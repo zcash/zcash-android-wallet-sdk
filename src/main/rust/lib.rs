@@ -15,10 +15,7 @@ use std::panic;
 use std::path::Path;
 use std::ptr;
 use zcash_client_backend::{
-    constants::{
-        testnet::{HRP_SAPLING_EXTENDED_SPENDING_KEY, HRP_SAPLING_PAYMENT_ADDRESS},
-        SAPLING_CONSENSUS_BRANCH_ID,
-    },
+    constants::SAPLING_CONSENSUS_BRANCH_ID,
     encoding::{
         decode_extended_spending_key, decode_payment_address, encode_extended_spending_key,
     },
@@ -35,6 +32,16 @@ use zcash_primitives::{
 use zcash_proofs::prover::LocalTxProver;
 
 use crate::utils::exception::unwrap_exc_or;
+
+#[cfg(feature = "mainnet")]
+use zcash_client_backend::constants::mainnet::{
+    HRP_SAPLING_EXTENDED_SPENDING_KEY, HRP_SAPLING_PAYMENT_ADDRESS,
+};
+
+#[cfg(not(feature = "mainnet"))]
+use zcash_client_backend::constants::testnet::{
+    HRP_SAPLING_EXTENDED_SPENDING_KEY, HRP_SAPLING_PAYMENT_ADDRESS,
+};
 
 #[no_mangle]
 pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_initLogs(
