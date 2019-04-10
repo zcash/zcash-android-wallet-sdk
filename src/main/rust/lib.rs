@@ -3,8 +3,6 @@ extern crate log;
 
 mod utils;
 
-const SAPLING_CONSENSUS_BRANCH_ID: u32 = 0x76b8_09bb;
-
 use android_logger::Filter;
 use failure::format_err;
 use jni::{
@@ -17,20 +15,24 @@ use std::panic;
 use std::path::Path;
 use std::ptr;
 use zcash_client_backend::{
-    constants::{HRP_SAPLING_EXTENDED_SPENDING_KEY_TEST, HRP_SAPLING_PAYMENT_ADDRESS_TEST},
+    constants::{
+        testnet::{HRP_SAPLING_EXTENDED_SPENDING_KEY, HRP_SAPLING_PAYMENT_ADDRESS},
+        SAPLING_CONSENSUS_BRANCH_ID,
+    },
     encoding::{
         decode_extended_spending_key, decode_payment_address, encode_extended_spending_key,
     },
-    keystore::spending_key,
-    prover::LocalTxProver,
-    sqlite::{
-        get_address, get_balance, get_received_memo_as_utf8, get_sent_memo_as_utf8,
-        get_verified_balance, init_accounts_table, init_blocks_table, init_data_database,
-        scan_cached_blocks, send_to_address,
-    },
+    keys::spending_key,
 };
-use zcash_primitives::{note_encryption::Memo, transaction::components::Amount};
-use zip32::ExtendedFullViewingKey;
+use zcash_client_sqlite::{
+    get_address, get_balance, get_received_memo_as_utf8, get_sent_memo_as_utf8,
+    get_verified_balance, init_accounts_table, init_blocks_table, init_data_database,
+    scan_cached_blocks, send_to_address,
+};
+use zcash_primitives::{
+    note_encryption::Memo, transaction::components::Amount, zip32::ExtendedFullViewingKey,
+};
+use zcash_proofs::prover::LocalTxProver;
 
 use crate::utils::exception::unwrap_exc_or;
 
@@ -96,7 +98,7 @@ pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_initAccountsTab
                     "java/lang/String",
                     |env, extsk| {
                         env.new_string(encode_extended_spending_key(
-                            HRP_SAPLING_EXTENDED_SPENDING_KEY_TEST,
+                            HRP_SAPLING_EXTENDED_SPENDING_KEY,
                             &extsk,
                         ))
                     },
@@ -296,18 +298,17 @@ pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_sendToAddress(
         let spend_params = utils::java_string_to_rust(&env, spend_params);
         let output_params = utils::java_string_to_rust(&env, output_params);
 
-        let extsk =
-            match decode_extended_spending_key(HRP_SAPLING_EXTENDED_SPENDING_KEY_TEST, &extsk) {
-                Ok(Some(extsk)) => extsk,
-                Ok(None) => {
-                    return Err(format_err!("ExtendedSpendingKey is for the wrong network"));
-                }
-                Err(e) => {
-                    return Err(format_err!("Invalid ExtendedSpendingKey: {}", e));
-                }
-            };
+        let extsk = match decode_extended_spending_key(HRP_SAPLING_EXTENDED_SPENDING_KEY, &extsk) {
+            Ok(Some(extsk)) => extsk,
+            Ok(None) => {
+                return Err(format_err!("ExtendedSpendingKey is for the wrong network"));
+            }
+            Err(e) => {
+                return Err(format_err!("Invalid ExtendedSpendingKey: {}", e));
+            }
+        };
 
-        let to = match decode_payment_address(HRP_SAPLING_PAYMENT_ADDRESS_TEST, &to) {
+        let to = match decode_payment_address(HRP_SAPLING_PAYMENT_ADDRESS, &to) {
             Ok(Some(to)) => to,
             Ok(None) => {
                 return Err(format_err!("PaymentAddress is for the wrong network"));
@@ -319,12 +320,7 @@ pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_sendToAddress(
 
         let memo = Memo::from_str(&memo);
 
-        let prover = LocalTxProver::new(
-            Path::new(&spend_params),
-            "8270785a1a0d0bc77196f000ee6d221c9c9894f55307bd9357c3f0105d31ca63991ab91324160d8f53e2bbd3c2633a6eb8bdf5205d822e7f3f73edac51b2b70c",
-            Path::new(&output_params),
-            "657e3d38dbb5cb5e7dd2970e8b03d69b4787dd907285b5a7f0790dcc8072f60bf593b32cc2d1c030e00ff5ae64bf84c5c3beb84ddc841d48264b4a171744d028",
-        );
+        let prover = LocalTxProver::new(Path::new(&spend_params), Path::new(&output_params));
 
         send_to_address(
             &db_data,

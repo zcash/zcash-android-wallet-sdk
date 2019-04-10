@@ -15,7 +15,7 @@ use futures::Stream;
 use grpc::ClientStubExt;
 use pairing::bls12_381::{Fr, FrRepr};
 use zcash_client_backend::proto::compact_formats;
-use zcash_primitives::merkle_tree::{CommitmentTree, Node};
+use zcash_primitives::{merkle_tree::CommitmentTree, sapling::Node};
 
 use service_grpc::CompactTxStreamer;
 
@@ -23,7 +23,7 @@ const LIGHTWALLETD_HOST: &str = "lightwalletd.z.cash";
 const LIGHTWALLETD_PORT: u16 = 9067;
 const BATCH_SIZE: u64 = 10_000;
 
-fn print_sapling_tree(height: u64, time: u32, tree: CommitmentTree) {
+fn print_sapling_tree(height: u64, time: u32, tree: CommitmentTree<Node>) {
     let mut tree_bytes = vec![];
     tree.write(&mut tree_bytes).unwrap();
     println!("{{");
