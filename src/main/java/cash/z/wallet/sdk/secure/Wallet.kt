@@ -79,7 +79,7 @@ class Wallet(
         twig("Initializing wallet for first run")
         converter.initDataDb(dataDbPath)
         twig("seeding the database with sapling tree at height ${birthday.height}")
-        converter.initBlocksTable(dataDbPath, birthday.height, birthday.time, birthday.tree)
+        converter.initBlocksTable(dataDbPath, birthday.height, birthday.hash, birthday.time, birthday.tree)
 
         // store the spendingkey by leveraging the utilities provided during construction
         val seed by seedProvider
@@ -314,6 +314,7 @@ class Wallet(
      * New wallets can ignore any blocks created before their birthday.
      *
      * @param height the height at the time the wallet was born
+     * @param hash the block hash corresponding to the given height
      * @param time the time the wallet was born, in seconds
      * @param tree the sapling tree corresponding to the given height. This takes around 15 minutes of processing to
      * generate from scratch because all blocks since activation need to be considered. So when it is calculated in
@@ -321,6 +322,7 @@ class Wallet(
      */
     data class WalletBirthday(
         val height: Int = -1,
+        val hash: String = "",
         val time: Long = -1,
         val tree: String = ""
     )

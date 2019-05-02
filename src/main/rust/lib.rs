@@ -22,12 +22,14 @@ use zcash_client_backend::{
     keys::spending_key,
 };
 use zcash_client_sqlite::{
+    chain::{rewind_to_height, validate_combined_chain},
     get_address, get_balance, get_received_memo_as_utf8, get_sent_memo_as_utf8,
     get_verified_balance, init_accounts_table, init_blocks_table, init_data_database,
-    scan_cached_blocks, send_to_address,
+    scan_cached_blocks, send_to_address, ErrorKind,
 };
 use zcash_primitives::{
-    note_encryption::Memo, transaction::components::Amount, zip32::ExtendedFullViewingKey,
+    block::BlockHash, note_encryption::Memo, transaction::components::Amount,
+    zip32::ExtendedFullViewingKey,
 };
 use zcash_proofs::prover::LocalTxProver;
 
@@ -124,11 +126,17 @@ pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_initBlocksTable
     _: JClass<'_>,
     db_data: JString<'_>,
     height: jint,
+    hash_string: JString<'_>,
     time: jlong,
     sapling_tree_string: JString<'_>,
 ) -> jboolean {
     let res = panic::catch_unwind(|| {
         let db_data = utils::java_string_to_rust(&env, db_data);
+        let hash = {
+            let mut hash = hex::decode(utils::java_string_to_rust(&env, hash_string)).unwrap();
+            hash.reverse();
+            BlockHash::from_slice(&hash)
+        };
         let time = if time >= 0 && time <= jlong::from(u32::max_value()) {
             time as u32
         } else {
@@ -137,7 +145,7 @@ pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_initBlocksTable
         let sapling_tree =
             hex::decode(utils::java_string_to_rust(&env, sapling_tree_string)).unwrap();
 
-        match init_blocks_table(&db_data, height, time, &sapling_tree) {
+        match init_blocks_table(&db_data, height, hash, time, &sapling_tree) {
             Ok(()) => Ok(JNI_TRUE),
             Err(e) => Err(format_err!("Error while initializing blocks table: {}", e)),
         }
@@ -257,6 +265,52 @@ pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_getSentMemoAsUt
         Ok(output.into_inner())
     });
     unwrap_exc_or(&env, res, ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_validateCombinedChain(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    db_cache: JString<'_>,
+    db_data: JString<'_>,
+) -> jint {
+    let res = panic::catch_unwind(|| {
+        let db_cache = utils::java_string_to_rust(&env, db_cache);
+        let db_data = utils::java_string_to_rust(&env, db_data);
+
+        if let Err(e) = validate_combined_chain(&db_cache, &db_data) {
+            match e.kind() {
+                ErrorKind::InvalidChain(upper_bound, _) => Ok(*upper_bound),
+                _ => Err(format_err!("Error while validating chain: {}", e)),
+            }
+        } else {
+            // All blocks are valid, so "highest invalid block height" is below genesis.
+            Ok(-1)
+        }
+    });
+    unwrap_exc_or(&env, res, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_JniConverter_rewindToHeight(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    db_data: JString<'_>,
+    height: jint,
+) -> jboolean {
+    let res = panic::catch_unwind(|| {
+        let db_data = utils::java_string_to_rust(&env, db_data);
+
+        match rewind_to_height(&db_data, height) {
+            Ok(()) => Ok(JNI_TRUE),
+            Err(e) => Err(format_err!(
+                "Error while rewinding data DB to height {}: {}",
+                height,
+                e
+            )),
+        }
+    });
+    unwrap_exc_or(&env, res, JNI_FALSE)
 }
 
 #[no_mangle]

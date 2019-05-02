@@ -20,6 +20,7 @@ class JniConverter {
     external fun initBlocksTable(
         dbData: String,
         height: Int,
+        hash: String,
         time: Long,
         saplingTree: String): Boolean
 
@@ -32,6 +33,10 @@ class JniConverter {
     external fun getReceivedMemoAsUtf8(dbData: String, idNote: Long): String
 
     external fun getSentMemoAsUtf8(dbData: String, idNote: Long): String
+
+    external fun validateCombinedChain(db_cache: String, db_data: String): Int
+
+    external fun rewindToHeight(db_data: String, height: Int): Boolean
 
     external fun scanBlocks(db_cache: String, db_data: String): Boolean
 

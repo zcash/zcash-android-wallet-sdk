@@ -23,11 +23,13 @@ const LIGHTWALLETD_HOST: &str = "lightwalletd.z.cash";
 const LIGHTWALLETD_PORT: u16 = 9067;
 const BATCH_SIZE: u64 = 10_000;
 
-fn print_sapling_tree(height: u64, time: u32, tree: CommitmentTree<Node>) {
+fn print_sapling_tree(height: u64, mut hash: Vec<u8>, time: u32, tree: CommitmentTree<Node>) {
+    hash.reverse();
     let mut tree_bytes = vec![];
     tree.write(&mut tree_bytes).unwrap();
     println!("{{");
     println!("  \"height\": {},", height);
+    println!("  \"hash\": {},", hex::encode(hash));
     println!("  \"time\": {},", time);
     println!("  \"tree\": \"{}\",", hex::encode(tree_bytes));
     println!("}}");
@@ -73,10 +75,12 @@ fn main() {
             .drop_metadata()
             .wait();
 
+        let mut end_hash = vec![];
         let mut end_time = 0;
         let mut parsed = 0;
         for block in blocks {
             let block = block.unwrap();
+            end_hash = block.hash;
             end_time = block.time;
             for tx in block.vtx.iter() {
                 for output in tx.outputs.iter() {
@@ -93,7 +97,7 @@ fn main() {
         println!("Parsed {} blocks", parsed);
 
         if end_height == latest_height {
-            print_sapling_tree(end_height, end_time, tree);
+            print_sapling_tree(end_height, end_hash, end_time, tree);
             break;
         } else {
             start_height = end_height + 1
