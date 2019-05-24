@@ -6,7 +6,8 @@ import androidx.room.RoomDatabase
 import cash.z.wallet.sdk.dao.CompactBlockDao
 import cash.z.wallet.sdk.db.CompactBlockDb
 import cash.z.wallet.sdk.exception.CompactBlockProcessorException
-import cash.z.wallet.sdk.jni.JniConverter
+import cash.z.wallet.sdk.jni.RustBackend
+import cash.z.wallet.sdk.jni.RustBackendWelding
 import cash.z.wallet.sdk.rpc.CompactFormats
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.channels.ReceiveChannel
@@ -21,7 +22,7 @@ import java.io.File
  */
 class CompactBlockProcessor(
     applicationContext: Context,
-    val converter: JniConverter = JniConverter(),
+    val rustBackend: RustBackendWelding = RustBackend(),
     cacheDbName: String = DEFAULT_CACHE_DB_NAME,
     dataDbName: String = DEFAULT_DATA_DB_NAME
 ) {
@@ -90,7 +91,7 @@ class CompactBlockProcessor(
         twigTask("scanning blocks") {
             if (isActive) {
                 try {
-                    converter.scanBlocks(cacheDbPath, dataDbPath)
+                    rustBackend.scanBlocks(cacheDbPath, dataDbPath)
                 } catch (t: Throwable) {
                     twig("error while scanning blocks: $t")
                 }

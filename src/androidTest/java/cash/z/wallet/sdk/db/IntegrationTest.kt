@@ -3,7 +3,7 @@ package cash.z.wallet.sdk.db
 import android.text.format.DateUtils
 import androidx.test.platform.app.InstrumentationRegistry
 import cash.z.wallet.sdk.data.*
-import cash.z.wallet.sdk.jni.JniConverter
+import cash.z.wallet.sdk.jni.RustBackend
 import cash.z.wallet.sdk.secure.Wallet
 import kotlinx.coroutines.runBlocking
 import org.junit.AfterClass
@@ -40,16 +40,16 @@ class IntegrationTest {
 
     @Test(timeout = 1L * DateUtils.MINUTE_IN_MILLIS/10)
     fun testSync() = runBlocking<Unit> {
-        val converter = JniConverter()
-        converter.initLogs()
+        val rustBackend = RustBackend()
+        rustBackend.initLogs()
         val logger = TroubleshootingTwig()
 
         downloader = CompactBlockStream("10.0.2.2", 9067, logger)
-        processor = CompactBlockProcessor(context, converter, cacheDdName, dataDbName, logger = logger)
+        processor = CompactBlockProcessor(context, rustBackend, cacheDdName, dataDbName, logger = logger)
         repository = PollingTransactionRepository(context, dataDbName, 10_000L)
         wallet = Wallet(
             context,
-            converter,
+            rustBackend,
             context.getDatabasePath(dataDbName).absolutePath,
             context.cacheDir.absolutePath,
             arrayOf(0),

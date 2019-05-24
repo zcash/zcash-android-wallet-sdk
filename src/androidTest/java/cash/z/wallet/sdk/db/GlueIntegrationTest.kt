@@ -10,8 +10,9 @@ import cash.z.wallet.sdk.dao.CompactBlockDao
 import cash.z.wallet.sdk.dao.TransactionDao
 import cash.z.wallet.sdk.data.SampleSeedProvider
 import cash.z.wallet.sdk.ext.toBlockHeight
-import cash.z.wallet.sdk.jni.JniConverter
+import cash.z.wallet.sdk.jni.RustBackend
 import cash.z.wallet.sdk.entity.CompactBlock
+import cash.z.wallet.sdk.jni.RustBackendWelding
 import io.grpc.ManagedChannel
 import io.grpc.ManagedChannelBuilder
 import org.junit.*
@@ -55,12 +56,12 @@ class GlueIntegrationTest {
 
     private fun scanData() {
         val dbFileName = "/data/user/0/cash.z.wallet.sdk.test/databases/new-data-glue.db"
-        converter.initDataDb(dbFileName)
-        converter.initAccountsTable(dbFileName, "dummyseed".toByteArray(), 1)
+        rustBackend.initDataDb(dbFileName)
+        rustBackend.initAccountsTable(dbFileName, "dummyseed".toByteArray(), 1)
 
 
         Log.e("tezt", "scanning blocks...")
-        val result = converter.scanBlocks(cacheDbPath, dbFileName)
+        val result = rustBackend.scanBlocks(cacheDbPath, dbFileName)
         System.err.println("done.")
     }
 
@@ -70,7 +71,7 @@ class GlueIntegrationTest {
 
     companion object {
         // jni
-        val converter: JniConverter = JniConverter()
+        val rustBackend: RustBackendWelding = RustBackend()
 
         // db
         private lateinit var dao: CompactBlockDao
@@ -84,7 +85,7 @@ class GlueIntegrationTest {
         @BeforeClass
         @JvmStatic
         fun setup() {
-            converter.initLogs()
+            rustBackend.initLogs()
 
             val channel = ManagedChannelBuilder.forAddress("10.0.2.2", 9067).usePlaintext().build()
             blockingStub = CompactTxStreamerGrpc.newBlockingStub(channel)

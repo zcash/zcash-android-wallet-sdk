@@ -2,7 +2,7 @@ package cash.z.wallet.sdk.sample.memo
 
 import android.content.Context
 import cash.z.wallet.sdk.data.*
-import cash.z.wallet.sdk.jni.JniConverter
+import cash.z.wallet.sdk.jni.RustBackend
 import cash.z.wallet.sdk.secure.Wallet
 
 object Injection {
@@ -15,7 +15,7 @@ object Injection {
         val downloader = CompactBlockStream(host, port)
         val wallet = Wallet(
             context = appContext,
-            converter = JniConverter(),
+            rustBackend = RustBackend(),
             dataDbPath = appContext.getDatabasePath(dataDbName).absolutePath,
             paramDestinationDir = "${appContext.cacheDir.absolutePath}/params",
             seedProvider = SampleSeedProvider("testreferencealice"),

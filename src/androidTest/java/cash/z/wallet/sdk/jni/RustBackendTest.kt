@@ -6,29 +6,29 @@ import org.junit.Assert.assertNotNull
 import org.junit.BeforeClass
 import org.junit.Test
 
-class JniConverterTest {
+class RustBackendTest {
 
     private val dbDataFile = "/data/user/0/cash.z.wallet.sdk.test/databases/data2.db"
 
     @Test
     fun testGetAddress_exists() {
-        assertNotNull(converter.getAddress(dbDataFile, 0))
+        assertNotNull(rustBackend.getAddress(dbDataFile, 0))
     }
 
     @Test
     fun testGetAddress_valid() {
-        val address = converter.getAddress(dbDataFile, 0)
+        val address = rustBackend.getAddress(dbDataFile, 0)
         val expectedAddress = "ztestsapling1snmqdnfqnc407pvqw7sld8w5zxx6nd0523kvlj4jf39uvxvh7vn0hs3q38n07806dwwecqwke3t"
         assertEquals("Invalid address", expectedAddress, address)
     }
 
     @Test
     fun testScanBlocks() {
-        converter.initDataDb(dbDataFile)
-        converter.initAccountsTable(dbDataFile, "dummyseed".toByteArray(), 1)
+        rustBackend.initDataDb(dbDataFile)
+        rustBackend.initAccountsTable(dbDataFile, "dummyseed".toByteArray(), 1)
 
         // note: for this to work, the db file below must be uploaded to the device. Eventually, this test will be self-contained and remove that requirement.
-        val result = converter.scanBlocks(
+        val result = rustBackend.scanBlocks(
             "/data/user/0/cash.z.wallet.sdk.test/databases/dummy-cache.db",
             dbDataFile
         )
@@ -38,7 +38,7 @@ class JniConverterTest {
 
     @Test
     fun testSend() {
-        converter.sendToAddress(
+        rustBackend.sendToAddress(
             "/data/user/0/cash.z.wallet.sdk.test/databases/data2.db",
             0,
             "dummykey",
@@ -51,12 +51,12 @@ class JniConverterTest {
     }
 
     companion object {
-        val converter: JniConverter = JniConverter()
+        val rustBackend: RustBackendWelding = RustBackend()
 
         @BeforeClass
         @JvmStatic
         fun setup() {
-            converter.initLogs()
+            rustBackend.initLogs()
         }
     }
 

@@ -24,7 +24,7 @@ sealed class SynchronizerException(message: String, cause: Throwable? = null) : 
 
 sealed class CompactBlockProcessorException(message: String, cause: Throwable? = null) : RuntimeException(message, cause) {
     class DataDbMissing(path: String): CompactBlockProcessorException("No data db file found at path $path. Verify " +
-            "that the data DB has been initialized via `converter.initDataDb(path)`")
+            "that the data DB has been initialized via `rustBackend.initDataDb(path)`")
 }
 
 sealed class CompactBlockStreamException(message: String, cause: Throwable? = null) : RuntimeException(message, cause) {

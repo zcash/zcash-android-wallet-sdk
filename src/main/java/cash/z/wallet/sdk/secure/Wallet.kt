@@ -8,7 +8,7 @@ import cash.z.wallet.sdk.data.twigTask
 import cash.z.wallet.sdk.exception.RustLayerException
 import cash.z.wallet.sdk.exception.WalletException
 import cash.z.wallet.sdk.ext.masked
-import cash.z.wallet.sdk.jni.JniConverter
+import cash.z.wallet.sdk.jni.RustBackendWelding
 import cash.z.wallet.sdk.secure.Wallet.WalletBirthday
 import com.google.gson.Gson
 import com.google.gson.stream.JsonReader
@@ -26,14 +26,14 @@ import kotlin.properties.ReadWriteProperty
 
 
 /**
- * Wrapper for the converter. This class basically represents all the Rust-wallet capabilities and the supporting data
- * required to exercise those abilities.
+ * Wrapper for the Rust backend. This class basically represents all the Rust-wallet
+ * capabilities and the supporting data required to exercise those abilities.
  *
  * @param birthday the birthday of this wallet. See [WalletBirthday] for more info.
  */
 class Wallet(
     private val birthday: WalletBirthday,
-    private val converter: JniConverter,
+    private val rustBackend: RustBackendWelding,
     private val dataDbPath: String,
     private val paramDestinationDir: String,
     /** indexes of accounts ids. In the reference wallet, we only work with account 0 */
@@ -43,7 +43,7 @@ class Wallet(
 ) {
     constructor(
         context: Context,
-        converter: JniConverter,
+        rustBackend: RustBackendWelding,
         dataDbPath: String,
         paramDestinationDir: String,
         accountIds: Array<Int> = arrayOf(0),
@@ -51,7 +51,7 @@ class Wallet(
         spendingKeyProvider: ReadWriteProperty<Any?, String>
     ) : this(
         birthday = loadBirthdayFromAssets(context),
-        converter = converter,
+        rustBackend = rustBackend,
         dataDbPath = dataDbPath,
         paramDestinationDir = paramDestinationDir,
         accountIds = accountIds,
@@ -77,13 +77,13 @@ class Wallet(
         firstRunStartHeight: Int = SAPLING_ACTIVATION_HEIGHT
     ): Int {
         twig("Initializing wallet for first run")
-        converter.initDataDb(dataDbPath)
+        rustBackend.initDataDb(dataDbPath)
         twig("seeding the database with sapling tree at height ${birthday.height}")
-        converter.initBlocksTable(dataDbPath, birthday.height, birthday.hash, birthday.time, birthday.tree)
+        rustBackend.initBlocksTable(dataDbPath, birthday.height, birthday.hash, birthday.time, birthday.tree)
 
         // store the spendingkey by leveraging the utilities provided during construction
         val seed by seedProvider
-        val accountSpendingKeys = converter.initAccountsTable(dataDbPath, seed, 1)
+        val accountSpendingKeys = rustBackend.initAccountsTable(dataDbPath, seed, 1)
         spendingKeyStore = accountSpendingKeys[0]
 
         return Math.max(firstRunStartHeight, birthday.height)
@@ -93,7 +93,7 @@ class Wallet(
      * Gets the address for this wallet, defaulting to the first account.
      */
     fun getAddress(accountId: Int = accountIds[0]): String {
-        return converter.getAddress(dataDbPath, accountId)
+        return rustBackend.getAddress(dataDbPath, accountId)
     }
 
     /**
@@ -110,7 +110,7 @@ class Wallet(
      * @param accountId the account to check for balance info. Defaults to zero.
      */
     fun availableBalanceSnapshot(accountId: Int = accountIds[0]): Long {
-        return converter.getVerifiedBalance(dataDbPath, accountId)
+        return rustBackend.getVerifiedBalance(dataDbPath, accountId)
     }
 
     /**
@@ -121,9 +121,9 @@ class Wallet(
     suspend fun sendBalanceInfo(accountId: Int = accountIds[0]) = withContext(IO) {
         twigTask("checking balance info") {
             try {
-                val balanceTotal = converter.getBalance(dataDbPath, accountId)
+                val balanceTotal = rustBackend.getBalance(dataDbPath, accountId)
                 twig("found total balance of: $balanceTotal")
-                val balanceAvailable = converter.getVerifiedBalance(dataDbPath, accountId)
+                val balanceAvailable = rustBackend.getVerifiedBalance(dataDbPath, accountId)
                 twig("found available balance of: $balanceAvailable")
                 balanceChannel.send(WalletBalance(balanceTotal, balanceAvailable))
             } catch (t: Throwable) {
@@ -150,7 +150,7 @@ class Wallet(
                 result = runCatching {
                     ensureParams(paramDestinationDir)
                     twig("params exist at $paramDestinationDir! attempting to send...")
-                    converter.sendToAddress(
+                    rustBackend.sendToAddress(
                         dataDbPath,
                         fromAccountId,
                         spendingKeyStore,
