@@ -16,12 +16,11 @@ use std::path::Path;
 use std::ptr;
 use zcash_client_backend::{
     constants::SAPLING_CONSENSUS_BRANCH_ID,
-    encoding::{
-        decode_extended_spending_key, decode_payment_address, encode_extended_spending_key,
-    },
+    encoding::{decode_extended_spending_key, encode_extended_spending_key},
     keys::spending_key,
 };
 use zcash_client_sqlite::{
+    address::RecipientAddress,
     chain::{rewind_to_height, validate_combined_chain},
     get_address, get_balance, get_received_memo_as_utf8, get_sent_memo_as_utf8,
     get_verified_balance, init_accounts_table, init_blocks_table, init_data_database,
@@ -36,14 +35,10 @@ use zcash_proofs::prover::LocalTxProver;
 use crate::utils::exception::unwrap_exc_or;
 
 #[cfg(feature = "mainnet")]
-use zcash_client_backend::constants::mainnet::{
-    HRP_SAPLING_EXTENDED_SPENDING_KEY, HRP_SAPLING_PAYMENT_ADDRESS,
-};
+use zcash_client_backend::constants::mainnet::HRP_SAPLING_EXTENDED_SPENDING_KEY;
 
 #[cfg(not(feature = "mainnet"))]
-use zcash_client_backend::constants::testnet::{
-    HRP_SAPLING_EXTENDED_SPENDING_KEY, HRP_SAPLING_PAYMENT_ADDRESS,
-};
+use zcash_client_backend::constants::testnet::HRP_SAPLING_EXTENDED_SPENDING_KEY;
 
 #[no_mangle]
 pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_RustBackend_initLogs(
@@ -369,13 +364,13 @@ pub unsafe extern "C" fn Java_cash_z_wallet_sdk_jni_RustBackend_sendToAddress(
             }
         };
 
-        let to = match decode_payment_address(HRP_SAPLING_PAYMENT_ADDRESS, &to) {
+        let to = match RecipientAddress::from_str(&to) {
             Ok(Some(to)) => to,
             Ok(None) => {
-                return Err(format_err!("PaymentAddress is for the wrong network"));
+                return Err(format_err!("Address is for the wrong network"));
             }
             Err(e) => {
-                return Err(format_err!("Invalid PaymentAddress: {}", e));
+                return Err(format_err!("Invalid Address: {}", e));
             }
         };
 
