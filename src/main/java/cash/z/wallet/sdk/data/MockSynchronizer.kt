@@ -1,6 +1,9 @@
 package cash.z.wallet.sdk.data
 
+import cash.z.wallet.sdk.block.CompactBlockProcessor
+import cash.z.wallet.sdk.block.ProcessorConfig
 import cash.z.wallet.sdk.dao.WalletTransaction
+import cash.z.wallet.sdk.ext.MINERS_FEE_ZATOSHI
 import cash.z.wallet.sdk.secure.Wallet
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.ConflatedBroadcastChannel
@@ -24,7 +27,6 @@ import kotlin.random.nextLong
  * will send regular updates such that it reaches 100 in this amount of time.
  * @param activeTransactionUpdateFrequency the amount of time in milliseconds between updates to an active
  * transaction's state. Active transactions move through their lifecycle and increment their state at this rate.
- * @param isFirstRun whether this Mock should return `true` for isFirstRun. Defaults to a random boolean.
  * @param isStale whether this Mock should return `true` for isStale. When null, this will follow the default behavior
  * of returning true about 10% of the time.
  * @param onSynchronizerErrorListener presently ignored because there are not yet any errors in mock.
@@ -33,7 +35,6 @@ open class MockSynchronizer(
     private val transactionInterval: Long = 30_000L,
     private val initialLoadDuration: Long = 5_000L,
     private val activeTransactionUpdateFrequency: Long = 3_000L,
-    private val isFirstRun: Boolean = Random.nextBoolean(),
     private var isStale: Boolean? = null,
     override var onSynchronizerErrorListener: ((Throwable?) -> Boolean)? = null // presently ignored (there are no errors in mock yet)
 ) : Synchronizer, CoroutineScope {
@@ -97,14 +98,6 @@ open class MockSynchronizer(
     }
 
     /**
-     * Returns [isFirstRun] as provided during initialization of this MockSynchronizer.
-     */
-    override suspend fun isFirstRun(): Boolean {
-        twig("checking isFirstRun: $isFirstRun")
-        return isFirstRun
-    }
-
-    /**
      * Returns the [mockAddress]. This address is not usable.
      */
     override fun getAddress(accountId: Int): String = mockAddress.also {  twig("returning mock address $mockAddress") }
@@ -116,7 +109,7 @@ open class MockSynchronizer(
         if (transactions.size != 0) {
             return transactions.fold(0L) { acc, tx ->
                 if (tx.isSend && tx.isMined) acc - tx.value else acc + tx.value
-            } - 10_000L // miner's fee
+            } - MINERS_FEE_ZATOSHI
         }
         return 0L
     }
@@ -262,7 +255,7 @@ open class MockSynchronizer(
                                     if (tx.isSend && tx.isMined) acc - tx.value else acc + tx.value
                                 }
                     }
-                    balanceChannel.send(Wallet.WalletBalance(balance, balance - 10000 /* miner's fee */))
+                    balanceChannel.send(Wallet.WalletBalance(balance, balance - MINERS_FEE_ZATOSHI))
                 }
                 // other collaborators add to the list, periodically. This simulates, real-world, non-distinct updates.
                 delay(Random.nextLong(transactionInterval / 2))

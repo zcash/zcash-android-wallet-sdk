@@ -1,8 +1,9 @@
 package cash.z.wallet.sdk.data
 
+import cash.z.wallet.sdk.block.CompactBlockProcessor
 import cash.z.wallet.sdk.dao.WalletTransaction
-import cash.z.wallet.sdk.data.SdkSynchronizer.SyncState.*
 import cash.z.wallet.sdk.exception.SynchronizerException
+import cash.z.wallet.sdk.exception.WalletException
 import cash.z.wallet.sdk.secure.Wallet
 import kotlinx.coroutines.*
 import kotlinx.coroutines.Dispatchers.IO
@@ -18,7 +19,6 @@ import kotlin.coroutines.CoroutineContext
  * Another way of thinking about this class is the reference that demonstrates how all the pieces can be tied
  * together.
  *
- * @param downloader the component that downloads compact blocks and exposes them as a stream
  * @param processor the component that saves the downloaded compact blocks to the cache and then scans those blocks for
  * data related to this wallet.
  * @param repository the component that exposes streams of wallet transaction information.
@@ -31,14 +31,11 @@ import kotlin.coroutines.CoroutineContext
  * number represents the number of milliseconds the synchronizer will wait before checking for newly mined blocks.
  */
 class SdkSynchronizer(
-    private val downloader: CompactBlockStream,
     private val processor: CompactBlockProcessor,
     private val repository: TransactionRepository,
     private val activeTransactionManager: ActiveTransactionManager,
     private val wallet: Wallet,
-    private val batchSize: Int = 1000,
-    private val staleTolerance: Int = 10,
-    private val blockPollFrequency: Long = CompactBlockStream.DEFAULT_POLL_INTERVAL
+    private val staleTolerance: Int = 10
 ) : Synchronizer {
 
     /**
@@ -103,7 +100,13 @@ class SdkSynchronizer(
         failure = null
         blockJob = parentScope.launch(CoroutineExceptionHandler(exceptionHandler)) {
             supervisorScope {
-                continueWithState(determineState())
+                try {
+                    wallet.initialize()
+                } catch (e: WalletException.AlreadyInitializedException) {
+                    twig("Warning: wallet already initialized but this is safe to ignore " +
+                            "because the SDK now automatically detects where to start downloading.")
+                }
+                onReady()
             }
         }
         return this
@@ -116,7 +119,6 @@ class SdkSynchronizer(
      */
     override fun stop() {
         twig("stopping")
-        downloader.stop().also { twig("downloader stopped") }
         repository.stop().also { twig("repository stopped") }
         activeTransactionManager.stop().also { twig("activeTransactionManager stopped") }
         // TODO: investigate whether this is necessary and remove or improve, accordingly
@@ -146,7 +148,7 @@ class SdkSynchronizer(
      * switches from catching up on missed blocks to periodically monitoring for newly mined blocks.
      */
     override fun progress(): ReceiveChannel<Int> {
-        return downloader.progress()
+        return processor.progress()
     }
 
     /**
@@ -170,26 +172,14 @@ class SdkSynchronizer(
      * @return true when the local data is significantly out of sync with the remote server and the app data is stale.
      */
     override suspend fun isStale(): Boolean = withContext(IO) {
-        val latestBlockHeight = downloader.connection.getLatestBlockHeight()
-        val ourHeight = processor.cacheDao.latestBlockHeight()
-        val tolerance = 10
+        val latestBlockHeight = processor.downloader.getLatestBlockHeight()
+        val ourHeight = processor.downloader.getLastDownloadedHeight()
+        val tolerance = staleTolerance
         val delta = latestBlockHeight - ourHeight
         twig("checking whether out of sync. " +
                 "LatestHeight: $latestBlockHeight  ourHeight: $ourHeight  Delta: $delta   tolerance: $tolerance")
         delta > tolerance
     }
-
-    /**
-     * A flag to indicate that the initial state of this synchronizer was firstRun. This is useful for knowing whether
-     * initializing the database is required and whether to show things like"first run walk-throughs."
-     *
-     * @return true when this synchronizer has not been run before on this device or when cache has been cleared since
-     * the last run.
-     */
-    override suspend fun isFirstRun(): Boolean = withContext(IO) {
-        initialState is FirstRun
-    }
-
 
     /* Operations */
 
@@ -234,80 +224,17 @@ class SdkSynchronizer(
     // Private API
     //
 
-    /**
-     * After determining the initial state, continue based on those findings.
-     *
-     * @param syncState the sync state found
-     */
-    private fun CoroutineScope.continueWithState(syncState: SyncState): Job {
-        return when (syncState) {
-            FirstRun -> onFirstRun()
-            is CacheOnly -> onCacheOnly(syncState)
-            is ReadyToProcess -> onReady(syncState)
-        }
-    }
-
-    /**
-     * Logic for the first run. This is when the wallet gets initialized, which includes setting up the dataDB and
-     * preloading it with data corresponding to the wallet birthday.
-     */
-    private fun CoroutineScope.onFirstRun(): Job {
-        twig("this appears to be a fresh install, beginning first run of application")
-        val firstRunStartHeight = wallet.initialize() // should get the latest sapling tree and return that height
-        twig("wallet firstRun returned a value of $firstRunStartHeight")
-        return continueWithState(ReadyToProcess(firstRunStartHeight))
-    }
-
-    /**
-     * Logic for starting the Synchronizer when no scans have yet occurred. Takes care of initializing the dataDb and
-     * then
-     */
-    private fun CoroutineScope.onCacheOnly(syncState: CacheOnly): Job {
-        twig("we have cached blocks but no data DB, beginning pre-cached version of application")
-        val firstRunStartHeight = wallet.initialize(syncState.startingBlockHeight)
-        twig("wallet has already cached up to a height of $firstRunStartHeight")
-        return continueWithState(ReadyToProcess(firstRunStartHeight))
-    }
 
     /**
      * Logic for starting the Synchronizer once it is ready for processing. All starts eventually end with this method.
      */
-    private fun CoroutineScope.onReady(syncState: ReadyToProcess) = launch {
-        twig("synchronization is ready to begin at height ${syncState.startingBlockHeight}")
-        // TODO: for PIR concerns, introduce some jitter here for where, exactly, the downloader starts
-        val blockChannel =
-            downloader.start(
-                this,
-                syncState.startingBlockHeight,
-                batchSize,
-                pollFrequencyMillis = blockPollFrequency
-            )
-        launch { monitorProgress(downloader.progress()) }
+    private fun CoroutineScope.onReady() = launch {
+        twig("synchronization is ready to begin!")
         launch { monitorTransactions(repository.allTransactions().distinct()) }
+
         activeTransactionManager.start()
         repository.start(this)
-        processor.processBlocks(blockChannel)
-    }
-
-    /**
-     * Monitor download progress in order to trigger a scan the moment all blocks have been received. This reduces the
-     * amount of time it takes to get accurate balance information since scan intervals are fairly long.
-     */
-    private suspend fun monitorProgress(progressChannel: ReceiveChannel<Int>) = withContext(IO) {
-        twig("beginning to monitor download progress")
-        for (i in progressChannel) {
-            if(i >= 100) {
-                twig("triggering a proactive scan in a second because all missing blocks have been loaded")
-                delay(1000L)
-                launch {
-                    twig("triggering proactive scan!")
-                    processor.scanBlocks()
-                    twig("done triggering proactive scan!")
-                }
-                break
-            }
-        }
-        twig("done monitoring download progress")
+        processor.start()
     }
 
     /**
@@ -323,32 +250,6 @@ class SdkSynchronizer(
             }
             twig("done monitoring transactions in order to update the balance")
         }
-
-    /**
-     * Determine the initial state of the data by checking whether the dataDB is initialized and the last scanned block
-     * height. This is considered a first run if no blocks have been processed.
-     */
-    private suspend fun determineState(): SyncState = withContext(IO) {
-        twig("determining state (has the app run before, what block did we last see, etc.)")
-        initialState = if (processor.dataDbExists) {
-            val isInitialized = repository.isInitialized()
-            // this call blocks because it does IO
-            val startingBlockHeight = Math.max(processor.lastProcessedBlock(), repository.lastScannedHeight())
-
-            twig("cacheDb exists with last height of $startingBlockHeight and isInitialized = $isInitialized")
-            if (!repository.isInitialized()) FirstRun else ReadyToProcess(startingBlockHeight)
-        } else if(processor.cachDbExists) {
-            // this call blocks because it does IO
-            val startingBlockHeight = processor.lastProcessedBlock()
-            twig("cacheDb exists with last height of $startingBlockHeight")
-            if (startingBlockHeight <= 0) FirstRun else CacheOnly(startingBlockHeight)
-        } else {
-            FirstRun
-        }
-
-        twig("determined ${initialState::class.java.simpleName}")
-         initialState
-    }
 
     /**
      * Wraps exceptions, logs them and then invokes the [onSynchronizerErrorListener], if it exists.
