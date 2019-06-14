@@ -11,7 +11,7 @@ buildscript {
         ],
         'grpc':'1.19.0',
         'kotlin': '1.3.21',
-        'coroutines': '1.1.1',
+        'coroutines': '1.3.0-M1',
         'junitJupiter': '5.5.0-M1'
     ]
     repositories {
@@ -22,7 +22,7 @@ buildscript {
         }
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:3.5.0-alpha09'
+        classpath 'com.android.tools.build:gradle:3.5.0-beta03'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${versions.kotlin}"
         classpath "org.jetbrains.kotlin:kotlin-allopen:${versions.kotlin}"
         classpath "org.jetbrains.dokka:dokka-gradle-plugin:0.9.18"
@@ -75,12 +75,12 @@ android {
         debug {
             // for test builds, which exceed the dex limit because they pull in things like mockito and grpc-testing
             multiDexEnabled true
-            minifyEnabled true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
         release {
             multiDexEnabled false
-            minifyEnabled true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
     }
