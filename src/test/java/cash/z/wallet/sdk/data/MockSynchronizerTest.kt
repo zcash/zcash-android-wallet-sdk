@@ -141,7 +141,7 @@ internal class MockSynchronizerTest {
 
     @Test
     fun `balance matches transactions without sends`() = runBlocking {
-        val balances = fastSynchronizer.start(fastSynchronizer).balance()
+        val balances = fastSynchronizer.start(fastSynchronizer).balances()
         var transactions = listOf<WalletTransaction>()
         while (transactions.count() < 10) {
             transactions = fastSynchronizer.allTransactions().receive()
@@ -153,7 +153,7 @@ internal class MockSynchronizerTest {
     @Test
     fun `balance matches transactions with sends`() = runBlocking {
         var transactions = listOf<WalletTransaction>()
-        val balances = fastSynchronizer.start(fastSynchronizer).balance()
+        val balances = fastSynchronizer.start(fastSynchronizer).balances()
         val transactionChannel = fastSynchronizer.allTransactions()
         while (transactions.count() < 10) {
             fastSynchronizer.sendToAddress(Random.nextLong(1L..10_000_000_000), validAddress)

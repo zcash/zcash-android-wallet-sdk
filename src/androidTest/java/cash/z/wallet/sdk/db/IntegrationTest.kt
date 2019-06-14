@@ -1,10 +1,14 @@
 package cash.z.wallet.sdk.db
 
-import android.text.format.DateUtils
 import androidx.test.platform.app.InstrumentationRegistry
+import cash.z.wallet.sdk.block.CompactBlockDbStore
+import cash.z.wallet.sdk.block.CompactBlockDownloader
+import cash.z.wallet.sdk.block.CompactBlockProcessor
+import cash.z.wallet.sdk.block.ProcessorConfig
 import cash.z.wallet.sdk.data.*
 import cash.z.wallet.sdk.jni.RustBackend
 import cash.z.wallet.sdk.secure.Wallet
+import cash.z.wallet.sdk.service.LightWalletGrpcService
 import kotlinx.coroutines.runBlocking
 import org.junit.AfterClass
 import org.junit.Before
@@ -21,13 +25,14 @@ class IntegrationTest {
     private val cacheDdName = "IntegrationCache41.db"
     private val context = InstrumentationRegistry.getInstrumentation().context
 
-    private lateinit var downloader: CompactBlockStream
+    private lateinit var downloader: CompactBlockDownloader
     private lateinit var processor: CompactBlockProcessor
     private lateinit var wallet: Wallet
 
     @Before
     fun setup() {
         deleteDbs()
+        Twig.plant(TroubleshootingTwig())
     }
 
     private fun deleteDbs() {
@@ -38,14 +43,22 @@ class IntegrationTest {
         }
     }
 
-    @Test(timeout = 1L * DateUtils.MINUTE_IN_MILLIS/10)
+    @Test(timeout = 120_000L)
     fun testSync() = runBlocking<Unit> {
         val rustBackend = RustBackend()
         rustBackend.initLogs()
-        val logger = TroubleshootingTwig()
+        val config = ProcessorConfig(
+            cacheDbPath = context.getDatabasePath(cacheDdName).absolutePath,
+            dataDbPath = context.getDatabasePath(dataDbName).absolutePath,
+            downloadBatchSize = 2000,
+            blockPollFrequencyMillis = 10_000L
+        )
 
-        downloader = CompactBlockStream("10.0.2.2", 9067, logger)
-        processor = CompactBlockProcessor(context, rustBackend, cacheDdName, dataDbName, logger = logger)
+        val lightwalletService = LightWalletGrpcService("192.168.1.134")
+        val compactBlockStore = CompactBlockDbStore(context, config.cacheDbPath)
+
+        downloader = CompactBlockDownloader(lightwalletService, compactBlockStore)
+        processor = CompactBlockProcessor(config, downloader, repository, rustBackend)
         repository = PollingTransactionRepository(context, dataDbName, 10_000L)
         wallet = Wallet(
             context,
@@ -59,16 +72,15 @@ class IntegrationTest {
 
 //        repository.start(this)
         synchronizer = SdkSynchronizer(
-            downloader,
             processor,
             repository,
-            ActiveTransactionManager(repository, downloader.connection, wallet, logger),
+            ActiveTransactionManager(repository, lightwalletService, wallet),
             wallet,
             1000
         ).start(this)
 
         for(i in synchronizer.progress()) {
-            logger.twig("made progress: $i")
+            twig("made progress: $i")
         }
     }
 

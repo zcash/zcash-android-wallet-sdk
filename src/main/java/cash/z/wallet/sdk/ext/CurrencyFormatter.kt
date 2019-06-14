@@ -11,7 +11,7 @@ import java.util.*
 //TODO: provide a dynamic way to configure this globally for the SDK
 // For now, just make these vars so at least they could be modified in one place
 object Conversions {
-    var ONE_ZEC_IN_ZATOSHI = BigDecimal(100_000_000.0, MathContext.DECIMAL128)
+    var ONE_ZEC_IN_ZATOSHI = BigDecimal(ZATOSHI, MathContext.DECIMAL128)
     var ZEC_FORMATTER = NumberFormat.getInstance(Locale.getDefault()).apply {
         roundingMode = RoundingMode.HALF_EVEN
         maximumFractionDigits = 6
