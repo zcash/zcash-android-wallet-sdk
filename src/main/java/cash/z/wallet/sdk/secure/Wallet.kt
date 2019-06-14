@@ -2,11 +2,11 @@ package cash.z.wallet.sdk.secure
 
 import android.content.Context
 import cash.z.wallet.sdk.data.Bush
-import cash.z.wallet.sdk.data.CompactBlockProcessor.Companion.SAPLING_ACTIVATION_HEIGHT
 import cash.z.wallet.sdk.data.twig
 import cash.z.wallet.sdk.data.twigTask
 import cash.z.wallet.sdk.exception.RustLayerException
 import cash.z.wallet.sdk.exception.WalletException
+import cash.z.wallet.sdk.ext.SAPLING_ACTIVATION_HEIGHT
 import cash.z.wallet.sdk.ext.masked
 import cash.z.wallet.sdk.jni.RustBackendWelding
 import cash.z.wallet.sdk.secure.Wallet.WalletBirthday
@@ -76,17 +76,34 @@ class Wallet(
     fun initialize(
         firstRunStartHeight: Int = SAPLING_ACTIVATION_HEIGHT
     ): Int {
-        twig("Initializing wallet for first run")
-        rustBackend.initDataDb(dataDbPath)
-        twig("seeding the database with sapling tree at height ${birthday.height}")
-        rustBackend.initBlocksTable(dataDbPath, birthday.height, birthday.hash, birthday.time, birthday.tree)
+        // TODO: find a better way to map these exceptions from the Rust side. For now, match error text :(
 
-        // store the spendingkey by leveraging the utilities provided during construction
-        val seed by seedProvider
-        val accountSpendingKeys = rustBackend.initAccountsTable(dataDbPath, seed, 1)
-        spendingKeyStore = accountSpendingKeys[0]
+        try {
+            rustBackend.initDataDb(dataDbPath)
+            twig("Initialized wallet for first run into file $dataDbPath")
+        } catch (e: Throwable) {
+            throw WalletException.FalseStart(e)
+        }
 
-        return Math.max(firstRunStartHeight, birthday.height)
+        try {
+            rustBackend.initBlocksTable(dataDbPath, birthday.height, birthday.hash, birthday.time, birthday.tree)
+            twig("seeded the database with sapling tree at height ${birthday.height} into file $dataDbPath")
+        } catch (t: Throwable) {
+            if (t.message?.contains("is not empty") == true) throw WalletException.AlreadyInitializedException(t)
+            else throw WalletException.FalseStart(t)
+        }
+
+        try {
+            // store the spendingkey by leveraging the utilities provided during construction
+            val seed by seedProvider
+            val accountSpendingKeys = rustBackend.initAccountsTable(dataDbPath, seed, 1)
+            spendingKeyStore = accountSpendingKeys[0]
+
+            twig("Initialized the accounts table into file $dataDbPath")
+            return Math.max(firstRunStartHeight, birthday.height)
+        } catch (e: Throwable) {
+            throw WalletException.FalseStart(e)
+        }
     }
 
     /**
@@ -147,7 +164,7 @@ class Wallet(
         withContext(IO) {
             var result = -1L
             twigTask("creating raw transaction to send $value zatoshi to ${toAddress.masked()}") {
-                result = runCatching {
+                result = try {
                     ensureParams(paramDestinationDir)
                     twig("params exist at $paramDestinationDir! attempting to send...")
                     rustBackend.sendToAddress(
@@ -161,7 +178,10 @@ class Wallet(
                         spendParams = SPEND_PARAM_FILE_NAME.toPath(),
                         outputParams = OUTPUT_PARAM_FILE_NAME.toPath()
                     )
-                }.getOrDefault(result)
+                } catch (t: Throwable) {
+                    twig("${t.message}")
+                    throw t
+                }
             }
             twig("result of sendToAddress: $result")
             result

@@ -9,9 +9,12 @@ import kotlinx.coroutines.channels.ReceiveChannel
 import java.util.*
 import kotlin.coroutines.CoroutineContext
 import cash.z.wallet.sdk.data.TransactionState.*
-import cash.z.wallet.sdk.rpc.CompactFormats
+//import cash.z.wallet.sdk.rpc.CompactFormats
+import cash.z.wallet.sdk.service.LightWalletService
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.contract
 
 /**
  * Manages active send/receive transactions. These are transactions that have been initiated but not completed with
@@ -19,7 +22,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class ActiveTransactionManager(
     private val repository: TransactionRepository,
-    private val service: CompactBlockStream.Connection,
+    private val service: LightWalletService,
     private val wallet: Wallet
 ) : CoroutineScope {
 
@@ -194,7 +197,15 @@ class ActiveTransactionManager(
     suspend fun sendToAddress(zatoshi: Long, toAddress: String, memo: String = "", fromAccountId: Int = 0) = withContext(Dispatchers.IO) {
         twig("creating send transaction for zatoshi value $zatoshi")
         val activeSendTransaction = create(zatoshi, toAddress.masked())
-        val transactionId: Long = wallet.createRawSendTransaction(zatoshi, toAddress, memo, fromAccountId) // this call takes up to 20 seconds
+        val transactionId: Long = try {
+            // this call takes up to 20 seconds
+            wallet.createRawSendTransaction(zatoshi, toAddress, memo, fromAccountId)
+        } catch (t: Throwable) {
+            val reason = "${t.message}"
+            twig("Failed to create transaction due to: $reason")
+            failure(activeSendTransaction, reason)
+            return@withContext
+        }
 
         // cancellation basically just prevents sending to the network but we cannot cancel after this moment
         // well, technically we could still allow cancellation in the split second between this line of code and the upload request but lets not complicate things
@@ -205,7 +216,7 @@ class ActiveTransactionManager(
         }
 
         if (transactionId < 0) {
-            failure(activeSendTransaction, "Failed to create, possibly due to insufficient funds or an invalid key")
+            failure(activeSendTransaction, "Failed to create, for unknown reason")
             return@withContext
         }
         val transactionRaw: ByteArray? = repository.findTransactionById(transactionId)?.raw
