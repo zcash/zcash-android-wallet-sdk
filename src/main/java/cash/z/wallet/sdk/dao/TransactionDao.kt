@@ -30,7 +30,15 @@ interface TransactionDao {
                CASE
                  WHEN transactions.raw IS NOT NULL THEN sent_notes.value
                  ELSE received_notes.value
-               END                            AS value
+               END                            AS value,
+              CASE
+                 WHEN transactions.raw IS NOT NULL THEN sent_notes.memo IS NOT NULL
+                 ELSE received_notes.memo IS NOT NULL
+               END                            AS rawMemoExists,
+             CASE
+                 WHEN transactions.raw IS NOT NULL THEN sent_notes.id_note
+                 ELSE received_notes.id_note
+               END                            AS noteId
         FROM   transactions
                LEFT JOIN sent_notes
                       ON transactions.id_tx = sent_notes.tx
@@ -45,11 +53,16 @@ interface TransactionDao {
 }
 
 data class WalletTransaction(
+    val noteId: Long = 0L,
     val txId: Long = 0L,
     val value: Long = 0L,
     val height: Int? = null,
     val isSend: Boolean = false,
     val timeInSeconds: Long = 0L,
     val address: String? = null,
-    val isMined: Boolean = false
+    val isMined: Boolean = false,
+    // does the raw transaction contain a memo?
+    val rawMemoExists: Boolean = false,
+    // TODO: investigate populating this with SQL rather than a separate SDK call. then get rid of rawMemoExists.
+    var memo: String? = null
 )

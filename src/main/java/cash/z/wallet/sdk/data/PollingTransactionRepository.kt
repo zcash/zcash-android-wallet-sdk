@@ -9,6 +9,7 @@ import cash.z.wallet.sdk.dao.WalletTransaction
 import cash.z.wallet.sdk.db.DerivedDataDb
 import cash.z.wallet.sdk.entity.Transaction
 import cash.z.wallet.sdk.exception.RepositoryException
+import cash.z.wallet.sdk.jni.RustBackendWelding
 import kotlinx.coroutines.*
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.channels.ConflatedBroadcastChannel
@@ -20,7 +21,9 @@ import kotlinx.coroutines.channels.ReceiveChannel
  * changes.
  */
 open class PollingTransactionRepository(
+    private val dataDbPath: String,
     private val derivedDataDb: DerivedDataDb,
+    private val rustBackend: RustBackendWelding,
     private val pollFrequencyMillis: Long = 2000L
 ) : TransactionRepository {
 
@@ -30,12 +33,15 @@ open class PollingTransactionRepository(
     constructor(
         context: Context,
         dataDbName: String,
+        rustBackend: RustBackendWelding,
         pollFrequencyMillis: Long = 2000L,
         dbCallback: (DerivedDataDb) -> Unit = {}
     ) : this(
+        context.getDatabasePath(dataDbName).absolutePath,
         Room.databaseBuilder(context, DerivedDataDb::class.java, dataDbName)
             .setJournalMode(RoomDatabase.JournalMode.TRUNCATE)
             .build(),
+        rustBackend,
         pollFrequencyMillis
     ) {
         dbCallback(derivedDataDb)
@@ -99,7 +105,7 @@ open class PollingTransactionRepository(
 
                 if (hasChanged(previousTransactions, newTransactions)) {
                     twig("loaded ${newTransactions.count()} transactions and changes were detected!")
-                    allTransactionsChannel.send(newTransactions)
+                    allTransactionsChannel.send(addMemos(newTransactions))
                     previousTransactions = newTransactions
                 } else {
                     twig("loaded ${newTransactions.count()} transactions but no changes detected.")
@@ -108,6 +114,19 @@ open class PollingTransactionRepository(
             delay(pollFrequencyMillis)
         }
         twig("Done polling for transactions")
+    }
+
+    private suspend fun addMemos(newTransactions: List<WalletTransaction>): List<WalletTransaction> = withContext(IO){
+        for (tx in newTransactions) {
+            if (tx.rawMemoExists) {
+                tx.memo = if(tx.isSend) {
+                    rustBackend.getSentMemoAsUtf8(dataDbPath, tx.noteId)
+                } else {
+                    rustBackend.getReceivedMemoAsUtf8(dataDbPath, tx.noteId)
+                }
+            }
+        }
+        newTransactions
     }
 
 
