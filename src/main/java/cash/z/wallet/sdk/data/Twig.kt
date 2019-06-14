@@ -1,6 +1,7 @@
 package cash.z.wallet.sdk.data
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CopyOnWriteArraySet
 
 internal typealias Leaf = String
 
@@ -31,6 +32,11 @@ interface Twig {
          * Clip a leaf from the bush. Clipped leaves no longer appear in logs.
          */
         fun clip(leaf: Leaf) = Bush.leaves.remove(leaf)
+
+        /**
+         * Clip all leaves from the bush.
+         */
+        fun prune() = Bush.leaves.clear()
     }
 }
 
@@ -45,7 +51,7 @@ interface Twig {
  */
 object Bush {
     var trunk: Twig = SilentTwig()
-    val leaves: MutableList<Leaf> = CopyOnWriteArrayList<Leaf>()
+    val leaves: MutableSet<Leaf> = CopyOnWriteArraySet<Leaf>()
 }
 
 /**
@@ -54,7 +60,12 @@ object Bush {
 inline fun twig(message: String) = Bush.trunk.twig(message)
 
 /**
- * Times a tiny log task. Execute the block of code with some twigging around the outside.
+ * Times a tiny log.
+ */
+inline fun <R> twig(logMessage: String, block: () -> R): R = Bush.trunk.twig(logMessage, block)
+
+/**
+ * Meticulously times a tiny task.
  */
 inline fun <R> twigTask(logMessage: String, block: () -> R): R = Bush.trunk.twigTask(logMessage, block)
 
@@ -99,6 +110,17 @@ open class CompositeTwig(private val twigBundle: MutableList<Twig>) : Twig {
 }
 
 /**
+ * Times a tiny log. Execute the block of code on the clock.
+ */
+inline fun <R> Twig.twig(logMessage: String, block: () -> R): R {
+    val start = System.currentTimeMillis()
+    val result  = block()
+    val elapsed = (System.currentTimeMillis() - start)
+    twig("$logMessage | ${elapsed}ms")
+    return result
+}
+
+/**
  * A tiny log task. Execute the block of code with some twigging around the outside. For silent twigs, this adds a small
  * amount of overhead at the call site but still avoids logging.
  *
@@ -107,10 +129,11 @@ open class CompositeTwig(private val twigBundle: MutableList<Twig>) : Twig {
  *       (otherwise the function and its "block" param would have to suspend)
  */
 inline fun <R> Twig.twigTask(logMessage: String, block: () -> R): R {
-    val start = System.nanoTime()
     twig("$logMessage - started    | on thread ${Thread.currentThread().name})")
+    val start = System.nanoTime()
     val result  = block()
-    twig("$logMessage - completed  | in ${System.nanoTime() - start}ms" +
+    val elapsed = ((System.nanoTime() - start)/1e6)
+    twig("$logMessage - completed  | in $elapsed ms" +
             " on thread ${Thread.currentThread().name}")
     return result
 }
