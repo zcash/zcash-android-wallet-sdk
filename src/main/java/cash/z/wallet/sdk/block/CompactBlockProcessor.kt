@@ -30,9 +30,13 @@ class CompactBlockProcessor(
     private val repository: TransactionRepository,
     private val rustBackend: RustBackendWelding = RustBackend()
 ) {
+    var onErrorListener: ((Throwable) -> Boolean)? = null
+    var isConnected: Boolean = false
+    var isSyncing: Boolean = false
+    var isScanning: Boolean = false
     private val progressChannel = ConflatedBroadcastChannel<Int>()
     private var isStopped = false
-    private val consecutiveErrors = AtomicInteger(0)
+    private val consecutiveChainErrors = AtomicInteger(0)
 
     fun progress(): ReceiveChannel<Int> = progressChannel.openSubscription()
 
@@ -44,22 +48,25 @@ class CompactBlockProcessor(
         validateConfig()
 
         // using do/while makes it easier to execute exactly one loop which helps with testing this processor quickly
+        // (because you can start and then immediately set isStopped=true to always get precisely one loop)
         do {
-            retryUpTo(config.retries) {
+            retryWithBackoff(::onConnectionError, maxDelayMillis = config.maxBackoffInterval) {
                 val result = processNewBlocks()
                 // immediately process again after failures in order to download new blocks right away
                 if (result < 0) {
-                    consecutiveErrors.set(0)
+                    isSyncing = false
+                    isScanning = false
+                    consecutiveChainErrors.set(0)
                     twig("Successfully processed new blocks. Sleeping for ${config.blockPollFrequencyMillis}ms")
                     delay(config.blockPollFrequencyMillis)
                 } else {
-                    if(consecutiveErrors.get() >= config.retries) {
-                        val errorMessage = "ERROR: unable to resolve reorg at height $result after ${consecutiveErrors.get()} correction attempts!"
+                    if(consecutiveChainErrors.get() >= config.retries) {
+                        val errorMessage = "ERROR: unable to resolve reorg at height $result after ${consecutiveChainErrors.get()} correction attempts!"
                         fail(CompactBlockProcessorException.FailedReorgRepair(errorMessage))
                     } else {
                         handleChainError(result)
                     }
-                    consecutiveErrors.getAndIncrement()
+                    consecutiveChainErrors.getAndIncrement()
                 }
             }
         } while (isActive && !isStopped)
@@ -98,6 +105,8 @@ class CompactBlockProcessor(
 
         // define ranges
         val latestBlockHeight = downloader.getLatestBlockHeight()
+        isConnected = true // no exception on downloader call
+        isSyncing = true
         val lastDownloadedHeight = Math.max(getLastDownloadedHeight(), SAPLING_ACTIVATION_HEIGHT - 1)
         val lastScannedHeight = getLastScannedHeight()
 
@@ -169,7 +178,9 @@ class CompactBlockProcessor(
         }
         Twig.sprout("scanning")
         twig("scanning blocks in range $range")
+        isScanning = true
         val result = rustBackend.scanBlocks(config.cacheDbPath, config.dataDbPath)
+        isScanning = false
         Twig.clip("scanning")
         return result
     }
@@ -181,8 +192,15 @@ class CompactBlockProcessor(
         downloader.rewindTo(lowerBound)
     }
 
+    private fun onConnectionError(throwable: Throwable): Boolean {
+        isConnected = false
+        isSyncing = false
+        isScanning = false
+        return onErrorListener?.invoke(throwable) ?: true
+    }
+
     private fun determineLowerBound(errorHeight: Int): Int {
-        val offset = Math.min(MAX_REORG_SIZE, config.rewindDistance * (consecutiveErrors.get() + 1))
+        val offset = Math.min(MAX_REORG_SIZE, config.rewindDistance * (consecutiveChainErrors.get() + 1))
         return Math.max(errorHeight - offset, SAPLING_ACTIVATION_HEIGHT)
     }
 
@@ -205,5 +223,6 @@ data class ProcessorConfig(
     val downloadBatchSize: Int = DEFAULT_BATCH_SIZE,
     val blockPollFrequencyMillis: Long = DEFAULT_POLL_INTERVAL,
     val retries: Int = DEFAULT_RETRIES,
+    val maxBackoffInterval: Long = DEFAULT_MAX_BACKOFF_INTERVAL,
     val rewindDistance: Int = DEFAULT_REWIND_DISTANCE
 )

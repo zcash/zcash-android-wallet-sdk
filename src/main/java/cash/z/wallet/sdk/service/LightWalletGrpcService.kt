@@ -1,5 +1,6 @@
 package cash.z.wallet.sdk.service
 
+import android.content.Context
 import cash.z.wallet.sdk.entity.CompactBlock
 import cash.z.wallet.sdk.ext.toBlockHeight
 import cash.z.wallet.sdk.rpc.CompactFormats
@@ -7,24 +8,34 @@ import cash.z.wallet.sdk.rpc.CompactTxStreamerGrpc
 import cash.z.wallet.sdk.rpc.Service
 import com.google.protobuf.ByteString
 import io.grpc.Channel
-import io.grpc.ManagedChannelBuilder
+import io.grpc.ManagedChannel
+import io.grpc.android.AndroidChannelBuilder
 import java.util.concurrent.TimeUnit
 
-class LightWalletGrpcService(private val channel: Channel) : LightWalletService {
+class LightWalletGrpcService(private val channel: ManagedChannel) : LightWalletService {
 
-    constructor(host: String, port: Int = 9067) : this(ManagedChannelBuilder.forAddress(host, port).usePlaintext().build())
+    constructor(appContext: Context, host: String, port: Int = 9067) : this(
+        AndroidChannelBuilder
+            .forAddress(host, port)
+            .context(appContext)
+            .usePlaintext()
+            .build()
+    )
 
     /* LightWalletService implementation */
 
     override fun getBlockRange(heightRange: IntRange): List<CompactBlock> {
+        channel.resetConnectBackoff()
         return channel.createStub(90L).getBlockRange(heightRange.toBlockRange()).toList()
     }
 
     override fun getLatestBlockHeight(): Int {
+        channel.resetConnectBackoff()
         return channel.createStub(10L).getLatestBlock(Service.ChainSpec.newBuilder().build()).height.toInt()
     }
 
     override fun submitTransaction(raw: ByteArray): Service.SendResponse {
+        channel.resetConnectBackoff()
         val request = Service.RawTransaction.newBuilder().setData(ByteString.copyFrom(raw)).build()
         return channel.createStub().sendTransaction(request)
     }

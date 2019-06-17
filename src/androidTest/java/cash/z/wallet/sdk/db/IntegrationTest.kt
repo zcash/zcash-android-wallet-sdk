@@ -54,7 +54,7 @@ class IntegrationTest {
             blockPollFrequencyMillis = 10_000L
         )
 
-        val lightwalletService = LightWalletGrpcService("192.168.1.134")
+        val lightwalletService = LightWalletGrpcService(context,"192.168.1.134")
         val compactBlockStore = CompactBlockDbStore(context, config.cacheDbPath)
 
         downloader = CompactBlockDownloader(lightwalletService, compactBlockStore)

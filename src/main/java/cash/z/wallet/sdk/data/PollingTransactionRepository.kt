@@ -69,6 +69,7 @@ open class PollingTransactionRepository(
     override fun stop() {
         twig("stopping but doing nothing")
         pollingJob.cancel()
+        derivedDataDb.close()
         // TODO: verify that the channels behave as expected in this scenario
     }
 

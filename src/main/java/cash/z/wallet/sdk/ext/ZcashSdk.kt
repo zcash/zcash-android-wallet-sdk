@@ -47,6 +47,12 @@ const val DEFAULT_POLL_INTERVAL = 75_000L
 const val DEFAULT_RETRIES = 5
 
 /**
+ * The default maximum amount of time to wait during retry backoff intervals. Failed loops will never wait longer than
+ * this before retyring.
+ */
+const val DEFAULT_MAX_BACKOFF_INTERVAL = 600_000L
+
+/**
  * Default number of blocks to rewind when a chain reorg is detected. This should be large enough to recover from the
  * reorg but smaller than the theoretical max reorg size of 100.
  */
