@@ -159,7 +159,7 @@ open class MockSynchronizer(
                 }
 
                 // then update the active transaction through the creation and submission steps
-                listOf(TransactionState.Created(walletTransaction.txId), TransactionState.SendingToNetwork)
+                listOf(TransactionState.Created(walletTransaction.id), TransactionState.SendingToNetwork)
                     .forEach { newState ->
                         if (!job.isActive) return@withContext
                         delay(activeTransactionUpdateFrequency)
@@ -306,7 +306,7 @@ open class MockSynchronizer(
          */
         fun createReceiveTransaction(): WalletTransaction {
             return WalletTransaction(
-                txId = transactionId.getAndIncrement(),
+                id = transactionId.getAndIncrement(),
                 value = Random.nextLong(20_000L..1_000_000_000L),
                 height = latestHeight.getAndIncrement(),
                 isSend = false,
@@ -323,7 +323,7 @@ open class MockSynchronizer(
             txId: Long = -1L
         ): WalletTransaction {
             return WalletTransaction(
-                txId = if (txId == -1L) transactionId.getAndIncrement() else txId,
+                id = if (txId == -1L) transactionId.getAndIncrement() else txId,
                 value = amount,
                 height = null,
                 isSend = true,
@@ -336,7 +336,7 @@ open class MockSynchronizer(
          * Fabricate an active send transaction, based on the given wallet transaction instance.
          */
         fun createActiveSendTransaction(walletTransaction: WalletTransaction, toAddress: String)
-                = createActiveSendTransaction(walletTransaction.value, toAddress, walletTransaction.txId)
+                = createActiveSendTransaction(walletTransaction.value, toAddress, walletTransaction.id)
 
         /**
          * Fabricate an active send transaction.

@@ -34,7 +34,7 @@ class CompactBlockProcessor(
     var isConnected: Boolean = false
     var isSyncing: Boolean = false
     var isScanning: Boolean = false
-    private val progressChannel = ConflatedBroadcastChannel<Int>()
+    private val progressChannel = ConflatedBroadcastChannel(0)
     private var isStopped = false
     private val consecutiveChainErrors = AtomicInteger(0)
 
@@ -100,7 +100,7 @@ class CompactBlockProcessor(
      * @return -1 when processing was successful and did not encounter errors during validation or scanning. Otherwise
      * return the block height where an error was found.
      */
-    private suspend fun processNewBlocks(): Int {
+    private suspend fun processNewBlocks(): Int = withContext(IO) {
         twig("beginning to process new blocks...")
 
         // define ranges
@@ -120,7 +120,7 @@ class CompactBlockProcessor(
 
         downloadNewBlocks(rangeToDownload)
         val error = validateNewBlocks(rangeToScan)
-        return if (error < 0) {
+        if (error < 0) {
             scanNewBlocks(rangeToScan)
             -1 // TODO: in theory scan should not fail when validate succeeds but maybe consider returning the failed block height whenever scan does fail
         } else {
@@ -130,33 +130,34 @@ class CompactBlockProcessor(
 
 
     @VisibleForTesting //allow mocks to verify how this is called, rather than the downloader, which is more complex
-    internal suspend fun downloadNewBlocks(range: IntRange) {
+    internal suspend fun downloadNewBlocks(range: IntRange) = withContext<Unit>(IO) {
         if (range.isEmpty()) {
             twig("no blocks to download")
-            return
-        }
-        Twig.sprout("downloading")
-        twig("downloading blocks in range $range")
+        } else {
+            Twig.sprout("downloading")
+            twig("downloading blocks in range $range")
 
-        var downloadedBlockHeight = range.start
-        val missingBlockCount = range.last - range.first + 1
-        val batches = (missingBlockCount / config.downloadBatchSize
-                + (if (missingBlockCount.rem(config.downloadBatchSize) == 0) 0 else 1))
-        var progress: Int
-        twig("found $missingBlockCount missing blocks, downloading in $batches batches of ${config.downloadBatchSize}...")
-        for (i in 1..batches) {
-            retryUpTo(config.retries) {
-                val end = Math.min(range.first + (i * config.downloadBatchSize), range.last + 1)
-                val batchRange = downloadedBlockHeight..(end - 1)
-                twig("downloaded $batchRange (batch $i of $batches)") {
-                    downloader.downloadBlockRange(batchRange)
+            var downloadedBlockHeight = range.start
+            val missingBlockCount = range.last - range.first + 1
+            val batches = (missingBlockCount / config.downloadBatchSize
+                    + (if (missingBlockCount.rem(config.downloadBatchSize) == 0) 0 else 1))
+            var progress: Int
+            twig("found $missingBlockCount missing blocks, downloading in $batches batches of ${config.downloadBatchSize}...")
+            for (i in 1..batches) {
+                retryUpTo(config.retries) {
+                    val end = Math.min(range.first + (i * config.downloadBatchSize), range.last + 1)
+                    val batchRange = downloadedBlockHeight..(end - 1)
+                    twig("downloaded $batchRange (batch $i of $batches)") {
+                        downloader.downloadBlockRange(batchRange)
+                    }
+                    progress = Math.round(i / batches.toFloat() * 100)
+                    // only report during large downloads. TODO: allow for configuration of "large"
+                    if (missingBlockCount > 200) progressChannel.send(progress)
+                    downloadedBlockHeight = end
                 }
-                progress = Math.round(i / batches.toFloat() * 100)
-                progressChannel.send(progress)
-                downloadedBlockHeight = end
             }
+            Twig.clip("downloading")
         }
-        Twig.clip("downloading")
     }
 
     private fun validateNewBlocks(range: IntRange?): Int {

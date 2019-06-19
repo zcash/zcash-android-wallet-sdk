@@ -21,7 +21,8 @@ interface TransactionDao {
      * and the oldest transactions are at the bottom.
      */
     @Query("""
-        SELECT transactions.id_tx             AS txId,
+        SELECT transactions.id_tx             AS id,
+               transactions.txid              AS rawTransactionId,
                transactions.block             AS height,
                transactions.raw IS NOT NULL   AS isSend,
                transactions.block IS NOT NULL AS isMined,
@@ -53,8 +54,9 @@ interface TransactionDao {
 }
 
 data class WalletTransaction(
+    val id: Long = 0L,
     val noteId: Long = 0L,
-    val txId: Long = 0L,
+    val rawTransactionId: ByteArray? = null,
     val value: Long = 0L,
     val height: Int? = null,
     val isSend: Boolean = false,
@@ -67,4 +69,44 @@ data class WalletTransaction(
     var memo: String? = null,
     // set/maintain a custom status
     var status: String? = null
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is WalletTransaction) return false
+
+        if (noteId != other.noteId) return false
+        if (id != other.id) return false
+        if (rawTransactionId != null) {
+            if (other.rawTransactionId == null) return false
+            if (!rawTransactionId.contentEquals(other.rawTransactionId)) return false
+        } else if (other.rawTransactionId != null) return false
+        if (value != other.value) return false
+        if (height != other.height) return false
+        if (isSend != other.isSend) return false
+        if (timeInSeconds != other.timeInSeconds) return false
+        if (address != other.address) return false
+        if (isMined != other.isMined) return false
+        if (rawMemoExists != other.rawMemoExists) return false
+        if (memo != other.memo) return false
+        if (status != other.status) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = noteId.hashCode()
+        result = 31 * result + id.hashCode()
+        result = 31 * result + (rawTransactionId?.contentHashCode() ?: 0)
+        result = 31 * result + value.hashCode()
+        result = 31 * result + (height ?: 0)
+        result = 31 * result + isSend.hashCode()
+        result = 31 * result + timeInSeconds.hashCode()
+        result = 31 * result + (address?.hashCode() ?: 0)
+        result = 31 * result + isMined.hashCode()
+        result = 31 * result + rawMemoExists.hashCode()
+        result = 31 * result + (memo?.hashCode() ?: 0)
+        result = 31 * result + (status?.hashCode() ?: 0)
+        return result
+    }
+
+}

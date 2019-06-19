@@ -169,7 +169,7 @@ class ActiveTransactionManager(
 
             if (tx.height.get() < 0) {
                 twig("checking whether active transaction $transactionId has been mined")
-                val matchingDbTransaction = sentTransactions.find { it.txId == transactionId }
+                val matchingDbTransaction = sentTransactions.find { it.id == transactionId }
                 if (matchingDbTransaction?.height != null) {
                     twig("transaction $transactionId HAS BEEN MINED!!! updating the corresponding active transaction.")
                     tx.height.set(matchingDbTransaction.height)
@@ -296,8 +296,8 @@ sealed class TransactionState(val order: Int) {
 
     object Creating : TransactionState(0)
 
-    /** @param txId row in the database where the raw transaction has been stored, temporarily, by the rust lib */
-    class Created(val txId: Long) : TransactionState(10)
+    /** @param id row in the database where the raw transaction has been stored, temporarily, by the rust lib */
+    class Created(val id: Long) : TransactionState(10)
 
     object SendingToNetwork : TransactionState(20)
 

@@ -148,9 +148,8 @@ class Wallet(
      */
     suspend fun createRawSendTransaction(value: Long, toAddress: String, memo: String = "", fromAccountId: Int = accountIds[0]): Long =
         withContext(IO) {
-            var result = -1L
             twigTask("creating raw transaction to send $value zatoshi to ${toAddress.masked()} with memo $memo") {
-                result = try {
+                try {
                     ensureParams(paramDestinationDir)
                     twig("params exist at $paramDestinationDir! attempting to send...")
                     rustBackend.sendToAddress(
@@ -168,9 +167,9 @@ class Wallet(
                     twig("${t.message}")
                     throw t
                 }
+            }.also { result ->
+                twig("result of sendToAddress: $result")
             }
-            twig("result of sendToAddress: $result")
-            result
         }
 
     /**

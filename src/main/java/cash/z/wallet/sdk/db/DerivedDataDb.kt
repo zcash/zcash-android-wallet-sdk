@@ -14,7 +14,7 @@ import cash.z.wallet.sdk.entity.*
         Account::class,
         Sent::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class DerivedDataDb : RoomDatabase() {
