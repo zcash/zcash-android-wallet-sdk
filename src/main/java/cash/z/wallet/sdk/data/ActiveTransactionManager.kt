@@ -34,7 +34,7 @@ class ActiveTransactionManager(
     // mutableMapOf gives the same result but we're explicit about preserving insertion order, since we rely on that
     private val activeTransactions = LinkedHashMap<ActiveTransaction, TransactionState>()
     private val channel = ConflatedBroadcastChannel<Map<ActiveTransaction, TransactionState>>()
-    private val transactionSubscription = repository.allTransactions()
+    private val clearedTransactions = ConflatedBroadcastChannel<List<WalletTransaction>>()
 //    private val latestHeightSubscription = service.latestHeights()
 
     fun subscribe(): ReceiveChannel<Map<ActiveTransaction, TransactionState>> {
@@ -49,10 +49,10 @@ class ActiveTransactionManager(
 
     fun stop() {
         twig("ActiveTransactionManager stopping")
+        clearedTransactions.cancel()
         channel.cancel()
         job.cancel()
         sentTransactionMonitorJob.cancel()
-        transactionSubscription.cancel()
 //        confirmationMonitorJob.cancel() <- TODO: enable confirmation monitor
     }
 
@@ -124,11 +124,14 @@ class ActiveTransactionManager(
 
     private fun CoroutineScope.launchSentTransactionMonitor() = launch {
         withContext(Dispatchers.IO) {
-            while(isActive && !transactionSubscription.isClosedForReceive) {
+            (repository as PollingTransactionRepository).poll(clearedTransactions)
+            val results = clearedTransactions.openSubscription()
+            while(isActive && !clearedTransactions.isClosedForSend && !results.isClosedForReceive) {
                 twig("awaiting next modification to transactions...")
-                val transactions = transactionSubscription.receive()
+                val transactions = results.receive()
                 updateSentTransactions(transactions)
             }
+            results.cancel()
         }
     }
 

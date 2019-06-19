@@ -25,6 +25,11 @@ const val SAPLING_ACTIVATION_HEIGHT = 280_000
  */
 const val MAX_REORG_SIZE = 100
 
+/**
+ * The amount of blocks ahead of the current height where new transactions are set to expire. This value is controlled
+ * by the rust backend but it is helpful to know what it is set to and shdould be kept in sync.
+ */
+const val EXPIRY_OFFSET = 20
 
 //
 // Defaults

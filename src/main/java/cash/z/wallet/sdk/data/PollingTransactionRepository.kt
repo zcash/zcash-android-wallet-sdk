@@ -8,12 +8,10 @@ import cash.z.wallet.sdk.dao.TransactionDao
 import cash.z.wallet.sdk.dao.WalletTransaction
 import cash.z.wallet.sdk.db.DerivedDataDb
 import cash.z.wallet.sdk.entity.Transaction
-import cash.z.wallet.sdk.exception.RepositoryException
 import cash.z.wallet.sdk.jni.RustBackendWelding
 import kotlinx.coroutines.*
 import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.channels.ConflatedBroadcastChannel
-import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.channels.SendChannel
 
 /**
  * Repository that does polling for simplicity. We will implement an alternative version that uses live data as well as
@@ -49,33 +47,7 @@ open class PollingTransactionRepository(
 
     internal val blocks: BlockDao = derivedDataDb.blockDao()
     private val transactions: TransactionDao = derivedDataDb.transactionDao()
-    private lateinit var pollingJob: Job
-    private val allTransactionsChannel = ConflatedBroadcastChannel<List<WalletTransaction>>()
-    private val existingTransactions = listOf<WalletTransaction>()
-    private val wasPreviouslyStarted
-        get() = !existingTransactions.isEmpty() || allTransactionsChannel.isClosedForSend
-
-    override fun start(parentScope: CoroutineScope) {
-        //  prevent restarts so the behavior of this class is easier to reason about
-        if (wasPreviouslyStarted) throw RepositoryException.FalseStart
-
-        twig("starting")
-
-        pollingJob = parentScope.launch {
-            poll()
-        }
-    }
-
-    override fun stop() {
-        twig("stopping but doing nothing")
-        pollingJob.cancel()
-        derivedDataDb.close()
-        // TODO: verify that the channels behave as expected in this scenario
-    }
-
-    override fun allTransactions(): ReceiveChannel<List<WalletTransaction>> {
-        return allTransactionsChannel.openSubscription()
-    }
+    private var pollingJob: Job? = null
 
     override fun lastScannedHeight(): Int {
         return blocks.lastScannedHeight()
@@ -98,23 +70,31 @@ open class PollingTransactionRepository(
         }
     }
 
-    private suspend fun poll() = withContext(IO) {
-        var previousTransactions: List<WalletTransaction>? = null
-        while (isActive && !allTransactionsChannel.isClosedForSend) {
-            twigTask("polling for transactions every ${pollFrequencyMillis}ms") {
-                val newTransactions = transactions.getAll()
+    suspend fun poll(channel: SendChannel<List<WalletTransaction>>, frequency: Long = pollFrequencyMillis) = withContext(IO) {
+        pollingJob?.cancel()
+        pollingJob = launch {
+            var previousTransactions: List<WalletTransaction>? = null
+            while (isActive && !channel.isClosedForSend) {
+                twigTask("polling for cleared transactions every ${frequency}ms") {
+                    val newTransactions = transactions.getAll()
 
-                if (hasChanged(previousTransactions, newTransactions)) {
-                    twig("loaded ${newTransactions.count()} transactions and changes were detected!")
-                    allTransactionsChannel.send(addMemos(newTransactions))
-                    previousTransactions = newTransactions
-                } else {
-                    twig("loaded ${newTransactions.count()} transactions but no changes detected.")
+                    if (hasChanged(previousTransactions, newTransactions)) {
+                        twig("loaded ${newTransactions.count()} cleared transactions and changes were detected!")
+                        channel.send(addMemos(newTransactions))
+                        previousTransactions = newTransactions
+                    } else {
+                        twig("loaded ${newTransactions.count()} cleared transactions but no changes detected.")
+                    }
                 }
+                delay(pollFrequencyMillis)
             }
-            delay(pollFrequencyMillis)
+            twig("Done polling for cleared transactions")
         }
-        twig("Done polling for transactions")
+    }
+
+    fun stop() {
+        pollingJob?.cancel().also { pollingJob = null }
+        derivedDataDb.close()
     }
 
     private suspend fun addMemos(newTransactions: List<WalletTransaction>): List<WalletTransaction> = withContext(IO){

@@ -7,6 +7,7 @@ import cash.z.wallet.sdk.exception.WalletException
 import cash.z.wallet.sdk.secure.Wallet
 import kotlinx.coroutines.*
 import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.channels.ConflatedBroadcastChannel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.distinct
 import kotlin.coroutines.CoroutineContext
@@ -32,7 +33,7 @@ import kotlin.coroutines.CoroutineContext
  */
 class SdkSynchronizer(
     private val processor: CompactBlockProcessor,
-    private val repository: TransactionRepository,
+    private val repository: PollingTransactionRepository,
     private val activeTransactionManager: ActiveTransactionManager,
     private val wallet: Wallet,
     private val staleTolerance: Int = 10
@@ -76,6 +77,15 @@ class SdkSynchronizer(
             if (failure != null) value?.invoke(failure)
         }
 
+    /**
+     * Channel of transactions from the repository.
+     */
+    private val transactionChannel = ConflatedBroadcastChannel<List<WalletTransaction>>()
+
+    /**
+     * Channel of balance information.
+     */
+    private val balanceChannel = ConflatedBroadcastChannel<Wallet.WalletBalance>()
 
     //
     // Public API
@@ -119,7 +129,7 @@ class SdkSynchronizer(
      */
     override fun stop() {
         twig("stopping")
-        repository.stop().also { twig("repository stopped") }
+        (repository as? PollingTransactionRepository)?.stop().also { twig("repository stopped") }
         activeTransactionManager.stop().also { twig("activeTransactionManager stopped") }
         // TODO: investigate whether this is necessary and remove or improve, accordingly
         Thread.sleep(5000L)
@@ -138,7 +148,7 @@ class SdkSynchronizer(
      * A stream of all the wallet transactions, delegated to the [repository].
      */
     override fun allTransactions(): ReceiveChannel<List<WalletTransaction>> {
-        return repository.allTransactions()
+        return transactionChannel.openSubscription()
     }
 
     /**
@@ -155,7 +165,7 @@ class SdkSynchronizer(
      * A stream of balance values, delegated to the [wallet].
      */
     override fun balances(): ReceiveChannel<Wallet.WalletBalance> {
-        return wallet.balances()
+        return balanceChannel.openSubscription()
     }
 
 
@@ -230,10 +240,10 @@ class SdkSynchronizer(
      */
     private fun CoroutineScope.onReady() = launch {
         twig("synchronization is ready to begin!")
-        launch { monitorTransactions(repository.allTransactions().distinct()) }
+        launch { monitorTransactions(transactionChannel.openSubscription().distinct()) }
 
         activeTransactionManager.start()
-        repository.start(this)
+        repository.poll(transactionChannel)
         processor.start()
     }
 
@@ -243,10 +253,12 @@ class SdkSynchronizer(
     private suspend fun monitorTransactions(transactionChannel: ReceiveChannel<List<WalletTransaction>>) =
         withContext(IO) {
             twig("beginning to monitor transactions in order to update the balance")
-            for (i in transactionChannel) {
-                twig("triggering a balance update because transactions have changed")
-                wallet.sendBalanceInfo()
-                twig("done triggering balance check!")
+            launch {
+                for (i in transactionChannel) {
+                    twig("triggering a balance update because transactions have changed")
+                    balanceChannel.send(wallet.getBalanceInfo())
+                    twig("done triggering balance check!")
+                }
             }
             twig("done monitoring transactions in order to update the balance")
         }

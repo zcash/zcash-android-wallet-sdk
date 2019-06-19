@@ -64,5 +64,7 @@ data class WalletTransaction(
     // does the raw transaction contain a memo?
     val rawMemoExists: Boolean = false,
     // TODO: investigate populating this with SQL rather than a separate SDK call. then get rid of rawMemoExists.
-    var memo: String? = null
+    var memo: String? = null,
+    // set/maintain a custom status
+    var status: String? = null
 )

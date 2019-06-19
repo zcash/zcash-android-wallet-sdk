@@ -59,7 +59,7 @@ class IntegrationTest {
 
         downloader = CompactBlockDownloader(lightwalletService, compactBlockStore)
         processor = CompactBlockProcessor(config, downloader, repository, rustBackend)
-        repository = PollingTransactionRepository(context, dataDbName, 10_000L)
+        repository = PollingTransactionRepository(context, dataDbName, rustBackend, 10_000L)
         wallet = Wallet(
             context,
             rustBackend,
@@ -86,7 +86,7 @@ class IntegrationTest {
 
     companion object {
         private lateinit var synchronizer: Synchronizer
-        private lateinit var repository: TransactionRepository
+        private lateinit var repository: PollingTransactionRepository
         @AfterClass
         fun tearDown() {
             repository.stop()

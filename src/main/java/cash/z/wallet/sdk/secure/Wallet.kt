@@ -15,8 +15,6 @@ import com.google.gson.stream.JsonReader
 import com.squareup.okhttp.OkHttpClient
 import com.squareup.okhttp.Request
 import kotlinx.coroutines.Dispatchers.IO
-import kotlinx.coroutines.channels.ConflatedBroadcastChannel
-import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.withContext
 import okio.Okio
 import java.io.File
@@ -65,11 +63,6 @@ class Wallet(
     private var spendingKeyStore by spendingKeyProvider
 
     /**
-     * Channel where balance info will be emitted.
-     */
-    private val balanceChannel = ConflatedBroadcastChannel<WalletBalance>()
-
-    /**
      * Initializes the wallet by creating the DataDb and pre-populating it with data corresponding to the birthday for
      * this wallet.
      */
@@ -114,13 +107,6 @@ class Wallet(
     }
 
     /**
-     * Stream of balances.
-     */
-    fun balances(): ReceiveChannel<WalletBalance> {
-        return balanceChannel.openSubscription()
-    }
-
-    /**
      * Return a quick snapshot of the available balance. In most cases, the stream of balances
      * provided by [balances] should be used instead of this funciton.
      *
@@ -135,14 +121,14 @@ class Wallet(
      *
      * @param accountId the account to check for balance info.
      */
-    suspend fun sendBalanceInfo(accountId: Int = accountIds[0]) = withContext(IO) {
+    suspend fun getBalanceInfo(accountId: Int = accountIds[0]): WalletBalance = withContext(IO) {
         twigTask("checking balance info") {
             try {
                 val balanceTotal = rustBackend.getBalance(dataDbPath, accountId)
                 twig("found total balance of: $balanceTotal")
                 val balanceAvailable = rustBackend.getVerifiedBalance(dataDbPath, accountId)
                 twig("found available balance of: $balanceAvailable")
-                balanceChannel.send(WalletBalance(balanceTotal, balanceAvailable))
+                WalletBalance(balanceTotal, balanceAvailable)
             } catch (t: Throwable) {
                 twig("failed to get balance due to $t")
                 throw RustLayerException.BalanceException(t)
@@ -163,7 +149,7 @@ class Wallet(
     suspend fun createRawSendTransaction(value: Long, toAddress: String, memo: String = "", fromAccountId: Int = accountIds[0]): Long =
         withContext(IO) {
             var result = -1L
-            twigTask("creating raw transaction to send $value zatoshi to ${toAddress.masked()}") {
+            twigTask("creating raw transaction to send $value zatoshi to ${toAddress.masked()} with memo $memo") {
                 result = try {
                     ensureParams(paramDestinationDir)
                     twig("params exist at $paramDestinationDir! attempting to send...")
