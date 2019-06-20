@@ -61,13 +61,11 @@ class IntegrationTest {
         processor = CompactBlockProcessor(config, downloader, repository, rustBackend)
         repository = PollingTransactionRepository(context, dataDbName, rustBackend, 10_000L)
         wallet = Wallet(
-            context,
-            rustBackend,
-            context.getDatabasePath(dataDbName).absolutePath,
-            context.cacheDir.absolutePath,
-            arrayOf(0),
-            SampleSeedProvider("dummyseed"),
-            SampleSpendingKeyProvider("dummyseed")
+            context = context,
+            rustBackend = rustBackend,
+            dataDbName = dataDbName,
+            seedProvider = SampleSeedProvider("dummyseed"),
+            spendingKeyProvider = SampleSpendingKeyProvider("dummyseed")
         )
 
 //        repository.start(this)

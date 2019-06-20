@@ -65,13 +65,11 @@ class AddressGeneratorUtil {
         deleteDb()
         val spendingKeyProvider = Delegates.notNull<String>()
         wallet = Wallet(
-            context,
-            rustBackend,
-            context.getDatabasePath(dataDbName).absolutePath,
-            context.cacheDir.absolutePath,
-            arrayOf(0),
-            SampleSeedProvider(seed),
-            spendingKeyProvider
+            context = context,
+            rustBackend = rustBackend,
+            dataDbName = dataDbName,
+            seedProvider = SampleSeedProvider(seed),
+            spendingKeyProvider = spendingKeyProvider
         )
         wallet.initialize()
         return spendingKeyProvider
