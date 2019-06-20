@@ -200,13 +200,7 @@ class SdkSynchronizer(
      */
     override fun getAddress(accountId: Int): String = wallet.getAddress()
 
-    /**
-     * Gets the available balance for the given account. In most cases, the stream of balances provided by [balances]
-     * should be used instead of this function.
-     *
-     * @param accountId the optional accountId whose available balance is of interest. Typically, this value is zero.
-     */
-    override fun getAvailableBalance(accountId: Int): Long = wallet.availableBalanceSnapshot(accountId)
+    override suspend fun getBalance(accountId: Int): Wallet.WalletBalance = wallet.getBalanceInfo(accountId)
 
     /**
      * Sends zatoshi.

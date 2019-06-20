@@ -1,22 +1,35 @@
 package cash.z.wallet.sdk.sample.memo
 
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import androidx.core.content.getSystemService
 import cash.z.wallet.sdk.data.*
 import cash.z.wallet.sdk.ext.convertZatoshiToZec
+import cash.z.wallet.sdk.secure.Wallet
 import kotlinx.android.synthetic.main.activity_main.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.launch
+import kotlin.properties.Delegates
+import kotlin.properties.Delegates.observable
+import kotlin.reflect.KProperty
 
 class MainActivity : ScopedActivity() {
 
     private lateinit var synchronizer: Synchronizer
     private var progressJob: Job? = null
+    private var balanceJob: Job? = null
     private var activeTransaction: TransactionInfo = TransactionInfo()
+    private var loaded: Boolean by observable(false) {_, old: Boolean, new: Boolean ->
+        if (!old && new) {
+            launch {
+                onBalance(synchronizer.getBalance())
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,12 +46,13 @@ class MainActivity : ScopedActivity() {
     override fun onResume() {
         super.onResume()
         progressJob = launchProgressMonitor(synchronizer.progress())
+        balanceJob = launchBalanceMonitor(synchronizer.balances())
     }
 
     override fun onPause() {
         super.onPause()
-        progressJob?.cancel()
-        progressJob = null
+        progressJob?.cancel().also { progressJob = null }
+        balanceJob?.cancel().also { balanceJob = null }
     }
 
     override fun onDestroy() {
@@ -58,11 +72,30 @@ class MainActivity : ScopedActivity() {
         }
     }
 
+    private fun CoroutineScope.launchBalanceMonitor(channel: ReceiveChannel<Wallet.WalletBalance>) = launch {
+        for (i in channel) {
+            onBalance(i)
+        }
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun onBalance(balanceInfo: Wallet.WalletBalance) {
+        text_status.text = "Available Balance: ${balanceInfo.available.convertZatoshiToZec()} TAZ" +
+                "\nTotal Balance: ${balanceInfo.available.convertZatoshiToZec()} TAZ"
+    }
+
     private fun onProgress(progress: Int) {
         twig("Launching - onProgress $progress")
-        val isComplete = progress == 100
-        text_status.text = if(isComplete) "Balance: ${synchronizer.getAvailableBalance().convertZatoshiToZec(3)} TAZ" else "Synchronizing...\t$progress%"
-        button_send.isEnabled = isComplete
+        launch {
+            val isComplete = progress == 100
+            val status = when {
+                isComplete -> "".also { loaded = true }
+                progress > 90 -> "Synchronizing...finishing up"
+                else -> "Synchronizing...\t$progress%"
+            }
+            text_progress.text = status
+            button_send.isEnabled = isComplete
+        }
     }
 
     private fun onUpdate(transactions: Map<ActiveTransaction, TransactionState>) {

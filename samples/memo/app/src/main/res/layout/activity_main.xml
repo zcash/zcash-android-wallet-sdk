@@ -8,22 +8,32 @@
     tools:context=".MainActivity">
 
     <TextView
-        android:id="@+id/text_status"
+        android:id="@+id/text_progress"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginLeft="48dp"
-        android:text="Initializing wallet..."
-        app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintVertical_bias="0.2"/>
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_bias="0.2"
+        tools:text="Initializing wallet..." />
+
+    <TextView
+        android:id="@+id/text_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="48dp"
+        android:layout_marginTop="16dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/text_progress"
+        tools:text="Available balance: 5 TAZ\nTotal balance: 10 TAZ" />
 
     <EditText
         android:id="@+id/input_memo"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginStart="64dp"
         android:layout_marginEnd="64dp"
+        android:layout_marginStart="64dp"
         android:hint="Enter memo (after sync)"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
@@ -34,10 +44,10 @@
         android:id="@+id/button_send"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:enabled="false"
         android:onClick="onSendMemo"
         android:text="Send"
-        android:enabled="false"
-        app:layout_constraintTop_toBottomOf="@id/input_memo"
-        app:layout_constraintEnd_toEndOf="@id/input_memo"/>
+        app:layout_constraintEnd_toEndOf="@id/input_memo"
+        app:layout_constraintTop_toBottomOf="@id/input_memo" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

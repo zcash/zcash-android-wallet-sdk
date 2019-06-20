@@ -102,16 +102,14 @@ open class MockSynchronizer(
      */
     override fun getAddress(accountId: Int): String = mockAddress.also {  twig("returning mock address $mockAddress") }
 
-    /**
-     * Returns the available balance by adding up all the transactions and subtracting the miner's fee.
-     */
-    override fun getAvailableBalance(accountId: Int): Long {
+    override suspend fun getBalance(accountId: Int): Wallet.WalletBalance {
         if (transactions.size != 0) {
-            return transactions.fold(0L) { acc, tx ->
+            val balance = transactions.fold(0L) { acc, tx ->
                 if (tx.isSend && tx.isMined) acc - tx.value else acc + tx.value
             } - MINERS_FEE_ZATOSHI
+            return Wallet.WalletBalance(balance, balance)
         }
-        return 0L
+        return Wallet.WalletBalance()
     }
 
     /**

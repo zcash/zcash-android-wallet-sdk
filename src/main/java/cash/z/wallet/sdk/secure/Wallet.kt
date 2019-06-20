@@ -42,15 +42,16 @@ class Wallet(
     constructor(
         context: Context,
         rustBackend: RustBackendWelding,
-        dataDbPath: String,
-        paramDestinationDir: String,
-        accountIds: Array<Int> = arrayOf(0),
+        dataDbName: String,
         seedProvider: ReadOnlyProperty<Any?, ByteArray>,
-        spendingKeyProvider: ReadWriteProperty<Any?, String>
+        spendingKeyProvider: ReadWriteProperty<Any?, String>,
+        birthday: WalletBirthday = loadBirthdayFromAssets(context),
+        paramDestinationDir: String = "${context.cacheDir.absolutePath}/params",
+        accountIds: Array<Int> = arrayOf(0)
     ) : this(
-        birthday = loadBirthdayFromAssets(context),
+        birthday = birthday,
         rustBackend = rustBackend,
-        dataDbPath = dataDbPath,
+        dataDbPath = context.getDatabasePath(dataDbName).absolutePath,
         paramDestinationDir = paramDestinationDir,
         accountIds = accountIds,
         seedProvider = seedProvider,

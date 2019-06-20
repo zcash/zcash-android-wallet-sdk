@@ -85,12 +85,13 @@ interface Synchronizer {
     fun getAddress(accountId: Int = 0): String
 
     /**
-     * Gets the available balance for the given account. In most cases, the stream of balances provided by [balances]
+     * Gets the balance info for the given account. In most cases, the stream of balances provided by [balances]
      * should be used instead of this function.
      *
      * @param accountId the optional accountId whose balance is of interest. By default, the first account is used.
+     * @return a wrapper around the available and total balances.
      */
-    fun getAvailableBalance(accountId: Int = 0): Long
+    suspend fun getBalance(accountId: Int = 0): Wallet.WalletBalance
 
     /**
      * Sends zatoshi.

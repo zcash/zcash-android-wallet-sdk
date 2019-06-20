@@ -152,12 +152,13 @@ class CompactBlockProcessor(
                     }
                     progress = Math.round(i / batches.toFloat() * 100)
                     // only report during large downloads. TODO: allow for configuration of "large"
-                    if (missingBlockCount > 200) progressChannel.send(progress)
+                    progressChannel.send(progress)
                     downloadedBlockHeight = end
                 }
             }
             Twig.clip("downloading")
         }
+        progressChannel.send(100)
     }
 
     private fun validateNewBlocks(range: IntRange?): Int {
