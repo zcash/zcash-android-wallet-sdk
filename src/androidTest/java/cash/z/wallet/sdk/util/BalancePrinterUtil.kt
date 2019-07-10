@@ -21,11 +21,16 @@ import org.junit.Test
 import java.io.IOException
 import kotlin.properties.Delegates
 
+/**
+ * A tool for checking transactions since the given birthday and printing balances. This was useful for the Zcon1 app to
+ * ensure that we loaded all the pokerchips correctly.
+ */
 @ExperimentalCoroutinesApi
 class BalancePrinterUtil {
 
     private val host = "34.65.230.46"
     private val downloadBatchSize = 9_000
+    private val birthday = 523240
 
 
     private val context = InstrumentationRegistry.getInstrumentation().context
@@ -34,7 +39,6 @@ class BalancePrinterUtil {
     private val cacheDbPath = context.getDatabasePath("BalanceUtilCache.db").absolutePath
     private val dataDbPath = context.getDatabasePath("BalanceUtilData.db").absolutePath
     private val rustBackend = RustBackend()
-    private val birthday = 523240
 
     private val downloader = CompactBlockDownloader(
         LightWalletGrpcService(context, host),
@@ -59,15 +63,14 @@ class BalancePrinterUtil {
         assertEquals(-1, error)
     }
 
-
-    private fun deleteDb() {
-        context.getDatabasePath(dataDbName).absoluteFile.delete()
+    private fun deleteDb(dbName: String) {
+        context.getDatabasePath(dbName).absoluteFile.delete()
     }
 
     @Test
     fun printBalances() = runBlocking {
         readLines().collect { seed ->
-            deleteDb()
+            deleteDb(dataDbName)
             initWallet(seed)
             twig("scanning blocks for seed <$seed>")
             rustBackend.scanBlocks(cacheDbPath, dataDbPath)

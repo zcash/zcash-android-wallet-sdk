@@ -18,13 +18,12 @@ object Injection {
         App.instance.getDatabasePath(dataDbName).absoluteFile.delete()
 
         return Wallet(
-            App.instance,
-            provideRustBackend(),
-            App.instance.getDatabasePath(dataDbName).absolutePath,
-            App.instance.cacheDir.absolutePath,
-            arrayOf(0),
-            seedProvider,
-            spendingKeyProvider
+            context = App.instance,
+            birthday = Wallet.loadBirthdayFromAssets(App.instance, 421720),
+            rustBackend = provideRustBackend(),
+            dataDbName = dataDbName,
+            seedProvider = seedProvider,
+            spendingKeyProvider = spendingKeyProvider
         )
     }
 

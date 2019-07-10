@@ -7,7 +7,6 @@ import androidx.appcompat.app.AppCompatActivity
 import cash.z.wallet.sdk.data.SampleSeedProvider
 import cash.z.wallet.sdk.data.TroubleshootingTwig
 import cash.z.wallet.sdk.data.Twig
-import cash.z.wallet.sdk.jni.RustBackend
 import cash.z.wallet.sdk.jni.RustBackendWelding
 import cash.z.wallet.sdk.secure.Wallet
 import kotlinx.coroutines.runBlocking
