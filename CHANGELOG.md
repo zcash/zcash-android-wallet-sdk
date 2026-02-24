@@ -8,7 +8,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-## [2.4.5] - 2025-02-16
+## [2.4.5] - 2025-02-24
 
 ### Changed
 - Migrated to Rust 1.92.0.
