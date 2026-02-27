@@ -23,6 +23,7 @@ sealed class JniEip681TransactionRequest {
      * @param gasPriceHex the gas price as a `0x`-prefixed hex string, or null if not specified.
      */
     @Keep
+    @Suppress("LongParameterList")
     class Native(
         val schemaPrefix: String,
         val hasPay: Boolean,
