@@ -6,7 +6,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.6] - 2025-03-06
+
 ### Fixed
+- Checkpoints update
 - Migrated to `zcash_client_sqlite 0.19.4`, `shardtree 0.6.2`. This fixes 
   an error that could cause note commitment tree corruption (which required
   a rescan to remediate when encountered).
