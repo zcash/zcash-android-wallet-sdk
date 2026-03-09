@@ -274,6 +274,40 @@ internal object CheckpointTool {
         )
     }
 
+    suspend fun estimateBirthdayDate(context: Context, blockHeight: BlockHeight, network: ZcashNetwork): Instant? {
+        val blockInterval =
+            if (network == ZcashNetwork.Mainnet) {
+                CHECKPOINT_BLOCK_INTERVAL_MAINNET
+            } else {
+                CHECKPOINT_BLOCK_INTERVAL_TESTNET
+            }
+
+        var checkpointHeight = (blockHeight.value / blockInterval) * blockInterval
+
+        var checkpoint: Checkpoint? = null
+
+        while (checkpoint == null || checkpointHeight > blockInterval) {
+            checkpoint =
+                try {
+                    loadNearest(
+                        birthdayHeight = BlockHeight(checkpointHeight),
+                        network = network,
+                        context = context,
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+
+            if (checkpoint != null) {
+                return Instant.fromEpochMilliseconds(checkpoint.epochTimeMillis)
+            }
+
+            checkpointHeight -= blockInterval
+        }
+
+        return null
+    }
+
     @Suppress("LongParameterList", "ReturnCount")
     private suspend fun loadCheckpointAndEstimate(
         avgIntervalTime: Float,
