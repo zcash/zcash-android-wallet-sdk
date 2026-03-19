@@ -264,6 +264,15 @@ class RustBackend private constructor(
             )
         }
 
+    override suspend fun rewindToChainState(chainState: ByteArray) =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            rewindToChainState(
+                dataDbFile.absolutePath,
+                chainState,
+                networkId = networkId
+            )
+        }
+
     override suspend fun putSubtreeRoots(
         saplingStartIndex: Long,
         saplingRoots: List<JniSubtreeRoot>,
@@ -740,6 +749,13 @@ class RustBackend private constructor(
             height: Long,
             networkId: Int
         ): JniRewindResult
+
+        @JvmStatic
+        private external fun rewindToChainState(
+            dbDataPath: String,
+            chainState: ByteArray,
+            networkId: Int
+        )
 
         @JvmStatic
         @Suppress("LongParameterList")
