@@ -156,6 +156,15 @@ internal interface TypesafeBackend {
 
     suspend fun rewindToHeight(height: BlockHeight): RewindResult
 
+    /**
+     * Truncates the data database to the specified chain state.
+     *
+     * In contrast to [rewindToHeight], this method allows the caller to truncate the wallet
+     * database to a precise height by providing additional chain state information needed for
+     * note commitment tree maintenance after the truncation.
+     */
+    suspend fun rewindToChainState(chainState: TreeState)
+
     suspend fun getLatestCacheHeight(): BlockHeight?
 
     suspend fun findBlockMetadata(height: BlockHeight): JniBlockMeta?

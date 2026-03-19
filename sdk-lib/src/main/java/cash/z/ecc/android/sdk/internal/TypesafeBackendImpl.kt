@@ -210,6 +210,9 @@ internal class TypesafeBackendImpl(
     override suspend fun rewindToHeight(height: BlockHeight): RewindResult =
         RewindResult.new(backend.rewindToHeight(height.value))
 
+    override suspend fun rewindToChainState(chainState: TreeState) =
+        backend.rewindToChainState(chainState.encoded)
+
     override suspend fun getLatestCacheHeight(): BlockHeight? =
         backend.getLatestCacheHeight()?.let {
             BlockHeight.new(it)

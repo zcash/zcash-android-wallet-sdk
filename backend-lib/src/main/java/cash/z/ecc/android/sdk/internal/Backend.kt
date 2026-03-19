@@ -234,6 +234,19 @@ interface Backend {
     suspend fun rewindToHeight(height: Long): JniRewindResult
 
     /**
+     * Truncates the data database to the specified chain state.
+     *
+     * In contrast to [rewindToHeight], this method allows the caller to truncate the wallet
+     * database to a precise height by providing additional chain state information needed for
+     * note commitment tree maintenance after the truncation.
+     *
+     * @param chainState protobuf-encoded TreeState at the height to truncate to.
+     * @throws RuntimeException as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun rewindToChainState(chainState: ByteArray)
+
+    /**
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)

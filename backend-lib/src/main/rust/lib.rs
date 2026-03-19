@@ -1324,6 +1324,38 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Truncates the data database to the specified chain state.
+///
+/// In contrast to `rewindToHeight`, this function allows the caller to truncate the wallet
+/// database to a precise height by providing additional chain state information needed for
+/// note commitment tree maintenance after the truncation.
+///
+/// The `chain_state` parameter is a protobuf-encoded `TreeState` value representing the chain
+/// state at the height to which the database should be truncated.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToChainState<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    chain_state: JByteArray<'local>,
+    network_id: jint,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.rewindToChainState").entered();
+        let network = parse_network(network_id as u32)?;
+        let mut db_data = wallet_db(env, network, db_data)?;
+        let chain_state = parse_treestate(env, chain_state)?.to_chain_state()?;
+
+        db_data
+            .truncate_to_chain_state(chain_state)
+            .map_err(|e| anyhow!("Error while truncating to chain state: {}", e))?;
+
+        Ok(())
+    });
+
+    unwrap_exc_or(&mut env, res, ())
+}
+
 fn decode_subtree_root<H>(
     env: &mut JNIEnv,
     obj: JObject,
