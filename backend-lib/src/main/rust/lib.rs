@@ -276,6 +276,14 @@ fn encode_account<'a, P: Parameters>(
         None => JObject::null(),
     };
 
+    let uivk = match account.ufvk() {
+        Some(ufvk) => {
+            let uivk = ufvk.to_unified_incoming_viewing_key();
+            env.new_string(uivk.encode(network))?.into()
+        }
+        None => JObject::null(),
+    };
+
     let account_name = match account.name() {
         Some(name) => env.new_string(name)?.into(),
         None => JObject::null(),
@@ -301,7 +309,7 @@ fn encode_account<'a, P: Parameters>(
 
     env.new_object(
         JNI_ACCOUNT,
-        "(Ljava/lang/String;[BJLjava/lang/String;[BLjava/lang/String;)V",
+        "(Ljava/lang/String;[BJLjava/lang/String;[BLjava/lang/String;Ljava/lang/String;)V",
         &[
             (&account_name).into(),
             (&env.byte_array_from_slice(account.id().expose_uuid().as_bytes())?).into(),
@@ -309,6 +317,7 @@ fn encode_account<'a, P: Parameters>(
             (&key_source).into(),
             (&seed_fingerprint).into(),
             (&ufvk).into(),
+            (&uivk).into(),
         ],
     )
 }

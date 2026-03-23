@@ -23,6 +23,7 @@ import cash.z.ecc.android.sdk.internal.model.JniAccount
  *
  * @param accountUuid The account identifier.
  * @param ufvk The account's Unified Full Viewing Key, if any.
+ * @param uivk The account's Unified Incoming Viewing Key, if any.
  * @param accountName A human-readable name for the account. This is visible to the wallet user, and
  *        the wallet app may have obtained it from them.
  * @param keySource A string identifier or other metadata describing the location of the spending
@@ -34,6 +35,7 @@ import cash.z.ecc.android.sdk.internal.model.JniAccount
 data class Account internal constructor(
     val accountUuid: AccountUuid,
     val ufvk: String?,
+    val uivk: String?,
     val accountName: String?,
     val keySource: String?,
     val seedFingerprint: ByteArray?,
@@ -52,6 +54,7 @@ data class Account internal constructor(
             Account(
                 accountUuid = AccountUuid.new(jniAccount.accountUuid),
                 ufvk = jniAccount.ufvk,
+                uivk = jniAccount.uivk,
                 accountName = jniAccount.accountName,
                 keySource = jniAccount.keySource,
                 seedFingerprint = jniAccount.seedFingerprint,
@@ -68,6 +71,7 @@ data class Account internal constructor(
             Account(
                 accountUuid = accountUuid,
                 ufvk = null,
+                uivk = null,
                 accountName = null,
                 keySource = null,
                 seedFingerprint = null,
@@ -78,6 +82,7 @@ data class Account internal constructor(
     override fun toString(): String =
         "Account(accountUuid=$accountUuid," +
             " ufvk length=${ufvk?.length}," +
+            " uivk length=${uivk?.length}," +
             " accountName=$accountName," +
             " keySource=$keySource," +
             " seedFingerprint size=${seedFingerprint?.size}," +
@@ -91,6 +96,7 @@ data class Account internal constructor(
 
         if (accountUuid != other.accountUuid) return false
         if (ufvk != other.ufvk) return false
+        if (uivk != other.uivk) return false
         if (accountName != other.accountName) return false
         if (keySource != other.keySource) return false
         if (seedFingerprint != null) {
@@ -107,6 +113,7 @@ data class Account internal constructor(
     override fun hashCode(): Int {
         var result = accountUuid.hashCode()
         result = 31 * result + (ufvk?.hashCode() ?: 0)
+        result = 31 * result + (uivk?.hashCode() ?: 0)
         result = 31 * result + (accountName?.hashCode() ?: 0)
         result = 31 * result + (keySource?.hashCode() ?: 0)
         result = 31 * result + (seedFingerprint?.contentHashCode() ?: 0)
