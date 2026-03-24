@@ -3,7 +3,7 @@ package cash.z.ecc.android.sdk.internal.model
 import cash.z.ecc.android.sdk.exception.SdkException
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.model.BlockHeight
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 
 /**
  * A request for transaction data enhancement, spentness check, or discovery
@@ -113,9 +113,15 @@ sealed interface TransactionDataRequest {
     companion object {
         fun new(jni: JniTransactionDataRequest): TransactionDataRequest =
             when (jni) {
-                is JniTransactionDataRequest.GetStatus -> GetStatus(jni.txid)
-                is JniTransactionDataRequest.Enhancement -> Enhancement(jni.txid)
-                is JniTransactionDataRequest.TransactionsInvolvingAddress ->
+                is JniTransactionDataRequest.GetStatus -> {
+                    GetStatus(jni.txid)
+                }
+
+                is JniTransactionDataRequest.Enhancement -> {
+                    Enhancement(jni.txid)
+                }
+
+                is JniTransactionDataRequest.TransactionsInvolvingAddress -> {
                     TransactionsInvolvingAddress(
                         jni.address,
                         BlockHeight.new(jni.startHeight),
@@ -139,8 +145,7 @@ sealed interface TransactionDataRequest {
                             is JniOutputStatusFilter.All -> OutputStatusFilter.All
                         }
                     )
-
-                else -> throw SdkException("Unknown JniTransactionDataRequest variant", cause = null)
+                }
             }
     }
 }

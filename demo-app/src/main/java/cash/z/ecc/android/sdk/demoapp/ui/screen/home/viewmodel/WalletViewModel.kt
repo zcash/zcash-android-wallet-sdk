@@ -59,8 +59,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.datetime.Instant
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 // To make this more multiplatform compatible, we need to remove the dependency on Context
 // for loading the preferences.

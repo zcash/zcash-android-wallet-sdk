@@ -178,15 +178,17 @@ interface Synchronizer {
      */
     suspend fun importAccountByUfvk(setup: AccountImportSetup): Account
 
-    /**
+    /*
+     * Not ready to be a public API; internal for testing only
+     *
      * Adds the next available account-level spend authority, given the current set of
      * [ZIP 316](https://zips.z.cash/zip-0316) account identifiers known, to the wallet
      * database.
      *
      * The caller should store the byte encoding of the returned spending key in a secure
-     * fashion. This encoding **MUST NOT** be exposed to users. It is an internal encoding
+     * fashion. This encoding MUST NOT be exposed to users. It is an internal encoding
      * that is inherently unstable, and only intended to be passed between the SDK and the
-     * storage backend. The caller **MUST NOT** allow this encoding to be exported or
+     * storage backend. The caller MUST NOT allow this encoding to be exported or
      * imported.
      *
      * If `seed` was imported from a backup and this method is being used to restore a
@@ -205,9 +207,7 @@ interface Synchronizer {
      * encoding of the `UnifiedSpendingKey` for the newly created account.
      *
      * @throws [InitializeException.CreateAccountException] in case of the operation failure
-     **/
-    @Suppress("standard:no-consecutive-comments")
-    /* Not ready to be a public API; internal for testing only
+     *
     suspend fun createAccount(
         setup: AccountCreateSetup,
         treeState: TreeState,

@@ -94,9 +94,11 @@ data class PersistableWallet(
                 VERSION_1 -> {
                     endpoint = getLightWalletEndpointForNetwork(network)
                 }
+
                 VERSION_2 -> {
                     endpoint = getEndpoint(jsonObject)
                 }
+
                 else -> {
                     throw IllegalArgumentException("Unsupported version $version")
                 }

@@ -64,7 +64,7 @@ internal class TypesafeBackendImpl(
         Account.new(
             jniAccount =
                 when (setup.purpose) {
-                    is AccountPurpose.Spending ->
+                    is AccountPurpose.Spending -> {
                         backend.importAccountUfvk(
                             accountName = setup.accountName,
                             keySource = setup.keySource,
@@ -75,7 +75,9 @@ internal class TypesafeBackendImpl(
                             seedFingerprint = setup.purpose.seedFingerprint,
                             zip32AccountIndex = setup.purpose.zip32AccountIndex.index,
                         )
-                    AccountPurpose.ViewOnly ->
+                    }
+
+                    AccountPurpose.ViewOnly -> {
                         backend.importAccountUfvk(
                             accountName = setup.accountName,
                             keySource = setup.keySource,
@@ -86,6 +88,7 @@ internal class TypesafeBackendImpl(
                             seedFingerprint = null,
                             zip32AccountIndex = null,
                         )
+                    }
                 }
         )
 
@@ -258,11 +261,23 @@ internal class TypesafeBackendImpl(
     override suspend fun initDataDb(seed: FirstClassByteArray?) {
         val ret = backend.initDataDb(seed?.byteArray)
         when (ret) {
-            2 -> throw InitializeException.SeedNotRelevant
-            1 -> throw InitializeException.SeedRequired
+            2 -> {
+                throw InitializeException.SeedNotRelevant
+            }
+
+            1 -> {
+                throw InitializeException.SeedRequired
+            }
+
             0 -> { /* Successful case - no action needed */ }
-            -1 -> error("Rust backend only uses -1 as an error sentinel")
-            else -> error("Rust backend used a code that needs to be defined here")
+
+            -1 -> {
+                error("Rust backend only uses -1 as an error sentinel")
+            }
+
+            else -> {
+                error("Rust backend used a code that needs to be defined here")
+            }
         }
     }
 

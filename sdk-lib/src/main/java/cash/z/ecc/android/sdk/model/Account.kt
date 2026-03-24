@@ -31,6 +31,7 @@ import cash.z.ecc.android.sdk.internal.model.JniAccount
  * @param seedFingerprint The seed fingerprint. Must be length 32.
  * @param hdAccountIndex ZIP 32 account index
  */
+@ConsistentCopyVisibility
 data class Account internal constructor(
     val accountUuid: AccountUuid,
     val ufvk: String?,

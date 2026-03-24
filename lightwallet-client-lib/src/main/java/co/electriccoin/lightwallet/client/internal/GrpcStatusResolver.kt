@@ -12,55 +12,77 @@ object GrpcStatusResolver : ApiStatusResolver {
         val status = Status.fromThrowable(exception)
         Log.w(Constants.LOG_TAG, "Networking error: ${status.code}: ${status.description}")
 
-        return when (status.code) {
-            Status.Code.ABORTED ->
+        return resolveByStatusCode(status, exception)
+    }
+
+    @Suppress("CyclomaticComplexMethod")
+    private fun <T> resolveByStatusCode(
+        status: Status,
+        exception: Exception
+    ): Response.Failure<T> =
+        when (status.code) {
+            Status.Code.ABORTED -> {
                 Response.Failure.Server.Aborted(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
-            Status.Code.CANCELLED ->
+            }
+
+            Status.Code.CANCELLED -> {
                 Response.Failure.Client.Canceled(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
-            Status.Code.DEADLINE_EXCEEDED ->
+            }
+
+            Status.Code.DEADLINE_EXCEEDED -> {
                 Response.Failure.Server.DeadlineExceeded(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
-            Status.Code.NOT_FOUND ->
+            }
+
+            Status.Code.NOT_FOUND -> {
                 Response.Failure.Server.NotFound(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
-            Status.Code.PERMISSION_DENIED ->
+            }
+
+            Status.Code.PERMISSION_DENIED -> {
                 Response.Failure.Server.PermissionDenied(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
-            Status.Code.UNAVAILABLE ->
+            }
+
+            Status.Code.UNAVAILABLE -> {
                 Response.Failure.Server.Unavailable(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
-            Status.Code.UNKNOWN ->
+            }
+
+            Status.Code.UNKNOWN -> {
                 Response.Failure.Server.Unknown(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
-            else ->
+            }
+
+            else -> {
                 Response.Failure.Server.Other(
                     cause = exception,
                     code = status.code.value(),
                     description = status.description
                 )
+            }
         }
-    }
 }

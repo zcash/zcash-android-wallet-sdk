@@ -13,6 +13,7 @@ import cash.z.ecc.android.sdk.tool.CheckpointTool
  * For easier compatibility with Java clients, this class represents the height value as a Long with
  * assertions to ensure that it is a 32-bit unsigned integer.
  */
+@ConsistentCopyVisibility
 data class BlockHeight internal constructor(
     val value: Long
 ) : Comparable<BlockHeight> {

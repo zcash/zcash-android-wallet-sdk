@@ -58,27 +58,47 @@ internal class DerivedDataDb private constructor(
                         val row =
                             (0 until columnCount).map { index ->
                                 when (cursor.getType(index)) {
-                                    FIELD_TYPE_NULL -> "null"
-                                    FIELD_TYPE_INTEGER -> cursor.getLongOrNull(index).toString()
-                                    FIELD_TYPE_FLOAT -> cursor.getDoubleOrNull(index).toString()
-                                    FIELD_TYPE_STRING -> cursor.getStringOrNull(index)
+                                    FIELD_TYPE_NULL -> {
+                                        "null"
+                                    }
+
+                                    FIELD_TYPE_INTEGER -> {
+                                        cursor.getLongOrNull(index).toString()
+                                    }
+
+                                    FIELD_TYPE_FLOAT -> {
+                                        cursor.getDoubleOrNull(index).toString()
+                                    }
+
+                                    FIELD_TYPE_STRING -> {
+                                        cursor.getStringOrNull(index)
+                                    }
+
                                     FIELD_TYPE_BLOB -> {
                                         val columnName = cursor.getColumnName(index)
                                         val blob = cursor.getBlobOrNull(index)
                                         when (columnName.lowercase()) {
-                                            "txid" ->
+                                            "txid" -> {
                                                 blob?.let {
                                                     TransactionId(FirstClassByteArray(it)).txIdString()
                                                 }
-                                            "memo" ->
+                                            }
+
+                                            "memo" -> {
                                                 blob
                                                     ?.let { MemoContent.fromBytes(it) }
                                                     ?.toStringOrNull() ?: blob?.toHex() ?: "null"
-                                            else -> blob?.toHex()
+                                            }
+
+                                            else -> {
+                                                blob?.toHex()
+                                            }
                                         }
                                     }
 
-                                    else -> "unknown"
+                                    else -> {
+                                        "unknown"
+                                    }
                                 }
                             }
                         appendLine(row.joinToString(" | "))

@@ -1,7 +1,7 @@
 package cash.z.ecc.android.sdk.fixture
 
 import cash.z.ecc.android.sdk.model.FiatCurrencyConversion
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 
 object CurrencyConversionFixture {
     val TIMESTAMP = Instant.parse("2022-07-08T11:51:44Z")

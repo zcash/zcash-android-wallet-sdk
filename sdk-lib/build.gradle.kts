@@ -61,11 +61,13 @@ android {
         }
     }
 
-    kotlinOptions {
-        // Tricky: fix: By default, the kotlin_module name will not include the version (in classes.jar/META-INF).
-        // Instead it has a colon, which breaks compilation on Windows. This is one way to set it explicitly to the
-        // proper value. See https://github.com/zcash/zcash-android-wallet-sdk/issues/222 for more info.
-        freeCompilerArgs += listOf("-module-name", "$myArtifactId-${myVersion}_release")
+    // Tricky: fix: By default, the kotlin_module name will not include the version (in classes.jar/META-INF).
+    // Instead it has a colon, which breaks compilation on Windows. This is one way to set it explicitly to the
+    // proper value. See https://github.com/zcash/zcash-android-wallet-sdk/issues/222 for more info.
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+        compilerOptions {
+            freeCompilerArgs.addAll("-module-name", "$myArtifactId-${myVersion}_release")
+        }
     }
 
     lint {
@@ -76,7 +78,7 @@ android {
 androidComponents {
     onVariants { variant ->
         // Add library version to be available for runtime
-        variant.buildConfigFields.put(
+        variant.buildConfigFields?.put(
             "LIBRARY_VERSION",
             BuildConfigField(
                 type = "String",

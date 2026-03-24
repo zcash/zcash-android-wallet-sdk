@@ -5,6 +5,7 @@ package cash.z.ecc.android.sdk.model
 import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.minutes
 
+@ConsistentCopyVisibility
 data class PendingTransaction internal constructor(
     val id: Long,
     val value: Zatoshi,
@@ -117,12 +118,16 @@ internal fun PendingTransaction.isSafeToDiscard(): Boolean {
     return when {
         // if it is mined, then it is not pending so it can be deleted fairly quickly from this db
         isMined() && ageInMilliseconds > smallThreshold.inWholeMilliseconds -> true
+
         // if a tx fails to encode, then there's not much we can do with it
         isFailedEncoding() && ageInMilliseconds > smallThreshold.inWholeMilliseconds -> true
+
         // don't delete failed submissions until they've been cleaned up, properly, or else we lose
         // the ability to remove them in librustzcash prior to expiration
         isFailedSubmit() && isMarkedForDeletion() -> true
+
         !isMined() && ageInMilliseconds > hugeThreshold.inWholeMilliseconds -> true
+
         else -> false
     }
 }

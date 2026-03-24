@@ -8,6 +8,7 @@ import cash.z.wallet.sdk.internal.rpc.Service.BlockID
  *
  * It is marked as "unsafe" because it is not guaranteed to be valid.
  */
+@ConsistentCopyVisibility
 data class BlockIDUnsafe private constructor(
     val height: Long,
     val hash: ByteArray,

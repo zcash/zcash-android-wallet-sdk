@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.internal.model.JniSingleUseTransparentAddress
  *
  * This address is for one-time use, such as when receiving a swap from a decentralized exchange.
  */
+@ConsistentCopyVisibility
 data class SingleUseTransparentAddress private constructor(
     /**
      * The ephemeral transparent address.
