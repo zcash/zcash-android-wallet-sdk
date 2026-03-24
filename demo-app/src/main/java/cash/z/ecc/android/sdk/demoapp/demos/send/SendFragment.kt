@@ -182,11 +182,16 @@ class SendFragment : BaseDemoFragment<FragmentSendBinding>() {
                     text = "➡ sending"
                     isEnabled = false
                 }
+
                 isSyncing -> {
                     text = "⌛ syncing"
                     isEnabled = false
                 }
-                (balance?.available?.value ?: 0) <= 0 -> isEnabled = false
+
+                (balance?.available?.value ?: 0) <= 0 -> {
+                    isEnabled = false
+                }
+
                 else -> {
                     text = "send"
                     isEnabled = true

@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.ext.isInUIntRange
  *
  * @param index The account ZIP 32 account identifier
  */
+@ConsistentCopyVisibility
 data class Zip32AccountIndex internal constructor(
     val index: Long
 ) {

@@ -13,14 +13,19 @@ data class Locale(
     }
 }
 
-fun Locale.toJavaLocale(): java.util.Locale =
-    if (!region.isNullOrEmpty() && !variant.isNullOrEmpty()) {
-        java.util.Locale(language, region, variant)
-    } else if (!region.isNullOrEmpty() && variant.isNullOrEmpty()) {
-        java.util.Locale(language, region)
-    } else {
-        java.util.Locale(language)
+fun Locale.toJavaLocale(): java.util.Locale {
+    val builder =
+        java.util.Locale
+            .Builder()
+            .setLanguage(language)
+    if (!region.isNullOrEmpty()) {
+        builder.setRegion(region)
     }
+    if (!variant.isNullOrEmpty()) {
+        builder.setVariant(variant)
+    }
+    return builder.build()
+}
 
 fun java.util.Locale.toKotlinLocale(): Locale {
     val resultCountry =

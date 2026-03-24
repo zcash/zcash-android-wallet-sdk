@@ -4,6 +4,7 @@ import io.ktor.client.engine.HttpClientEngineBase
 import io.ktor.client.engine.callContext
 import io.ktor.client.request.HttpRequestData
 import io.ktor.client.request.HttpResponseData
+import io.ktor.http.Headers
 import io.ktor.http.HeadersBuilder
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpProtocolVersion
@@ -37,50 +38,8 @@ class TorHttpEngine(
 
         val response =
             when (data.method.value) {
-                "GET" ->
-                    when (data.body) {
-                        is OutgoingContent.NoContent ->
-                            torClient.httpGet(
-                                data.url.toString(),
-                                data.headers
-                                    .entries()
-                                    .flatMap { it.value.map { value -> JniHttpHeader(it.key, value) } },
-                                config.retryLimit
-                            )
-
-                        else -> throw IllegalArgumentException("HTTP GET does not support body")
-                    }
-
-                "POST" ->
-                    when (data.body) {
-                        is OutgoingContent.NoContent ->
-                            torClient.httpPost(
-                                data.url.toString(),
-                                data.headers
-                                    .entries()
-                                    .flatMap { it.value.map { value -> JniHttpHeader(it.key, value) } },
-                                ByteArray(0),
-                                config.retryLimit
-                            )
-
-                        is OutgoingContent.ByteArrayContent ->
-                            torClient.httpPost(
-                                data.url.toString(),
-                                HeadersBuilder()
-                                    .apply {
-                                        appendAll(data.headers)
-                                        appendAll(data.body.headers)
-                                        data.body.contentType?.let { append(HttpHeaders.ContentType, it.toString()) }
-                                    }.build()
-                                    .entries()
-                                    .flatMap { it.value.map { value -> JniHttpHeader(it.key, value) } },
-                                (data.body as OutgoingContent.ByteArrayContent).bytes(),
-                                config.retryLimit
-                            )
-
-                        else -> throw IllegalArgumentException("HTTP POST requires ByteArray body")
-                    }
-
+                "GET" -> executeGet(data)
+                "POST" -> executePost(data)
                 else -> throw UnsupportedHttpMethodOverTor("Unsupported HTTP method " + data.method)
             }
 
@@ -97,11 +56,61 @@ class TorHttpEngine(
         )
     }
 
+    private suspend fun executeGet(data: HttpRequestData): JniHttpResponseBytes =
+        when (data.body) {
+            is OutgoingContent.NoContent -> {
+                torClient.httpGet(
+                    data.url.toString(),
+                    data.headers.toJniHeaders(),
+                    config.retryLimit
+                )
+            }
+
+            else -> {
+                throw IllegalArgumentException("HTTP GET does not support body")
+            }
+        }
+
+    @OptIn(InternalAPI::class)
+    private suspend fun executePost(data: HttpRequestData): JniHttpResponseBytes =
+        when (data.body) {
+            is OutgoingContent.NoContent -> {
+                torClient.httpPost(
+                    data.url.toString(),
+                    data.headers.toJniHeaders(),
+                    ByteArray(0),
+                    config.retryLimit
+                )
+            }
+
+            is OutgoingContent.ByteArrayContent -> {
+                torClient.httpPost(
+                    data.url.toString(),
+                    HeadersBuilder()
+                        .apply {
+                            appendAll(data.headers)
+                            appendAll(data.body.headers)
+                            data.body.contentType?.let { append(HttpHeaders.ContentType, it.toString()) }
+                        }.build()
+                        .toJniHeaders(),
+                    (data.body as OutgoingContent.ByteArrayContent).bytes(),
+                    config.retryLimit
+                )
+            }
+
+            else -> {
+                throw IllegalArgumentException("HTTP POST requires ByteArray body")
+            }
+        }
+
     override fun close() {
         runBlocking { torClient.dispose() }
         super.close()
     }
 }
+
+private fun Headers.toJniHeaders(): List<JniHttpHeader> =
+    entries().flatMap { (key, values) -> values.map { value -> JniHttpHeader(key, value) } }
 
 class UnsupportedHttpMethodOverTor(
     message: String

@@ -132,7 +132,10 @@ internal class FastestServerFetcher(
                                         )
                                 )
                         ) {
-                            is Response.Success -> response.result
+                            is Response.Success -> {
+                                response.result
+                            }
+
                             is Response.Failure -> {
                                 logRuledOut("getServerInfo failed", response.toThrowable())
                                 null

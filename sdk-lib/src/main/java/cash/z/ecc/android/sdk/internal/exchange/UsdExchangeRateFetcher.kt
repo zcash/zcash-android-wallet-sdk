@@ -6,7 +6,7 @@ import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FiatCurrencyConversion
 import co.electriccoin.lightwallet.client.util.Disposable
 import kotlinx.coroutines.delay
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 internal class UsdExchangeRateFetcher(
     private val isolatedTorClient: TorClient,

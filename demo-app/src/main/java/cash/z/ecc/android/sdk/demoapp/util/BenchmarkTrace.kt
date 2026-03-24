@@ -29,15 +29,19 @@ object SyncBlockchainBenchmarkTrace : BenchmarkTrace {
             Event.BALANCE_SCREEN_START -> {
                 Trace.beginAsyncSection(Event.BALANCE_SCREEN_START.section, Event.BALANCE_SCREEN_START.cookie)
             }
+
             Event.BALANCE_SCREEN_END -> {
                 Trace.endAsyncSection(Event.BALANCE_SCREEN_END.section, Event.BALANCE_SCREEN_END.cookie)
             }
+
             Event.BLOCKCHAIN_SYNC_START -> {
                 Trace.beginAsyncSection(Event.BLOCKCHAIN_SYNC_START.section, Event.BLOCKCHAIN_SYNC_START.cookie)
             }
+
             Event.BLOCKCHAIN_SYNC_END -> {
                 Trace.endAsyncSection(Event.BLOCKCHAIN_SYNC_END.section, Event.BLOCKCHAIN_SYNC_END.cookie)
             }
+
             else -> { // nothing to write
             }
         }
@@ -75,30 +79,38 @@ object ProvideAddressBenchmarkTrace : BenchmarkTrace {
             Event.ADDRESS_SCREEN_START -> {
                 Trace.beginAsyncSection(Event.ADDRESS_SCREEN_START.section, Event.ADDRESS_SCREEN_START.cookie)
             }
+
             Event.ADDRESS_SCREEN_END -> {
                 Trace.endAsyncSection(Event.ADDRESS_SCREEN_END.section, Event.ADDRESS_SCREEN_END.cookie)
             }
+
             Event.UNIFIED_ADDRESS_START -> {
                 Trace.beginAsyncSection(Event.UNIFIED_ADDRESS_START.section, Event.UNIFIED_ADDRESS_START.cookie)
             }
+
             Event.UNIFIED_ADDRESS_END -> {
                 Trace.endAsyncSection(Event.UNIFIED_ADDRESS_END.section, Event.UNIFIED_ADDRESS_END.cookie)
             }
+
             Event.SAPLING_ADDRESS_START -> {
                 Trace.beginAsyncSection(Event.SAPLING_ADDRESS_START.section, Event.SAPLING_ADDRESS_START.cookie)
             }
+
             Event.SAPLING_ADDRESS_END -> {
                 Trace.endAsyncSection(Event.SAPLING_ADDRESS_END.section, Event.SAPLING_ADDRESS_END.cookie)
             }
+
             Event.TRANSPARENT_ADDRESS_START -> {
                 Trace.beginAsyncSection(
                     Event.TRANSPARENT_ADDRESS_START.section,
                     Event.TRANSPARENT_ADDRESS_START.cookie
                 )
             }
+
             Event.TRANSPARENT_ADDRESS_END -> {
                 Trace.endAsyncSection(Event.TRANSPARENT_ADDRESS_END.section, Event.TRANSPARENT_ADDRESS_END.cookie)
             }
+
             else -> { // nothing to write
             }
         }

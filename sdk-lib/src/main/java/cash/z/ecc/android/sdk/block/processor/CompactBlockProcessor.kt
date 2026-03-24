@@ -1901,8 +1901,9 @@ class CompactBlockProcessor internal constructor(
         retryUpToAndContinue(
             retries = RETRIES,
             exceptionWrapper = {
-                downloadException = CompactBlockProcessorException.FailedDownloadException(it)
-                downloadException!!
+                CompactBlockProcessorException.FailedDownloadException(it).also {
+                    downloadException = it
+                }
             }
         ) { failedAttempts ->
             if (failedAttempts == 0) {
@@ -2336,17 +2337,23 @@ class CompactBlockProcessor internal constructor(
                             sdkFlags ifTor ServiceMode.Group("fetch-${transactionRequest.txIdString()}")
                         )
                 ) {
-                    is Response.Success -> response.result
+                    is Response.Success -> {
+                        response.result
+                    }
+
                     is Response.Failure -> {
                         val description = response.description.orEmpty()
                         when {
                             response is Response.Failure.Server.NotFound ||
                                 description.contains(NOT_FOUND_MESSAGE_WORKAROUND, true) ||
                                 description.contains(NOT_FOUND_MESSAGE_WORKAROUND_2, true) ||
-                                description.contains(NOT_FOUND_MESSAGE_WORKAROUND_3, true) ->
+                                description.contains(NOT_FOUND_MESSAGE_WORKAROUND_3, true) -> {
                                 null
+                            }
 
-                            else -> throw EnhanceTxDownloadError(response.toThrowable())
+                            else -> {
+                                throw EnhanceTxDownloadError(response.toThrowable())
+                            }
                         }
                     }
                 }

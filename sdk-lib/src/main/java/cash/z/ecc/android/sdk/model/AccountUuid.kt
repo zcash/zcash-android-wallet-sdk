@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_UUID_BYTES_SIZE
  *
  * @param value The account identifier. Must be length 16.
  */
+@ConsistentCopyVisibility
 data class AccountUuid internal constructor(
     val value: ByteArray,
 ) {

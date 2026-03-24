@@ -206,7 +206,8 @@ fun ServerSwitch(
                 Text(text = stringResource(R.string.server_fastest_servers))
                 CircularProgressIndicator()
             }
-            is FastestServersResult.Validating ->
+
+            is FastestServersResult.Validating -> {
                 if (fastestServers.servers.isNotEmpty()) {
                     Text(text = stringResource(R.string.server_fastest_servers))
                     fastestServers.servers.forEach {
@@ -214,13 +215,17 @@ fun ServerSwitch(
                     }
                     CircularProgressIndicator()
                 }
-            is FastestServersResult.Done ->
+            }
+
+            is FastestServersResult.Done -> {
                 if (fastestServers.servers.isNotEmpty()) {
                     Text(text = stringResource(R.string.server_fastest_servers))
                     fastestServers.servers.forEach {
                         Text(text = it.toString())
                     }
                 }
+            }
+
             null -> {
                 // do nothing
             }
