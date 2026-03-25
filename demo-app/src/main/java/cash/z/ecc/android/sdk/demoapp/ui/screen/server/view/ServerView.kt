@@ -2,6 +2,7 @@
 
 package cash.z.ecc.android.sdk.demoapp.ui.screen.server.view
 
+import android.annotation.SuppressLint
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -127,6 +128,7 @@ private fun ServerTopAppBar(onBack: () -> Unit) {
     )
 }
 
+@SuppressLint("LocalContextGetResourceValueCall")
 @Composable
 @Suppress("LongMethod", "LongParameterList", "CyclomaticComplexMethod")
 fun ServerSwitch(
