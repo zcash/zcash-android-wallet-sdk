@@ -4,11 +4,11 @@ import androidx.test.filters.SmallTest
 import cash.z.ecc.android.sdk.fixture.CurrencyConversionFixture
 import cash.z.ecc.android.sdk.fixture.LocaleFixture
 import cash.z.ecc.android.sdk.fixture.ZatoshiFixture
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
 import org.junit.Test
 import kotlin.test.assertIs
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 class FiatCurrencyConversionRateStateTest {
     @Test

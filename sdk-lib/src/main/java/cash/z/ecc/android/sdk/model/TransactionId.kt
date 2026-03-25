@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.ext.toHexReversed
  *
  * @param value Byte array of the the transaction ID wrapped in [FirstClassByteArray]
  */
+@ConsistentCopyVisibility
 data class TransactionId internal constructor(
     val value: FirstClassByteArray,
 ) {

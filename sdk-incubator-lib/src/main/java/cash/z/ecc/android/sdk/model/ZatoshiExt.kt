@@ -6,10 +6,10 @@ import android.icu.text.DecimalFormat
 import android.icu.text.NumberFormat
 import android.icu.util.Currency
 import cash.z.ecc.android.sdk.ext.Conversions
-import kotlinx.datetime.Clock
 import java.math.BigDecimal
 import java.math.MathContext
 import java.math.RoundingMode
+import kotlin.time.Clock
 import kotlin.time.Duration
 
 fun Zatoshi.toFiatCurrencyState(

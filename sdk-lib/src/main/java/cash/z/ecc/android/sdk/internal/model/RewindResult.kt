@@ -16,8 +16,11 @@ sealed interface RewindResult {
     companion object {
         fun new(jni: JniRewindResult): RewindResult =
             when (jni) {
-                is JniRewindResult.Success -> Success(BlockHeight.new(jni.height))
-                is JniRewindResult.Invalid ->
+                is JniRewindResult.Success -> {
+                    Success(BlockHeight.new(jni.height))
+                }
+
+                is JniRewindResult.Invalid -> {
                     Invalid(
                         if (jni.safeRewindHeight == -1L) {
                             null
@@ -26,8 +29,7 @@ sealed interface RewindResult {
                         },
                         BlockHeight.new(jni.requestedHeight),
                     )
-
-                else -> throw SdkException("Unknown JniRewindResult variant", cause = null)
+                }
             }
     }
 }

@@ -12,12 +12,12 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
 import java.io.BufferedReader
 import java.io.IOException
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /**
  * Tool for loading checkpoints for the wallet, based on the height at which the wallet was born.

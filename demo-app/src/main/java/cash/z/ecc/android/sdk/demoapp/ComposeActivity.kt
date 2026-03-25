@@ -44,6 +44,7 @@ class ComposeActivity : ComponentActivity() {
             SecretState.Loading -> {
                 // In the future, we might consider displaying something different here.
             }
+
             SecretState.None -> {
                 var estimatedBirthdayHeight by remember { mutableStateOf<BlockHeight?>(null) }
                 Seed(
@@ -54,6 +55,7 @@ class ComposeActivity : ComponentActivity() {
                     estimatedHeight = estimatedBirthdayHeight
                 )
             }
+
             is SecretState.Ready -> {
                 Navigation()
             }

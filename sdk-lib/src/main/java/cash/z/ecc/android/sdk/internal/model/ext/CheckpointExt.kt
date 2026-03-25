@@ -58,6 +58,7 @@ private fun Checkpoint.Companion.from(
 
             return Checkpoint(height, hash, epochSeconds, saplingTree, orchardTree)
         }
+
         else -> {
             throw IllegalArgumentException("Unsupported version $version")
         }
