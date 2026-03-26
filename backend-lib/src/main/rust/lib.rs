@@ -100,6 +100,7 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
+mod eip681;
 mod tor;
 mod utils;
 
