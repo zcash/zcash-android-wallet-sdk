@@ -9,6 +9,7 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_UUID_BYTES_SIZE
  *
  * @param accountUuid the "one-way stable" identifier for the account.
  * @param ufvk The account's Unified Full Viewing Key, if any.
+ * @param uivk The account's Unified Incoming Viewing Key, if any.
  * @param accountName A human-readable name for the account
  * @param keySource A string identifier or other metadata describing the source of the seed
  * @param seedFingerprint The seed fingerprint
@@ -25,6 +26,7 @@ class JniAccount(
     val keySource: String?,
     val seedFingerprint: ByteArray?,
     val ufvk: String?,
+    val uivk: String?,
 ) {
     init {
         require(accountUuid.size == JNI_ACCOUNT_UUID_BYTES_SIZE) {
