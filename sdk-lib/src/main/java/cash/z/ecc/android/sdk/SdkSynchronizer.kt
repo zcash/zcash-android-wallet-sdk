@@ -268,6 +268,17 @@ class SdkSynchronizer private constructor(
                 date = date,
                 network = network
             )
+
+        suspend fun estimateBirthdayDate(
+            context: Context,
+            blockHeight: BlockHeight,
+            network: ZcashNetwork
+        ): Instant? =
+            CheckpointTool.estimateBirthdayDate(
+                context = context,
+                blockHeight = blockHeight,
+                network = network
+            )
     }
 
     private val _status = MutableStateFlow(DISCONNECTED)
