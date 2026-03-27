@@ -1333,7 +1333,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
 /// The `chain_state` parameter is a protobuf-encoded `TreeState` value representing the chain
 /// state at the height to which the database should be truncated.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToChainState<'local>(
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToChainState<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     db_data: JString<'local>,
@@ -2098,9 +2100,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         let (change_strategy, input_selector) = zip317_helper(None);
 
         let request = TransactionRequest::new(vec![
-            Payment::new(to, Some(value), memo, None, None, vec![]).ok_or_else(|| {
-                anyhow!("Memos are not permitted when sending to transparent recipients.")
-            })?,
+            Payment::new(to, Some(value), memo, None, None, vec![])
+                .map_err(|e| anyhow!("Unable to construct payment: {}.", e))?,
         ])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
