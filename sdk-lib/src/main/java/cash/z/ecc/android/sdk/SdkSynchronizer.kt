@@ -271,14 +271,16 @@ class SdkSynchronizer private constructor(
 
         suspend fun estimateBirthdayDate(
             context: Context,
-            blockHeight: BlockHeight,
+            height: BlockHeight,
             network: ZcashNetwork
-        ): Instant? =
-            CheckpointTool.estimateBirthdayDate(
+        ): Instant {
+            val checkpoint = CheckpointTool.loadNearest(
                 context = context,
-                blockHeight = blockHeight,
-                network = network
+                network = network,
+                birthdayHeight = height
             )
+            return Instant.fromEpochMilliseconds(checkpoint.epochTimeMillis)
+        }
     }
 
     private val _status = MutableStateFlow(DISCONNECTED)
@@ -499,6 +501,15 @@ class SdkSynchronizer private constructor(
 
     override suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight? =
         processor.rewindToNearestHeight(height)
+
+    override suspend fun rewindToChainState(height: BlockHeight) {
+        val checkpoint = CheckpointTool.loadNearest(
+            context = context,
+            network = network,
+            birthdayHeight = height
+        )
+        backend.rewindToChainState(checkpoint.treeState())
+    }
 
     override fun getMemos(transactionOverview: TransactionOverview): Flow<String> =
         storage.getOutputProperties(transactionOverview.txId).map { properties ->
