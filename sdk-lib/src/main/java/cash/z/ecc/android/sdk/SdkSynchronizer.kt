@@ -884,6 +884,7 @@ class SdkSynchronizer private constructor(
                     setup = setup,
                     treeState = treeState,
                 ).also {
+                    backend.rewindToChainState(treeState)
                     refreshAccountsBus.emit(Unit)
                 }
         }.onFailure {
