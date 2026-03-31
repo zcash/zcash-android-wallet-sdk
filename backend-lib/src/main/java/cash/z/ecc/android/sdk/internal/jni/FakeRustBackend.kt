@@ -192,6 +192,9 @@ class FakeRustBackend(
     override suspend fun isSeedRelevantToAnyDerivedAccounts(seed: ByteArray): Boolean =
         error("Intentionally not implemented in mocked FakeRustBackend implementation.")
 
+    override suspend fun deleteAccount(accountUuid: ByteArray): Boolean =
+        error("Intentionally not implemented in mocked FakeRustBackend implementation.")
+
     override fun isValidSaplingAddr(addr: String): Boolean =
         error("Intentionally not implemented in mocked FakeRustBackend implementation.")
 
