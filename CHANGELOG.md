@@ -6,6 +6,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `Synchronizer.importAccountByUfvk` now calls `TypesafeBackend.rewindToChainState` after importing 
+  an account. This enables imported accounts to discover their history and funds, at the cost of 
+  other accounts being temporarily blocked by a short resync (specifically rescanning the incomplete 
+  shard at the tip).
+
 ## [2.4.7] - 2025-03-20
 
 ### Changed
