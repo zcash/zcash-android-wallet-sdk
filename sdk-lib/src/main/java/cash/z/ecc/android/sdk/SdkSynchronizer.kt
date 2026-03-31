@@ -1287,6 +1287,7 @@ internal object DefaultSynchronizerFactory {
         recoverUntil: BlockHeight?,
         rustBackend: TypesafeBackend,
         setup: AccountCreateSetup?,
+        treeStateOverride: TreeState? = null,
     ): DerivedDataRepository =
         DbDerivedDataRepository(
             DerivedDataDb.new(
@@ -1296,6 +1297,7 @@ internal object DefaultSynchronizerFactory {
                 checkpoint = checkpoint,
                 recoverUntil = recoverUntil,
                 setup = setup,
+                treeStateOverride = treeStateOverride,
             )
         )
 

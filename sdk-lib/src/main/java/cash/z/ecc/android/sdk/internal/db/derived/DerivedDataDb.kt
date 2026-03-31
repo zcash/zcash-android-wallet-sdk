@@ -19,6 +19,7 @@ import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.internal.db.ReadOnlySupportSqliteOpenHelper
 import cash.z.ecc.android.sdk.internal.model.Checkpoint
+import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
@@ -130,6 +131,7 @@ internal class DerivedDataDb private constructor(
             checkpoint: Checkpoint,
             recoverUntil: BlockHeight?,
             setup: AccountCreateSetup?,
+            treeStateOverride: TreeState? = null,
         ): DerivedDataDb {
             backend.initDataDb(setup?.seed)
 
@@ -154,7 +156,7 @@ internal class DerivedDataDb private constructor(
                         keySource = setup.keySource,
                         recoverUntil = recoverUntil,
                         seed = setup.seed,
-                        treeState = checkpoint.treeState()
+                        treeState = treeStateOverride ?: checkpoint.treeState()
                     )
                 }.onFailure {
                     Twig.error(it) { "Create account failed." }
