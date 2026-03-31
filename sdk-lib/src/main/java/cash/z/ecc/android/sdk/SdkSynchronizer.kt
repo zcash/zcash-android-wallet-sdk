@@ -902,7 +902,7 @@ class SdkSynchronizer private constructor(
             CheckpointTool.loadNearest(
                 context = context,
                 network = network,
-                chainTip ?: network.saplingActivationHeight
+                setup.birthdayHeight ?: chainTip ?: network.saplingActivationHeight
             )
         val treeState: TreeState = loadedCheckpoint.treeState()
 
