@@ -185,6 +185,18 @@ interface Backend {
     @Throws(RuntimeException::class)
     suspend fun isSeedRelevantToAnyDerivedAccounts(seed: ByteArray): Boolean
 
+    /**
+     * Deletes the specified account, and all transactions that exclusively involve it,
+     * from the wallet database.
+     *
+     * WARNING: This is a destructive operation and may result in the permanent loss of
+     * potentially important information that is not recoverable from chain data.
+     *
+     * @throws RuntimeException as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun deleteAccount(accountUuid: ByteArray): Boolean
+
     fun isValidSaplingAddr(addr: String): Boolean
 
     fun isValidTransparentAddr(addr: String): Boolean
