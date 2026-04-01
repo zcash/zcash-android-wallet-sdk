@@ -250,6 +250,10 @@ sealed class InitializeException(
     message: String,
     cause: Throwable? = null
 ) : SdkException(message, cause) {
+    object NoAccountLoaded : InitializeException(
+        "No Account loaded"
+    )
+
     data object SeedRequired : InitializeException(
         "A pending database migration requires the wallet's seed. Call this initialization " +
             "method again with the seed."
