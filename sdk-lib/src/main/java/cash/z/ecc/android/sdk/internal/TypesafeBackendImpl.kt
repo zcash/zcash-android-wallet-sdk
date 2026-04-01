@@ -385,4 +385,6 @@ internal class TypesafeBackendImpl(
     override fun isValidUnifiedAddr(addr: String): Boolean = backend.isValidUnifiedAddr(addr)
 
     override fun isValidTexAddr(addr: String): Boolean = backend.isValidTexAddr(addr)
+
+    override suspend fun deleteAccount(accountUuid: AccountUuid) = backend.deleteAccount(accountUuid.value)
 }

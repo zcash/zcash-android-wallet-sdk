@@ -664,6 +664,8 @@ interface Synchronizer {
 
     suspend fun debugQuery(query: String): String
 
+    suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
+
     //
     // Error Handling
     //
