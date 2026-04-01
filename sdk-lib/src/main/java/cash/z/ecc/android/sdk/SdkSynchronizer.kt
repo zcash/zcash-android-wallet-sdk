@@ -268,6 +268,20 @@ class SdkSynchronizer private constructor(
                 date = date,
                 network = network
             )
+
+        suspend fun estimateBirthdayDate(
+            context: Context,
+            height: BlockHeight,
+            network: ZcashNetwork
+        ): Instant {
+            val checkpoint =
+                CheckpointTool.loadNearest(
+                    context = context,
+                    network = network,
+                    birthdayHeight = height
+                )
+            return Instant.fromEpochMilliseconds(checkpoint.epochTimeMillis)
+        }
     }
 
     private val _status = MutableStateFlow(DISCONNECTED)
@@ -650,6 +664,11 @@ class SdkSynchronizer private constructor(
         }
 
     override suspend fun debugQuery(query: String): String = storage.debugQuery(query)
+
+    override suspend fun deleteAccount(accountUuid: AccountUuid) =
+        backend.deleteAccount(accountUuid).also {
+            refreshAccountsBus.emit(Unit)
+        }
 
     suspend fun isValidAddress(address: String): Boolean = !validateAddress(address).isNotValid
 
