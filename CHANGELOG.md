@@ -6,6 +6,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.8] - 2025-04-02
+
+### Added
+- `Synchronizer.deleteAccount` function added to delete an account from the wallet
+
+### Changed
+- Updated dependencies
+- Checkpoints update
+
 ## [2.4.7] - 2025-03-20
 
 ### Changed
