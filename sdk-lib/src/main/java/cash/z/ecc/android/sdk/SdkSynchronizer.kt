@@ -274,11 +274,12 @@ class SdkSynchronizer private constructor(
             height: BlockHeight,
             network: ZcashNetwork
         ): Instant {
-            val checkpoint = CheckpointTool.loadNearest(
-                context = context,
-                network = network,
-                birthdayHeight = height
-            )
+            val checkpoint =
+                CheckpointTool.loadNearest(
+                    context = context,
+                    network = network,
+                    birthdayHeight = height
+                )
             return Instant.fromEpochMilliseconds(checkpoint.epochTimeMillis)
         }
     }
@@ -503,11 +504,12 @@ class SdkSynchronizer private constructor(
         processor.rewindToNearestHeight(height)
 
     override suspend fun rescanFromHeight(height: BlockHeight) {
-        val checkpoint = CheckpointTool.loadNearest(
-            context = context,
-            network = network,
-            birthdayHeight = height
-        )
+        val checkpoint =
+            CheckpointTool.loadNearest(
+                context = context,
+                network = network,
+                birthdayHeight = height
+            )
         backend.rewindToChainState(checkpoint.treeState())
     }
 
