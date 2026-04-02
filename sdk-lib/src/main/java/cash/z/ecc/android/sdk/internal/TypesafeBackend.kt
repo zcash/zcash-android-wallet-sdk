@@ -310,4 +310,6 @@ internal interface TypesafeBackend {
      */
     @Throws(RuntimeException::class)
     fun isValidTexAddr(addr: String): Boolean
+
+    suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
 }
