@@ -128,7 +128,10 @@ open class CompactBlockDownloader private constructor(
         withContext(IO) {
             retryUpToAndThrow(GET_SERVER_INFO_RETRIES) {
                 when (val response = lightWalletClient.getServerInfo(serviceMode = serviceMode)) {
-                    is Response.Success -> return@withContext response.result
+                    is Response.Success -> {
+                        return@withContext response.result
+                    }
+
                     is Response.Failure -> {
                         lightWalletClient.reconnect()
                         Twig.warn { "WARNING: reconnecting to server in response to failure (retry #${it + 1})" }

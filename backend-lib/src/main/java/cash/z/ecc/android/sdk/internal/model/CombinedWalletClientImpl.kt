@@ -174,16 +174,23 @@ class CombinedWalletClientImpl private constructor(
     ): T =
         semaphore.withLock {
             when (serviceMode) {
-                ServiceMode.Direct -> block(lightWalletClient)
-                ServiceMode.UniqueTor -> create().use { block(it) }
+                ServiceMode.Direct -> {
+                    block(lightWalletClient)
+                }
+
+                ServiceMode.UniqueTor -> {
+                    create().use { block(it) }
+                }
+
                 ServiceMode.DefaultTor,
-                is ServiceMode.Group ->
+                is ServiceMode.Group -> {
                     try {
                         block(getOrCreate(serviceMode))
                     } catch (e: Exception) {
                         remove(serviceMode)
                         throw e
                     }
+                }
             }
         }
 

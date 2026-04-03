@@ -1,6 +1,6 @@
 import com.android.build.api.dsl.CommonExtension
 import com.android.build.api.dsl.ManagedVirtualDevice
-import org.jetbrains.kotlin.gradle.dsl.KotlinJvmOptions
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Locale
 
 pluginManager.withPlugin("com.android.application") {
@@ -178,17 +178,16 @@ fun com.android.build.gradle.BaseExtension.configureBaseExtension() {
     }
 
     if (this is CommonExtension<*, *, *, *, *, *>) {
-        kotlinOptions {
-            jvmTarget = project.property("ANDROID_JVM_TARGET").toString()
-            allWarningsAsErrors = project.property("ZCASH_IS_TREAT_WARNINGS_AS_ERRORS").toString().toBoolean()
-            freeCompilerArgs += listOf(
-                "-opt-in=kotlin.RequiresOptIn",
-                "-Xconsistent-data-class-copy-visibility"
-            )
+        project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile::class.java).configureEach {
+            compilerOptions {
+                jvmTarget.set(JvmTarget.fromTarget(project.property("ANDROID_JVM_TARGET").toString()))
+                allWarningsAsErrors.set(
+                    project.property("ZCASH_IS_TREAT_WARNINGS_AS_ERRORS").toString().toBoolean()
+                )
+                freeCompilerArgs.addAll(
+                    "-opt-in=kotlin.RequiresOptIn"
+                )
+            }
         }
     }
-}
-
-fun CommonExtension<*, *, *, *, *, *>.kotlinOptions(block: KotlinJvmOptions.() -> Unit) {
-    (this as ExtensionAware).extensions.configure("kotlinOptions", block)
 }

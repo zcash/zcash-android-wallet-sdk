@@ -55,14 +55,18 @@ sealed interface MemoContent {
     @Throws(MemoException::class)
     fun asMemoBytes(): MemoBytes =
         when (this) {
-            is Empty -> MemoBytes.empty()
+            is Empty -> {
+                MemoBytes.empty()
+            }
 
             is Text -> {
                 val bytes = text.string.toByteArray(UTF_8)
                 MemoBytes.fromBytes(bytes)
             }
 
-            is Future -> bytes
+            is Future -> {
+                bytes
+            }
 
             is Arbitrary -> {
                 val arbitraryBytes = ByteArray(data.byteArray.size + 1)
@@ -125,6 +129,7 @@ sealed class MemoException(
 /**
  * A wrapper on `String` so that `Memo` can't be created with an invalid String
  */
+@ConsistentCopyVisibility
 data class MemoText internal constructor(
     val string: String
 ) {
@@ -155,6 +160,7 @@ data class MemoText internal constructor(
 /**
  * MemoBytes represents the raw 512-byte memo data as stored in transactions.
  */
+@ConsistentCopyVisibility
 data class MemoBytes internal constructor(
     val bytes: FirstClassByteArray
 ) {

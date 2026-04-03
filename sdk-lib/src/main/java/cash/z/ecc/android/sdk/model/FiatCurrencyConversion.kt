@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.model
 
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 
 /**
  * Represents a snapshot in time of a currency conversion rate.

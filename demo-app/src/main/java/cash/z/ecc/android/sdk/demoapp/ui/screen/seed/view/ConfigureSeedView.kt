@@ -45,7 +45,7 @@ import cash.z.ecc.android.sdk.model.PersistableWallet
 import cash.z.ecc.android.sdk.model.SeedPhrase
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 
 @Preview(name = "Seed")
 @Composable
@@ -248,12 +248,18 @@ private fun RestoreWalletSection(
         TextField(
             value =
                 when {
-                    walletBirthdayString != null -> walletBirthdayString!!
+                    walletBirthdayString != null -> {
+                        walletBirthdayString!!
+                    }
+
                     estimatedHeight != null -> {
                         walletBirthdayString = estimatedHeight.value.toString()
                         walletBirthdayString!!
                     }
-                    else -> ""
+
+                    else -> {
+                        ""
+                    }
                 },
             onValueChange = {
                 Twig.debug { "New BD value: $it" }

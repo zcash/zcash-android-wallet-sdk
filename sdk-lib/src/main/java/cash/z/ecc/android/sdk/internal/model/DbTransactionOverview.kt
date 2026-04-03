@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Zatoshi
 
+@ConsistentCopyVisibility
 internal data class DbTransactionOverview internal constructor(
     val rawId: FirstClassByteArray,
     val minedHeight: BlockHeight?,

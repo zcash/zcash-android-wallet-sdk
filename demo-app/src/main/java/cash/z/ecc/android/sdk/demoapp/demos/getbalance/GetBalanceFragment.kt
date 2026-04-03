@@ -207,7 +207,9 @@ class GetBalanceFragment : BaseDemoFragment<FragmentGetBalanceBinding>() {
                     SyncBlockchainBenchmarkTrace.Event.BLOCKCHAIN_SYNC_END
                 }
 
-                else -> null
+                else -> {
+                    null
+                }
             }
         traceEvents?.let { reportTraceEvent(it) }
 

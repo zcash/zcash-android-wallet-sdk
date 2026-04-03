@@ -2,6 +2,7 @@
 
 package cash.z.ecc.android.sdk.demoapp.ui.screen.server.view
 
+import android.annotation.SuppressLint
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -127,6 +128,7 @@ private fun ServerTopAppBar(onBack: () -> Unit) {
     )
 }
 
+@SuppressLint("LocalContextGetResourceValueCall")
 @Composable
 @Suppress("LongMethod", "LongParameterList", "CyclomaticComplexMethod")
 fun ServerSwitch(
@@ -206,7 +208,8 @@ fun ServerSwitch(
                 Text(text = stringResource(R.string.server_fastest_servers))
                 CircularProgressIndicator()
             }
-            is FastestServersResult.Validating ->
+
+            is FastestServersResult.Validating -> {
                 if (fastestServers.servers.isNotEmpty()) {
                     Text(text = stringResource(R.string.server_fastest_servers))
                     fastestServers.servers.forEach {
@@ -214,13 +217,17 @@ fun ServerSwitch(
                     }
                     CircularProgressIndicator()
                 }
-            is FastestServersResult.Done ->
+            }
+
+            is FastestServersResult.Done -> {
                 if (fastestServers.servers.isNotEmpty()) {
                     Text(text = stringResource(R.string.server_fastest_servers))
                     fastestServers.servers.forEach {
                         Text(text = it.toString())
                     }
                 }
+            }
+
             null -> {
                 // do nothing
             }

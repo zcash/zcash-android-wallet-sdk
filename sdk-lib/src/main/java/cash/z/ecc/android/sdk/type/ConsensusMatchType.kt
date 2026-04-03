@@ -23,16 +23,25 @@ class ConsensusMatchType(
     val errorMessage
         get() =
             when {
-                isValid -> null
-                hasNeither ->
+                isValid -> {
+                    null
+                }
+
+                hasNeither -> {
                     "Our branch is unknown and the server branch is unknown. Verify" +
                         " that they are both using the latest consensus branch ID."
-                hasServerBranch ->
+                }
+
+                hasServerBranch -> {
                     "The server is on $serverBranch but our branch is unknown." +
                         " Verify that we are fully synced."
-                hasSdkBranch ->
+                }
+
+                hasSdkBranch -> {
                     "We are on $sdkBranch but the server branch is unknown. Verify" +
                         " the network connection."
+                }
+
                 else -> {
                     val newerBranch = if (isServerNewer) serverBranch else sdkBranch
                     val olderBranch = if (isSdkNewer) serverBranch else sdkBranch

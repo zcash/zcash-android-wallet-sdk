@@ -25,6 +25,7 @@ enum class ZcashProtocol {
                 TRANSPARENT.poolCode,
                 SAPLING.poolCode,
                 ORCHARD.poolCode -> true
+
                 else -> false
             }
 

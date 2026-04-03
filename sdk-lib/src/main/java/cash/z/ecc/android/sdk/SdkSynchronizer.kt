@@ -122,11 +122,11 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.datetime.Instant
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
+import kotlin.time.Instant
 
 /**
  * A Synchronizer that attempts to remain operational, despite any number of errors that can occur.
@@ -268,6 +268,20 @@ class SdkSynchronizer private constructor(
                 date = date,
                 network = network
             )
+
+        suspend fun estimateBirthdayDate(
+            context: Context,
+            height: BlockHeight,
+            network: ZcashNetwork
+        ): Instant {
+            val checkpoint =
+                CheckpointTool.loadNearest(
+                    context = context,
+                    network = network,
+                    birthdayHeight = height
+                )
+            return Instant.fromEpochMilliseconds(checkpoint.epochTimeMillis)
+        }
     }
 
     private val _status = MutableStateFlow(DISCONNECTED)
@@ -292,14 +306,17 @@ class SdkSynchronizer private constructor(
                         } else {
                             emit(lastExchangeRateValue.copy(isLoading = true))
                             lastExchangeRateValue =
-                                when (val result = fetchExchangeChangeUsd.invoke()) {
-                                    is FetchFiatCurrencyResult.Error -> lastExchangeRateValue.copy(isLoading = false)
+                                when (val result = fetchExchangeChangeUsd()) {
+                                    is FetchFiatCurrencyResult.Error -> {
+                                        lastExchangeRateValue.copy(isLoading = false)
+                                    }
 
-                                    is FetchFiatCurrencyResult.Success ->
+                                    is FetchFiatCurrencyResult.Success -> {
                                         lastExchangeRateValue.copy(
                                             isLoading = false,
                                             currencyConversion = result.currencyConversion
                                         )
+                                    }
                                 }
                             emit(lastExchangeRateValue)
                         }
@@ -648,6 +665,11 @@ class SdkSynchronizer private constructor(
 
     override suspend fun debugQuery(query: String): String = storage.debugQuery(query)
 
+    override suspend fun deleteAccount(accountUuid: AccountUuid) =
+        backend.deleteAccount(accountUuid).also {
+            refreshAccountsBus.emit(Unit)
+        }
+
     suspend fun isValidAddress(address: String): Boolean = !validateAddress(address).isNotValid
 
     //
@@ -683,15 +705,26 @@ class SdkSynchronizer private constructor(
             processor.state
                 .onEach {
                     when (it) {
-                        is Initializing -> INITIALIZING
+                        is Initializing -> {
+                            INITIALIZING
+                        }
+
                         is Synced -> {
                             onScanComplete()
                             SYNCED
                         }
 
-                        is Stopped -> STOPPED
-                        is Disconnected -> DISCONNECTED
-                        is Syncing -> SYNCING
+                        is Stopped -> {
+                            STOPPED
+                        }
+
+                        is Disconnected -> {
+                            DISCONNECTED
+                        }
+
+                        is Syncing -> {
+                            SYNCING
+                        }
                     }.let { synchronizerStatus ->
                         _status.value = synchronizerStatus
                     }
@@ -1144,7 +1177,10 @@ class SdkSynchronizer private constructor(
                                     )
                             )
                     ) {
-                        is Response.Success -> response.result
+                        is Response.Success -> {
+                            response.result
+                        }
+
                         is Response.Failure -> {
                             return ServerValidation.InValid(response.toThrowable())
                         }

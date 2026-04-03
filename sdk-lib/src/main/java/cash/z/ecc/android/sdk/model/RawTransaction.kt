@@ -12,6 +12,7 @@ import co.electriccoin.lightwallet.client.model.RawTransactionUnsafe
  * @param data The complete data of the transaction.
  * @param height The transaction mined height.
  */
+@ConsistentCopyVisibility
 data class RawTransaction internal constructor(
     val data: ByteArray,
     val height: BlockHeight?

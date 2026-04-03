@@ -7,7 +7,7 @@ import cash.z.ecc.android.sdk.demoapp.ui.screen.transactions.view.TransactionSta
 import cash.z.ecc.android.sdk.model.FiatCurrencyConversionRateState
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.toFiatCurrencyState
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 
 internal fun TransactionOverview.toTransactionState(
     context: Context,
