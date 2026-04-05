@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New wallets now fetch the chain-tip tree state from the lightwalletd server, eliminating unnecessary block scanning for wallets with no transaction history
+
 ### Changed
 - `Synchronizer.importAccountByUfvk` now calls `TypesafeBackend.rewindToChainState` after importing 
   an account. This enables imported accounts to discover their history and funds, at the cost of 
