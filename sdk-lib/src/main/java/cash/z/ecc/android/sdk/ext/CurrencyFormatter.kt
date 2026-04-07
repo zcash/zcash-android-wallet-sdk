@@ -2,6 +2,7 @@
 
 package cash.z.ecc.android.sdk.ext
 
+import android.os.Build
 import cash.z.ecc.android.sdk.ext.Conversions.USD_FORMATTER
 import cash.z.ecc.android.sdk.ext.Conversions.ZEC_FORMATTER
 import cash.z.ecc.android.sdk.internal.Twig
@@ -9,6 +10,8 @@ import cash.z.ecc.android.sdk.model.Zatoshi
 import java.math.BigDecimal
 import java.math.MathContext
 import java.math.RoundingMode
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -53,9 +56,10 @@ object Conversions {
  * most [maxDecimals]
  */
 fun Zatoshi?.convertZatoshiToZecString(
+    locale: Locale,
     maxDecimals: Int = ZEC_FORMATTER.maximumFractionDigits,
     minDecimals: Int = ZEC_FORMATTER.minimumFractionDigits
-): String = currencyFormatter(maxDecimals, minDecimals).format(convertZatoshiToZec(maxDecimals))
+): String = currencyFormatter(locale, maxDecimals, minDecimals).format(convertZatoshiToZec(maxDecimals))
 
 /**
  * Format a ZEC value into ZEC with the given number of digits, represented as a string.
@@ -69,9 +73,10 @@ fun Zatoshi?.convertZatoshiToZecString(
  * [maxDecimals].
  */
 fun Double?.toZecString(
+    locale: Locale,
     maxDecimals: Int = ZEC_FORMATTER.maximumFractionDigits,
     minDecimals: Int = ZEC_FORMATTER.minimumFractionDigits
-): String = currencyFormatter(maxDecimals, minDecimals).format(this.toZec(maxDecimals))
+): String = currencyFormatter(locale, maxDecimals, minDecimals).format(this.toZec(maxDecimals))
 
 /**
  * Format a Zatoshi value into ZEC with the given number of decimal places, represented as a string.
@@ -85,9 +90,10 @@ fun Double?.toZecString(
  * [maxDecimals].
  */
 fun BigDecimal?.toZecString(
+    locale: Locale,
     maxDecimals: Int = ZEC_FORMATTER.maximumFractionDigits,
     minDecimals: Int = ZEC_FORMATTER.minimumFractionDigits
-): String = currencyFormatter(maxDecimals, minDecimals).format(this.toZec(maxDecimals))
+): String = currencyFormatter(locale, maxDecimals, minDecimals).format(this.toZec(maxDecimals))
 
 /**
  * Format a USD value into USD with the given number of digits, represented as a string.
@@ -101,13 +107,14 @@ fun BigDecimal?.toZecString(
  * [maxDecimals], which is 2 by default. Zero is always represented without any decimals.
  */
 fun Double?.toUsdString(
+    locale: Locale,
     maxDecimals: Int = USD_FORMATTER.maximumFractionDigits,
     minDecimals: Int = USD_FORMATTER.minimumFractionDigits
 ): String =
     if (this == 0.0) {
         "0"
     } else {
-        currencyFormatter(maxDecimals, minDecimals).format(this.toUsd(maxDecimals))
+        currencyFormatter(locale, maxDecimals, minDecimals).format(this.toUsd(maxDecimals))
     }
 
 /**
@@ -122,31 +129,79 @@ fun Double?.toUsdString(
  * [maxDecimals], which is 2 by default.
  */
 fun BigDecimal?.toUsdString(
+    locale: Locale,
     maxDecimals: Int = USD_FORMATTER.maximumFractionDigits,
     minDecimals: Int = USD_FORMATTER.minimumFractionDigits
-): String = currencyFormatter(maxDecimals, minDecimals).format(this.toUsd(maxDecimals))
+): String = currencyFormatter(locale, maxDecimals, minDecimals).format(this.toUsd(maxDecimals))
+
+/**
+ * Create a zaotshi formatter for use with converting currency to strings. This probably isn't needed
+ * externally since the other formatting functions leverage this, instead. Leverages the default
+ * rounding mode for ZEC found in ZEC_FORMATTER.
+ *
+ * @return a currency formatter, appropriate for the [locale].
+ */
+fun zatoshiFormatter(locale: Locale) =
+    currencyFormatter(
+        locale = locale,
+        maximumFractionDigits = 8,
+        minimumFractionDigits = 3
+    )
 
 /**
  * Create a number formatter for use with converting currency to strings. This probably isn't needed
  * externally since the other formatting functions leverage this, instead. Leverages the default
  * rounding mode for ZEC found in ZEC_FORMATTER.
  *
- * @param maxDecimals the number of decimal places to use in the format. Default is 6 because ZEC is
+ * @param maximumFractionDigits the number of decimal places to use in the format. Default is 6 because ZEC is
  * glorious.
- * @param minDecimals the minimum number of digits to allow to the right of the decimal.
+ * @param minimumFractionDigits the minimum number of digits to allow to the right of the decimal.
  *
- * @return a currency formatter, appropriate for the default locale.
+ * @return a currency formatter, appropriate for the [locale].
  */
 fun currencyFormatter(
-    maxDecimals: Int,
-    minDecimals: Int
-): NumberFormat =
-    NumberFormat.getInstance(Locale.getDefault()).apply {
+    locale: Locale,
+    maximumFractionDigits: Int? = ZEC_FORMATTER.maximumFractionDigits,
+    minimumFractionDigits: Int? = ZEC_FORMATTER.minimumFractionDigits
+): DecimalFormat {
+    val symbols = ZcashDecimalFormatSymbols(locale)
+    val pattern = (DecimalFormat.getInstance(locale) as? DecimalFormat)?.toPattern()
+
+    return if (pattern != null) {
+        DecimalFormat(pattern, symbols)
+    } else {
+        DecimalFormat().apply {
+            this.decimalFormatSymbols = symbols
+        }
+    }.apply {
         roundingMode = ZEC_FORMATTER.roundingMode
-        maximumFractionDigits = maxDecimals
-        minimumFractionDigits = minDecimals
-        minimumIntegerDigits = 1
+        maximumFractionDigits?.let { this.maximumFractionDigits = it }
+        minimumFractionDigits?.let { this.minimumFractionDigits = it }
     }
+}
+
+class ZcashDecimalFormatSymbols(
+    locale: Locale
+) : DecimalFormatSymbols(locale) {
+    override fun getGroupingSeparator(): Char {
+        val originalGroupingSeparator = super.getGroupingSeparator()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            monetaryGroupingSeparator
+        } else {
+            originalGroupingSeparator
+        }
+    }
+
+    override fun getDecimalSeparator(): Char {
+        val originalDecimalSeparator = super.getDecimalSeparator()
+        val originalGroupingSeparator = super.getGroupingSeparator()
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> monetaryDecimalSeparator
+            originalGroupingSeparator == monetaryDecimalSeparator -> originalDecimalSeparator
+            else -> monetaryDecimalSeparator
+        }
+    }
+}
 
 /**
  * Convert a Zatoshi value into ZEC, right-padded to the given number of fraction digits,

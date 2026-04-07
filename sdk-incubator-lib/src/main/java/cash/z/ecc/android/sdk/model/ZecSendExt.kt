@@ -1,11 +1,11 @@
 package cash.z.ecc.android.sdk.model
 
-import android.content.Context
 import kotlinx.coroutines.runBlocking
+import java.util.Locale
 
 object ZecSendExt {
     fun new(
-        context: Context,
+        locale: Locale,
         destinationString: String,
         zecString: String,
         memoString: String,
@@ -13,7 +13,7 @@ object ZecSendExt {
         // This runBlocking shouldn't have a performance impact, since everything needs to be loaded at this point.
         // However it would be better to eliminate it entirely.
         val destination = runBlocking { WalletAddress.Unified.new(destinationString) }
-        val amount = Zatoshi.fromZecString(context, zecString)
+        val amount = Zatoshi.fromZecString(zecString, locale)
         val memo = Memo(memoString)
 
         val validationErrors =

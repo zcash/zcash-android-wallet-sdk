@@ -41,7 +41,7 @@ class TransactionViewHolder(
         time: Long?,
         value: Zatoshi
     ) {
-        amountText.text = value.convertZatoshiToZecString()
+        amountText.text = value.convertZatoshiToZecString(Locale.getDefault())
         timeText.text = minedHeight?.let {
             time?.let {
                 formatter.format(it * 1000L)
