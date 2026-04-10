@@ -1,12 +1,12 @@
 package cash.z.ecc.android.sdk.model
 
-import android.content.Context
-import android.icu.text.DecimalFormat
-import android.icu.text.NumberFormat
+import cash.z.ecc.android.sdk.ext.ZcashDecimalFormatSymbols
 import cash.z.ecc.android.sdk.ext.convertZatoshiToZecString
 import cash.z.ecc.android.sdk.ext.convertZecToZatoshi
-import java.text.DecimalFormatSymbols
+import cash.z.ecc.android.sdk.ext.currencyFormatter
+import java.math.BigDecimal
 import java.text.ParseException
+import java.util.Locale
 
 object ZecString {
     fun allowedCharacters(monetarySeparators: MonetarySeparators) =
@@ -40,15 +40,12 @@ data class MonetarySeparators(
          * @return The current localized monetary separators.  Do not cache this value, as it
          * can change if the system Locale changes.
          */
-        fun current(locale: java.util.Locale? = null): MonetarySeparators {
-            val decimalFormatSymbols =
-                locale?.let {
-                    DecimalFormatSymbols.getInstance(locale)
-                } ?: DecimalFormatSymbols.getInstance()
+        fun current(locale: Locale = Locale.getDefault()): MonetarySeparators {
+            val decimalFormatSymbols = ZcashDecimalFormatSymbols(locale)
 
             return MonetarySeparators(
-                decimalFormatSymbols.groupingSeparator,
-                decimalFormatSymbols.monetaryDecimalSeparator
+                grouping = decimalFormatSymbols.groupingSeparator,
+                decimal = decimalFormatSymbols.decimalSeparator
             )
         }
     }
@@ -60,7 +57,7 @@ private const val DECIMALS = 8
 
 // TODO [#412]: https://github.com/zcash/zcash-android-wallet-sdk/issues/412
 // The SDK needs to fix the API for currency conversion
-fun Zatoshi.toZecString() = convertZatoshiToZecString(DECIMALS, DECIMALS)
+fun Zatoshi.toZecString(locale: Locale) = convertZatoshiToZecString(locale, DECIMALS, DECIMALS)
 
 const val FRACTION_DIGITS = 2
 
@@ -75,39 +72,27 @@ const val FRACTION_DIGITS = 2
 /**
  * @return [zecString] parsed into Zatoshi or null if parsing failed.
  */
-fun Zatoshi.Companion.fromZecString(
-    context: Context,
-    zecString: String,
-    locale: Locale = Locale.getDefault(),
-): Zatoshi? {
-    if (!ZecStringExt.filterConfirm(
-            context = context,
-            separators = MonetarySeparators.current(locale.toJavaLocale()),
-            zecString = zecString
-        )
-    ) {
-        return null
-    }
-
+fun Zatoshi.Companion.fromZecString(zecString: String, locale: Locale): Zatoshi? {
     val decimalFormat =
-        DecimalFormat.getInstance(locale.toJavaLocale(), NumberFormat.NUMBERSTYLE).apply {
-            // TODO [#343]: https://github.com/zcash/secant-android-wallet/issues/343
-            roundingMode = android.icu.math.BigDecimal.ROUND_HALF_EVEN // aka Bankers rounding
-            maximumFractionDigits = FRACTION_DIGITS
+        currencyFormatter(
+            locale = locale,
+            maximumFractionDigits = FRACTION_DIGITS,
             minimumFractionDigits = FRACTION_DIGITS
+        ).apply {
+            this.isParseBigDecimal = true
         }
 
     val doubleValue =
         try {
-            decimalFormat.parse(zecString).toDouble()
-        } catch (e: ParseException) {
+            decimalFormat.parse(zecString) as BigDecimal
+        } catch (_: ParseException) {
             null
         }
 
     @Suppress("SwallowedException")
     return try {
         doubleValue.convertZecToZatoshi()
-    } catch (e: IllegalArgumentException) {
+    } catch (_: IllegalArgumentException) {
         null
     }
 }
