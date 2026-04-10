@@ -66,14 +66,16 @@ object AccountFixture {
         hdAccountIndex: Zip32AccountIndex = HD_ACCOUNT_INDEX,
         keySource: String = KEY_SOURCE,
         seedFingerprint: ByteArray = SEED_FINGER_PRINT,
-        ufvk: String = UFVK
+        ufvk: String = UFVK,
+        uivk: String? = null
     ) = Account(
         accountName = accountName,
         accountUuid = AccountUuid.new(accountUuid.toByteArray()),
         hdAccountIndex = hdAccountIndex,
         keySource = keySource,
         seedFingerprint = seedFingerprint,
-        ufvk = ufvk
+        ufvk = ufvk,
+        uivk = uivk
     )
 }
 

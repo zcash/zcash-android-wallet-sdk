@@ -550,6 +550,17 @@ interface Synchronizer {
     suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight?
 
     /**
+     * Truncates the data database to the specified chain state.
+     *
+     * In contrast to [rewindToNearestHeight], this method allows the caller to truncate the wallet
+     * database to a precise height. The SDK internally loads the checkpoint for the given height
+     * and extracts the TreeState needed for the rewind operation.
+     *
+     * @param height The target block height to rewind to.
+     */
+    suspend fun rescanFromHeight(height: BlockHeight)
+
+    /**
      * Returns a stream of memos for a transaction. It works for both received and sent transaction.
      *
      * Note that this function internally resolves any error which comes, logs it, and then transforms it to an empty

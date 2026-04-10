@@ -29,10 +29,10 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
-        uses: gradle/actions/wrapper-validation@v5
+        uses: gradle/actions/wrapper-validation@v6
 
   check_firebase_secrets:
     runs-on: ubuntu-latest
@@ -66,7 +66,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 10
@@ -84,7 +84,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -105,7 +105,7 @@ jobs:
           zip -r ${REPORTS_ZIP_PATH} . -i build/reports/detekt/\*
       - name: Upload Artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
           name: Detekt static analysis results
@@ -119,7 +119,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -140,7 +140,7 @@ jobs:
           zip -r ${REPORTS_ZIP_PATH} . -i build/reports/ktlint/\*
       - name: Upload Artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
           name: Ktlint static analysis results
@@ -154,7 +154,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -177,7 +177,7 @@ jobs:
           zip -r ${LINT_ZIP_PATH} . -i \*build/reports/\*
       - name: Upload Artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
           name: Android Lint static analysis results
@@ -191,7 +191,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -212,7 +212,7 @@ jobs:
           zip -r ${TEST_RESULTS_ZIP_PATH} . -i \*/build/test-results/\* \*/build/reports/\*
       - name: Upload Artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
           name: Test Android modules with Unit Tests
@@ -229,7 +229,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -269,7 +269,7 @@ jobs:
           zip -r ${TEST_RESULTS_ZIP_PATH} . -i build/fladle/\* \*/build/outputs/androidTest-results/\*
       - name: Upload Artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
           name: Test Android modules with FTL results
@@ -284,7 +284,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -307,7 +307,7 @@ jobs:
           zip -r ${TEST_RESULTS_ZIP_PATH} . -i \*/build/test-results/\*
       - name: Upload Artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
           name: Test Android modules with WTF results
@@ -321,7 +321,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -353,7 +353,7 @@ jobs:
           zip -r ${BINARIES_ZIP_PATH} . -i demo-app/build/outputs/apk/\*/release/\*.apk demo-app/build/outputs/bundle/\*/release/\*.aab
           zip -r ${MAPPINGS_ZIP_PATH} . -i demo-app/build/outputs/mapping/\*/mapping.txt
       - name: Upload Artifacts
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
           name: Demo app release binaries
@@ -374,7 +374,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -389,7 +389,7 @@ jobs:
           workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
           access_token_lifetime: '900s'
       - name: Download a single artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: Demo app release binaries
       - name: Robo test
