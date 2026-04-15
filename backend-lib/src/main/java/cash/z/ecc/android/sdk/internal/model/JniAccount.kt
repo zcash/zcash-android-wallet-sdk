@@ -19,6 +19,7 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_UUID_BYTES_SIZE
  */
 @Suppress("LongParameterList")
 @Keep
+@Suppress("LongParameterList")
 class JniAccount(
     val accountName: String?,
     val accountUuid: ByteArray,
