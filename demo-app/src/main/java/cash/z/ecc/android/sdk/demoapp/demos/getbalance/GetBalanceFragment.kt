@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
+import java.util.Locale
 
 /**
  * Displays the available balance && total balance associated with the seed defined by the default config.
@@ -254,17 +255,17 @@ private fun Pair<WalletBalance, BigDecimal?>?.balanceHumanString() =
         "Calculating balance"
     } else {
         """
-        Pending balance: ${first.pending.convertZatoshiToZecString(12)} (${
+        Pending balance: ${first.pending.convertZatoshiToZecString(Locale.getDefault(), 12)} (${
             second?.multiply(first.pending.convertZatoshiToZec())
-                .toUsdString()
+                .toUsdString(Locale.getDefault())
         } USD)
-        Available balance: ${first.available.convertZatoshiToZecString(12)} (${
+        Available balance: ${first.available.convertZatoshiToZecString(Locale.getDefault(), 12)} (${
             second?.multiply(first.available.convertZatoshiToZec())
-                .toUsdString()
+                .toUsdString(Locale.getDefault())
         } USD)
-        Total balance: ${first.total.convertZatoshiToZecString(12)} (${
+        Total balance: ${first.total.convertZatoshiToZecString(Locale.getDefault(), 12)} (${
             second?.multiply(first.total.convertZatoshiToZec())
-                .toUsdString()
+                .toUsdString(Locale.getDefault())
         } USD)
         """.trimIndent()
     }
@@ -275,9 +276,9 @@ private fun Pair<Zatoshi, BigDecimal?>?.humanString() =
         "Calculating balance"
     } else {
         """
-        Balance: ${first.convertZatoshiToZecString(12)} (${
+        Balance: ${first.convertZatoshiToZecString(Locale.getDefault(), 12)} (${
             second?.multiply(first.convertZatoshiToZec())
-                .toUsdString()
+                .toUsdString(Locale.getDefault())
         } USD)
         """.trimIndent()
     }
