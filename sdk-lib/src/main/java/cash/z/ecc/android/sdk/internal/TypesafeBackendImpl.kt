@@ -347,7 +347,7 @@ internal class TypesafeBackendImpl(
         }
 
     override suspend fun suggestScanRanges(): List<ScanRange> =
-        backend.suggestScanRanges().map { jniScanRange ->
+        backend.suggestScanRanges().mapNotNull { jniScanRange ->
             ScanRange.new(jniScanRange)
         }
 
