@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ScanRangeTest {
@@ -37,6 +38,24 @@ class ScanRangeTest {
                 priority = Long.MIN_VALUE
             )
         }
+    }
+
+    @Test
+    fun empty_scan_range_returns_null() {
+        val jni = JniScanRange(startHeight = 0L, endHeight = 0L, priority = SuggestScanRangePriority.Verify.priority)
+        assertNull(ScanRange.new(jni))
+    }
+
+    @Test
+    fun non_zero_empty_scan_range_returns_null() {
+        val jni = JniScanRange(startHeight = 100L, endHeight = 100L, priority = SuggestScanRangePriority.Verify.priority)
+        assertNull(ScanRange.new(jni))
+    }
+
+    @Test
+    fun inverted_scan_range_returns_null() {
+        val jni = JniScanRange(startHeight = 200L, endHeight = 100L, priority = SuggestScanRangePriority.Verify.priority)
+        assertNull(ScanRange.new(jni))
     }
 
     @Test
