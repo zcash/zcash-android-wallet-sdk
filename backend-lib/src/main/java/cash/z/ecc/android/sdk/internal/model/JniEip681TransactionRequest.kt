@@ -24,7 +24,7 @@ sealed class JniEip681TransactionRequest {
      */
     @Keep
     @Suppress("LongParameterList")
-    class Native(
+    data class Native(
         val schemaPrefix: String,
         val hasPay: Boolean,
         val chainId: String?,
@@ -45,7 +45,7 @@ sealed class JniEip681TransactionRequest {
      * @param valueHex the transfer value in atomic units as a `0x`-prefixed hex string.
      */
     @Keep
-    class Erc20(
+    data class Erc20(
         val schemaPrefix: String,
         val hasPay: Boolean,
         val chainId: String?,
@@ -58,5 +58,5 @@ sealed class JniEip681TransactionRequest {
      * A valid EIP-681 request that is not a recognized transfer pattern.
      */
     @Keep
-    class Unrecognised : JniEip681TransactionRequest()
+    data object Unrecognised : JniEip681TransactionRequest()
 }

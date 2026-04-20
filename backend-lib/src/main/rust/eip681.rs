@@ -48,13 +48,15 @@ fn chain_id_to_jstring<'a>(
 }
 
 /// Parse a nullable `0x`-prefixed hex string into an `Option<U256>`.
+///
+/// Returns an error if the string is present but does not start with `0x` or `0X`.
 fn hex_string_to_u256(s: Option<String>) -> anyhow::Result<Option<U256>> {
     match s {
         Some(hex) => {
             let stripped = hex
                 .strip_prefix("0x")
                 .or_else(|| hex.strip_prefix("0X"))
-                .unwrap_or(&hex);
+                .ok_or_else(|| anyhow::anyhow!("hex string '{}' missing 0x prefix", hex))?;
             Ok(Some(U256::from_str_radix(stripped, 16).map_err(|e| {
                 anyhow::anyhow!("invalid hex U256 '{}': {}", hex, e)
             })?))
@@ -197,7 +199,8 @@ fn decode_eip681_transaction_request(
         let token_contract = get_string_field(env, obj, "tokenContractAddress")?;
         let recipient = get_string_field(env, obj, "recipientAddress")?;
         let value_hex = get_string_field(env, obj, "valueHex")?;
-        let value = hex_string_to_u256(Some(value_hex))?.expect("valueHex is non-null for Erc20");
+        let value = hex_string_to_u256(Some(value_hex))?
+            .ok_or_else(|| anyhow::anyhow!("valueHex must be non-null for Erc20"))?;
 
         TransactionRequest::from_erc20_request_parts(
             &schema_prefix,
