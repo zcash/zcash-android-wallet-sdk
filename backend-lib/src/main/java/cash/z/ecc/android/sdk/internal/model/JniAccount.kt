@@ -17,7 +17,6 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_UUID_BYTES_SIZE
  *
  * @throws IllegalArgumentException if the values are inconsistent.
  */
-@Suppress("LongParameterList")
 @Keep
 @Suppress("LongParameterList")
 class JniAccount(
