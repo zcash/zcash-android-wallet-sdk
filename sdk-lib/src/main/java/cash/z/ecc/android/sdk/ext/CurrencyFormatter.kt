@@ -183,23 +183,23 @@ fun currencyFormatter(
 class ZcashDecimalFormatSymbols(
     locale: Locale
 ) : DecimalFormatSymbols(locale) {
-    override fun getGroupingSeparator(): Char {
-        val originalGroupingSeparator = super.getGroupingSeparator()
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            monetaryGroupingSeparator
-        } else {
-            originalGroupingSeparator
-        }
-    }
+    init {
+        val originalDecimalSeparator = decimalSeparator
+        val originalGroupingSeparator = groupingSeparator
 
-    override fun getDecimalSeparator(): Char {
-        val originalDecimalSeparator = super.getDecimalSeparator()
-        val originalGroupingSeparator = super.getGroupingSeparator()
-        return when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> monetaryDecimalSeparator
-            originalGroupingSeparator == monetaryDecimalSeparator -> originalDecimalSeparator
-            else -> monetaryDecimalSeparator
-        }
+        groupingSeparator =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                monetaryGroupingSeparator
+            } else {
+                originalGroupingSeparator
+            }
+
+        decimalSeparator =
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> monetaryDecimalSeparator
+                originalGroupingSeparator == monetaryDecimalSeparator -> originalDecimalSeparator
+                else -> monetaryDecimalSeparator
+            }
     }
 }
 
