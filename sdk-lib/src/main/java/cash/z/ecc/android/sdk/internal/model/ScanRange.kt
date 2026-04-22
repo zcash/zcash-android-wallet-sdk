@@ -29,7 +29,10 @@ internal data class ScanRange(
          */
         fun new(jni: JniScanRange): ScanRange? {
             if (jni.endHeight <= jni.startHeight) {
-                Twig.warn { "Skipping empty scan range returned by Rust: startHeight=${jni.startHeight}, endHeight=${jni.endHeight}" }
+                Twig.warn {
+                    "Skipping empty scan range returned by Rust: " +
+                        "startHeight=${jni.startHeight}, endHeight=${jni.endHeight}"
+                }
                 return null
             }
             return ScanRange(
