@@ -256,7 +256,7 @@ private fun SendMainContent(
             onClick = {
                 val zecSendValidation =
                     ZecSendExt.new(
-                        context,
+                        Locale.getDefault(),
                         recipientAddressString,
                         amountZecString,
                         memoString,
@@ -283,7 +283,7 @@ private fun SendMainContent(
             onClick = {
                 val zecSendValidation =
                     ZecSendExt.new(
-                        context,
+                        Locale.getDefault(),
                         recipientAddressString,
                         amountZecString,
                         memoString,
