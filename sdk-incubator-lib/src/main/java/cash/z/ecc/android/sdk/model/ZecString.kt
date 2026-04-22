@@ -84,8 +84,9 @@ fun Zatoshi.Companion.fromZecString(zecString: String, locale: Locale): Zatoshi?
             this.isParseBigDecimal = true
         }
 
-    // Use ParsePosition so we can verify the entire string was consumed. DecimalFormat.parse will
-    // otherwise accept partial input (e.g. "1,2", "1,23,", or "asdf" -> 0), which we need to reject.
+    // Use ParsePosition so we can verify the entire string was consumed. DecimalFormat.parse may
+    // otherwise accept only a leading numeric portion (e.g. "1,2" or "1,23,"), which we need to reject.
+    // Completely invalid input such as "asdf" fails parsing at index 0 and results in null.
     val parsePosition = ParsePosition(0)
     val parsed = decimalFormat.parse(zecString, parsePosition) as? BigDecimal
     if (parsed == null || parsePosition.index != zecString.length) {
