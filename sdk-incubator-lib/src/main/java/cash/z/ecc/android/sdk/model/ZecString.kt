@@ -5,7 +5,7 @@ import cash.z.ecc.android.sdk.ext.convertZatoshiToZecString
 import cash.z.ecc.android.sdk.ext.convertZecToZatoshi
 import cash.z.ecc.android.sdk.ext.currencyFormatter
 import java.math.BigDecimal
-import java.text.ParseException
+import java.text.ParsePosition
 import java.util.Locale
 
 object ZecString {
@@ -73,6 +73,8 @@ const val FRACTION_DIGITS = 2
  * @return [zecString] parsed into Zatoshi or null if parsing failed.
  */
 fun Zatoshi.Companion.fromZecString(zecString: String, locale: Locale): Zatoshi? {
+    if (zecString.isEmpty()) return null
+
     val decimalFormat =
         currencyFormatter(
             locale = locale,
@@ -82,16 +84,17 @@ fun Zatoshi.Companion.fromZecString(zecString: String, locale: Locale): Zatoshi?
             this.isParseBigDecimal = true
         }
 
-    val doubleValue =
-        try {
-            decimalFormat.parse(zecString) as BigDecimal
-        } catch (_: ParseException) {
-            null
-        }
+    // Use ParsePosition so we can verify the entire string was consumed. DecimalFormat.parse will
+    // otherwise accept partial input (e.g. "1,2", "1,23,", or "asdf" -> 0), which we need to reject.
+    val parsePosition = ParsePosition(0)
+    val parsed = decimalFormat.parse(zecString, parsePosition) as? BigDecimal
+    if (parsed == null || parsePosition.index != zecString.length) {
+        return null
+    }
 
     @Suppress("SwallowedException")
     return try {
-        doubleValue.convertZecToZatoshi()
+        parsed.convertZecToZatoshi()
     } catch (_: IllegalArgumentException) {
         null
     }
