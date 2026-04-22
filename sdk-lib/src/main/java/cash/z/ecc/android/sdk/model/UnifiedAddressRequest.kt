@@ -34,8 +34,8 @@ sealed interface UnifiedAddressRequest {
     infix fun and(other: UnifiedAddressRequest): UnifiedAddressRequest = Custom(flags or other.flags)
 
     companion object {
-        val all = P2PKH and Sapling and Orchard
+        val all get() = P2PKH and Sapling and Orchard
 
-        val shielded = Sapling and Orchard
+        val shielded get() = Sapling and Orchard
     }
 }
