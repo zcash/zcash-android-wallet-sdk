@@ -142,6 +142,11 @@ fun com.android.build.gradle.BaseExtension.configureBaseExtension() {
     testOptions {
         animationsDisabled = true
 
+        // Make Android framework calls (e.g. android.util.Log.*) return default no-op values in
+        // local unit tests instead of throwing "Method ... not mocked". This is needed by code
+        // under test that invokes android.util.Log via Twig (e.g. ScanRange.new).
+        unitTests.isReturnDefaultValues = true
+
         if (project.property("IS_USE_TEST_ORCHESTRATOR").toString().toBoolean()) {
             execution = "ANDROIDX_TEST_ORCHESTRATOR"
         }

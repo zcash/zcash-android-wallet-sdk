@@ -42,19 +42,34 @@ class ScanRangeTest {
 
     @Test
     fun empty_scan_range_returns_null() {
-        val jni = JniScanRange(startHeight = 0L, endHeight = 0L, priority = SuggestScanRangePriority.Verify.priority)
+        val jni =
+            JniScanRange(
+                startHeight = 0L,
+                endHeight = 0L,
+                priority = SuggestScanRangePriority.Verify.priority
+            )
         assertNull(ScanRange.new(jni))
     }
 
     @Test
     fun non_zero_empty_scan_range_returns_null() {
-        val jni = JniScanRange(startHeight = 100L, endHeight = 100L, priority = SuggestScanRangePriority.Verify.priority)
+        val jni =
+            JniScanRange(
+                startHeight = 100L,
+                endHeight = 100L,
+                priority = SuggestScanRangePriority.Verify.priority
+            )
         assertNull(ScanRange.new(jni))
     }
 
     @Test
     fun inverted_scan_range_returns_null() {
-        val jni = JniScanRange(startHeight = 200L, endHeight = 100L, priority = SuggestScanRangePriority.Verify.priority)
+        val jni =
+            JniScanRange(
+                startHeight = 200L,
+                endHeight = 100L,
+                priority = SuggestScanRangePriority.Verify.priority
+            )
         assertNull(ScanRange.new(jni))
     }
 
