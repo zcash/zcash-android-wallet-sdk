@@ -85,6 +85,7 @@ import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.util.use
@@ -98,6 +99,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -385,6 +387,19 @@ class SdkSynchronizer private constructor(
      * latest height scanned and is useful for determining block confirmations and expiration.
      */
     override val networkHeight: StateFlow<BlockHeight?> = processor.networkHeight
+
+    override val fullyScannedHeight: StateFlow<BlockHeight?> =
+        processor.processorInfo
+            .map {
+                runCatching { backend.getFullyScannedHeight() }
+                    .onFailure { Twig.error(it) { "Failed to get fully scanned height" } }
+                    .getOrNull()
+            }
+            .stateIn(
+                scope = coroutineScope,
+                started = SharingStarted.WhileSubscribed(),
+                initialValue = null
+            )
 
     //
     // Error Handling
@@ -678,6 +693,32 @@ class SdkSynchronizer private constructor(
     override suspend fun deleteAccount(accountUuid: AccountUuid) =
         backend.deleteAccount(accountUuid).also {
             refreshAccountsBus.emit(Unit)
+        }
+
+    override suspend fun getTreeState(height: BlockHeight): ByteArray {
+        return when (
+            val response =
+                processor.downloader.getTreeState(
+                    height = BlockHeightUnsafe(height.value),
+                    serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
+                )
+        ) {
+            is Response.Success -> TreeState.new(response.result).encoded
+            is Response.Failure -> {
+                val message = "Failed to fetch tree state at height ${height.value}: ${response.toThrowable()}"
+                Twig.error { message }
+                throw response.toThrowable()
+            }
+        }
+    }
+
+    override suspend fun getWalletDbPath(): String =
+        withContext(Dispatchers.IO) {
+            DatabaseCoordinator.getInstance(context)
+                .dataDbFile(
+                    network = synchronizerKey.zcashNetwork,
+                    alias = synchronizerKey.alias
+                ).absolutePath
         }
 
     suspend fun isValidAddress(address: String): Boolean = !validateAddress(address).isNotValid
