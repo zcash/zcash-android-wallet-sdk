@@ -34,6 +34,23 @@ zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
 
+# Shielded voting (valargroup/zcash_voting)
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", branch = "greg/orchard-0.12" }
+
+# Serialization (needed for voting JSON FFI)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+
+# Merkle tree
+incrementalmerkletree = "0.8"
+
+# OpenSSL vendored — needed for cross-compilation to Android targets.
+# pir-client (via zcash_voting) pulls in reqwest with native-tls default,
+# which requires OpenSSL. Using the vendored feature compiles OpenSSL from
+# source with the NDK toolchain instead of looking for a system library.
+openssl = { version = "0.10", features = ["vendored"] }
+
 # Infrastructure
 prost = "0.14"
 rusqlite = "0.37"
@@ -103,14 +120,18 @@ path = "src/main/rust/lib.rs"
 crate-type = ["staticlib", "cdylib"]
 
 [patch.crates-io]
-pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-orchard = { package = "orchard", git = "https://github.com/zcash/orchard.git", rev = "6b12c77260aa7fac0d804983fc31b71b584d48e0" }
+# Voting-circuits fork of orchard — upstream 0.12 + pub visibility for constants/spec
+# + shared_primitives gadget for voting ZKPs (same as iOS SDK shielded-vote-2.4.10).
+orchard = { package = "orchard", git = "https://github.com/valargroup/voting-circuits.git", branch = "greg/orchard-0.12" }
 sapling = { package = "sapling-crypto", git = "https://github.com/zcash/sapling-crypto.git", rev = "4f95c2286dbe90f05e6f44d634bc2924b992fab4" }
-transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "438657c52c7b5abd933c715e83f0289a79349c5a" }
+# valargroup librustzcash fork — shielded-vote-main branch adds PCZT/key visibility
+# changes required for voting delegation flows (mirrors iOS SDK patches).
+pczt              = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+transparent       = { package = "zcash_transparent", git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+zcash_address     = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+zcash_client_backend = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+zcash_client_sqlite  = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+zcash_keys        = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+zcash_primitives  = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+zcash_proofs      = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }
+zcash_protocol    = { git = "https://github.com/valargroup/librustzcash.git", branch = "shielded-vote-main" }

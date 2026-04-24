@@ -102,6 +102,15 @@ interface Synchronizer {
     val networkHeight: StateFlow<BlockHeight?>
 
     /**
+     * The height to which the wallet has been fully scanned.
+     *
+     * This is the height for which the wallet has fully trial-decrypted this and all preceding
+     * blocks above the wallet's birthday height. This value is useful for determining whether the
+     * wallet has scanned up to a specific snapshot height (e.g., for coinholder voting eligibility).
+     */
+    val fullyScannedHeight: StateFlow<BlockHeight?>
+
+    /**
      * A stream of wallet balances
      */
     val walletBalances: StateFlow<Map<AccountUuid, AccountBalance>?>
@@ -665,6 +674,23 @@ interface Synchronizer {
     suspend fun debugQuery(query: String): String
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
+
+    /**
+     * Returns the commitment tree state at the given block height, encoded as a protobuf [ByteArray].
+     *
+     * This is used by the coinholder voting protocol to generate witnesses and verify inclusion
+     * proofs against the Orchard note commitment tree at a specific snapshot height.
+     *
+     * @param height the block height at which to fetch the tree state
+     * @return the serialized tree state bytes
+     */
+    suspend fun getTreeState(height: BlockHeight): ByteArray
+
+    /**
+     * Returns the absolute path to the wallet's SQLite database file.
+     * Used by the voting backend to read notes at historical heights.
+     */
+    suspend fun getWalletDbPath(): String
 
     //
     // Error Handling
