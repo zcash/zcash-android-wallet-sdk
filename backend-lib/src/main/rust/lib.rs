@@ -102,6 +102,7 @@ use crate::utils::{
 
 mod tor;
 mod utils;
+mod voting;
 
 #[cfg(debug_assertions)]
 fn print_debug_state() {
