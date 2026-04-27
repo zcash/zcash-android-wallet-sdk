@@ -420,6 +420,8 @@ interface TypesafeVotingBackend {
 data class GovernancePcztResult(
     /** Raw PCZT bytes for display as QR code (Keystone) or direct signing. */
     val pcztBytes: ByteArray,
+    /** Randomized Orchard validating key for the governance action. */
+    val rk: ByteArray,
     /** ZIP-244 sighash — used to verify the Keystone signature. */
     val sighash: ByteArray,
     /** Index of the governance action within the PCZT. */

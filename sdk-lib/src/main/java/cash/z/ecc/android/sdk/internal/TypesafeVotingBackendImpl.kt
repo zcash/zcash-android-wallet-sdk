@@ -116,6 +116,7 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
             val obj = org.json.JSONObject(json)
             GovernancePcztResult(
                 pcztBytes = hexDec(obj.getString("pczt_bytes")),
+                rk = hexDec(obj.getString("rk")),
                 sighash = hexDec(obj.getString("pczt_sighash")),
                 actionIndex = obj.getInt("action_index")
             )
