@@ -228,6 +228,158 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
             parseDelegationSubmission(json)
         }
 
+    // ─── Recovery state ─────────────────────────────────────────────────────
+
+    override suspend fun storeDelegationTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        txHash: String
+    ) = io {
+        check(VotingRustBackend.storeDelegationTxHash(dbHandle, roundId, bundleIndex, txHash)) {
+            "storeDelegationTxHash failed"
+        }
+    }
+
+    override suspend fun getDelegationTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int
+    ): String? = io {
+        VotingRustBackend.getDelegationTxHash(dbHandle, roundId, bundleIndex)
+    }
+
+    override suspend fun storeVoteTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        txHash: String
+    ) = io {
+        check(VotingRustBackend.storeVoteTxHash(dbHandle, roundId, bundleIndex, proposalId, txHash)) {
+            "storeVoteTxHash failed"
+        }
+    }
+
+    override suspend fun getVoteTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): String? = io {
+        VotingRustBackend.getVoteTxHash(dbHandle, roundId, bundleIndex, proposalId)
+    }
+
+    override suspend fun storeCommitmentBundle(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        bundleJson: String,
+        vcTreePosition: Long
+    ) = io {
+        check(
+            VotingRustBackend.storeCommitmentBundle(
+                dbHandle,
+                roundId,
+                bundleIndex,
+                proposalId,
+                bundleJson,
+                vcTreePosition
+            )
+        ) {
+            "storeCommitmentBundle failed"
+        }
+    }
+
+    override suspend fun getCommitmentBundle(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): CommitmentBundleRecord? = io {
+        VotingRustBackend.getCommitmentBundleJson(
+            dbHandle,
+            roundId,
+            bundleIndex,
+            proposalId
+        )?.let { json ->
+            val obj = org.json.JSONObject(json)
+            CommitmentBundleRecord(
+                bundleJson = obj.getString("bundle_json"),
+                vcTreePosition = obj.getLong("vc_tree_position")
+            )
+        }
+    }
+
+    override suspend fun clearRecoveryState(
+        dbHandle: Long,
+        roundId: String
+    ) = io {
+        check(VotingRustBackend.clearRecoveryState(dbHandle, roundId)) {
+            "clearRecoveryState failed"
+        }
+    }
+
+    override suspend fun recordShareDelegation(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        sentToUrls: List<String>,
+        nullifier: ByteArray,
+        submitAt: Long
+    ) = io {
+        val sentToUrlsJson = org.json.JSONArray(sentToUrls).toString()
+        check(
+            VotingRustBackend.recordShareDelegation(
+                dbHandle,
+                roundId,
+                bundleIndex,
+                proposalId,
+                shareIndex,
+                sentToUrlsJson,
+                nullifier,
+                submitAt
+            )
+        ) {
+            "recordShareDelegation failed"
+        }
+    }
+
+    override suspend fun getShareDelegations(
+        dbHandle: Long,
+        roundId: String
+    ): List<ShareDelegationRecord> = io {
+        val json = VotingRustBackend.getShareDelegationsJson(dbHandle, roundId)
+        val arr = org.json.JSONArray(json)
+        (0 until arr.length()).map { index ->
+            val obj = arr.getJSONObject(index)
+            val sentToUrlsArray = obj.getJSONArray("sent_to_urls")
+            ShareDelegationRecord(
+                roundId = obj.getString("round_id"),
+                bundleIndex = obj.getInt("bundle_index"),
+                proposalId = obj.getInt("proposal_id"),
+                shareIndex = obj.getInt("share_index"),
+                sentToUrls = (0 until sentToUrlsArray.length()).map(sentToUrlsArray::getString),
+                nullifier = hexDec(obj.getString("nullifier")),
+                confirmed = obj.getBoolean("confirmed"),
+                submitAt = obj.getLong("submit_at"),
+                createdAt = obj.getLong("created_at")
+            )
+        }
+    }
+
+    override suspend fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray = io {
+        VotingRustBackend.computeShareNullifier(voteCommitment, shareIndex, blind)
+            ?: error("computeShareNullifier returned null")
+    }
+
     // ─── Vote commitment tree ─────────────────────────────────────────────────
 
     override suspend fun syncVoteTree(
@@ -350,10 +502,8 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
 
     // ─── Private helpers ─────────────────────────────────────────────────────
 
-    private fun hexDec(hex: String): ByteArray = java.math.BigInteger(hex, 16).toByteArray().let { bytes ->
-        // BigInteger may prepend a sign byte; strip it if needed
-        if (hex.length / 2 < bytes.size) bytes.copyOfRange(1, bytes.size) else bytes
-    }
+    private fun hexDec(hex: String): ByteArray =
+        hex.chunked(2).map { chunk -> chunk.toInt(16).toByte() }.toByteArray()
 
     private fun parseDelegationSubmission(json: String): DelegationSubmissionResult {
         val obj = org.json.JSONObject(json)

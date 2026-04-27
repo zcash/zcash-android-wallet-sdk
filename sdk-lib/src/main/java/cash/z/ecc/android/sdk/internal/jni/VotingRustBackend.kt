@@ -324,6 +324,89 @@ internal object VotingRustBackend {
         keystoneSighash: ByteArray
     ): String?
 
+    // ─── Recovery state ───────────────────────────────────────────────────────
+
+    @JvmStatic
+    external fun storeDelegationTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        txHash: String
+    ): Boolean
+
+    @JvmStatic
+    external fun getDelegationTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int
+    ): String?
+
+    @JvmStatic
+    external fun storeVoteTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        txHash: String
+    ): Boolean
+
+    @JvmStatic
+    external fun getVoteTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): String?
+
+    @JvmStatic
+    external fun storeCommitmentBundle(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        bundleJson: String,
+        vcTreePosition: Long
+    ): Boolean
+
+    @JvmStatic
+    external fun getCommitmentBundleJson(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): String?
+
+    @JvmStatic
+    external fun clearRecoveryState(
+        dbHandle: Long,
+        roundId: String
+    ): Boolean
+
+    @JvmStatic
+    external fun recordShareDelegation(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        sentToUrlsJson: String,
+        nullifier: ByteArray,
+        submitAt: Long
+    ): Boolean
+
+    @JvmStatic
+    external fun getShareDelegationsJson(
+        dbHandle: Long,
+        roundId: String
+    ): String
+
+    @JvmStatic
+    external fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray?
+
     // ─── Stateless utilities ──────────────────────────────────────────────────
 
     /** Decomposes [weight] into power-of-2 share components. Returns JSON array of u64. */

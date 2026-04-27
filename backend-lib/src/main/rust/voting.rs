@@ -444,6 +444,41 @@ impl From<DelegationSubmissionData> for JsonDelegationSubmission {
     }
 }
 
+#[derive(Serialize)]
+struct JsonCommitmentBundleRecord {
+    bundle_json: String,
+    vc_tree_position: u64,
+}
+
+#[derive(Serialize)]
+struct JsonShareDelegationRecord {
+    round_id: String,
+    bundle_index: u32,
+    proposal_id: u32,
+    share_index: u32,
+    sent_to_urls: Vec<String>,
+    nullifier: String,
+    confirmed: bool,
+    submit_at: u64,
+    created_at: u64,
+}
+
+impl From<voting::ShareDelegationRecord> for JsonShareDelegationRecord {
+    fn from(record: voting::ShareDelegationRecord) -> Self {
+        JsonShareDelegationRecord {
+            round_id: record.round_id,
+            bundle_index: record.bundle_index,
+            proposal_id: record.proposal_id,
+            share_index: record.share_index,
+            sent_to_urls: record.sent_to_urls,
+            nullifier: hex_enc(&record.nullifier),
+            confirmed: record.confirmed,
+            submit_at: record.submit_at,
+            created_at: record.created_at,
+        }
+    }
+}
+
 // Convenience: deserialise a JSON string into T, throwing a JNI exception on error.
 // Lifetimes are left implicit so this works inside catch_unwind closures.
 fn json_from_jstring<T: for<'de> Deserialize<'de>>(
@@ -1216,7 +1251,284 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 }
 
 // =============================================================================
-// M. Stateless utilities
+// M. Recovery state
+// =============================================================================
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeDelegationTxHash<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    tx_hash: JString<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        handle
+            .db
+            .store_delegation_tx_hash(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                &java_string_to_rust(env, &tx_hash)?,
+            )
+            .map_err(|e| anyhow!("store_delegation_tx_hash: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getDelegationTxHash<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        let tx_hash = handle
+            .db
+            .get_delegation_tx_hash(&java_string_to_rust(env, &round_id)?, bundle_index as u32)
+            .map_err(|e| anyhow!("get_delegation_tx_hash: {}", e))?;
+        match tx_hash {
+            Some(value) => Ok(env.new_string(value)?.into_raw()),
+            None => Ok(std::ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeVoteTxHash<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+    tx_hash: JString<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        handle
+            .db
+            .store_vote_tx_hash(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+                &java_string_to_rust(env, &tx_hash)?,
+            )
+            .map_err(|e| anyhow!("store_vote_tx_hash: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getVoteTxHash<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        let tx_hash = handle
+            .db
+            .get_vote_tx_hash(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+            )
+            .map_err(|e| anyhow!("get_vote_tx_hash: {}", e))?;
+        match tx_hash {
+            Some(value) => Ok(env.new_string(value)?.into_raw()),
+            None => Ok(std::ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeCommitmentBundle<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+    bundle_json: JString<'local>,
+    vc_tree_position: jlong,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        handle
+            .db
+            .store_commitment_bundle(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+                &java_string_to_rust(env, &bundle_json)?,
+                vc_tree_position as u64,
+            )
+            .map_err(|e| anyhow!("store_commitment_bundle: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getCommitmentBundleJson<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        let record = handle
+            .db
+            .get_commitment_bundle(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+            )
+            .map_err(|e| anyhow!("get_commitment_bundle: {}", e))?;
+        match record {
+            Some((bundle_json, vc_tree_position)) => json_to_jstring(
+                env,
+                &JsonCommitmentBundleRecord {
+                    bundle_json,
+                    vc_tree_position,
+                },
+            ),
+            None => Ok(std::ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_clearRecoveryState<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        handle
+            .db
+            .clear_recovery_state(&java_string_to_rust(env, &round_id)?)
+            .map_err(|e| anyhow!("clear_recovery_state: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordShareDelegation<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+    share_index: jint,
+    sent_to_urls_json: JString<'local>,
+    nullifier: JByteArray<'local>,
+    submit_at: jlong,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        let sent_to_urls: Vec<String> =
+            json_from_jstring(env, &sent_to_urls_json, "sentToUrlsJson")?;
+        handle
+            .db
+            .record_share_delegation(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+                share_index as u32,
+                &sent_to_urls,
+                &env.convert_byte_array(&nullifier)?,
+                submit_at as u64,
+            )
+            .map_err(|e| anyhow!("record_share_delegation: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getShareDelegationsJson<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        let records: Vec<JsonShareDelegationRecord> = handle
+            .db
+            .get_share_delegations(&java_string_to_rust(env, &round_id)?)
+            .map_err(|e| anyhow!("get_share_delegations: {}", e))?
+            .into_iter()
+            .map(JsonShareDelegationRecord::from)
+            .collect();
+        json_to_jstring(env, &records)
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_computeShareNullifier<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    vote_commitment: JByteArray<'local>,
+    share_index: jint,
+    blind: JByteArray<'local>,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let nullifier = voting::share_tracking::compute_share_nullifier(
+            &env.convert_byte_array(&vote_commitment)?,
+            share_index as u32,
+            &env.convert_byte_array(&blind)?,
+        )
+        .map_err(|e| anyhow!("compute_share_nullifier: {}", e))?;
+        Ok(env.byte_array_from_slice(&nullifier)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+// =============================================================================
+// N. Stateless utilities
 // =============================================================================
 
 #[unsafe(no_mangle)]

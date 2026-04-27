@@ -166,6 +166,79 @@ interface TypesafeVotingBackend {
         keystoneSighash: ByteArray
     ): DelegationSubmissionResult
 
+    // ─── Recovery state ───────────────────────────────────────────────────────
+
+    suspend fun storeDelegationTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        txHash: String
+    )
+
+    suspend fun getDelegationTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int
+    ): String?
+
+    suspend fun storeVoteTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        txHash: String
+    )
+
+    suspend fun getVoteTxHash(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): String?
+
+    suspend fun storeCommitmentBundle(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        bundleJson: String,
+        vcTreePosition: Long
+    )
+
+    suspend fun getCommitmentBundle(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): CommitmentBundleRecord?
+
+    suspend fun clearRecoveryState(
+        dbHandle: Long,
+        roundId: String
+    )
+
+    suspend fun recordShareDelegation(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        sentToUrls: List<String>,
+        nullifier: ByteArray,
+        submitAt: Long
+    )
+
+    suspend fun getShareDelegations(
+        dbHandle: Long,
+        roundId: String
+    ): List<ShareDelegationRecord>
+
+    suspend fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray
+
     // ─── Vote commitment tree ─────────────────────────────────────────────────
 
     /**
@@ -390,4 +463,49 @@ data class DelegationSubmissionResult(
     }
 
     override fun hashCode(): Int = sighash.contentHashCode()
+}
+
+data class CommitmentBundleRecord(
+    val bundleJson: String,
+    val vcTreePosition: Long
+)
+
+data class ShareDelegationRecord(
+    val roundId: String,
+    val bundleIndex: Int,
+    val proposalId: Int,
+    val shareIndex: Int,
+    val sentToUrls: List<String>,
+    val nullifier: ByteArray,
+    val confirmed: Boolean,
+    val submitAt: Long,
+    val createdAt: Long
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ShareDelegationRecord) return false
+
+        return roundId == other.roundId &&
+            bundleIndex == other.bundleIndex &&
+            proposalId == other.proposalId &&
+            shareIndex == other.shareIndex &&
+            sentToUrls == other.sentToUrls &&
+            nullifier.contentEquals(other.nullifier) &&
+            confirmed == other.confirmed &&
+            submitAt == other.submitAt &&
+            createdAt == other.createdAt
+    }
+
+    override fun hashCode(): Int {
+        var result = roundId.hashCode()
+        result = 31 * result + bundleIndex
+        result = 31 * result + proposalId
+        result = 31 * result + shareIndex
+        result = 31 * result + sentToUrls.hashCode()
+        result = 31 * result + nullifier.contentHashCode()
+        result = 31 * result + confirmed.hashCode()
+        result = 31 * result + submitAt.hashCode()
+        result = 31 * result + createdAt.hashCode()
+        return result
+    }
 }
