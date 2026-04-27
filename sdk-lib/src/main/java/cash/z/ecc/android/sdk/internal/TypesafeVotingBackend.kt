@@ -233,6 +233,23 @@ interface TypesafeVotingBackend {
         roundId: String
     ): List<ShareDelegationRecord>
 
+    suspend fun markShareConfirmed(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int
+    )
+
+    suspend fun addSentServers(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        newUrls: List<String>
+    )
+
     suspend fun computeShareNullifier(
         voteCommitment: ByteArray,
         shareIndex: Int,

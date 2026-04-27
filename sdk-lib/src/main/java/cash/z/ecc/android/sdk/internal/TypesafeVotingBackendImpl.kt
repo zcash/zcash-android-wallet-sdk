@@ -371,6 +371,41 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         }
     }
 
+    override suspend fun markShareConfirmed(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int
+    ) = io {
+        check(VotingRustBackend.markShareConfirmed(dbHandle, roundId, bundleIndex, proposalId, shareIndex)) {
+            "markShareConfirmed failed"
+        }
+    }
+
+    override suspend fun addSentServers(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        newUrls: List<String>
+    ) = io {
+        val newUrlsJson = org.json.JSONArray(newUrls).toString()
+        check(
+            VotingRustBackend.addSentServers(
+                dbHandle,
+                roundId,
+                bundleIndex,
+                proposalId,
+                shareIndex,
+                newUrlsJson
+            )
+        ) {
+            "addSentServers failed"
+        }
+    }
+
     override suspend fun computeShareNullifier(
         voteCommitment: ByteArray,
         shareIndex: Int,

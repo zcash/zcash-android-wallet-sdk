@@ -401,6 +401,25 @@ internal object VotingRustBackend {
     ): String
 
     @JvmStatic
+    external fun markShareConfirmed(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int
+    ): Boolean
+
+    @JvmStatic
+    external fun addSentServers(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        newUrlsJson: String
+    ): Boolean
+
+    @JvmStatic
     external fun computeShareNullifier(
         voteCommitment: ByteArray,
         shareIndex: Int,

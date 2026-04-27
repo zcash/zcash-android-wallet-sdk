@@ -1506,6 +1506,65 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_markShareConfirmed<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+    share_index: jint,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        handle
+            .db
+            .mark_share_confirmed(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+                share_index as u32,
+            )
+            .map_err(|e| anyhow!("mark_share_confirmed: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_addSentServers<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+    share_index: jint,
+    new_urls_json: JString<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        let new_urls: Vec<String> = json_from_jstring(env, &new_urls_json, "newUrlsJson")?;
+        handle
+            .db
+            .add_sent_servers(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+                share_index as u32,
+                &new_urls,
+            )
+            .map_err(|e| anyhow!("add_sent_servers: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_computeShareNullifier<
     'local,
 >(
