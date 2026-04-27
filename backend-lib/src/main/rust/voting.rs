@@ -805,6 +805,24 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_extractSpendAuthSig<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    signed_pczt_bytes: JByteArray<'local>,
+    action_index: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let bytes = env.convert_byte_array(&signed_pczt_bytes)?;
+        let sig = voting::action::extract_spend_auth_sig(&bytes, action_index as usize)
+            .map_err(|e| anyhow!("extract_spend_auth_sig: {}", e))?;
+        Ok(env.byte_array_from_slice(&sig)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
 // =============================================================================
 // F. Witness management
 // =============================================================================

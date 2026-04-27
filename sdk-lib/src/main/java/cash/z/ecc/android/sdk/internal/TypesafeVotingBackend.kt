@@ -118,6 +118,19 @@ interface TypesafeVotingBackend {
         addressIndex: Int = 0
     ): GovernancePcztResult
 
+    /**
+     * Extracts the ZIP-244 sighash from a signed or unsigned governance PCZT.
+     */
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
+
+    /**
+     * Extracts the Orchard SpendAuth signature for the governance action at [actionIndex].
+     */
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray
+
     // ─── Delegation proof (ZKP1) ──────────────────────────────────────────────
 
     /**

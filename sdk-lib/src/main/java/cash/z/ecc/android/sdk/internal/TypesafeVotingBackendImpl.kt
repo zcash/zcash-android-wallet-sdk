@@ -121,12 +121,19 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
             )
         }
 
-    // extractPcztSighash is a lower-level utility exposed directly via VotingRustBackend
-    // and not part of the TypesafeVotingBackend interface.
-    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+    override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
         io {
             VotingRustBackend.extractPcztSighash(pcztBytes)
                 ?: error("extractPcztSighash returned null")
+        }
+
+    override suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        io {
+            VotingRustBackend.extractSpendAuthSig(signedPcztBytes, actionIndex)
+                ?: error("extractSpendAuthSig returned null")
         }
 
     // ─── Tree state + note witnesses ─────────────────────────────────────────

@@ -115,6 +115,13 @@ internal object VotingRustBackend {
     @JvmStatic
     external fun extractPcztSighash(pcztBytes: ByteArray): ByteArray?
 
+    /** Extracts the Orchard SpendAuth signature for the action at [actionIndex]. */
+    @JvmStatic
+    external fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray?
+
     // ─── Witnesses (required before buildAndProveDelegationJson) ─────────────
 
     /**
