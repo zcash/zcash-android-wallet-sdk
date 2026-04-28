@@ -12,7 +12,7 @@
 //!     do not derive Serialize/Deserialize (by design — EncryptedShare has secret fields).
 //!   - Progress reporting uses `NoopProgressReporter` (no JNI callback needed for MVP).
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::anyhow;
 use jni::{
@@ -20,6 +20,7 @@ use jni::{
     objects::{JByteArray, JClass, JObject, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jstring},
 };
+use rusqlite::named_params;
 use orchard::keys::Scope;
 use serde::{Deserialize, Serialize};
 use zcash_client_backend::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
@@ -494,6 +495,74 @@ fn json_to_jstring<T: Serialize>(env: &mut JNIEnv<'_>, value: &T) -> anyhow::Res
     let s = serde_json::to_string(value)
         .map_err(|e| anyhow!("JSON serialization error: {}", e))?;
     Ok(env.new_string(s)?.into_raw())
+}
+
+fn select_bundle_notes(
+    conn: &rusqlite::Connection,
+    round_id: &str,
+    wallet_id: &str,
+    bundle_index: u32,
+    notes: &[NoteInfo],
+) -> anyhow::Result<Vec<NoteInfo>> {
+    let positions = voting::storage::queries::load_bundle_note_positions(
+        conn,
+        round_id,
+        wallet_id,
+        bundle_index,
+    )
+    .map_err(|e| anyhow!("load_bundle_note_positions: {}", e))?;
+
+    let mut notes_by_position = HashMap::with_capacity(notes.len());
+    for note in notes.iter().cloned() {
+        let position = note.position;
+        if notes_by_position.insert(position, note).is_some() {
+            return Err(anyhow!(
+                "duplicate note position {} in provided notes_json",
+                position
+            ));
+        }
+    }
+
+    positions
+        .into_iter()
+        .map(|position| {
+            notes_by_position.remove(&position).ok_or_else(|| {
+                anyhow!(
+                    "bundle {} is missing note position {} from provided notes_json",
+                    bundle_index,
+                    position
+                )
+            })
+        })
+        .collect()
+}
+
+fn replace_bundle_witnesses(
+    conn: &rusqlite::Connection,
+    round_id: &str,
+    wallet_id: &str,
+    bundle_index: u32,
+    witnesses: &[WitnessData],
+) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM witnesses
+         WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        named_params! {
+            ":round_id": round_id,
+            ":wallet_id": wallet_id,
+            ":bundle_index": bundle_index as i64,
+        },
+    )
+    .map_err(|e| anyhow!("clear_witnesses: {}", e))?;
+
+    voting::storage::queries::store_witnesses(
+        conn,
+        round_id,
+        wallet_id,
+        bundle_index,
+        witnesses,
+    )
+    .map_err(|e| anyhow!("store_witnesses: {}", e))
 }
 
 // =============================================================================
@@ -1872,7 +1941,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 /// Requires [storeTreeState] to have been called first (loads the frontier from the
 /// cached tree state). Also calls [storeWitnesses] internally.
 ///
-/// [notesJson] is the JSON array of NoteInfo from [getWalletNotesJson] for this bundle.
+/// [notesJson] is the JSON array of NoteInfo from [getWalletNotesJson].
+/// The persisted bundle note positions are used to select only the notes that
+/// belong to [bundleIndex], so callers may safely pass the full wallet note set.
 /// Returns JSON array of WitnessData, or null on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_generateNoteWitnessesJson<
@@ -1907,6 +1978,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
         // Load tree state and params from voting DB
         let conn = handle.db.conn();
         let wallet_id = handle.db.wallet_id();
+        let bundle_index_u32 = bundle_index as u32;
+        let bundle_notes = select_bundle_notes(
+            &conn,
+            &round_id_str,
+            &wallet_id,
+            bundle_index_u32,
+            &core_notes,
+        )?;
         let tree_state_bytes =
             voting::storage::queries::load_tree_state(&conn, &round_id_str, &wallet_id)
                 .map_err(|e| anyhow!("load_tree_state: {}", e))?;
@@ -1939,7 +2018,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
         )
         .map_err(|e| anyhow!("open wallet DB: {}", e))?;
 
-        let positions: Vec<Position> = core_notes
+        let positions: Vec<Position> = bundle_notes
             .iter()
             .map(|n| Position::from(n.position))
             .collect();
@@ -1955,7 +2034,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
         let root_bytes = frontier_root.to_bytes().to_vec();
         let witnesses: Vec<WitnessData> = merkle_paths
             .into_iter()
-            .zip(core_notes.iter())
+            .zip(bundle_notes.iter())
             .map(|(path, note)| {
                 let auth_path: Vec<Vec<u8>> = path
                     .path_elems()
@@ -1971,11 +2050,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
             })
             .collect();
 
-        // Cache in voting DB
-        handle
-            .db
-            .store_witnesses(&round_id_str, bundle_index as u32, &witnesses)
-            .map_err(|e| anyhow!("store_witnesses: {}", e))?;
+        // Overwrite any previously cached witness set so retries recover from
+        // stale bundle selections created by older client builds.
+        let conn = handle.db.conn();
+        replace_bundle_witnesses(
+            &conn,
+            &round_id_str,
+            &wallet_id,
+            bundle_index_u32,
+            &witnesses,
+        )?;
 
         let json_witnesses: Vec<JsonWitnessData> =
             witnesses.into_iter().map(JsonWitnessData::from).collect();
