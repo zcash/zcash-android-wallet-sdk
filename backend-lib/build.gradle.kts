@@ -85,6 +85,13 @@ cargo {
     // https://developer.android.com/about/versions/15/behavior-changes-all#16-kb
     exec = { spec, _ ->
         spec.environment["RUST_ANDROID_GRADLE_CC_LINK_ARG"] = "-Wl,-z,max-page-size=16384"
+        // NDK >= r23 ships llvm-ranlib instead of target-prefixed ranlib wrappers.
+        // openssl-sys vendored build looks for "arm-linux-androideabi-ranlib" which
+        // doesn't exist; point it at llvm-ranlib so OpenSSL cross-compiles correctly.
+        val ndkDir = android.ndkDirectory
+        val ndkBin = "$ndkDir/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+        spec.environment["RANLIB"] = "$ndkBin/llvm-ranlib"
+        spec.environment["AR"] = "$ndkBin/llvm-ar"
     }
 }
 
