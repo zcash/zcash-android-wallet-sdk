@@ -388,18 +388,7 @@ class SdkSynchronizer private constructor(
      */
     override val networkHeight: StateFlow<BlockHeight?> = processor.networkHeight
 
-    override val fullyScannedHeight: StateFlow<BlockHeight?> =
-        processor.processorInfo
-            .map {
-                runCatching { backend.getFullyScannedHeight() }
-                    .onFailure { Twig.error(it) { "Failed to get fully scanned height" } }
-                    .getOrNull()
-            }
-            .stateIn(
-                scope = coroutineScope,
-                started = SharingStarted.WhileSubscribed(),
-                initialValue = null
-            )
+    override val fullyScannedHeight: StateFlow<BlockHeight?> = processor.fullyScannedHeight
 
     //
     // Error Handling
