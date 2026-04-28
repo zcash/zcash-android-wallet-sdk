@@ -1351,6 +1351,32 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_markVoteSubmitted<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let handle = handle_from_jlong(db_handle)?;
+        handle
+            .db
+            .mark_vote_submitted(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index as u32,
+                proposal_id as u32,
+            )
+            .map_err(|e| anyhow!("mark_vote_submitted: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getVoteTxHash<
     'local,
 >(

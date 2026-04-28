@@ -202,6 +202,13 @@ interface TypesafeVotingBackend {
         txHash: String
     )
 
+    suspend fun markVoteSubmitted(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    )
+
     suspend fun getVoteTxHash(
         dbHandle: Long,
         roundId: String,

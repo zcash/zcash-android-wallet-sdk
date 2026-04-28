@@ -43,7 +43,17 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
     }
 
     override suspend fun getRoundState(dbHandle: Long, roundId: String): FfiRoundState? =
-        io { VotingRustBackend.getRoundState(dbHandle, roundId) }
+        io {
+            runCatching { VotingRustBackend.getRoundState(dbHandle, roundId) }
+                .recoverCatching { throwable ->
+                    if (throwable.isRoundNotFound()) {
+                        null
+                    } else {
+                        throw throwable
+                    }
+                }
+                .getOrThrow()
+        }
 
     override suspend fun listRoundsJson(dbHandle: Long): String =
         io { VotingRustBackend.listRoundsJson(dbHandle) }
@@ -253,9 +263,18 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         dbHandle: Long,
         roundId: String,
         bundleIndex: Int
-    ): String? = io {
-        VotingRustBackend.getDelegationTxHash(dbHandle, roundId, bundleIndex)
-    }
+    ): String? =
+        io {
+            runCatching { VotingRustBackend.getDelegationTxHash(dbHandle, roundId, bundleIndex) }
+                .recoverCatching { throwable ->
+                    if (throwable.isRecoveryRowMissing()) {
+                        null
+                    } else {
+                        throw throwable
+                    }
+                }
+                .getOrThrow()
+        }
 
     override suspend fun storeVoteTxHash(
         dbHandle: Long,
@@ -269,14 +288,34 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         }
     }
 
+    override suspend fun markVoteSubmitted(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ) = io {
+        check(VotingRustBackend.markVoteSubmitted(dbHandle, roundId, bundleIndex, proposalId)) {
+            "markVoteSubmitted failed"
+        }
+    }
+
     override suspend fun getVoteTxHash(
         dbHandle: Long,
         roundId: String,
         bundleIndex: Int,
         proposalId: Int
-    ): String? = io {
-        VotingRustBackend.getVoteTxHash(dbHandle, roundId, bundleIndex, proposalId)
-    }
+    ): String? =
+        io {
+            runCatching { VotingRustBackend.getVoteTxHash(dbHandle, roundId, bundleIndex, proposalId) }
+                .recoverCatching { throwable ->
+                    if (throwable.isRecoveryRowMissing()) {
+                        null
+                    } else {
+                        throw throwable
+                    }
+                }
+                .getOrThrow()
+        }
 
     override suspend fun storeCommitmentBundle(
         dbHandle: Long,
@@ -305,20 +344,29 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         roundId: String,
         bundleIndex: Int,
         proposalId: Int
-    ): CommitmentBundleRecord? = io {
-        VotingRustBackend.getCommitmentBundleJson(
-            dbHandle,
-            roundId,
-            bundleIndex,
-            proposalId
-        )?.let { json ->
-            val obj = org.json.JSONObject(json)
-            CommitmentBundleRecord(
-                bundleJson = obj.getString("bundle_json"),
-                vcTreePosition = obj.getLong("vc_tree_position")
-            )
+    ): CommitmentBundleRecord? =
+        io {
+            runCatching {
+                VotingRustBackend.getCommitmentBundleJson(
+                    dbHandle,
+                    roundId,
+                    bundleIndex,
+                    proposalId
+                )
+            }.recoverCatching { throwable ->
+                if (throwable.isRecoveryRowMissing()) {
+                    null
+                } else {
+                    throw throwable
+                }
+            }.getOrThrow()?.let { json ->
+                val obj = org.json.JSONObject(json)
+                CommitmentBundleRecord(
+                    bundleJson = obj.getString("bundle_json"),
+                    vcTreePosition = obj.getLong("vc_tree_position")
+                )
+            }
         }
-    }
 
     override suspend fun clearRecoveryState(
         dbHandle: Long,
@@ -567,4 +615,10 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
     }
 
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
+
+    private fun Throwable.isRoundNotFound(): Boolean =
+        message?.contains("round not found", ignoreCase = true) == true
+
+    private fun Throwable.isRecoveryRowMissing(): Boolean =
+        message?.contains("Query returned no rows", ignoreCase = true) == true
 }

@@ -358,6 +358,14 @@ internal object VotingRustBackend {
     ): Boolean
 
     @JvmStatic
+    external fun markVoteSubmitted(
+        dbHandle: Long,
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): Boolean
+
+    @JvmStatic
     external fun getVoteTxHash(
         dbHandle: Long,
         roundId: String,
