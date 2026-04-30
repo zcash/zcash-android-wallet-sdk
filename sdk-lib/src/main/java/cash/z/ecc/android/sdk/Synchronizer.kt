@@ -17,6 +17,7 @@ import cash.z.ecc.android.sdk.internal.SaplingParamTool
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
+import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
@@ -890,37 +891,80 @@ interface Synchronizer {
             val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
             val downloader = DefaultSynchronizerFactory.defaultDownloader(walletClient, blockStore)
 
-            val chainTip =
-                when (walletInitMode) {
-                    is RestoreWallet -> {
-                        when (
-                            val response = downloader.getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)
-                        ) {
-                            is Response.Success -> {
-                                Twig.info { "Chain tip for recovery until param fetched: ${response.result.value}" }
-                                runCatching { response.result.toBlockHeight() }.getOrNull()
-                            }
+            var chainTip: BlockHeight? = null
+            var effectiveTreeState: TreeState = loadedCheckpoint.treeState()
 
-                            is Response.Failure -> {
-                                Twig.error {
-                                    "Chain tip fetch for recovery until failed with: ${response.toThrowable()}"
-                                }
-                                null
+            when (walletInitMode) {
+                is RestoreWallet -> {
+                    when (
+                        val response = downloader.getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)
+                    ) {
+                        is Response.Success -> {
+                            Twig.info { "Chain tip for recovery until param fetched: ${response.result.value}" }
+                            chainTip = runCatching { response.result.toBlockHeight() }.getOrNull()
+                        }
+
+                        is Response.Failure -> {
+                            Twig.error {
+                                "Chain tip fetch for recovery until failed with: ${response.toThrowable()}"
                             }
                         }
                     }
+                }
 
-                    else -> {
-                        null
+                is WalletInitMode.NewWallet -> {
+                    // For new wallets, fetch the tree state at the chain tip so the birthday
+                    // equals chain_tip + 1, producing zero scan ranges. This eliminates
+                    // unnecessary block scanning for wallets with no transaction history.
+                    when (
+                        val heightResponse =
+                            downloader.getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)
+                    ) {
+                        is Response.Success -> {
+                            val tipHeight = heightResponse.result
+                            when (
+                                val treeStateResponse =
+                                    downloader.getTreeState(
+                                        height = tipHeight,
+                                        serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
+                                    )
+                            ) {
+                                is Response.Success -> {
+                                    effectiveTreeState = TreeState.new(treeStateResponse.result)
+                                    Twig.info {
+                                        "New wallet: using chain tip tree state at height ${tipHeight.value}"
+                                    }
+                                }
+
+                                is Response.Failure -> {
+                                    Twig.warn {
+                                        "Tree state fetch for new wallet failed with: " +
+                                            "${treeStateResponse.toThrowable()}, falling back to bundled checkpoint"
+                                    }
+                                }
+                            }
+                        }
+
+                        is Response.Failure -> {
+                            Twig.warn {
+                                "Chain tip fetch for new wallet failed with: " +
+                                    "${heightResponse.toThrowable()}, falling back to bundled checkpoint"
+                            }
+                        }
                     }
                 }
+
+                is WalletInitMode.ExistingWallet -> {
+                    // No special handling needed
+                }
+            }
 
             val repository =
                 DefaultSynchronizerFactory.defaultDerivedDataRepository(
                     context = applicationContext,
                     rustBackend = backend,
                     databaseFile = coordinator.dataDbFile(zcashNetwork, alias),
-                    checkpoint = loadedCheckpoint,
+                    treeState = effectiveTreeState,
                     recoverUntil = chainTip,
                     setup = setup,
                 )
