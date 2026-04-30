@@ -44,8 +44,8 @@ use zcash_client_backend::{
     data_api::{
         Account, AccountBalance, AccountBirthday, AccountPurpose, BirthdayError, InputSource,
         OutputStatusFilter, SeedRelevance, TransactionDataRequest, TransactionStatus,
-        TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
-        WalletSummary, WalletWrite, Zip32Derivation,
+        TransactionStatusFilter, TransparentKeyOrigin, TransparentOutputFilter,
+        WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite, Zip32Derivation,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
@@ -57,8 +57,8 @@ use zcash_client_backend::{
     encoding::AddressCodec,
     fees::{DustOutputPolicy, SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{
-        DecodingError, Era, ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey,
-        UnifiedSpendingKey,
+        DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
+        UnifiedFullViewingKey, UnifiedSpendingKey,
     },
     proto::{proposal::Proposal, service::TreeState},
     tor::{
@@ -768,7 +768,7 @@ bitflags! {
 }
 
 impl ReceiverFlags {
-    fn address_request(&self) -> Result<UnifiedAddressRequest, ()> {
+    fn address_request(&self) -> Result<UnifiedAddressRequest, ReceiverRequirementError> {
         UnifiedAddressRequest::custom(
             if self.contains(ReceiverFlags::ORCHARD) {
                 ReceiverRequirement::Require
@@ -1114,7 +1114,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
             .context("Target height not available; scan required.")?;
 
         let amount = db_data
-            .get_spendable_transparent_outputs(&taddr, target, wallet::ConfirmationsPolicy::MIN)
+            .get_spendable_transparent_outputs(
+                &taddr,
+                target,
+                wallet::ConfirmationsPolicy::MIN,
+                TransparentOutputFilter::All,
+            )
             .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))?
             .iter()
             .map(|utxo| utxo.txout().value())
@@ -2285,6 +2290,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             &from_addrs,
             account_uuid,
             confirmations_policy,
+            TransparentOutputFilter::All,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 

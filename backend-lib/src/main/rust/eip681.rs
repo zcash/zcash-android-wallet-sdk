@@ -1,9 +1,9 @@
 //! EIP-681 transaction request parsing via JNI.
 
 use jni::{
+    JNIEnv,
     objects::{JClass, JObject, JString, JValue},
     sys::{jobject, jstring},
-    JNIEnv,
 };
 
 use eip681::{TransactionRequest, U256};
