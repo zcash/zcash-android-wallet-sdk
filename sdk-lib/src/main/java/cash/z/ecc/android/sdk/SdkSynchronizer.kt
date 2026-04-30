@@ -510,7 +510,7 @@ class SdkSynchronizer private constructor(
                 network = network,
                 birthdayHeight = height
             )
-        backend.rewindToChainState(checkpoint.treeState())
+        backend.truncateToChainState(checkpoint.treeState())
     }
 
     override fun getMemos(transactionOverview: TransactionOverview): Flow<String> =
@@ -913,7 +913,7 @@ class SdkSynchronizer private constructor(
                     setup = setup,
                     treeState = treeState,
                 ).also {
-                    backend.rewindToChainState(treeState)
+                    backend.truncateToChainState(treeState)
                     refreshAccountsBus.emit(Unit)
                 }
         }.onFailure {

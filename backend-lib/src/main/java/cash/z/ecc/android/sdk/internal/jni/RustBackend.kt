@@ -273,9 +273,9 @@ class RustBackend private constructor(
             )
         }
 
-    override suspend fun rewindToChainState(chainState: ByteArray) =
+    override suspend fun truncateToChainState(chainState: ByteArray) =
         withContext(SdkDispatchers.DATABASE_IO) {
-            rewindToChainState(
+            truncateToChainState(
                 dataDbFile.absolutePath,
                 chainState,
                 networkId = networkId
@@ -767,7 +767,7 @@ class RustBackend private constructor(
         ): JniRewindResult
 
         @JvmStatic
-        private external fun rewindToChainState(
+        private external fun truncateToChainState(
             dbDataPath: String,
             chainState: ByteArray,
             networkId: Int
