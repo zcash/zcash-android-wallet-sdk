@@ -913,7 +913,6 @@ class SdkSynchronizer private constructor(
                     setup = setup,
                     treeState = treeState,
                 ).also {
-                    backend.truncateToChainState(treeState)
                     refreshAccountsBus.emit(Unit)
                 }
         }.onFailure {
