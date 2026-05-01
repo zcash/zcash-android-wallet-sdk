@@ -1358,7 +1358,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
         let mut db_data = wallet_db(env, network, db_data)?;
 
         let height = BlockHeight::try_from(height)?;
-        let rewind_result = db_data.truncate_to_height(height);
+        let rewind_result = db_data.rewind_to_height(height);
 
         Ok(encode_rewind_result(env, height, rewind_result)?.into_raw())
     });
@@ -1375,7 +1375,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
 /// The `chain_state` parameter is a protobuf-encoded `TreeState` value representing the chain
 /// state at the height to which the database should be truncated.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToChainState<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_truncateToChainState<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -1385,7 +1385,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToC
     network_id: jint,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let _span = tracing::info_span!("RustBackend.rewindToChainState").entered();
+        let _span = tracing::info_span!("RustBackend.truncateToChainState").entered();
         let network = parse_network(network_id as u32)?;
         let mut db_data = wallet_db(env, network, db_data)?;
         let chain_state = parse_treestate(env, chain_state)?.to_chain_state()?;
