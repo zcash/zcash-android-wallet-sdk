@@ -53,5 +53,6 @@ internal enum class SuggestScanRangePriority(
     OpenAdjacent(30),
     FoundNote(40),
     ChainTip(50),
+    Anchor(55),
     Verify(60)
 }

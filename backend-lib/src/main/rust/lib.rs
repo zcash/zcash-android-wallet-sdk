@@ -1687,6 +1687,7 @@ fn encode_scan_range<'a>(
         ScanPriority::OpenAdjacent => 30,
         ScanPriority::FoundNote => 40,
         ScanPriority::ChainTip => 50,
+        ScanPriority::Anchor => 55,
         ScanPriority::Verify => 60,
     };
     env.new_object(
