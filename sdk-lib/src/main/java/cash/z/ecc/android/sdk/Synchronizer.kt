@@ -558,7 +558,7 @@ interface Synchronizer {
      *
      * @param height The target block height to rewind to.
      */
-    suspend fun rescanFromHeight(height: BlockHeight)
+    suspend fun rewindToHeight(height: BlockHeight)
 
     /**
      * Returns a stream of memos for a transaction. It works for both received and sent transaction.
