@@ -386,6 +386,8 @@ class SdkSynchronizer private constructor(
      */
     override val networkHeight: StateFlow<BlockHeight?> = processor.networkHeight
 
+    override val fullyScannedHeight: StateFlow<BlockHeight?> = processor.fullyScannedHeight
+
     //
     // Error Handling
     //

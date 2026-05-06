@@ -102,6 +102,15 @@ interface Synchronizer {
     val networkHeight: StateFlow<BlockHeight?>
 
     /**
+     * The height to which the wallet has been fully scanned.
+     *
+     * This is the height for which the wallet has fully trial-decrypted this and all preceding
+     * blocks above the wallet's birthday height. This value is useful for determining whether the
+     * wallet has scanned up to a specific snapshot height.
+     */
+    val fullyScannedHeight: StateFlow<BlockHeight?>
+
+    /**
      * A stream of wallet balances
      */
     val walletBalances: StateFlow<Map<AccountUuid, AccountBalance>?>
