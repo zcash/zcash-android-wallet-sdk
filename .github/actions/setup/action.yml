@@ -64,16 +64,18 @@ runs:
         key: ${{ runner.os }}-gradle-build-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-gradle-build-
-    - name: Rust Cache Restore
+    - name: Rust Cache
       id: rust-cache-restore
-      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
         path: |
-          sdk-lib/target
+          backend-lib/target
           ~/.cargo
-        key: ${{ runner.os }}-rust-${{ hashFiles(format('{0}{1}', github.workspace, '/sdk-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/sdk-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/sdk-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/gradle.properties')) }}
+        key: ${{ runner.os }}-rust-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/backend-lib/build.rs'), format('{0}{1}', github.workspace, '/rust-toolchain.toml'), format('{0}{1}', github.workspace, '/gradle.properties'), format('{0}{1}', github.workspace, '/.github/actions/setup/action.yml')) }}
+        restore-keys: |
+          ${{ runner.os }}-rust-
 
     - name: Gradle Binary Download
       if: steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
@@ -112,13 +114,3 @@ runs:
         path: |
           ~/.gradle/caches/modules-2
         key: ${{ steps.gradle-dependency-cache-restore.key }}
-    - name: Rust Cache Save
-      id: rust-cache-save
-      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7
-      env:
-        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
-      with:
-        path: |
-          sdk-lib/target
-          ~/.cargo
-        key: ${{ steps.rust-cache-restore.key }}
