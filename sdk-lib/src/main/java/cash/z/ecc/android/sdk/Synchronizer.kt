@@ -680,6 +680,10 @@ interface Synchronizer {
      *
      * This lets app-layer consumers generate witnesses or verify inclusion proofs against a
      * specific Orchard note commitment tree snapshot without exposing the lightwalletd transport.
+     *
+     * This performs a live lightwalletd request and does not wait for the local wallet scan state.
+     * Callers that use the returned tree state together with local wallet data at the same height
+     * should first verify that [fullyScannedHeight] has reached at least [height].
      */
     suspend fun getTreeState(height: BlockHeight): ByteArray
 
