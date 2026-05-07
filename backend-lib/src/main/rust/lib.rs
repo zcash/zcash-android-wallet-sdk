@@ -103,6 +103,7 @@ use crate::utils::{
 mod eip681;
 mod tor;
 mod utils;
+mod voting;
 
 #[cfg(debug_assertions)]
 fn print_debug_state() {
