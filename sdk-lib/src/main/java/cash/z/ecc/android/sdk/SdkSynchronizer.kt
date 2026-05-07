@@ -696,10 +696,10 @@ class SdkSynchronizer private constructor(
             }
 
             is Response.Failure -> {
-                val message =
-                    "Failed to fetch tree state at height ${height.value}: ${response.toThrowable()}"
+                val throwable = response.toThrowable()
+                val message = "Failed to fetch tree state at height ${height.value}: $throwable"
                 Twig.error { message }
-                throw response.toThrowable()
+                throw throwable
             }
         }
 
