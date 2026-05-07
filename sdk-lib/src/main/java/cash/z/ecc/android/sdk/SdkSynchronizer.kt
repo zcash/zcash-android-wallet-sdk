@@ -692,7 +692,7 @@ class SdkSynchronizer private constructor(
                 )
         ) {
             is Response.Success -> {
-                TreeState.new(response.result).encoded
+                response.result.encoded
             }
 
             is Response.Failure -> {
