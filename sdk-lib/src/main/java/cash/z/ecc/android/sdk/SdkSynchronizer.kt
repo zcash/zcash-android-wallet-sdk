@@ -85,6 +85,7 @@ import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.util.use
@@ -386,6 +387,8 @@ class SdkSynchronizer private constructor(
      */
     override val networkHeight: StateFlow<BlockHeight?> = processor.networkHeight
 
+    override val fullyScannedHeight: StateFlow<BlockHeight?> = processor.fullyScannedHeight
+
     //
     // Error Handling
     //
@@ -678,6 +681,26 @@ class SdkSynchronizer private constructor(
     override suspend fun deleteAccount(accountUuid: AccountUuid) =
         backend.deleteAccount(accountUuid).also {
             refreshAccountsBus.emit(Unit)
+        }
+
+    override suspend fun getTreeState(height: BlockHeight): ByteArray =
+        when (
+            val response =
+                processor.downloader.getTreeState(
+                    height = BlockHeightUnsafe(height.value),
+                    serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
+                )
+        ) {
+            is Response.Success -> {
+                response.result.encoded
+            }
+
+            is Response.Failure -> {
+                val throwable = response.toThrowable()
+                val message = "Failed to fetch tree state at height ${height.value}: $throwable"
+                Twig.error { message }
+                throw throwable
+            }
         }
 
     suspend fun isValidAddress(address: String): Boolean = !validateAddress(address).isNotValid

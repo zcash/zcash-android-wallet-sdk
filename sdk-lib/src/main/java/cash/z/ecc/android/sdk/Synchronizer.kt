@@ -102,6 +102,15 @@ interface Synchronizer {
     val networkHeight: StateFlow<BlockHeight?>
 
     /**
+     * The height to which the wallet has been fully scanned.
+     *
+     * This is the height for which the wallet has fully trial-decrypted this and all preceding
+     * blocks above the wallet's birthday height. This value is useful for determining whether the
+     * wallet has scanned up to a specific snapshot height.
+     */
+    val fullyScannedHeight: StateFlow<BlockHeight?>
+
+    /**
      * A stream of wallet balances
      */
     val walletBalances: StateFlow<Map<AccountUuid, AccountBalance>?>
@@ -665,6 +674,18 @@ interface Synchronizer {
     suspend fun debugQuery(query: String): String
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
+
+    /**
+     * Returns the commitment tree state at the given block height, encoded as a protobuf [ByteArray].
+     *
+     * This lets app-layer consumers generate witnesses or verify inclusion proofs against a
+     * specific Orchard note commitment tree snapshot without exposing the lightwalletd transport.
+     *
+     * This performs a live lightwalletd request and does not wait for the local wallet scan state.
+     * Callers that use the returned tree state together with local wallet data at the same height
+     * should first verify that [fullyScannedHeight] has reached at least [height].
+     */
+    suspend fun getTreeState(height: BlockHeight): ByteArray
 
     //
     // Error Handling
