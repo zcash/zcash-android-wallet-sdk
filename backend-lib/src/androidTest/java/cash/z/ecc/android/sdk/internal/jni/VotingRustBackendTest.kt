@@ -1,12 +1,19 @@
 package cash.z.ecc.android.sdk.internal.jni
 
+import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundPhase
 import kotlinx.coroutines.test.runTest
+import org.json.JSONArray
 import org.junit.Test
+import kotlin.io.path.createTempDirectory
 import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 @OptIn(ExperimentalStdlibApi::class)
+@Suppress("MagicNumber")
 class VotingRustBackendTest {
     companion object {
         private const val FIELD_BYTES = 32
@@ -17,6 +24,16 @@ class VotingRustBackendTest {
         private val SHORT_FIELD = ByteArray(FIELD_BYTES - 1)
         private val EXPECTED_NULLIFIER =
             "8d6d97caa19a20e5e67e7cc24aaaa7beb72b4a513863f6adbe7b62ba1b1b0010".hexToByteArray()
+
+        private const val WALLET_ID = "wallet-1"
+        private const val OTHER_WALLET_ID = "wallet-2"
+        private const val ROUND_ID = "round-1"
+        private const val SNAPSHOT_HEIGHT = 123_456L
+        private const val JSON_ARRAY_START_INDEX = 0
+        private const val SESSION_JSON = "{\"round\":\"one\"}"
+        private val EA_PK = ByteArray(FIELD_BYTES) { 3 }
+        private val NC_ROOT = ByteArray(FIELD_BYTES) { 4 }
+        private val NULLIFIER_IMT_ROOT = ByteArray(FIELD_BYTES) { 5 }
     }
 
     @Test
@@ -45,4 +62,108 @@ class VotingRustBackendTest {
                 backend.computeShareNullifier(VOTE_COMMITMENT, OUT_OF_RANGE_SHARE_INDEX, BLIND)
             }
         }
+
+    @Test
+    fun voting_db_round_state_round_trips() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                assertNull(db.getRoundState(ROUND_ID))
+
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = SESSION_JSON
+                )
+
+                val state = assertNotNull(db.getRoundState(ROUND_ID))
+                assertEquals(ROUND_ID, state.roundId)
+                assertEquals(FfiRoundPhase.INITIALIZED.value, state.phase)
+                assertEquals(FfiRoundPhase.INITIALIZED, state.roundPhase)
+                assertEquals(SNAPSHOT_HEIGHT, state.snapshotHeight)
+                assertNull(state.hotkeyAddress)
+                assertNull(state.delegatedWeight)
+                assertFalse(state.proofGenerated)
+
+                val rounds = JSONArray(db.listRoundsJson())
+                assertEquals(1, rounds.length())
+                val round = rounds.getJSONObject(0)
+                assertEquals(ROUND_ID, round.getString("round_id"))
+                assertEquals(FfiRoundPhase.INITIALIZED.value, round.getInt("phase"))
+                assertEquals(SNAPSHOT_HEIGHT, round.getLong("snapshot_height"))
+
+                assertEquals(emptyList<Any>(), JSONArray(db.getVotesJson(ROUND_ID)).toList())
+
+                db.clearRound(ROUND_ID)
+                assertNull(db.getRoundState(ROUND_ID))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun voting_db_keeps_wallet_state_isolated() =
+        runTest {
+            val dbPath = newDbPath()
+            val firstWallet = VotingRustBackend.new().openVotingDb(dbPath, WALLET_ID)
+            val secondWallet = VotingRustBackend.new().openVotingDb(dbPath, OTHER_WALLET_ID)
+            try {
+                firstWallet.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+
+                assertNotNull(firstWallet.getRoundState(ROUND_ID))
+                assertNull(secondWallet.getRoundState(ROUND_ID))
+            } finally {
+                firstWallet.close()
+                secondWallet.close()
+            }
+        }
+
+    @Test
+    fun voting_db_rejects_malformed_inputs_and_closed_handle() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+
+            assertFailsWith<RuntimeException> {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = -1,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+            }
+            assertFailsWith<RuntimeException> {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = SHORT_FIELD,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+            }
+
+            db.close()
+            db.close()
+            assertFailsWith<IllegalStateException> {
+                db.getRoundState(ROUND_ID)
+            }
+        }
+
+    private fun newDbPath() =
+        createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
+
+    private fun JSONArray.toList(): List<Any> =
+        (JSON_ARRAY_START_INDEX until length()).map { index -> get(index) }
 }
