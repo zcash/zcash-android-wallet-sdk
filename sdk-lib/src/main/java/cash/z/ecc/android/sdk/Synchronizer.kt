@@ -26,6 +26,7 @@ import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FastestServersResult
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.Pczt
@@ -141,6 +142,13 @@ interface Synchronizer {
      * transaction has not yet occurred.
      */
     val latestBirthdayHeight: BlockHeight?
+
+    /**
+     * Creates transactions without submitting them and submits created transactions
+     * to caller-selected lightwalletd endpoints.
+     */
+    val broadcaster: Broadcaster
+        get() = UnavailableBroadcaster
 
     //
     // Operations
@@ -557,6 +565,11 @@ interface Synchronizer {
      * Returns the height to which we actually rewound, or `null` if the rewind failed.
      */
     suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight?
+
+    /**
+     * Compatibility alias for callers that still use the previous rewind API name.
+     */
+    suspend fun rewindToHeight(height: BlockHeight): BlockHeight? = rewindToNearestHeight(height)
 
     /**
      * Truncates the data database to the specified chain state.
@@ -983,6 +996,7 @@ interface Synchronizer {
                 torClient = torClient,
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
+                currentEndpoint = lightWalletEndpoint,
                 sdkFlags = sdkFlags
             )
         }
@@ -1040,6 +1054,29 @@ interface Synchronizer {
             alias: String = ZcashSdk.DEFAULT_ALIAS
         ): Boolean = SdkSynchronizer.erase(appContext, network, alias)
     }
+}
+
+private object UnavailableBroadcaster : Broadcaster {
+    override suspend fun createProposedTransactions(
+        proposal: Proposal,
+        usk: UnifiedSpendingKey
+    ): List<CreatedTransaction> = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
+
+    override suspend fun createTransactionFromPczt(
+        pcztWithProofs: Pczt,
+        pcztWithSignatures: Pczt
+    ): List<CreatedTransaction> = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
+
+    override suspend fun submit(
+        transaction: CreatedTransaction,
+        endpoint: LightWalletEndpoint
+    ): TransactionSubmitResult = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
 }
 
 /**
