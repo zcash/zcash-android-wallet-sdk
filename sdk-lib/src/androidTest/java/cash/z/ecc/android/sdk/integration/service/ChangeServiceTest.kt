@@ -5,6 +5,7 @@ import androidx.test.filters.SmallTest
 import cash.z.ecc.android.sdk.annotation.MaintainedTest
 import cash.z.ecc.android.sdk.annotation.TestPurpose
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.TypesafeBackendImpl
 import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
 import cash.z.ecc.android.sdk.internal.jni.FakeRustBackend
 import cash.z.ecc.android.sdk.internal.model.TorClient
@@ -61,7 +62,7 @@ class ChangeServiceTest : ScopedTest() {
 
     private suspend fun initMocks() {
         val torDir = createTempDirectory("tor-client-").toFile()
-        val torClient = TorClient.new(torDir, FakeRustBackend(0, mutableListOf()))
+        val torClient = TorClient.new(torDir, TypesafeBackendImpl(FakeRustBackend(0, mutableListOf())))
         val factory = WalletClientFactory(context = context, torClient = torClient)
         service = factory.create(lightWalletEndpoint)
         mockCloseable = MockitoAnnotations.openMocks(this)

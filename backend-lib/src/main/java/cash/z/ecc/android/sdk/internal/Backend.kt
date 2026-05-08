@@ -11,7 +11,6 @@ import cash.z.ecc.android.sdk.internal.model.JniSubtreeRoot
 import cash.z.ecc.android.sdk.internal.model.JniTransactionDataRequest
 import cash.z.ecc.android.sdk.internal.model.JniWalletSummary
 import cash.z.ecc.android.sdk.internal.model.ProposalUnsafe
-import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -179,11 +178,11 @@ interface Backend {
         zip32AccountIndex: Long?,
     ): JniAccount
 
-    /**
-     * @throws RuntimeException as a common indicator of the operation failure
-     */
-    @Throws(RuntimeException::class)
-    suspend fun isSeedRelevantToAnyDerivedAccounts(seed: ByteArray): Boolean
+    // /**
+    //  * @throws RuntimeException as a common indicator of the operation failure
+    //  */
+    // @Throws(RuntimeException::class)
+    // suspend fun isSeedRelevantToAnyDerivedAccounts(seed: ByteArray): Boolean
 
     /**
      * Deletes the specified account, and all transactions that exclusively involve it,
@@ -383,13 +382,4 @@ interface Backend {
         status: Long,
     )
 
-    //
-    // Helper Functions
-    //
-
-    suspend fun <T> withWallet(
-        block: suspend (dataDbFile: File, networkId: Int) -> T
-    ) = withContext(SdkDispatchers.DATABASE_IO) {
-        block(dataDbFile, networkId)
-    }
 }
