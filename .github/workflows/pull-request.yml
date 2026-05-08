@@ -159,6 +159,8 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          rust-cache: true
       - name: Android Lint
         timeout-minutes: 25
         env:
@@ -196,6 +198,8 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          rust-cache: true
       - name: Build and test
         timeout-minutes: 30
         run: |
@@ -234,6 +238,8 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          rust-cache: true
       - name: Build
         timeout-minutes: 20
         run: |
@@ -289,6 +295,8 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          rust-cache: true
       - name: Build and test
         timeout-minutes: 30
         env:
@@ -326,6 +334,8 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          rust-cache: true
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
         env:

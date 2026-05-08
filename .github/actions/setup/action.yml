@@ -1,5 +1,10 @@
 name: 'Setup Java, Rust, and Dependency Cache'
 description: "Configures the build environment and caches Gradle, dependencies, and build outputs."
+inputs:
+  rust-cache:
+    description: "Whether to restore and save the Rust build cache for jobs that compile Rust."
+    required: false
+    default: "false"
 runs:
   using: "composite"
   steps:
@@ -65,7 +70,8 @@ runs:
         restore-keys: |
           ${{ runner.os }}-gradle-build-
     - name: Rust Cache
-      id: rust-cache-restore
+      if: inputs.rust-cache == 'true'
+      id: rust-cache
       uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
@@ -73,9 +79,9 @@ runs:
         path: |
           backend-lib/target
           ~/.cargo
-        key: ${{ runner.os }}-rust-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/backend-lib/build.rs'), format('{0}{1}', github.workspace, '/rust-toolchain.toml'), format('{0}{1}', github.workspace, '/gradle.properties'), format('{0}{1}', github.workspace, '/.github/actions/setup/action.yml')) }}
+        key: ${{ runner.os }}-rust-v2-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/backend-lib/build.rs'), format('{0}{1}', github.workspace, '/rust-toolchain.toml'), format('{0}{1}', github.workspace, '/gradle.properties'), format('{0}{1}', github.workspace, '/.github/actions/setup/action.yml')) }}
         restore-keys: |
-          ${{ runner.os }}-rust-
+          ${{ runner.os }}-rust-v2-
 
     - name: Gradle Binary Download
       if: steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
@@ -88,7 +94,7 @@ runs:
       run: |
         ./gradlew dependencies :sdk-lib:dependencies :demo-app:dependencies
     - name: Gradle Build
-      if: github.event.pull_request.head.sha == '' && (steps.gradle-binary-cache-restore.outputs.cache-hit != 'true' || steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true' || steps.rust-cache-restore.outputs.cache-hit != 'true' || steps.gradle-build-cache-restore.outputs.cache-hit != 'true')
+      if: github.event.pull_request.head.sha == '' && (steps.gradle-binary-cache-restore.outputs.cache-hit != 'true' || steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true' || (inputs.rust-cache == 'true' && steps.rust-cache.outputs.cache-hit != 'true') || steps.gradle-build-cache-restore.outputs.cache-hit != 'true')
       env:
         ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: "false"
       shell: bash
