@@ -568,11 +568,6 @@ interface Synchronizer {
     suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight?
 
     /**
-     * Compatibility alias for callers that still use the previous rewind API name.
-     */
-    suspend fun rewindToHeight(height: BlockHeight): BlockHeight? = rewindToNearestHeight(height)
-
-    /**
      * Truncates the data database to the specified chain state.
      *
      * In contrast to [rewindToNearestHeight], this method allows the caller to truncate the wallet
