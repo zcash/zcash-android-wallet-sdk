@@ -10,6 +10,16 @@ internal const val JNI_ROUND_PHASE_DELEGATION_PROVED = 3
 internal const val JNI_ROUND_PHASE_VOTE_READY = 4
 
 @Keep
+data class JniBundleSetupResult(
+    val bundleCount: Int,
+    val eligibleWeight: Long,
+    val bundleWeights: List<Long> = emptyList()
+) {
+    internal constructor(bundleCount: Int, eligibleWeight: Long, bundleWeights: LongArray) :
+        this(bundleCount, eligibleWeight, bundleWeights.toList())
+}
+
+@Keep
 data class JniRoundState(
     val roundId: String,
     val phase: Int,

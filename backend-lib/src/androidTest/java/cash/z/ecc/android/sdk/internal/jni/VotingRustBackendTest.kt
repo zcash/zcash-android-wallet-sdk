@@ -2,6 +2,8 @@ package cash.z.ecc.android.sdk.internal.jni
 
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import kotlinx.coroutines.test.runTest
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Test
 import kotlin.io.path.createTempDirectory
 import kotlin.test.assertContentEquals
@@ -18,6 +20,7 @@ class VotingRustBackendTest {
         private const val FIELD_BYTES = 32
         private const val SHARE_INDEX = 5
         private const val OUT_OF_RANGE_SHARE_INDEX = 16
+        private const val DIVERSIFIER_BYTES = 11
         private val VOTE_COMMITMENT = ByteArray(FIELD_BYTES) { 1 }
         private val BLIND = ByteArray(FIELD_BYTES) { 2 }
         private val SHORT_FIELD = ByteArray(FIELD_BYTES - 1)
@@ -29,6 +32,10 @@ class VotingRustBackendTest {
         private const val ROUND_ID = "round-1"
         private const val SNAPSHOT_HEIGHT = 123_456L
         private const val SESSION_JSON = "{\"round\":\"one\"}"
+        private const val NOTE_VALUE = 13_000_000L
+        private const val LARGE_BUNDLE_WEIGHT = 62_500_000L
+        private const val SMALL_BUNDLE_WEIGHT = 12_500_000L
+        private const val TWO_BUNDLE_ELIGIBLE_WEIGHT = 75_000_000L
         private val EA_PK = ByteArray(FIELD_BYTES) { 3 }
         private val NC_ROOT = ByteArray(FIELD_BYTES) { 4 }
         private val NULLIFIER_IMT_ROOT = ByteArray(FIELD_BYTES) { 5 }
@@ -160,6 +167,88 @@ class VotingRustBackendTest {
             }
         }
 
+    @Test
+    fun compute_bundle_setup_returns_exact_weights() =
+        runTest {
+            val setup = VotingRustBackend.new().computeBundleSetup(notesJson(noteCount = 6))
+
+            assertEquals(2, setup.bundleCount)
+            assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
+            assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
+            assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
+        }
+
+    @Test
+    fun compute_bundle_setup_rejects_unknown_note_scope() =
+        runTest {
+            val notesJson =
+                JSONArray()
+                    .put(noteJson(value = NOTE_VALUE, position = 0, byteValue = 1, scope = 2))
+                    .toString()
+
+            assertFailsWith<RuntimeException> {
+                VotingRustBackend.new().computeBundleSetup(notesJson)
+            }
+        }
+
+    @Test
+    fun setup_bundles_round_trips_bundle_count() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+
+                val setup = db.setupBundles(ROUND_ID, notesJson(noteCount = 6))
+
+                assertEquals(2, setup.bundleCount)
+                assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
+                assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
+                assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
+                assertEquals(2, db.getBundleCount(ROUND_ID))
+            } finally {
+                db.close()
+            }
+        }
+
     private fun newDbPath() =
         createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
+
+    private fun notesJson(
+        noteCount: Int,
+        value: Long = NOTE_VALUE
+    ): String =
+        JSONArray()
+            .apply {
+                repeat(noteCount) { index ->
+                    put(noteJson(value = value, position = index.toLong(), byteValue = index + 1))
+                }
+            }.toString()
+
+    private fun noteJson(
+        value: Long,
+        position: Long,
+        byteValue: Int,
+        scope: Int = 0
+    ) = JSONObject()
+        .put("commitment", repeatedHex(byteValue))
+        .put("nullifier", repeatedHex(byteValue + 1))
+        .put("value", value)
+        .put("position", position)
+        .put("diversifier", repeatedHex(0, DIVERSIFIER_BYTES))
+        .put("rho", repeatedHex(0))
+        .put("rseed", repeatedHex(0))
+        .put("scope", scope)
+        .put("ufvk_str", "")
+
+    private fun repeatedHex(
+        byteValue: Int,
+        size: Int = FIELD_BYTES
+    ) = ByteArray(size) { byteValue.toByte() }.toHexString()
 }

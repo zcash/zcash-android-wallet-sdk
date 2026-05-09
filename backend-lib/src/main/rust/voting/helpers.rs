@@ -37,11 +37,15 @@ pub(super) fn jlong_to_u64(value: jlong, field: &str) -> anyhow::Result<u64> {
     u64::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
 }
 
-fn u32_to_jint(value: u32, field: &str) -> anyhow::Result<jint> {
+pub(super) fn u32_to_jint(value: u32, field: &str) -> anyhow::Result<jint> {
     jint::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Int range: {value}"))
 }
 
-fn u64_to_jlong(value: u64, field: &str) -> anyhow::Result<jlong> {
+pub(super) fn usize_to_jint(value: usize, field: &str) -> anyhow::Result<jint> {
+    jint::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Int range: {value}"))
+}
+
+pub(super) fn u64_to_jlong(value: u64, field: &str) -> anyhow::Result<jlong> {
     jlong::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Long range: {value}"))
 }
 
@@ -212,4 +216,54 @@ impl TryFrom<VoteRecord> for JniVoteRecordPayload {
             submitted: record.submitted,
         })
     }
+}
+
+pub(super) fn make_jni_bundle_setup_result<'local>(
+    env: &mut JNIEnv<'local>,
+    count: u32,
+    weight: u64,
+    bundle_weights: &[u64],
+) -> anyhow::Result<jobject> {
+    let class =
+        env.find_class("cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult")?;
+    let weights = bundle_weights
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| u64_to_jlong(*weight, &format!("bundle_weights[{index}]")))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let weights_array =
+        env.new_long_array(usize_to_jint(weights.len(), "bundle_weights length")?)?;
+    env.set_long_array_region(&weights_array, 0, &weights)?;
+    let weights_array_obj = JObject::from(weights_array);
+    let obj = env.new_object(
+        &class,
+        "(IJ[J)V",
+        &[
+            JValue::Int(u32_to_jint(count, "bundle_count")?),
+            JValue::Long(u64_to_jlong(weight, "eligible_weight")?),
+            JValue::Object(&weights_array_obj),
+        ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32, u64, Vec<u64>)> {
+    let chunk_result = voting::types::chunk_notes(notes);
+    let bundle_weights = chunk_result
+        .bundles
+        .iter()
+        .map(|bundle| {
+            let total = bundle.iter().try_fold(0u64, |acc, note| {
+                acc.checked_add(note.value)
+                    .ok_or_else(|| anyhow!("bundle note value overflows u64"))
+            })?;
+            Ok((total / voting::BALLOT_DIVISOR) * voting::BALLOT_DIVISOR)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok((
+        u32::try_from(chunk_result.bundles.len())
+            .map_err(|_| anyhow!("bundle count is too large for u32"))?,
+        chunk_result.eligible_weight,
+        bundle_weights,
+    ))
 }

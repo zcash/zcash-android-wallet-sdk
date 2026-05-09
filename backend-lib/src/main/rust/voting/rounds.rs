@@ -84,6 +84,25 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_lis
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getBundleCountNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+) -> jint {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let count = db
+            .get_bundle_count(&java_string_to_rust(env, &round_id)?)
+            .map_err(|e| anyhow!("get_bundle_count: {}", e))?;
+        u32_to_jint(count, "bundle_count")
+    });
+    unwrap_exc_or(&mut env, res, -1)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getVotesNative<
     'local,
 >(

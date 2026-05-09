@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
+import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
@@ -14,6 +15,9 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
 
     override suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb =
         TypesafeVotingDbImpl(rustBackend().openVotingDb(dbPath, walletId))
+
+    override suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult =
+        rustBackend().computeBundleSetup(notesJson)
 
     private suspend fun rustBackend() = rustBackendLazy.getInstance(Unit)
 }
@@ -46,6 +50,9 @@ private class TypesafeVotingDbImpl(
     override suspend fun listRounds(): List<JniRoundSummary> =
         votingDb.listRounds().asList()
 
+    override suspend fun getBundleCount(roundId: String): Int =
+        votingDb.getBundleCount(roundId)
+
     override suspend fun getVotes(roundId: String): List<JniVoteRecord> =
         votingDb.getVotes(roundId).asList()
 
@@ -56,4 +63,10 @@ private class TypesafeVotingDbImpl(
         roundId: String,
         keepCount: Int
     ): Long = votingDb.deleteSkippedBundles(roundId, keepCount)
+
+    override suspend fun setupBundles(
+        roundId: String,
+        notesJson: String
+    ): JniBundleSetupResult =
+        votingDb.setupBundles(roundId, notesJson)
 }
