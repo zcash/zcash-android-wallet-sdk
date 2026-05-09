@@ -54,6 +54,8 @@ jobs:
         id: setup
         timeout-minutes: 50
         uses: ./.github/actions/setup
+        with:
+          rust-cache: true
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.
       - name: Deploy to Maven Central
