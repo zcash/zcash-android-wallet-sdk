@@ -44,6 +44,7 @@ import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.metrics.TraceScope
 import cash.z.ecc.android.sdk.internal.metrics.withTraceScope
 import cash.z.ecc.android.sdk.internal.model.BlockBatch
+import cash.z.ecc.android.sdk.internal.model.DbTransactionOverview
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.OutputStatusFilter
 import cash.z.ecc.android.sdk.internal.model.RecoveryProgress
@@ -61,6 +62,7 @@ import cash.z.ecc.android.sdk.internal.model.ext.from
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.model.ext.toTransactionStatus
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
+import cash.z.ecc.android.sdk.internal.transaction.AutomaticResubmissionGuard
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManager
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
@@ -138,7 +140,8 @@ class CompactBlockProcessor internal constructor(
     private val repository: DerivedDataRepository,
     private val txManager: OutboundTransactionManager,
     private val sdkFlags: SdkFlags,
-    private val saplingParamFetcher: SaplingParamFetcher
+    private val saplingParamFetcher: SaplingParamFetcher,
+    private val automaticResubmissionGuard: AutomaticResubmissionGuard = AutomaticResubmissionGuard()
 ) {
     /**
      * Callback for any non-trivial errors that occur while processing compact blocks.
@@ -2684,7 +2687,10 @@ class CompactBlockProcessor internal constructor(
         if (blockHeight == null) {
             return
         }
-        val list = repository.findUnminedTransactionsWithinExpiry(blockHeight)
+        val list =
+            repository
+                .findUnminedTransactionsWithinExpiry(blockHeight)
+                .filterAutomaticallyResubmittable()
 
         Twig.debug { "Trx resubmission: ${list.size}, ${list.joinToString(separator = ", ") { it.txIdString() }}" }
 
@@ -2719,6 +2725,16 @@ class CompactBlockProcessor internal constructor(
         } else {
             Twig.debug { "Trx resubmission: No trx for resubmission found" }
         }
+    }
+
+    private suspend fun List<DbTransactionOverview>.filterAutomaticallyResubmittable(): List<DbTransactionOverview> {
+        val resubmittableTransactions = mutableListOf<DbTransactionOverview>()
+        for (transaction in this) {
+            if (automaticResubmissionGuard.shouldAutomaticallyResubmit(transaction.rawId)) {
+                resubmittableTransactions += transaction
+            }
+        }
+        return resubmittableTransactions
     }
 
     suspend fun getUtxoCacheBalance(address: String): Zatoshi = backend.getDownloadedUtxoBalance(address)

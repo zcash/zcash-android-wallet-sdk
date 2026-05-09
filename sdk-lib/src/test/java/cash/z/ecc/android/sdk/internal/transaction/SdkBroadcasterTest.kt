@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SdkBroadcasterTest {
@@ -26,13 +27,15 @@ class SdkBroadcasterTest {
             val encodedTransaction = encodedTransaction(1)
             val txManager = FakeOutboundTransactionManager(proposedTransactions = listOf(encodedTransaction))
             val submitter = FakeTransactionSubmitter()
-            val broadcaster = SdkBroadcaster(txManager, submitter)
+            val automaticResubmissionGuard = AutomaticResubmissionGuard()
+            val broadcaster = SdkBroadcaster(txManager, submitter, automaticResubmissionGuard)
 
             val result = broadcaster.createProposedTransactions(fakeProposal(), fakeUsk())
 
             assertEquals(listOf(encodedTransaction.toCreatedTransactionForTest()), result)
             assertEquals(1, txManager.proposedTransactionCreateCount)
             assertTrue(submitter.submissions.isEmpty())
+            assertFalse(automaticResubmissionGuard.shouldAutomaticallyResubmit(encodedTransaction.txId))
         }
 
     @Test
@@ -79,6 +82,24 @@ class SdkBroadcasterTest {
             assertEquals(listOf(TransactionSubmitResult.Success(transaction.txId)), result)
             assertEquals(1, broadcaster.proposedTransactionCreateCount)
             assertEquals(listOf(Submission(transaction, endpoint)), broadcaster.submissions)
+        }
+
+    @Test
+    fun sdk_legacy_proposed_transactions_are_still_eligible_for_auto_resubmission() =
+        runBlocking {
+            val endpoint = LightWalletEndpoint("current.z.cash", 443, true)
+            val encodedTransaction = encodedTransaction(8)
+            val txManager = FakeOutboundTransactionManager(proposedTransactions = listOf(encodedTransaction))
+            val automaticResubmissionGuard = AutomaticResubmissionGuard()
+            val broadcaster = SdkBroadcaster(txManager, FakeTransactionSubmitter(), automaticResubmissionGuard)
+
+            val result =
+                broadcaster
+                    .createAndSubmitProposedTransactions(fakeProposal(), fakeUsk(), endpoint)
+                    .toList()
+
+            assertEquals(listOf(TransactionSubmitResult.Success(encodedTransaction.txId)), result)
+            assertTrue(automaticResubmissionGuard.shouldAutomaticallyResubmit(encodedTransaction.txId))
         }
 
     @Test

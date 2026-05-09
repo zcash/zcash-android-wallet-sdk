@@ -46,14 +46,13 @@ import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferencePro
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.StandardPreferenceKeys.SDK_VERSION_OF_LAST_FIX_WITNESSES_CALL
+import cash.z.ecc.android.sdk.internal.transaction.AutomaticResubmissionGuard
 import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManager
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManagerImpl
 import cash.z.ecc.android.sdk.internal.transaction.SdkBroadcaster
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoder
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoderImpl
-import cash.z.ecc.android.sdk.internal.transaction.createAndSubmitProposedTransactions
-import cash.z.ecc.android.sdk.internal.transaction.createAndSubmitTransactionFromPczt
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
@@ -160,6 +159,7 @@ class SdkSynchronizer private constructor(
     private val walletClient: CombinedWalletClient,
     private val walletClientFactory: WalletClientFactory,
     private val currentEndpoint: LightWalletEndpoint,
+    private val automaticResubmissionGuard: AutomaticResubmissionGuard,
     private val sdkFlags: SdkFlags
 ) : CloseableSynchronizer {
     companion object {
@@ -201,6 +201,7 @@ class SdkSynchronizer private constructor(
             walletClient: CombinedWalletClient,
             walletClientFactory: WalletClientFactory,
             currentEndpoint: LightWalletEndpoint,
+            automaticResubmissionGuard: AutomaticResubmissionGuard,
             sdkFlags: SdkFlags
         ): CloseableSynchronizer {
             val synchronizerKey = SynchronizerKey(zcashNetwork, alias)
@@ -221,6 +222,7 @@ class SdkSynchronizer private constructor(
                     walletClient = walletClient,
                     walletClientFactory = walletClientFactory,
                     currentEndpoint = currentEndpoint,
+                    automaticResubmissionGuard = automaticResubmissionGuard,
                     sdkFlags = sdkFlags
                 ).apply {
                     instances[synchronizerKey] = InstanceState.Active
@@ -294,15 +296,18 @@ class SdkSynchronizer private constructor(
 
     val coroutineScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    override val broadcaster: Broadcaster =
+    private val sdkBroadcaster =
         SdkBroadcaster(
             txManager = txManager,
             transactionSubmitter =
                 EndpointTransactionSubmitter(
                     walletClientFactory = walletClientFactory,
                     sdkFlags = sdkFlags
-                )
+                ),
+            automaticResubmissionGuard = automaticResubmissionGuard
         )
+
+    override val broadcaster: Broadcaster = sdkBroadcaster
 
     override val walletBalances = processor.walletBalances.asStateFlow()
 
@@ -1078,7 +1083,7 @@ class SdkSynchronizer private constructor(
     ): Flow<TransactionSubmitResult> {
         // This preserves the legacy API contract by creating locally, then submitting each
         // created transaction to the synchronizer's current endpoint.
-        return broadcaster.createAndSubmitProposedTransactions(
+        return sdkBroadcaster.createAndSubmitProposedTransactions(
             proposal = proposal,
             usk = usk,
             endpoint = currentEndpoint
@@ -1102,7 +1107,7 @@ class SdkSynchronizer private constructor(
     ): Flow<TransactionSubmitResult> {
         // This preserves the legacy API contract by submitting the stored transaction to the
         // synchronizer's current endpoint.
-        return broadcaster.createAndSubmitTransactionFromPczt(
+        return sdkBroadcaster.createAndSubmitTransactionFromPczt(
             pcztWithProofs = pcztWithProofs,
             pcztWithSignatures = pcztWithSignatures,
             endpoint = currentEndpoint
@@ -1388,7 +1393,8 @@ internal object DefaultSynchronizerFactory {
         birthdayHeight: BlockHeight,
         txManager: OutboundTransactionManager,
         sdkFlags: SdkFlags,
-        saplingParamFetcher: SaplingParamFetcher
+        saplingParamFetcher: SaplingParamFetcher,
+        automaticResubmissionGuard: AutomaticResubmissionGuard = AutomaticResubmissionGuard()
     ): CompactBlockProcessor =
         CompactBlockProcessor(
             backend = backend,
@@ -1397,7 +1403,8 @@ internal object DefaultSynchronizerFactory {
             repository = repository,
             txManager = txManager,
             sdkFlags = sdkFlags,
-            saplingParamFetcher = saplingParamFetcher
+            saplingParamFetcher = saplingParamFetcher,
+            automaticResubmissionGuard = automaticResubmissionGuard
         )
 }
 

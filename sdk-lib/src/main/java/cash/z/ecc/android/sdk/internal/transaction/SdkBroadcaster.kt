@@ -21,30 +21,66 @@ import kotlinx.coroutines.flow.map
 
 internal class SdkBroadcaster(
     private val txManager: OutboundTransactionManager,
-    private val transactionSubmitter: TransactionSubmitter
+    private val transactionSubmitter: TransactionSubmitter,
+    private val automaticResubmissionGuard: AutomaticResubmissionGuard = AutomaticResubmissionGuard()
 ) : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey
-    ): List<CreatedTransaction> =
-        txManager
-            .createProposedTransactions(proposal, usk)
-            .map { it.toCreatedTransaction() }
+    ): List<CreatedTransaction> {
+        val transactions =
+            txManager
+                .createProposedTransactions(proposal, usk)
+                .map { it.toCreatedTransaction() }
+        automaticResubmissionGuard.excludeFromAutomaticResubmission(transactions)
+        return transactions
+    }
 
     override suspend fun createTransactionFromPczt(
         pcztWithProofs: Pczt,
         pcztWithSignatures: Pczt
-    ): List<CreatedTransaction> =
-        listOf(
-            txManager
-                .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
-                .toCreatedTransaction()
-        )
+    ): List<CreatedTransaction> {
+        val transactions =
+            listOf(
+                txManager
+                    .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
+                    .toCreatedTransaction()
+            )
+        automaticResubmissionGuard.excludeFromAutomaticResubmission(transactions)
+        return transactions
+    }
 
     override suspend fun submit(
         transaction: CreatedTransaction,
         endpoint: LightWalletEndpoint
-    ): TransactionSubmitResult = transactionSubmitter.submit(transaction, endpoint)
+    ): TransactionSubmitResult {
+        automaticResubmissionGuard.excludeFromAutomaticResubmission(transaction)
+        return transactionSubmitter.submit(transaction, endpoint)
+    }
+
+    internal suspend fun createAndSubmitProposedTransactions(
+        proposal: Proposal,
+        usk: UnifiedSpendingKey,
+        endpoint: LightWalletEndpoint
+    ): Flow<TransactionSubmitResult> =
+        txManager
+            .createProposedTransactions(proposal, usk)
+            .map { it.toCreatedTransaction() }
+            .createSubmitResultFlow { transaction ->
+                transactionSubmitter.submit(transaction, endpoint)
+            }
+
+    internal suspend fun createAndSubmitTransactionFromPczt(
+        pcztWithProofs: Pczt,
+        pcztWithSignatures: Pczt,
+        endpoint: LightWalletEndpoint
+    ): Flow<TransactionSubmitResult> =
+        listOf(
+            txManager
+                .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
+                .toCreatedTransaction()
+        ).asFlow()
+            .map { transaction -> transactionSubmitter.submit(transaction, endpoint) }
 }
 
 internal interface TransactionSubmitter {
@@ -58,29 +94,11 @@ internal suspend fun Broadcaster.createAndSubmitProposedTransactions(
     proposal: Proposal,
     usk: UnifiedSpendingKey,
     endpoint: LightWalletEndpoint
-): Flow<TransactionSubmitResult> {
-    var anySubmissionFailed = false
-    return createProposedTransactions(proposal, usk)
-        .asFlow()
-        .map { transaction ->
-            if (anySubmissionFailed) {
-                TransactionSubmitResult.NotAttempted(transaction.txId)
-            } else {
-                val submission = submit(transaction, endpoint)
-                when (submission) {
-                    is TransactionSubmitResult.Success -> {
-                        // Expected state
-                    }
-
-                    is TransactionSubmitResult.Failure,
-                    is TransactionSubmitResult.NotAttempted -> {
-                        anySubmissionFailed = true
-                    }
-                }
-                submission
-            }
+): Flow<TransactionSubmitResult> =
+    createProposedTransactions(proposal, usk)
+        .createSubmitResultFlow { transaction ->
+            submit(transaction, endpoint)
         }
-}
 
 internal suspend fun Broadcaster.createAndSubmitTransactionFromPczt(
     pcztWithProofs: Pczt,
@@ -121,6 +139,31 @@ private fun EncodedTransaction.toCreatedTransaction() =
         raw = raw,
         expiryHeight = expiryHeight
     )
+
+private fun List<CreatedTransaction>.createSubmitResultFlow(
+    submit: suspend (CreatedTransaction) -> TransactionSubmitResult
+): Flow<TransactionSubmitResult> {
+    var anySubmissionFailed = false
+    return asFlow()
+        .map { transaction ->
+            if (anySubmissionFailed) {
+                TransactionSubmitResult.NotAttempted(transaction.txId)
+            } else {
+                val submission = submit(transaction)
+                when (submission) {
+                    is TransactionSubmitResult.Success -> {
+                        // Expected state
+                    }
+
+                    is TransactionSubmitResult.Failure,
+                    is TransactionSubmitResult.NotAttempted -> {
+                        anySubmissionFailed = true
+                    }
+                }
+                submission
+            }
+        }
+}
 
 private fun Response<SendResponseUnsafe>.toSubmitResult(transaction: CreatedTransaction): TransactionSubmitResult =
     when (this) {

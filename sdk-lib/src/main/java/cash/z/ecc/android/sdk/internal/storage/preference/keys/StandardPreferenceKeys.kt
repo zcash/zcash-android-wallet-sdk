@@ -9,4 +9,10 @@ internal object StandardPreferenceKeys {
             key = PreferenceKey("sdk_version_of_last_fix_witnesses_call"),
             defaultValue = ""
         )
+
+    val AUTOMATIC_RESUBMISSION_EXCLUDED_TX_IDS =
+        StringPreferenceDefault(
+            key = PreferenceKey("automatic_resubmission_excluded_tx_ids"),
+            defaultValue = ""
+        )
 }

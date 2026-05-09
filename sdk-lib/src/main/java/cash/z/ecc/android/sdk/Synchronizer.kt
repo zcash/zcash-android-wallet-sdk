@@ -20,6 +20,7 @@ import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
+import cash.z.ecc.android.sdk.internal.transaction.AutomaticResubmissionGuard
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -962,6 +963,9 @@ interface Synchronizer {
             val encoder = DefaultSynchronizerFactory.defaultEncoder(backend, saplingParamFetcher, repository)
 
             val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
+            val standardPreferenceProvider = StandardPreferenceProvider(context)
+            val preferenceProvider = standardPreferenceProvider()
+            val automaticResubmissionGuard = AutomaticResubmissionGuard(preferenceProvider)
             val processor =
                 DefaultSynchronizerFactory.defaultProcessor(
                     backend = backend,
@@ -970,10 +974,9 @@ interface Synchronizer {
                     repository = repository,
                     txManager = txManager,
                     sdkFlags = sdkFlags,
-                    saplingParamFetcher = saplingParamFetcher
+                    saplingParamFetcher = saplingParamFetcher,
+                    automaticResubmissionGuard = automaticResubmissionGuard
                 )
-
-            val standardPreferenceProvider = StandardPreferenceProvider(context)
 
             return SdkSynchronizer.new(
                 context = context.applicationContext,
@@ -992,11 +995,12 @@ interface Synchronizer {
                     ),
                 fetchExchangeChangeUsd =
                     exchangeRateIsolatedTorClient?.let { UsdExchangeRateFetcher(isolatedTorClient = it) },
-                preferenceProvider = standardPreferenceProvider(),
+                preferenceProvider = preferenceProvider,
                 torClient = torClient,
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
                 currentEndpoint = lightWalletEndpoint,
+                automaticResubmissionGuard = automaticResubmissionGuard,
                 sdkFlags = sdkFlags
             )
         }
