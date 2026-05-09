@@ -12,4 +12,6 @@ data class CreatedTransaction(
     val expiryHeight: BlockHeight?
 ) {
     fun txIdString() = txId.byteArray.toHexReversed()
+
+    override fun toString() = "CreatedTransaction(txId=${txIdString()}, expiryHeight=$expiryHeight)"
 }
