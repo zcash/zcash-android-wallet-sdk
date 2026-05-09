@@ -20,11 +20,12 @@ internal class AutomaticResubmissionGuard(
     }
 
     suspend fun excludeFromAutomaticResubmission(transactions: List<CreatedTransaction>) {
-        val txIds = transactions.map { it.txId }
+        val txIdKeys = transactions.map { it.txId.toStableKey() }
         mutex.withLock {
             loadFromPreferencesIfNeeded()
-            callerManagedTransactionIds += txIds.map { it.toStableKey() }
-            saveToPreferences()
+            if (callerManagedTransactionIds.addAll(txIdKeys)) {
+                saveToPreferences()
+            }
         }
     }
 
@@ -37,8 +38,9 @@ internal class AutomaticResubmissionGuard(
     private suspend fun excludeFromAutomaticResubmission(txId: FirstClassByteArray) {
         mutex.withLock {
             loadFromPreferencesIfNeeded()
-            callerManagedTransactionIds += txId.toStableKey()
-            saveToPreferences()
+            if (callerManagedTransactionIds.add(txId.toStableKey())) {
+                saveToPreferences()
+            }
         }
     }
 

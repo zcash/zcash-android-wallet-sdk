@@ -15,14 +15,16 @@ import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 
 internal class SdkBroadcaster(
     private val txManager: OutboundTransactionManager,
     private val transactionSubmitter: TransactionSubmitter,
-    private val automaticResubmissionGuard: AutomaticResubmissionGuard = AutomaticResubmissionGuard()
+    private val automaticResubmissionGuard: AutomaticResubmissionGuard
 ) : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
@@ -128,7 +130,9 @@ internal class EndpointTransactionSubmitter(
                 )
             return response.toSubmitResult(transaction)
         } finally {
-            walletClient.dispose()
+            withContext(NonCancellable) {
+                walletClient.dispose()
+            }
         }
     }
 }

@@ -147,6 +147,9 @@ interface Synchronizer {
     /**
      * Creates transactions without submitting them and submits created transactions
      * to caller-selected lightwalletd endpoints.
+     *
+     * The default implementation throws [UnsupportedOperationException]. SDK-backed
+     * synchronizers override this with a working broadcaster.
      */
     val broadcaster: Broadcaster
         get() = UnavailableBroadcaster

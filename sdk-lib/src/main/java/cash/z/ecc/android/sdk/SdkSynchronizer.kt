@@ -1394,7 +1394,7 @@ internal object DefaultSynchronizerFactory {
         txManager: OutboundTransactionManager,
         sdkFlags: SdkFlags,
         saplingParamFetcher: SaplingParamFetcher,
-        automaticResubmissionGuard: AutomaticResubmissionGuard = AutomaticResubmissionGuard()
+        automaticResubmissionGuard: AutomaticResubmissionGuard
     ): CompactBlockProcessor =
         CompactBlockProcessor(
             backend = backend,

@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -37,8 +38,22 @@ class AutomaticResubmissionGuardTest {
             assertFalse(secondGuard.shouldAutomaticallyResubmit(transaction.txId))
         }
 
+    @Test
+    fun duplicate_exclusions_do_not_rewrite_preferences() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val transaction = createdTransaction(1)
+            val guard = AutomaticResubmissionGuard(preferenceProvider)
+
+            guard.excludeFromAutomaticResubmission(transaction)
+            guard.excludeFromAutomaticResubmission(transaction)
+
+            assertEquals(1, preferenceProvider.putStringCount)
+        }
+
     private class FakePreferenceProvider : PreferenceProvider {
         private val values = mutableMapOf<String, String?>()
+        var putStringCount = 0
 
         override suspend fun hasKey(key: PreferenceKey): Boolean = values.containsKey(key.key)
 
@@ -46,6 +61,7 @@ class AutomaticResubmissionGuardTest {
             key: PreferenceKey,
             value: String?
         ) {
+            putStringCount += 1
             values[key.key] = value
         }
 

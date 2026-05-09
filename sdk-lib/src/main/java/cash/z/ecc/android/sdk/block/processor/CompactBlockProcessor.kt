@@ -141,7 +141,7 @@ class CompactBlockProcessor internal constructor(
     private val txManager: OutboundTransactionManager,
     private val sdkFlags: SdkFlags,
     private val saplingParamFetcher: SaplingParamFetcher,
-    private val automaticResubmissionGuard: AutomaticResubmissionGuard = AutomaticResubmissionGuard()
+    private val automaticResubmissionGuard: AutomaticResubmissionGuard
 ) {
     /**
      * Callback for any non-trivial errors that occur while processing compact blocks.

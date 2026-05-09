@@ -43,7 +43,7 @@ class SdkBroadcasterTest {
         runBlocking {
             val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
             val submitter = FakeTransactionSubmitter()
-            val broadcaster = SdkBroadcaster(FakeOutboundTransactionManager(), submitter)
+            val broadcaster = SdkBroadcaster(FakeOutboundTransactionManager(), submitter, AutomaticResubmissionGuard())
             val transaction = encodedTransaction(2).toCreatedTransactionForTest()
 
             val result = broadcaster.submit(transaction, endpoint)
@@ -58,7 +58,7 @@ class SdkBroadcasterTest {
             val encodedTransaction = encodedTransaction(3)
             val txManager = FakeOutboundTransactionManager(pcztTransaction = encodedTransaction)
             val submitter = FakeTransactionSubmitter()
-            val broadcaster = SdkBroadcaster(txManager, submitter)
+            val broadcaster = SdkBroadcaster(txManager, submitter, AutomaticResubmissionGuard())
 
             val result = broadcaster.createTransactionFromPczt(Pczt(byteArrayOf(1)), Pczt(byteArrayOf(2)))
 
