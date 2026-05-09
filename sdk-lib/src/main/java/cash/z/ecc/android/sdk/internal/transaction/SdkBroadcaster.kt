@@ -60,6 +60,8 @@ internal class SdkBroadcaster(
         return transactionSubmitter.submit(transaction, endpoint)
     }
 
+    // Legacy Synchronizer APIs stay eligible for automatic resubmission, so these helpers
+    // bypass public Broadcaster methods that mark transactions caller-managed.
     internal suspend fun createAndSubmitProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
@@ -92,6 +94,8 @@ internal interface TransactionSubmitter {
     ): TransactionSubmitResult
 }
 
+// These helpers compose the public Broadcaster API, so they preserve
+// caller-managed exclusion semantics.
 internal suspend fun Broadcaster.createAndSubmitProposedTransactions(
     proposal: Proposal,
     usk: UnifiedSpendingKey,

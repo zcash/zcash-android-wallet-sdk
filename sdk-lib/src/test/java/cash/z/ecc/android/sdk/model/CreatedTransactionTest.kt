@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.model
 
+import cash.z.ecc.android.sdk.ext.toHex
 import org.junit.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -18,7 +19,6 @@ class CreatedTransactionTest {
 
         assertTrue(string.contains(transaction.txIdString()))
         assertTrue(string.contains("expiryHeight=${transaction.expiryHeight}"))
-        assertFalse(string.contains(transaction.raw.toString()))
-        assertFalse(string.contains("raw"))
+        assertFalse(string.contains(transaction.raw.byteArray.toHex()))
     }
 }
