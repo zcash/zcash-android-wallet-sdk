@@ -15,11 +15,14 @@ import kotlinx.coroutines.withContext
 @Suppress("TooManyFunctions", "LongParameterList")
 class VotingRustBackend private constructor() {
     @Throws(RuntimeException::class)
-    fun computeShareNullifier(
+    suspend fun computeShareNullifier(
         voteCommitment: ByteArray,
         shareIndex: Int,
         blind: ByteArray
-    ): ByteArray = computeShareNullifierNative(voteCommitment, shareIndex, blind)
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            computeShareNullifierNative(voteCommitment, shareIndex, blind)
+        }
 
     @Throws(RuntimeException::class)
     suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult =
@@ -32,6 +35,23 @@ class VotingRustBackend private constructor() {
     suspend fun warmProvingCaches() =
         withContext(Dispatchers.IO) {
             warmProvingCachesNative()
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractPcztSighashNative(pcztBytes)
+                ?: error("extractPcztSighash returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractSpendAuthSigNative(signedPcztBytes, actionIndex)
+                ?: error("extractSpendAuthSig returned null")
         }
 
     suspend fun openVotingDb(dbPath: String, walletId: String): VotingDb =
@@ -134,6 +154,35 @@ class VotingRustBackend private constructor() {
                     ?: error("generateHotkey returned null for roundId=$roundId")
             }
 
+        @Throws(RuntimeException::class)
+        suspend fun buildGovernancePcztJson(
+            roundId: String,
+            bundleIndex: Int,
+            ufvk: String,
+            networkId: Int,
+            accountIndex: Int,
+            notesJson: String,
+            walletSeed: ByteArray,
+            seedFingerprint: ByteArray,
+            roundName: String,
+            addressIndex: Int
+        ): String =
+            withHandle { handle ->
+                buildGovernancePcztJsonNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    ufvk,
+                    networkId,
+                    accountIndex,
+                    notesJson,
+                    walletSeed,
+                    seedFingerprint,
+                    roundName,
+                    addressIndex
+                ) ?: error("buildGovernancePczt returned null")
+            }
+
         private suspend fun <T> withHandle(block: (Long) -> T): T =
             accessMutex.withLock {
                 val handle =
@@ -232,5 +281,32 @@ class VotingRustBackend private constructor() {
             roundId: String,
             seed: ByteArray
         ): JniVotingHotkey?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildGovernancePcztJsonNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            ufvk: String,
+            networkId: Int,
+            accountIndex: Int,
+            notesJson: String,
+            walletSeed: ByteArray,
+            seedFingerprint: ByteArray,
+            roundName: String,
+            addressIndex: Int
+        ): String?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractPcztSighashNative(pcztBytes: ByteArray): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractSpendAuthSigNative(
+            signedPcztBytes: ByteArray,
+            actionIndex: Int
+        ): ByteArray?
     }
 }

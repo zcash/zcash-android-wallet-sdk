@@ -10,8 +10,7 @@ fun ByteArray.toHex(): String {
     return sb.toString()
 }
 
-// Not used within the SDK, but is used by the Wallet app
-@Suppress("unused", "MagicNumber")
+@Suppress("MagicNumber")
 fun String.fromHex(): ByteArray {
     val len = length
     val data = ByteArray(len / 2)

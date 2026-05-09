@@ -9,9 +9,7 @@ fn registry() -> &'static Mutex<HashMap<jlong, Arc<VotingDb>>> {
 
 fn next_handle() -> anyhow::Result<jlong> {
     NEXT_DB_HANDLE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
-            id.checked_add(1).filter(|next| *next > 0)
-        })
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| anyhow!("voting DB handle space exhausted"))
 }
 

@@ -1,9 +1,13 @@
 use super::helpers::*;
 use super::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const NOTE_SCOPE_EXTERNAL: u32 = 0;
 const NOTE_SCOPE_INTERNAL: u32 = 1;
+
+pub(super) fn hex_enc(bytes: &[u8]) -> String {
+    hex::encode(bytes)
+}
 
 pub(super) fn hex_dec(value: &str, field: &str) -> anyhow::Result<Vec<u8>> {
     hex::decode(value).map_err(|e| anyhow!("field '{field}': invalid hex: {e}"))
@@ -61,6 +65,36 @@ fn require_note_scope(scope: u32) -> anyhow::Result<u32> {
             "scope must be {NOTE_SCOPE_EXTERNAL} (external) or {NOTE_SCOPE_INTERNAL} (internal), got {scope}"
         )),
     }
+}
+
+#[derive(Serialize)]
+pub(super) struct JsonGovernancePczt {
+    pub(super) pczt_bytes: String,
+    pub(super) rk: String,
+    pub(super) action_index: u32,
+    pub(super) pczt_sighash: String,
+}
+
+impl TryFrom<GovernancePczt> for JsonGovernancePczt {
+    type Error = anyhow::Error;
+
+    fn try_from(pczt: GovernancePczt) -> anyhow::Result<Self> {
+        Ok(JsonGovernancePczt {
+            pczt_bytes: hex_enc(&pczt.pczt_bytes),
+            rk: hex_enc(&pczt.rk),
+            action_index: u32::try_from(pczt.action_index)
+                .map_err(|_| anyhow!("action_index is too large for u32: {}", pczt.action_index))?,
+            pczt_sighash: hex_enc(&pczt.pczt_sighash),
+        })
+    }
+}
+
+pub(super) fn json_to_jstring<T: Serialize>(
+    env: &mut JNIEnv<'_>,
+    value: &T,
+) -> anyhow::Result<jstring> {
+    let s = serde_json::to_string(value).map_err(|e| anyhow!("JSON serialization error: {}", e))?;
+    Ok(env.new_string(s)?.into_raw())
 }
 
 pub(super) fn json_from_jstring<T: for<'de> Deserialize<'de>>(

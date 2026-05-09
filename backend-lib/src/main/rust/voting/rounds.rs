@@ -157,7 +157,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_del
                 jint_to_u32(keep_count, "keep_count")?,
             )
             .map_err(|e| anyhow!("delete_skipped_bundles: {}", e))?;
-        Ok(deleted_rows as jlong)
+        u64_to_jlong(deleted_rows, "deleted_rows")
     });
     unwrap_exc_or(&mut env, res, -1)
 }

@@ -70,11 +70,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let seed = java_secret_bytes_at_least(env, &seed, "seed", PROTOCOL_FIELD_BYTES)?;
         let hotkey = db
-            .generate_hotkey(
-                &java_string_to_rust(env, &round_id)?,
-                &java_bytes_at_least(env, &seed, "seed", PROTOCOL_FIELD_BYTES)?,
-            )
+            .generate_hotkey(&java_string_to_rust(env, &round_id)?, seed.expose_secret())
             .map_err(|e| anyhow!("generate_hotkey: {}", e))?;
         make_jni_voting_hotkey(env, hotkey)
     });
