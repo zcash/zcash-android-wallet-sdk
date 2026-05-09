@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 
 @Suppress("TooManyFunctions", "LongParameterList")
 class TypesafeVotingBackendImpl : TypesafeVotingBackend {
@@ -18,6 +19,9 @@ class TypesafeVotingBackendImpl : TypesafeVotingBackend {
 
     override suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult =
         rustBackend().computeBundleSetup(notesJson)
+
+    override suspend fun warmProvingCaches() =
+        rustBackend().warmProvingCaches()
 
     private suspend fun rustBackend() = rustBackendLazy.getInstance(Unit)
 }
@@ -69,4 +73,10 @@ private class TypesafeVotingDbImpl(
         notesJson: String
     ): JniBundleSetupResult =
         votingDb.setupBundles(roundId, notesJson)
+
+    override suspend fun generateHotkey(
+        roundId: String,
+        seed: ByteArray
+    ): JniVotingHotkey =
+        votingDb.generateHotkey(roundId, seed)
 }

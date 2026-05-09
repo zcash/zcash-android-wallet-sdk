@@ -57,3 +57,26 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_generateHotkeyNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    seed: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let hotkey = db
+            .generate_hotkey(
+                &java_string_to_rust(env, &round_id)?,
+                &java_bytes_at_least(env, &seed, "seed", PROTOCOL_FIELD_BYTES)?,
+            )
+            .map_err(|e| anyhow!("generate_hotkey: {}", e))?;
+        make_jni_voting_hotkey(env, hotkey)
+    });
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}

@@ -4,12 +4,15 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 
 @Suppress("TooManyFunctions", "LongParameterList")
 interface TypesafeVotingBackend {
     suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb
 
     suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult
+
+    suspend fun warmProvingCaches()
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -44,4 +47,9 @@ interface TypesafeVotingDb {
         roundId: String,
         notesJson: String
     ): JniBundleSetupResult
+
+    suspend fun generateHotkey(
+        roundId: String,
+        seed: ByteArray
+    ): JniVotingHotkey
 }

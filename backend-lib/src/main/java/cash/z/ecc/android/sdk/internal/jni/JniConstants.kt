@@ -22,3 +22,13 @@ const val JNI_METADATA_KEY_SK_SIZE = 32
  * The number of bytes in a chain code. It's used e.g. in [JniMetadataKey.chainCode]
  */
 const val JNI_METADATA_KEY_CHAIN_CODE_SIZE = 32
+
+/**
+ * The number of bytes in a voting hotkey secret key. It's used e.g. in [HotkeySecretKey.value]
+ */
+const val JNI_HOTKEY_SECRET_KEY_BYTES_SIZE = 32
+
+/**
+ * The number of bytes in a voting hotkey public key. It's used e.g. in [HotkeyPublicKey.value]
+ */
+const val JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE = 32

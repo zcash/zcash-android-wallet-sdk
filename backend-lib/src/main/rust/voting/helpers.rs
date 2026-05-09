@@ -60,6 +60,21 @@ pub(super) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyho
     }
 }
 
+pub(super) fn require_min_len(
+    bytes: Vec<u8>,
+    field: &str,
+    minimum: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if bytes.len() >= minimum {
+        Ok(bytes)
+    } else {
+        Err(anyhow!(
+            "{field} must be at least {minimum} bytes, got {}",
+            bytes.len()
+        ))
+    }
+}
+
 pub(super) fn java_bytes(
     env: &mut JNIEnv<'_>,
     array: &JByteArray<'_>,
@@ -102,6 +117,15 @@ pub(super) fn round_phase_to_u32(phase: RoundPhase) -> u32 {
         RoundPhase::DelegationProved => PHASE_DELEGATION_PROVED,
         RoundPhase::VoteReady => PHASE_VOTE_READY,
     }
+}
+
+pub(super) fn java_bytes_at_least(
+    env: &mut JNIEnv<'_>,
+    array: &JByteArray<'_>,
+    field: &str,
+    minimum: usize,
+) -> anyhow::Result<Vec<u8>> {
+    require_min_len(java_bytes(env, array, field)?, field, minimum)
 }
 
 pub(super) fn make_jni_round_state<'local>(
@@ -216,6 +240,26 @@ impl TryFrom<VoteRecord> for JniVoteRecordPayload {
             submitted: record.submitted,
         })
     }
+}
+
+pub(super) fn make_jni_voting_hotkey<'local>(
+    env: &mut JNIEnv<'local>,
+    hotkey: voting::types::VotingHotkey,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class("cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey")?;
+    let sk_obj: JObject<'local> = env.byte_array_from_slice(&hotkey.secret_key)?.into();
+    let pk_obj: JObject<'local> = env.byte_array_from_slice(&hotkey.public_key)?.into();
+    let addr_obj: JObject<'local> = env.new_string(&hotkey.address)?.into();
+    let obj = env.new_object(
+        &class,
+        "([B[BLjava/lang/String;)V",
+        &[
+            JValue::Object(&sk_obj),
+            JValue::Object(&pk_obj),
+            JValue::Object(&addr_obj),
+        ],
+    )?;
+    Ok(obj.into_raw())
 }
 
 pub(super) fn make_jni_bundle_setup_result<'local>(

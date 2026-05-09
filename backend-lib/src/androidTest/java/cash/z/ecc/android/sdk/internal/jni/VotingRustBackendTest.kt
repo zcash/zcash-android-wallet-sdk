@@ -12,6 +12,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalStdlibApi::class)
 @Suppress("MagicNumber")
@@ -39,6 +40,8 @@ class VotingRustBackendTest {
         private val EA_PK = ByteArray(FIELD_BYTES) { 3 }
         private val NC_ROOT = ByteArray(FIELD_BYTES) { 4 }
         private val NULLIFIER_IMT_ROOT = ByteArray(FIELD_BYTES) { 5 }
+        private val HOTKEY_SEED = ByteArray(64) { 0x42 }
+        private val OTHER_HOTKEY_SEED = ByteArray(64) { 0x43 }
     }
 
     @Test
@@ -212,6 +215,32 @@ class VotingRustBackendTest {
                 assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
                 assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
                 assertEquals(2, db.getBundleCount(ROUND_ID))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun generate_hotkey_is_deterministic_and_rejects_short_seed() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val first = db.generateHotkey(ROUND_ID, HOTKEY_SEED)
+                val second = db.generateHotkey(ROUND_ID, HOTKEY_SEED)
+                val other = db.generateHotkey(ROUND_ID, OTHER_HOTKEY_SEED)
+
+                assertContentEquals(first.secretKey.value, second.secretKey.value)
+                assertContentEquals(first.publicKey.value, second.publicKey.value)
+                assertEquals(first.address, second.address)
+                assertFalse(first.secretKey.value.contentEquals(other.secretKey.value))
+                assertFalse(first.publicKey.value.contentEquals(other.publicKey.value))
+                assertEquals(FIELD_BYTES, first.secretKey.value.size)
+                assertEquals(FIELD_BYTES, first.publicKey.value.size)
+                assertTrue(first.address.startsWith("sv1"))
+
+                assertFailsWith<RuntimeException> {
+                    db.generateHotkey(ROUND_ID, SHORT_FIELD)
+                }
             } finally {
                 db.close()
             }
