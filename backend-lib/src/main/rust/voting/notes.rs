@@ -334,6 +334,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
                 expected_weight
             ));
         }
+        store_bundle_note_identities(&db, &round_id, &notes)?;
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())

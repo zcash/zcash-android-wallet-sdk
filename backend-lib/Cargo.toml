@@ -61,6 +61,7 @@ anyhow = "1"
 jni = { version = "0.21", default-features = false }
 uuid = "1"
 bitflags = "2"
+blake2b_simd = "1"
 hex = "0.4"
 
 # lightwalletd

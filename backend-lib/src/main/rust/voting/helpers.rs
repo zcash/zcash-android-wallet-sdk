@@ -88,6 +88,8 @@ pub(super) const GOVERNANCE_NULLIFIER_COUNT: usize = 5;
 pub(super) const ACCOUNT_UUID_BYTES: usize = 16;
 pub(super) const NETWORK_ID_TESTNET: jint = 0;
 pub(super) const NETWORK_ID_MAINNET: jint = 1;
+const NOTE_IDENTITY_HASH_BYTES: usize = PROTOCOL_FIELD_BYTES;
+const NOTE_IDENTITY_DOMAIN: &[u8] = b"zcash-android-voting-note-v1";
 
 struct JniRoundSummaryPayload {
     round_id: String,
@@ -1332,6 +1334,90 @@ pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32
     ))
 }
 
+fn update_hash_with_len_prefixed_bytes(state: &mut blake2b_simd::State, value: &[u8]) {
+    state.update(&(value.len() as u64).to_le_bytes());
+    state.update(value);
+}
+
+fn note_identity_hash(note: &NoteInfo) -> [u8; NOTE_IDENTITY_HASH_BYTES] {
+    let mut state = blake2b_simd::Params::new()
+        .hash_length(NOTE_IDENTITY_HASH_BYTES)
+        .to_state();
+    state.update(NOTE_IDENTITY_DOMAIN);
+    state.update(&note.position.to_le_bytes());
+    state.update(&note.value.to_le_bytes());
+    state.update(&note.scope.to_le_bytes());
+    update_hash_with_len_prefixed_bytes(&mut state, &note.commitment);
+    update_hash_with_len_prefixed_bytes(&mut state, &note.nullifier);
+    update_hash_with_len_prefixed_bytes(&mut state, &note.diversifier);
+    update_hash_with_len_prefixed_bytes(&mut state, &note.rho);
+    update_hash_with_len_prefixed_bytes(&mut state, &note.rseed);
+    update_hash_with_len_prefixed_bytes(&mut state, note.ufvk_str.as_bytes());
+
+    let hash = state.finalize();
+    let mut out = [0u8; NOTE_IDENTITY_HASH_BYTES];
+    out.copy_from_slice(hash.as_bytes());
+    out
+}
+
+pub(super) fn init_voting_android_tables(db: &VotingDb) -> anyhow::Result<()> {
+    let conn = db.conn();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS android_voting_bundle_note_identity (
+            round_id      TEXT NOT NULL,
+            wallet_id     TEXT NOT NULL,
+            bundle_index  INTEGER NOT NULL,
+            note_order    INTEGER NOT NULL,
+            position      INTEGER NOT NULL,
+            identity_hash BLOB NOT NULL,
+            PRIMARY KEY (round_id, wallet_id, bundle_index, note_order),
+            FOREIGN KEY (round_id, wallet_id, bundle_index)
+                REFERENCES bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
+        );",
+    )
+    .map_err(|e| anyhow!("failed to initialize Android voting tables: {e}"))
+}
+
+pub(super) fn store_bundle_note_identities(
+    db: &VotingDb,
+    round_id: &str,
+    notes: &[NoteInfo],
+) -> anyhow::Result<()> {
+    let conn = db.conn();
+    let wallet_id = db.wallet_id();
+    conn.execute(
+        "DELETE FROM android_voting_bundle_note_identity WHERE round_id = ?1 AND wallet_id = ?2",
+        rusqlite::params![round_id, wallet_id],
+    )
+    .map_err(|e| anyhow!("failed to clear bundle note identities: {e}"))?;
+
+    let chunk_result = voting::types::chunk_notes(notes);
+    for (bundle_index, bundle) in chunk_result.bundles.iter().enumerate() {
+        let bundle_index = i64::try_from(bundle_index)
+            .map_err(|_| anyhow!("bundle_index is too large for SQLite"))?;
+        for (note_order, note) in bundle.iter().enumerate() {
+            let note_order = i64::try_from(note_order)
+                .map_err(|_| anyhow!("note_order is too large for SQLite"))?;
+            conn.execute(
+                "INSERT INTO android_voting_bundle_note_identity
+                    (round_id, wallet_id, bundle_index, note_order, position, identity_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    round_id,
+                    wallet_id,
+                    bundle_index,
+                    note_order,
+                    u64_to_jlong(note.position, "note.position")?,
+                    note_identity_hash(note).to_vec(),
+                ],
+            )
+            .map_err(|e| anyhow!("failed to store bundle note identity: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Recomputes deterministic note chunking and returns the requested bundle.
 pub(super) fn bundled_notes_for_index(
     notes: &[NoteInfo],
@@ -1346,6 +1432,105 @@ pub(super) fn bundled_notes_for_index(
         .get(bundle_index)
         .cloned()
         .ok_or_else(|| anyhow!("bundle_index {bundle_index} is not present in note bundle set"))
+}
+
+pub(super) fn require_persisted_bundle_notes(
+    db: &VotingDb,
+    round_id: &str,
+    bundle_index: u32,
+    bundle_notes: &[NoteInfo],
+) -> anyhow::Result<()> {
+    let stored_positions = {
+        let conn = db.conn();
+        let wallet_id = db.wallet_id();
+        voting::storage::queries::load_bundle_note_positions(
+            &conn,
+            round_id,
+            &wallet_id,
+            bundle_index,
+        )
+        .map_err(|e| anyhow!("load_bundle_note_positions: {}", e))?
+    };
+    let requested_positions = bundle_notes
+        .iter()
+        .map(|note| note.position)
+        .collect::<Vec<_>>();
+
+    if stored_positions == requested_positions {
+        require_persisted_bundle_note_identities(db, round_id, bundle_index, bundle_notes)
+    } else {
+        Err(anyhow!(
+            "bundle_index {bundle_index} notes do not match persisted setup: stored positions {:?}, requested positions {:?}",
+            stored_positions,
+            requested_positions
+        ))
+    }
+}
+
+fn require_persisted_bundle_note_identities(
+    db: &VotingDb,
+    round_id: &str,
+    bundle_index: u32,
+    bundle_notes: &[NoteInfo],
+) -> anyhow::Result<()> {
+    let stored = {
+        let conn = db.conn();
+        let wallet_id = db.wallet_id();
+        let mut stmt = conn
+            .prepare(
+                "SELECT position, identity_hash
+                 FROM android_voting_bundle_note_identity
+                 WHERE round_id = ?1 AND wallet_id = ?2 AND bundle_index = ?3
+                 ORDER BY note_order ASC",
+            )
+            .map_err(|e| anyhow!("failed to prepare bundle note identity query: {e}"))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![round_id, wallet_id, i64::from(bundle_index)],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .map_err(|e| anyhow!("failed to query bundle note identities: {e}"))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("failed to read bundle note identities: {e}"))?
+    };
+
+    if stored.len() != bundle_notes.len() {
+        return Err(anyhow!(
+            "bundle_index {bundle_index} note identity count mismatch: stored {}, requested {}",
+            stored.len(),
+            bundle_notes.len()
+        ));
+    }
+
+    for (index, ((stored_position, stored_hash), note)) in
+        stored.iter().zip(bundle_notes.iter()).enumerate()
+    {
+        let stored_position = u64::try_from(*stored_position)
+            .map_err(|_| anyhow!("stored note position is negative at index {index}"))?;
+        let requested_hash = note_identity_hash(note);
+        if stored_position != note.position || stored_hash.as_slice() != requested_hash {
+            return Err(anyhow!(
+                "bundle_index {bundle_index} note identity mismatch at index {index}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn round_exists(db: &VotingDb, round_id: &str) -> anyhow::Result<bool> {
+    let conn = db.conn();
+    let wallet_id = db.wallet_id();
+    match conn.query_row(
+        "SELECT 1 FROM rounds WHERE round_id = ?1 AND wallet_id = ?2 LIMIT 1",
+        rusqlite::params![round_id, wallet_id],
+        |_| Ok(()),
+    ) {
+        Ok(()) => Ok(true),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(anyhow!("round_exists query failed: {}", e)),
+    }
 }
 
 /// Advances a round phase without allowing regressions; equal phases are

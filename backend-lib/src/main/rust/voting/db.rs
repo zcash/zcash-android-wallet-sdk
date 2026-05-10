@@ -28,6 +28,7 @@ impl VotingDbHandle {
     fn open(path: &str, wallet_id: &str) -> anyhow::Result<Self> {
         let db = VotingDb::open(path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
         db.set_wallet_id(wallet_id);
+        init_voting_android_tables(&db)?;
 
         Ok(Self {
             db,
