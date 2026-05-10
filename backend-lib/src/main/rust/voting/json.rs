@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 const NOTE_SCOPE_EXTERNAL: u32 = 0;
 const NOTE_SCOPE_INTERNAL: u32 = 1;
+const ORCHARD_DIVERSIFIER_BYTES: usize = 11;
 
 pub(super) fn hex_enc(bytes: &[u8]) -> String {
     hex::encode(bytes)
@@ -45,7 +46,11 @@ impl TryFrom<JsonNoteInfo> for NoteInfo {
             )?,
             value: note.value,
             position: note.position,
-            diversifier: hex_dec(&note.diversifier, "diversifier")?,
+            diversifier: require_len(
+                hex_dec(&note.diversifier, "diversifier")?,
+                "diversifier",
+                ORCHARD_DIVERSIFIER_BYTES,
+            )?,
             rho: require_len(hex_dec(&note.rho, "rho")?, "rho", PROTOCOL_FIELD_BYTES)?,
             rseed: require_len(
                 hex_dec(&note.rseed, "rseed")?,
@@ -103,7 +108,13 @@ pub(super) fn json_from_jstring<T: for<'de> Deserialize<'de>>(
     field: &str,
 ) -> anyhow::Result<T> {
     let s = java_string_to_rust(env, value)?;
-    serde_json::from_str(&s).map_err(|e| anyhow!("{field}: JSON parse error: {e}"))
+    serde_json::from_str(&s).map_err(|e| {
+        anyhow!(
+            "{field}: JSON parse error at line {}, column {}",
+            e.line(),
+            e.column()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -117,7 +128,7 @@ mod tests {
             nullifier: hex::encode([2u8; PROTOCOL_FIELD_BYTES]),
             value: 13_000_000,
             position: 0,
-            diversifier: hex::encode([0u8; 11]),
+            diversifier: hex::encode([0u8; ORCHARD_DIVERSIFIER_BYTES]),
             rho: hex::encode([0u8; PROTOCOL_FIELD_BYTES]),
             rseed: hex::encode([0u8; PROTOCOL_FIELD_BYTES]),
             scope: 2,

@@ -33,9 +33,11 @@ class VotingRustBackendTest {
         private const val ROUND_ID = "round-1"
         private const val SNAPSHOT_HEIGHT = 123_456L
         private const val SESSION_JSON = "{\"round\":\"one\"}"
-        private const val TESTNET_NETWORK_ID = 0
+        private const val TESTNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_TESTNET
         private const val ACCOUNT_INDEX = 0
         private const val ADDRESS_INDEX = 1
+        private const val MAINNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_MAINNET
+        private const val SECOND_ROUND_ID = "round-2"
         private const val PCZT_ROUND_ID =
             "0101010101010101010101010101010101010101010101010101010101010101"
         private const val ROUND_NAME = "Test Round"
@@ -77,6 +79,12 @@ class VotingRustBackendTest {
             assertFailsWith<RuntimeException> {
                 backend.computeShareNullifier(VOTE_COMMITMENT, OUT_OF_RANGE_SHARE_INDEX, BLIND)
             }
+        }
+
+    @Test
+    fun warm_proving_caches_smoke() =
+        runTest {
+            VotingRustBackend.new().warmProvingCaches()
         }
 
     @Test
@@ -146,6 +154,41 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun list_rounds_returns_all_rounds_for_current_wallet_only() =
+        runTest {
+            val dbPath = newDbPath()
+            val firstWallet = VotingRustBackend.new().openVotingDb(dbPath, WALLET_ID)
+            val secondWallet = VotingRustBackend.new().openVotingDb(dbPath, OTHER_WALLET_ID)
+            try {
+                firstWallet.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+                firstWallet.initRound(
+                    roundId = SECOND_ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+
+                val firstWalletRounds = firstWallet.listRounds().map { it.roundId }.toSet()
+                val secondWalletRounds = secondWallet.listRounds()
+
+                assertEquals(setOf(ROUND_ID, SECOND_ROUND_ID), firstWalletRounds)
+                assertEquals(0, secondWalletRounds.size)
+            } finally {
+                firstWallet.close()
+                secondWallet.close()
+            }
+        }
+
+    @Test
     fun voting_db_rejects_malformed_inputs_and_closed_handle() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
@@ -203,6 +246,21 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun compute_bundle_setup_rejects_malformed_diversifier() =
+        runTest {
+            val notesJson =
+                JSONArray()
+                    .put(
+                        noteJson(value = NOTE_VALUE, position = 0, byteValue = 1)
+                            .put("diversifier", repeatedHex(0, DIVERSIFIER_BYTES - 1))
+                    ).toString()
+
+            assertFailsWith<RuntimeException> {
+                VotingRustBackend.new().computeBundleSetup(notesJson)
+            }
+        }
+
+    @Test
     fun setup_bundles_round_trips_bundle_count() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
@@ -223,6 +281,10 @@ class VotingRustBackendTest {
                 assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
                 assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
                 assertEquals(2, db.getBundleCount(ROUND_ID))
+
+                val deletedRows = db.deleteSkippedBundles(ROUND_ID, keepCount = 1)
+                assertEquals(1L, deletedRows)
+                assertEquals(1, db.getBundleCount(ROUND_ID))
             } finally {
                 db.close()
             }
@@ -233,6 +295,15 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+
                 val first = db.generateHotkey(ROUND_ID, HOTKEY_SEED)
                 val second = db.generateHotkey(ROUND_ID, HOTKEY_SEED)
                 val other = db.generateHotkey(ROUND_ID, OTHER_HOTKEY_SEED)
@@ -245,9 +316,48 @@ class VotingRustBackendTest {
                 assertEquals(FIELD_BYTES, first.secretKey.value.size)
                 assertEquals(FIELD_BYTES, first.publicKey.value.size)
                 assertTrue(first.address.startsWith("sv1"))
+                assertEquals(
+                    JniRoundPhase.HOTKEY_GENERATED,
+                    assertNotNull(db.getRoundState(ROUND_ID)).roundPhase
+                )
+
+                first.secretKey.clear()
+                assertTrue(first.secretKey.value.all { it == 0.toByte() })
 
                 assertFailsWith<RuntimeException> {
                     db.generateHotkey(ROUND_ID, SHORT_FIELD)
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun build_governance_pczt_rejects_mismatched_bundle_inputs_and_seed() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val mismatchedNotesJson = notesJson(noteCount = 1, value = PCZT_NOTE_VALUE)
+                val mismatchedSameIndexNotesJson =
+                    notesJson(noteCount = 6, value = PCZT_NOTE_VALUE, positionOffset = 10)
+                val mismatchedSamePositionNotesJson =
+                    notesJson(noteCount = 6, value = PCZT_NOTE_VALUE, ufvkString = "different")
+                val ufvk = deriveTestUfvk()
+                val mismatchedUfvk = deriveTestUfvk(seed = OTHER_HOTKEY_SEED)
+                db.initPcztRoundWithBundles(notesJson)
+
+                assertFailsWith<RuntimeException> {
+                    db.buildTestGovernancePcztJson(ufvk, mismatchedNotesJson)
+                }
+                assertFailsWith<RuntimeException> {
+                    db.buildTestGovernancePcztJson(ufvk, mismatchedSameIndexNotesJson)
+                }
+                assertFailsWith<RuntimeException> {
+                    db.buildTestGovernancePcztJson(ufvk, mismatchedSamePositionNotesJson)
+                }
+                assertFailsWith<RuntimeException> {
+                    db.buildTestGovernancePcztJson(mismatchedUfvk, notesJson)
                 }
             } finally {
                 db.close()
@@ -261,26 +371,8 @@ class VotingRustBackendTest {
             val db = backend.openVotingDb(newDbPath(), WALLET_ID)
             try {
                 val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val mismatchedNotesJson = notesJson(noteCount = 1, value = PCZT_NOTE_VALUE)
-                val ufvk =
-                    RustDerivationTool
-                        .new()
-                        .deriveUnifiedFullViewingKeys(HOTKEY_SEED, TESTNET_NETWORK_ID, 1)
-                        .first()
-
-                db.initRound(
-                    roundId = PCZT_ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-                db.setupBundles(PCZT_ROUND_ID, notesJson)
-
-                assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztJson(ufvk, mismatchedNotesJson)
-                }
+                val ufvk = deriveTestUfvk()
+                db.initPcztRoundWithBundles(notesJson)
 
                 val pcztJson =
                     JSONObject(db.buildTestGovernancePcztJson(ufvk, notesJson))
@@ -293,6 +385,13 @@ class VotingRustBackendTest {
                 assertEquals(FIELD_BYTES, sighash.size)
                 assertTrue(pcztJson.getInt("action_index") >= 0)
                 assertContentEquals(sighash, extractedSighash)
+                assertEquals(
+                    JniRoundPhase.DELEGATION_CONSTRUCTED,
+                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
+                )
+                assertFailsWith<RuntimeException> {
+                    db.generateHotkey(PCZT_ROUND_ID, HOTKEY_SEED)
+                }
                 assertFailsWith<RuntimeException> {
                     backend.extractSpendAuthSig(pcztBytes, pcztJson.getInt("action_index"))
                 }
@@ -301,20 +400,71 @@ class VotingRustBackendTest {
             }
         }
 
+    @Test
+    fun build_governance_pczt_accepts_mainnet_network_id() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val ufvk = deriveTestUfvk(networkId = MAINNET_NETWORK_ID)
+                db.initPcztRoundWithBundles(notesJson)
+
+                val pcztJson =
+                    JSONObject(
+                        db.buildTestGovernancePcztJson(
+                            ufvk = ufvk,
+                            notesJson = notesJson,
+                            networkId = MAINNET_NETWORK_ID
+                        )
+                    )
+
+                assertTrue(pcztJson.getString("pczt_bytes").hexToByteArray().isNotEmpty())
+            } finally {
+                db.close()
+            }
+        }
+
     private fun newDbPath() =
         createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
 
+    private suspend fun deriveTestUfvk(
+        seed: ByteArray = HOTKEY_SEED,
+        networkId: Int = TESTNET_NETWORK_ID
+    ): String =
+        RustDerivationTool
+            .new()
+            .deriveUnifiedFullViewingKeys(seed, networkId, 1)
+            .first()
+
+    private suspend fun VotingRustBackend.VotingDb.initPcztRoundWithBundles(
+        notesJson: String,
+        roundId: String = PCZT_ROUND_ID
+    ) {
+        initRound(
+            roundId = roundId,
+            snapshotHeight = SNAPSHOT_HEIGHT,
+            eaPK = EA_PK,
+            ncRoot = NC_ROOT,
+            nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+            sessionJson = null
+        )
+        setupBundles(roundId, notesJson)
+    }
+
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePcztJson(
         ufvk: String,
-        notesJson: String
+        notesJson: String,
+        walletSeed: ByteArray = HOTKEY_SEED,
+        networkId: Int = TESTNET_NETWORK_ID,
+        roundId: String = PCZT_ROUND_ID
     ) = buildGovernancePcztJson(
-        roundId = PCZT_ROUND_ID,
+        roundId = roundId,
         bundleIndex = 1,
         ufvk = ufvk,
-        networkId = TESTNET_NETWORK_ID,
+        networkId = networkId,
         accountIndex = ACCOUNT_INDEX,
         notesJson = notesJson,
-        walletSeed = HOTKEY_SEED,
+        walletSeed = walletSeed,
         seedFingerprint = SEED_FINGERPRINT,
         roundName = ROUND_NAME,
         addressIndex = ADDRESS_INDEX
@@ -322,12 +472,21 @@ class VotingRustBackendTest {
 
     private fun notesJson(
         noteCount: Int,
-        value: Long = NOTE_VALUE
+        value: Long = NOTE_VALUE,
+        positionOffset: Long = 0,
+        ufvkString: String = ""
     ): String =
         JSONArray()
             .apply {
                 repeat(noteCount) { index ->
-                    put(noteJson(value = value, position = index.toLong(), byteValue = index + 1))
+                    put(
+                        noteJson(
+                            value = value,
+                            position = positionOffset + index.toLong(),
+                            byteValue = index + 1,
+                            ufvkString = ufvkString
+                        )
+                    )
                 }
             }.toString()
 
@@ -335,7 +494,8 @@ class VotingRustBackendTest {
         value: Long,
         position: Long,
         byteValue: Int,
-        scope: Int = 0
+        scope: Int = 0,
+        ufvkString: String = ""
     ) = JSONObject()
         .put("commitment", repeatedHex(byteValue))
         .put("nullifier", repeatedHex(byteValue + 1))
@@ -345,7 +505,7 @@ class VotingRustBackendTest {
         .put("rho", repeatedHex(0))
         .put("rseed", repeatedHex(0))
         .put("scope", scope)
-        .put("ufvk_str", "")
+        .put("ufvk_str", ufvkString)
 
     private fun repeatedHex(
         byteValue: Int,

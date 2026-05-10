@@ -9,6 +9,8 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import org.json.JSONObject
 
+private const val PCZT_HASH_BYTES = 32
+
 @Suppress("TooManyFunctions", "LongParameterList")
 internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
     private val rustBackendLazy =
@@ -131,8 +133,21 @@ private fun JSONObject.getCheckedInt(name: String): Int =
 
 private fun JSONObject.toGovernancePcztResult() =
     GovernancePcztResult(
-        pcztBytes = getString("pczt_bytes").fromHex(),
-        rk = getString("rk").fromHex(),
-        sighash = getString("pczt_sighash").fromHex(),
+        pcztBytes = getHexBytes("pczt_bytes"),
+        rk = getHexBytes("rk", PCZT_HASH_BYTES),
+        sighash = getHexBytes("pczt_sighash", PCZT_HASH_BYTES),
         actionIndex = getCheckedInt("action_index")
     )
+
+private fun JSONObject.getHexBytes(
+    name: String,
+    expectedSize: Int? = null
+): ByteArray {
+    val bytes = getString(name).fromHex()
+
+    require(expectedSize == null || bytes.size == expectedSize) {
+        "$name must be $expectedSize bytes, got ${bytes.size}"
+    }
+
+    return bytes
+}

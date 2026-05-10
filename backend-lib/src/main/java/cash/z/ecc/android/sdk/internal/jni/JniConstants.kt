@@ -32,3 +32,13 @@ const val JNI_HOTKEY_SECRET_KEY_BYTES_SIZE = 32
  * The number of bytes in a voting hotkey public key. It's used e.g. in [HotkeyPublicKey.value]
  */
 const val JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE = 32
+
+/**
+ * Voting JNI network id for testnet. Matches [cash.z.ecc.android.sdk.model.ZcashNetwork.ID_TESTNET].
+ */
+const val JNI_VOTING_NETWORK_ID_TESTNET = 0
+
+/**
+ * Voting JNI network id for mainnet. Matches [cash.z.ecc.android.sdk.model.ZcashNetwork.ID_MAINNET].
+ */
+const val JNI_VOTING_NETWORK_ID_MAINNET = 1

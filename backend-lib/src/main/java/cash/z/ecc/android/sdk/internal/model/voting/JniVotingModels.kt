@@ -4,16 +4,35 @@ import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_SECRET_KEY_BYTES_SIZE
 
+/**
+ * JVM-owned voting hotkey secret bytes.
+ *
+ * Call [useSecret], [clear], or [close] as soon as the secret is no longer needed. The JVM
+ * byte array cannot be zeroized automatically by Rust after it crosses JNI.
+ */
 @Keep
 @ConsistentCopyVisibility
 data class HotkeySecretKey internal constructor(
     val value: ByteArray
-) {
+) : AutoCloseable {
     init {
         require(value.size == JNI_HOTKEY_SECRET_KEY_BYTES_SIZE) {
             "HotkeySecretKey must be $JNI_HOTKEY_SECRET_KEY_BYTES_SIZE bytes, got ${value.size}"
         }
     }
+
+    fun clear() {
+        value.fill(0)
+    }
+
+    fun <T> useSecret(block: (ByteArray) -> T): T =
+        try {
+            block(value)
+        } finally {
+            clear()
+        }
+
+    override fun close() = clear()
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

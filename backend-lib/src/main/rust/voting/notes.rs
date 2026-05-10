@@ -41,8 +41,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
             .map(NoteInfo::try_from)
             .collect::<anyhow::Result<_>>()?;
         let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
+        let round_id = java_string_to_rust(env, &round_id)?;
         let (count, weight) = db
-            .setup_bundles(&java_string_to_rust(env, &round_id)?, &notes)
+            .setup_bundles(&round_id, &notes)
             .map_err(|e| anyhow!("setup_bundles: {}", e))?;
         if count != expected_count || weight != expected_weight {
             return Err(anyhow!(
@@ -53,6 +54,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
                 expected_weight
             ));
         }
+        store_bundle_note_identities(&db, &round_id, &notes)?;
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
@@ -71,9 +73,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let seed = java_secret_bytes_at_least(env, &seed, "seed", PROTOCOL_FIELD_BYTES)?;
+        let round_id = java_string_to_rust(env, &round_id)?;
         let hotkey = db
-            .generate_hotkey(&java_string_to_rust(env, &round_id)?, seed.expose_secret())
+            .generate_hotkey(&round_id, seed.expose_secret())
             .map_err(|e| anyhow!("generate_hotkey: {}", e))?;
+        update_round_phase_forward(&db, &round_id, RoundPhase::HotkeyGenerated)?;
         make_jni_voting_hotkey(env, hotkey)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())

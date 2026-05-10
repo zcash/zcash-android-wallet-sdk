@@ -20,7 +20,7 @@ use zcash_protocol::consensus::{BranchId, Network, NetworkConstants};
 use zcash_voting as voting;
 
 use voting::storage::{RoundPhase, RoundState, RoundSummary, VoteRecord, VotingDb};
-use voting::types::{GovernancePczt, NoteInfo, VotingError};
+use voting::types::{GovernancePczt, NoteInfo};
 
 use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,

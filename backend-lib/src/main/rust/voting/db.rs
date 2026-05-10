@@ -1,3 +1,4 @@
+use super::helpers::*;
 use super::*;
 
 static NEXT_DB_HANDLE: AtomicI64 = AtomicI64::new(1);
@@ -44,6 +45,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
 
         let db = VotingDb::open(&path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
         db.set_wallet_id(&wallet_id);
+        init_voting_android_tables(&db)?;
         let handle = next_handle()?;
         registry()
             .lock()
