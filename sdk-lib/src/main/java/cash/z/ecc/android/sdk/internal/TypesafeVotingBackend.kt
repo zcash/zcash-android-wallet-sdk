@@ -78,6 +78,33 @@ internal interface TypesafeVotingDb {
         roundName: String,
         addressIndex: Int
     ): GovernancePcztResult
+
+    suspend fun storeWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        witnessesJson: String
+    )
+
+    suspend fun precomputeDelegationPir(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String
+    ): DelegationPirPrecomputeResult
+
+    suspend fun buildAndProveDelegation(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String,
+        walletSeed: ByteArray,
+        accountIndex: Int,
+        addressIndex: Int,
+        proofProgress: ((Double) -> Unit)? = null
+    ): DelegationProofResult
+
 }
 
 internal data class GovernancePcztResult(
@@ -103,3 +130,47 @@ internal data class GovernancePcztResult(
         return result
     }
 }
+
+internal data class DelegationPirPrecomputeResult(
+    val cachedCount: Long,
+    val fetchedCount: Long
+)
+
+internal data class DelegationProofResult(
+    val proof: ByteArray,
+    val publicInputs: List<ByteArray>,
+    val nfSigned: ByteArray,
+    val cmxNew: ByteArray,
+    val govNullifiers: List<ByteArray>,
+    val vanComm: ByteArray,
+    val rk: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DelegationProofResult) return false
+        return proof.contentEquals(other.proof) &&
+            publicInputs.contentDeepEquals(other.publicInputs) &&
+            nfSigned.contentEquals(other.nfSigned) &&
+            cmxNew.contentEquals(other.cmxNew) &&
+            govNullifiers.contentDeepEquals(other.govNullifiers) &&
+            vanComm.contentEquals(other.vanComm) &&
+            rk.contentEquals(other.rk)
+    }
+
+    override fun hashCode(): Int {
+        var result = proof.contentHashCode()
+        result = 31 * result + publicInputs.contentDeepHashCode()
+        result = 31 * result + nfSigned.contentHashCode()
+        result = 31 * result + cmxNew.contentHashCode()
+        result = 31 * result + govNullifiers.contentDeepHashCode()
+        result = 31 * result + vanComm.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        return result
+    }
+}
+
+private fun List<ByteArray>.contentDeepEquals(other: List<ByteArray>): Boolean =
+    size == other.size && zip(other).all { (left, right) -> left.contentEquals(right) }
+
+private fun List<ByteArray>.contentDeepHashCode(): Int =
+    toTypedArray().contentDeepHashCode()

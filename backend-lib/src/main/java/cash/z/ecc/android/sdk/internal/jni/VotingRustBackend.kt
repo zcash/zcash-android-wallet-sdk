@@ -12,6 +12,45 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+/**
+ * Synchronous native proof progress callback.
+ *
+ * This callback runs while the owning voting DB handle is locked by the in-flight
+ * proof operation. Implementations must not call back into voting DB methods.
+ * Native code treats callback failures as best-effort progress reporting and
+ * continues proof generation after logging the failure.
+ */
+@Keep
+fun interface VotingProofProgressCallback {
+    @Keep
+    fun onProgress(progress: Double)
+}
+
+private val proofProgressCallbackDepth = ThreadLocal<Int>()
+
+private fun isInProofProgressCallback() = (proofProgressCallbackDepth.get() ?: 0) > 0
+
+private fun <T> runInProofProgressCallback(block: () -> T): T {
+    val depth = proofProgressCallbackDepth.get() ?: 0
+    proofProgressCallbackDepth.set(depth + 1)
+    try {
+        return block()
+    } finally {
+        if (depth == 0) {
+            proofProgressCallbackDepth.remove()
+        } else {
+            proofProgressCallbackDepth.set(depth)
+        }
+    }
+}
+
+private fun VotingProofProgressCallback.withVotingDbReentryGuard() =
+    VotingProofProgressCallback { progress ->
+        runInProofProgressCallback {
+            onProgress(progress)
+        }
+    }
+
 @Keep
 @Suppress("TooManyFunctions", "LongParameterList")
 class VotingRustBackend private constructor() {
@@ -178,8 +217,67 @@ class VotingRustBackend private constructor() {
                 ) ?: error("buildGovernancePczt returned null")
             }
 
-        private suspend fun <T> withHandle(block: (Long) -> T): T =
-            accessMutex.withLock {
+        @Throws(RuntimeException::class)
+        suspend fun storeWitnesses(
+            roundId: String,
+            bundleIndex: Int,
+            witnessesJson: String
+        ) = withHandle { handle ->
+            storeWitnessesNative(handle, roundId, bundleIndex, witnessesJson)
+        }
+
+        @Throws(RuntimeException::class)
+        suspend fun precomputeDelegationPirJson(
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notesJson: String
+        ): String =
+            withHandle { handle ->
+                precomputeDelegationPirJsonNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    pirServerUrl,
+                    networkId,
+                    notesJson
+                ) ?: error("precomputeDelegationPir returned null")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun buildAndProveDelegationJson(
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notesJson: String,
+            walletSeed: ByteArray,
+            accountIndex: Int,
+            addressIndex: Int,
+            proofProgress: VotingProofProgressCallback?
+        ): String =
+            withHandle { handle ->
+                buildAndProveDelegationJsonNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    pirServerUrl,
+                    networkId,
+                    notesJson,
+                    walletSeed,
+                    accountIndex,
+                    addressIndex,
+                    proofProgress?.withVotingDbReentryGuard()
+                ) ?: error("buildAndProveDelegation returned null")
+            }
+
+        private suspend fun <T> withHandle(block: (Long) -> T): T {
+            check(!isInProofProgressCallback()) {
+                "Voting DB methods must not be called from a proof progress callback"
+            }
+
+            return accessMutex.withLock {
                 val handle =
                     checkNotNull(dbHandle) {
                         "Voting DB handle is closed"
@@ -188,6 +286,7 @@ class VotingRustBackend private constructor() {
                     block(handle)
                 }
             }
+        }
     }
 
     companion object {
@@ -303,5 +402,41 @@ class VotingRustBackend private constructor() {
             signedPcztBytes: ByteArray,
             actionIndex: Int
         ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeWitnessesNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            witnessesJson: String
+        )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun precomputeDelegationPirJsonNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notesJson: String
+        ): String?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildAndProveDelegationJsonNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notesJson: String,
+            walletSeed: ByteArray,
+            accountIndex: Int,
+            addressIndex: Int,
+            proofProgress: VotingProofProgressCallback?
+        ): String?
+
     }
 }

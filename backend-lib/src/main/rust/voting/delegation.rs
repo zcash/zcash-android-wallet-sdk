@@ -1,6 +1,7 @@
 use super::db::*;
 use super::helpers::*;
 use super::json::*;
+use super::progress::*;
 use super::*;
 
 #[unsafe(no_mangle)]
@@ -118,7 +119,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
 fn extract_indexed_spend_auth_sig(
     signed_pczt_bytes: &[u8],
     action_index: usize,
-) -> anyhow::Result<[u8; 64]> {
+) -> anyhow::Result<[u8; SPEND_AUTH_SIG_BYTES]> {
     let pczt = pczt::Pczt::parse(signed_pczt_bytes).map_err(|e| {
         anyhow!(
             "extract_spend_auth_sig: failed to parse signed PCZT: {:?}",
@@ -139,6 +140,137 @@ fn extract_indexed_spend_auth_sig(
         "extract_spend_auth_sig: action_index {action_index} out of bounds for {} actions",
         actions.len()
     ))
+}
+
+fn connect_pir_client(pir_url: &str) -> anyhow::Result<voting::PirClientBlocking> {
+    voting::PirClientBlocking::with_transport(pir_url, Arc::new(voting::HyperTransport::new()))
+        .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeWitnessesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    witnesses_json: JString<'local>,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let json_witnesses: Vec<JsonWitnessData> =
+            json_from_jstring(env, &witnesses_json, "witnessesJson")?;
+        let witnesses: Vec<WitnessData> = json_witnesses
+            .into_iter()
+            .map(WitnessData::try_from)
+            .collect::<anyhow::Result<_>>()?;
+        db.store_witnesses(
+            &java_string_to_rust(env, &round_id)?,
+            jint_to_u32(bundle_index, "bundle_index")?,
+            &witnesses,
+        )
+        .map_err(|e| anyhow!("store_witnesses: {}", e))?;
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_precomputeDelegationPirJsonNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    pir_server_url: JString<'local>,
+    network_id: jint,
+    notes_json: JString<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        network_from_id(network_id)?;
+        let network_id = jint_to_u32(network_id, "network_id")?;
+        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
+        let notes: Vec<NoteInfo> = json_notes
+            .into_iter()
+            .map(NoteInfo::try_from)
+            .collect::<anyhow::Result<_>>()?;
+        let pir_url = java_string_to_rust(env, &pir_server_url)?;
+        let pir_client = connect_pir_client(&pir_url)?;
+        let result = db
+            .precompute_delegation_pir(
+                &java_string_to_rust(env, &round_id)?,
+                jint_to_u32(bundle_index, "bundle_index")?,
+                &notes,
+                &pir_client,
+                network_id,
+            )
+            .map_err(|e| anyhow!("precompute_delegation_pir: {}", e))?;
+
+        json_to_jstring(env, &JsonDelegationPirPrecomputeResult::from(result))
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_buildAndProveDelegationJsonNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    pir_server_url: JString<'local>,
+    network_id: jint,
+    notes_json: JString<'local>,
+    wallet_seed: JByteArray<'local>,
+    account_index: jint,
+    address_index: jint,
+    progress_callback: JObject<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let network = network_from_id(network_id)?;
+        let network_id = jint_to_u32(network_id, "network_id")?;
+        let account_index = jint_to_u32(account_index, "account_index")?;
+        let address_index = jint_to_u32(address_index, "address_index")?;
+        let seed_bytes =
+            java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
+        let hotkey_raw_address = hotkey_orchard_raw_address_from_wallet_seed(
+            seed_bytes.expose_secret(),
+            network,
+            account_index,
+            address_index,
+        )?;
+
+        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
+        let notes: Vec<NoteInfo> = json_notes
+            .into_iter()
+            .map(NoteInfo::try_from)
+            .collect::<anyhow::Result<_>>()?;
+        let pir_url = java_string_to_rust(env, &pir_server_url)?;
+        let pir_client = connect_pir_client(&pir_url)?;
+        let reporter = progress_reporter_from_callback(env, &progress_callback)?;
+        let result = db
+            .build_and_prove_delegation(
+                &java_string_to_rust(env, &round_id)?,
+                jint_to_u32(bundle_index, "bundle_index")?,
+                &notes,
+                &hotkey_raw_address,
+                &pir_client,
+                network_id,
+                reporter.as_ref(),
+            )
+            .map_err(|e| anyhow!("build_and_prove_delegation: {}", e))?;
+
+        json_to_jstring(env, &JsonDelegationProofResult::from(result))
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
 #[cfg(test)]

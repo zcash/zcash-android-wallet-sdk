@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.ext.fromHex
+import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
@@ -9,7 +10,8 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import org.json.JSONObject
 
-private const val PCZT_HASH_BYTES = 32
+private const val PROTOCOL_FIELD_BYTES = 32
+private const val PCZT_SIGHASH_BYTES = PROTOCOL_FIELD_BYTES
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
@@ -126,18 +128,107 @@ private class TypesafeVotingDbImpl(
                 addressIndex
             )
         ).toGovernancePcztResult()
+
+    override suspend fun storeWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        witnessesJson: String
+    ) = votingDb.storeWitnesses(roundId, bundleIndex, witnessesJson)
+
+    override suspend fun precomputeDelegationPir(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String
+    ): DelegationPirPrecomputeResult =
+        JSONObject(
+            votingDb.precomputeDelegationPirJson(
+                roundId,
+                bundleIndex,
+                pirServerUrl,
+                networkId,
+                notesJson
+            )
+        ).toDelegationPirPrecomputeResult()
+
+    override suspend fun buildAndProveDelegation(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String,
+        walletSeed: ByteArray,
+        accountIndex: Int,
+        addressIndex: Int,
+        proofProgress: ((Double) -> Unit)?
+    ): DelegationProofResult =
+        JSONObject(
+            votingDb.buildAndProveDelegationJson(
+                roundId,
+                bundleIndex,
+                pirServerUrl,
+                networkId,
+                notesJson,
+                walletSeed,
+                accountIndex,
+                addressIndex,
+                proofProgress?.asVotingProgressCallback()
+            )
+        ).toDelegationProofResult()
+
 }
 
 private fun JSONObject.getCheckedInt(name: String): Int =
     Math.toIntExact(getLong(name))
 
-private fun JSONObject.toGovernancePcztResult() =
+internal fun JSONObject.toGovernancePcztResult() =
     GovernancePcztResult(
         pcztBytes = getHexBytes("pczt_bytes"),
-        rk = getHexBytes("rk", PCZT_HASH_BYTES),
-        sighash = getHexBytes("pczt_sighash", PCZT_HASH_BYTES),
+        rk = getHexBytes("rk", PROTOCOL_FIELD_BYTES),
+        sighash = getHexBytes("pczt_sighash", PCZT_SIGHASH_BYTES),
         actionIndex = getCheckedInt("action_index")
     )
+
+internal fun JSONObject.toDelegationPirPrecomputeResult() =
+    DelegationPirPrecomputeResult(
+        cachedCount = getLong("cached_count"),
+        fetchedCount = getLong("fetched_count")
+    )
+
+internal fun JSONObject.toDelegationProofResult() =
+    DelegationProofResult(
+        proof = getHexBytes("proof"),
+        publicInputs =
+            getJSONArray("public_inputs").toHexByteArrayList(
+                "public_inputs",
+                PROTOCOL_FIELD_BYTES
+            ),
+        nfSigned = getHexBytes("nf_signed", PROTOCOL_FIELD_BYTES),
+        cmxNew = getHexBytes("cmx_new", PROTOCOL_FIELD_BYTES),
+        govNullifiers =
+            getJSONArray("gov_nullifiers").toHexByteArrayList(
+                "gov_nullifiers",
+                PROTOCOL_FIELD_BYTES
+            ),
+        vanComm = getHexBytes("van_comm", PROTOCOL_FIELD_BYTES),
+        rk = getHexBytes("rk", PROTOCOL_FIELD_BYTES)
+    )
+
+private fun JSONArray.toHexByteArrayList(
+    name: String,
+    expectedElementSize: Int
+): List<ByteArray> =
+    (0 until length()).map { index ->
+        getString(index).fromHex().also { bytes ->
+            require(bytes.size == expectedElementSize) {
+                "$name[$index] must be $expectedElementSize bytes, got ${bytes.size}"
+            }
+        }
+    }
+
+private fun ((Double) -> Unit).asVotingProgressCallback() =
+    VotingProofProgressCallback { progress -> invoke(progress) }
 
 private fun JSONObject.getHexBytes(
     name: String,

@@ -25,6 +25,7 @@ pub(super) const VOTE_COMMITMENT_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const BLIND_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const SHARE_NULLIFIER_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const HOTKEY_PUBLIC_KEY_BYTES: usize = PROTOCOL_FIELD_BYTES;
+pub(super) const SPEND_AUTH_SIG_BYTES: usize = 64;
 pub(super) const NETWORK_ID_TESTNET: jint = 0;
 pub(super) const NETWORK_ID_MAINNET: jint = 1;
 

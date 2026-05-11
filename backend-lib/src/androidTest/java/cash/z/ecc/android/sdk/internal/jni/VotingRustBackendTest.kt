@@ -22,6 +22,7 @@ class VotingRustBackendTest {
         private const val SHARE_INDEX = 5
         private const val OUT_OF_RANGE_SHARE_INDEX = 16
         private const val DIVERSIFIER_BYTES = 11
+        private const val ORCHARD_WITNESS_PATH_DEPTH = 32
         private val VOTE_COMMITMENT = ByteArray(FIELD_BYTES) { 1 }
         private val BLIND = ByteArray(FIELD_BYTES) { 2 }
         private val SHORT_FIELD = ByteArray(FIELD_BYTES - 1)
@@ -447,6 +448,51 @@ class VotingRustBackendTest {
             }
         }
 
+    @Test
+    fun delegation_proof_bridge_methods_reject_malformed_inputs_before_side_effects() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                db.initPcztRoundWithBundles(notesJson)
+
+                assertFailsWith<RuntimeException> {
+                    db.storeWitnesses(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        witnessesJson =
+                            witnessesJson(
+                                authPathEntries = ORCHARD_WITNESS_PATH_DEPTH - 1
+                            )
+                    )
+                }
+                assertFailsWith<RuntimeException> {
+                    db.precomputeDelegationPirJson(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        pirServerUrl = "http://127.0.0.1:1",
+                        networkId = -1,
+                        notesJson = notesJson
+                    )
+                }
+                assertFailsWith<RuntimeException> {
+                    db.buildAndProveDelegationJson(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        pirServerUrl = "http://127.0.0.1:1",
+                        networkId = TESTNET_NETWORK_ID,
+                        notesJson = notesJson,
+                        walletSeed = SHORT_FIELD,
+                        accountIndex = ACCOUNT_INDEX,
+                        addressIndex = ADDRESS_INDEX,
+                        proofProgress = null
+                    )
+                }
+            } finally {
+                db.close()
+            }
+        }
+
     private fun newDbPath() =
         createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
 
@@ -530,6 +576,23 @@ class VotingRustBackendTest {
         .put("rseed", repeatedHex(0))
         .put("scope", scope)
         .put("ufvk_str", ufvkString)
+
+    private fun witnessesJson(authPathEntries: Int) =
+        JSONArray()
+            .put(
+                JSONObject()
+                    .put("note_commitment", repeatedHex(1))
+                    .put("position", 0)
+                    .put("root", repeatedHex(2))
+                    .put(
+                        "auth_path",
+                        JSONArray().apply {
+                            repeat(authPathEntries) { index ->
+                                put(repeatedHex(index + 3))
+                            }
+                        }
+                    )
+            ).toString()
 
     private fun repeatedHex(
         byteValue: Int,
