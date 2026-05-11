@@ -37,7 +37,7 @@ runs:
         echo -n > ~/.gradle/gradle.properties
     - name: Gradle Binary Cache Restore
       id: gradle-binary-cache-restore
-      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
@@ -47,7 +47,7 @@ runs:
         key: ${{ runner.os }}-gradle-binary-${{ hashFiles(format('{0}{1}', github.workspace, '/gradle/wrapper/gradle-wrapper.properties')) }}
     - name: Gradle Dependency Cache Restore
       id: gradle-dependency-cache-restore
-      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
@@ -58,7 +58,7 @@ runs:
           ${{ runner.os }}-gradle-deps-
     - name: Gradle Build Cache Restore
       id: gradle-build-cache-restore
-      uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
@@ -72,7 +72,7 @@ runs:
     - name: Rust Cache
       if: inputs.rust-cache == 'true'
       id: rust-cache
-      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
@@ -104,7 +104,7 @@ runs:
     - name: Gradle Binary Cache Save
       id: gradle-binary-cache-save
       if: github.event.pull_request.head.sha == '' && steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
@@ -115,7 +115,7 @@ runs:
     - name: Gradle Dependency Cache Save
       id: gradle-dependency-cache-save
       if: github.event.pull_request.head.sha == '' && steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       with:
         path: |
           ~/.gradle/caches/modules-2
