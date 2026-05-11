@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.internal
 
-import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundState
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 
@@ -22,7 +22,7 @@ interface TypesafeVotingDb {
         sessionJson: String?
     )
 
-    suspend fun getRoundState(roundId: String): FfiRoundState?
+    suspend fun getRoundState(roundId: String): JniRoundState?
 
     suspend fun listRounds(): List<JniRoundSummary>
 

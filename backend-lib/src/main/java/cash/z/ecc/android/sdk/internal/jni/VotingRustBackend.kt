@@ -1,7 +1,7 @@
 package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
-import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundState
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import kotlinx.coroutines.Dispatchers
@@ -67,7 +67,7 @@ class VotingRustBackend private constructor() {
         }
 
         @Throws(RuntimeException::class)
-        suspend fun getRoundState(roundId: String): FfiRoundState? =
+        suspend fun getRoundState(roundId: String): JniRoundState? =
             withHandle { handle -> getRoundStateNative(handle, roundId) }
 
         @Throws(RuntimeException::class)
@@ -138,7 +138,7 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun getRoundStateNative(dbHandle: Long, roundId: String): FfiRoundState?
+        private external fun getRoundStateNative(dbHandle: Long, roundId: String): JniRoundState?
 
         @JvmStatic
         @Throws(RuntimeException::class)

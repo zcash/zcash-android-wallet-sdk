@@ -3,14 +3,14 @@ package cash.z.ecc.android.sdk.internal.model.voting
 import androidx.annotation.Keep
 
 // Must match PHASE_* constants in backend-lib/src/main/rust/voting/helpers.rs.
-internal const val FFI_ROUND_PHASE_INITIALIZED = 0
-internal const val FFI_ROUND_PHASE_HOTKEY_GENERATED = 1
-internal const val FFI_ROUND_PHASE_DELEGATION_CONSTRUCTED = 2
-internal const val FFI_ROUND_PHASE_DELEGATION_PROVED = 3
-internal const val FFI_ROUND_PHASE_VOTE_READY = 4
+internal const val JNI_ROUND_PHASE_INITIALIZED = 0
+internal const val JNI_ROUND_PHASE_HOTKEY_GENERATED = 1
+internal const val JNI_ROUND_PHASE_DELEGATION_CONSTRUCTED = 2
+internal const val JNI_ROUND_PHASE_DELEGATION_PROVED = 3
+internal const val JNI_ROUND_PHASE_VOTE_READY = 4
 
 @Keep
-data class FfiRoundState(
+data class JniRoundState(
     val roundId: String,
     val phase: Int,
     val snapshotHeight: Long,
@@ -18,18 +18,18 @@ data class FfiRoundState(
     val delegatedWeight: Long?,
     val proofGenerated: Boolean
 ) {
-    val roundPhase = FfiRoundPhase.fromInt(phase)
+    val roundPhase = JniRoundPhase.fromInt(phase)
 }
 
 @Keep
-enum class FfiRoundPhase(
+enum class JniRoundPhase(
     val value: Int
 ) {
-    INITIALIZED(FFI_ROUND_PHASE_INITIALIZED),
-    HOTKEY_GENERATED(FFI_ROUND_PHASE_HOTKEY_GENERATED),
-    DELEGATION_CONSTRUCTED(FFI_ROUND_PHASE_DELEGATION_CONSTRUCTED),
-    DELEGATION_PROVED(FFI_ROUND_PHASE_DELEGATION_PROVED),
-    VOTE_READY(FFI_ROUND_PHASE_VOTE_READY);
+    INITIALIZED(JNI_ROUND_PHASE_INITIALIZED),
+    HOTKEY_GENERATED(JNI_ROUND_PHASE_HOTKEY_GENERATED),
+    DELEGATION_CONSTRUCTED(JNI_ROUND_PHASE_DELEGATION_CONSTRUCTED),
+    DELEGATION_PROVED(JNI_ROUND_PHASE_DELEGATION_PROVED),
+    VOTE_READY(JNI_ROUND_PHASE_VOTE_READY);
 
     companion object {
         fun fromInt(value: Int) =
@@ -45,7 +45,7 @@ data class JniRoundSummary(
     val snapshotHeight: Long,
     val createdAt: Long
 ) {
-    val roundPhase = FfiRoundPhase.fromInt(phase)
+    val roundPhase = JniRoundPhase.fromInt(phase)
 }
 
 @Keep

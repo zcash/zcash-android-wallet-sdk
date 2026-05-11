@@ -1,6 +1,6 @@
 use super::*;
 
-// Must match FFI_ROUND_PHASE_* constants in FfiVotingModels.kt.
+// Must match JNI_ROUND_PHASE_* constants in JniVotingModels.kt.
 const PHASE_INITIALIZED: u32 = 0;
 const PHASE_HOTKEY_GENERATED: u32 = 1;
 const PHASE_DELEGATION_CONSTRUCTED: u32 = 2;
@@ -100,12 +100,12 @@ pub(super) fn round_phase_to_u32(phase: RoundPhase) -> u32 {
     }
 }
 
-pub(super) fn make_ffi_round_state<'local>(
+pub(super) fn make_jni_round_state<'local>(
     env: &mut JNIEnv<'local>,
     state: RoundState,
 ) -> anyhow::Result<jobject> {
     let phase = round_phase_to_u32(state.phase) as i32;
-    let class = env.find_class("cash/z/ecc/android/sdk/internal/model/voting/FfiRoundState")?;
+    let class = env.find_class("cash/z/ecc/android/sdk/internal/model/voting/JniRoundState")?;
     let round_id_obj: JObject<'local> = env.new_string(&state.round_id)?.into();
     let hotkey_obj: JObject<'local> = match &state.hotkey_address {
         Some(a) => env.new_string(a)?.into(),
@@ -118,7 +118,7 @@ pub(super) fn make_ffi_round_state<'local>(
     };
     let obj = env.new_object(
         &class,
-        // Matches FfiRoundState(roundId, phase, snapshotHeight, hotkeyAddress,
+        // Matches JniRoundState(roundId, phase, snapshotHeight, hotkeyAddress,
         //                       delegatedWeight, proofGenerated).
         "(Ljava/lang/String;IJLjava/lang/String;Ljava/lang/Long;Z)V",
         &[

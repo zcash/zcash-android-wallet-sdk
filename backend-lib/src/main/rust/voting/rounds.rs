@@ -59,7 +59,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
             let state = db
                 .get_round_state(&round_id)
                 .map_err(|e| anyhow!("get_round_state: {}", e))?;
-            make_ffi_round_state(env, state)
+            make_jni_round_state(env, state)
         }
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())

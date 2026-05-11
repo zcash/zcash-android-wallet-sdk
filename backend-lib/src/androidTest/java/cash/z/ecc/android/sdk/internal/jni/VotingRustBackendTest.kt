@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.internal.jni
 
-import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundPhase
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import kotlin.io.path.createTempDirectory
@@ -79,8 +79,8 @@ class VotingRustBackendTest {
 
                 val state = assertNotNull(db.getRoundState(ROUND_ID))
                 assertEquals(ROUND_ID, state.roundId)
-                assertEquals(FfiRoundPhase.INITIALIZED.value, state.phase)
-                assertEquals(FfiRoundPhase.INITIALIZED, state.roundPhase)
+                assertEquals(JniRoundPhase.INITIALIZED.value, state.phase)
+                assertEquals(JniRoundPhase.INITIALIZED, state.roundPhase)
                 assertEquals(SNAPSHOT_HEIGHT, state.snapshotHeight)
                 assertNull(state.hotkeyAddress)
                 assertNull(state.delegatedWeight)
@@ -90,8 +90,8 @@ class VotingRustBackendTest {
                 assertEquals(1, rounds.size)
                 val round = rounds.single()
                 assertEquals(ROUND_ID, round.roundId)
-                assertEquals(FfiRoundPhase.INITIALIZED.value, round.phase)
-                assertEquals(FfiRoundPhase.INITIALIZED, round.roundPhase)
+                assertEquals(JniRoundPhase.INITIALIZED.value, round.phase)
+                assertEquals(JniRoundPhase.INITIALIZED, round.roundPhase)
                 assertEquals(SNAPSHOT_HEIGHT, round.snapshotHeight)
 
                 assertEquals(emptyList(), db.getVotes(ROUND_ID).asList())
