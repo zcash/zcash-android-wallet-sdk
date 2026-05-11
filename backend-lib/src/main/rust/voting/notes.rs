@@ -46,8 +46,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
             .setup_bundles(&round_id, &notes)
             .map_err(|e| anyhow!("setup_bundles: {}", e))?;
         if count != expected_count || weight != expected_weight {
+            // setup_bundles has already persisted the round's bundles. Treat a
+            // mismatch as an internal bug; callers must clear the round before retrying.
             return Err(anyhow!(
-                "setup_bundles result mismatch: db=({}, {}) chunk=({}, {})",
+                "setup_bundles result mismatch after persisting bundles; call clearRound before retrying: db=({}, {}) chunk=({}, {})",
                 count,
                 weight,
                 expected_count,
