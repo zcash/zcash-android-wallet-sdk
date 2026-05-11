@@ -77,6 +77,8 @@ pub(super) fn make_ffi_round_state<'local>(
     };
     let obj = env.new_object(
         &class,
+        // Matches FfiRoundState(roundId, phase, snapshotHeight, hotkeyAddress,
+        //                       delegatedWeight, proofGenerated).
         "(Ljava/lang/String;IJLjava/lang/String;Ljava/lang/Long;Z)V",
         &[
             JValue::Object(&round_id_obj),
