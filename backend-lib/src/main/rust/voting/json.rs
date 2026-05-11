@@ -142,89 +142,6 @@ impl TryFrom<GovernancePczt> for JsonGovernancePczt {
     }
 }
 
-#[derive(Serialize)]
-pub(super) struct JsonDelegationPirPrecomputeResult {
-    pub(super) cached_count: u32,
-    pub(super) fetched_count: u32,
-}
-
-impl From<DelegationPirPrecomputeResult> for JsonDelegationPirPrecomputeResult {
-    fn from(result: DelegationPirPrecomputeResult) -> Self {
-        JsonDelegationPirPrecomputeResult {
-            cached_count: result.cached_count,
-            fetched_count: result.fetched_count,
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub(super) struct JsonDelegationProofResult {
-    pub(super) proof: String,
-    pub(super) public_inputs: Vec<String>,
-    pub(super) nf_signed: String,
-    pub(super) cmx_new: String,
-    pub(super) gov_nullifiers: Vec<String>,
-    pub(super) van_comm: String,
-    pub(super) rk: String,
-}
-
-impl From<DelegationProofResult> for JsonDelegationProofResult {
-    fn from(result: DelegationProofResult) -> Self {
-        JsonDelegationProofResult {
-            proof: hex_enc(&result.proof),
-            public_inputs: result
-                .public_inputs
-                .iter()
-                .map(|input| hex_enc(input))
-                .collect(),
-            nf_signed: hex_enc(&result.nf_signed),
-            cmx_new: hex_enc(&result.cmx_new),
-            gov_nullifiers: result
-                .gov_nullifiers
-                .iter()
-                .map(|nullifier| hex_enc(nullifier))
-                .collect(),
-            van_comm: hex_enc(&result.van_comm),
-            rk: hex_enc(&result.rk),
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub(super) struct JsonDelegationSubmission {
-    pub(super) proof: String,
-    pub(super) rk: String,
-    pub(super) spend_auth_sig: String,
-    pub(super) sighash: String,
-    pub(super) nf_signed: String,
-    pub(super) cmx_new: String,
-    pub(super) gov_comm: String,
-    pub(super) gov_nullifiers: Vec<String>,
-    pub(super) alpha: String,
-    pub(super) vote_round_id: String,
-}
-
-impl From<DelegationSubmissionData> for JsonDelegationSubmission {
-    fn from(data: DelegationSubmissionData) -> Self {
-        JsonDelegationSubmission {
-            proof: hex_enc(&data.proof),
-            rk: hex_enc(&data.rk),
-            spend_auth_sig: hex_enc(&data.spend_auth_sig),
-            sighash: hex_enc(&data.sighash),
-            nf_signed: hex_enc(&data.nf_signed),
-            cmx_new: hex_enc(&data.cmx_new),
-            gov_comm: hex_enc(&data.gov_comm),
-            gov_nullifiers: data
-                .gov_nullifiers
-                .iter()
-                .map(|nullifier| hex_enc(nullifier))
-                .collect(),
-            alpha: hex_enc(&data.alpha),
-            vote_round_id: data.vote_round_id,
-        }
-    }
-}
-
 pub(super) fn json_to_jstring<T: Serialize>(
     env: &mut JNIEnv<'_>,
     value: &T,
@@ -251,7 +168,6 @@ pub(super) fn json_from_jstring<T: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn json_note_info_rejects_unknown_scope() {
@@ -304,113 +220,6 @@ mod tests {
         assert!(err.to_string().contains("auth_path[0]"));
     }
 
-    #[test]
-    fn json_delegation_pir_precompute_result_serializes_counts() {
-        let result = DelegationPirPrecomputeResult {
-            cached_count: 2,
-            fetched_count: 3,
-        };
-
-        let value = serde_json::to_value(JsonDelegationPirPrecomputeResult::from(result))
-            .expect("serializes");
-
-        assert_eq!(json!(2), value["cached_count"]);
-        assert_eq!(json!(3), value["fetched_count"]);
-    }
-
-    #[test]
-    fn json_delegation_proof_result_serializes_exact_hex_fields() {
-        let result = DelegationProofResult {
-            proof: bytes(1, 3),
-            public_inputs: vec![
-                bytes(2, PROTOCOL_FIELD_BYTES),
-                bytes(3, PROTOCOL_FIELD_BYTES),
-            ],
-            nf_signed: bytes(4, PROTOCOL_FIELD_BYTES),
-            cmx_new: bytes(5, PROTOCOL_FIELD_BYTES),
-            gov_nullifiers: vec![
-                bytes(6, PROTOCOL_FIELD_BYTES),
-                bytes(7, PROTOCOL_FIELD_BYTES),
-            ],
-            van_comm: bytes(8, PROTOCOL_FIELD_BYTES),
-            rk: bytes(9, PROTOCOL_FIELD_BYTES),
-        };
-
-        let value =
-            serde_json::to_value(JsonDelegationProofResult::from(result)).expect("serializes");
-
-        assert_eq!(json!(hex_bytes(1, 3)), value["proof"]);
-        assert_eq!(
-            json!(hex_bytes(2, PROTOCOL_FIELD_BYTES)),
-            value["public_inputs"][0]
-        );
-        assert_eq!(
-            json!(hex_bytes(3, PROTOCOL_FIELD_BYTES)),
-            value["public_inputs"][1]
-        );
-        assert_eq!(
-            json!(hex_bytes(4, PROTOCOL_FIELD_BYTES)),
-            value["nf_signed"]
-        );
-        assert_eq!(json!(hex_bytes(5, PROTOCOL_FIELD_BYTES)), value["cmx_new"]);
-        assert_eq!(
-            json!(hex_bytes(6, PROTOCOL_FIELD_BYTES)),
-            value["gov_nullifiers"][0]
-        );
-        assert_eq!(
-            json!(hex_bytes(7, PROTOCOL_FIELD_BYTES)),
-            value["gov_nullifiers"][1]
-        );
-        assert_eq!(json!(hex_bytes(8, PROTOCOL_FIELD_BYTES)), value["van_comm"]);
-        assert_eq!(json!(hex_bytes(9, PROTOCOL_FIELD_BYTES)), value["rk"]);
-    }
-
-    #[test]
-    fn json_delegation_submission_serializes_exact_hex_fields() {
-        let result = DelegationSubmissionData {
-            proof: bytes(1, 3),
-            rk: bytes(2, PROTOCOL_FIELD_BYTES),
-            nf_signed: bytes(3, PROTOCOL_FIELD_BYTES),
-            cmx_new: bytes(4, PROTOCOL_FIELD_BYTES),
-            gov_comm: bytes(5, PROTOCOL_FIELD_BYTES),
-            gov_nullifiers: vec![
-                bytes(6, PROTOCOL_FIELD_BYTES),
-                bytes(7, PROTOCOL_FIELD_BYTES),
-            ],
-            alpha: bytes(8, PROTOCOL_FIELD_BYTES),
-            vote_round_id: "round-1".to_string(),
-            spend_auth_sig: bytes(9, SPEND_AUTH_SIG_BYTES),
-            sighash: bytes(10, PROTOCOL_FIELD_BYTES),
-        };
-
-        let value =
-            serde_json::to_value(JsonDelegationSubmission::from(result)).expect("serializes");
-
-        assert_eq!(json!(hex_bytes(1, 3)), value["proof"]);
-        assert_eq!(json!(hex_bytes(2, PROTOCOL_FIELD_BYTES)), value["rk"]);
-        assert_eq!(
-            json!(hex_bytes(3, PROTOCOL_FIELD_BYTES)),
-            value["nf_signed"]
-        );
-        assert_eq!(json!(hex_bytes(4, PROTOCOL_FIELD_BYTES)), value["cmx_new"]);
-        assert_eq!(json!(hex_bytes(5, PROTOCOL_FIELD_BYTES)), value["gov_comm"]);
-        assert_eq!(
-            json!(hex_bytes(6, PROTOCOL_FIELD_BYTES)),
-            value["gov_nullifiers"][0]
-        );
-        assert_eq!(
-            json!(hex_bytes(7, PROTOCOL_FIELD_BYTES)),
-            value["gov_nullifiers"][1]
-        );
-        assert_eq!(json!(hex_bytes(8, PROTOCOL_FIELD_BYTES)), value["alpha"]);
-        assert_eq!(
-            json!(hex_bytes(9, SPEND_AUTH_SIG_BYTES)),
-            value["spend_auth_sig"]
-        );
-        assert_eq!(json!(hex_bytes(10, PROTOCOL_FIELD_BYTES)), value["sighash"]);
-        assert_eq!(json!("round-1"), value["vote_round_id"]);
-    }
-
     fn witness_json(auth_path_len: usize) -> JsonWitnessData {
         JsonWitnessData {
             note_commitment: hex_bytes(1, PROTOCOL_FIELD_BYTES),
@@ -422,11 +231,7 @@ mod tests {
         }
     }
 
-    fn bytes(byte: u8, len: usize) -> Vec<u8> {
-        vec![byte; len]
-    }
-
     fn hex_bytes(byte: u8, len: usize) -> String {
-        hex::encode(bytes(byte, len))
+        hex::encode(vec![byte; len])
     }
 }

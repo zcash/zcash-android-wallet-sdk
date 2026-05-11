@@ -1,8 +1,12 @@
 package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
+import androidx.annotation.VisibleForTesting
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
@@ -11,12 +15,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Synchronous native proof progress callback.
  *
  * This callback runs while the owning voting DB handle is locked by the in-flight
- * proof operation. Implementations must not call back into voting DB methods.
+ * proof operation. Implementations must not call back into this VotingDb's methods.
  * Native code treats callback failures as best-effort progress reporting and
  * continues proof generation after logging the failure.
  */
@@ -26,30 +31,8 @@ fun interface VotingProofProgressCallback {
     fun onProgress(progress: Double)
 }
 
-private val proofProgressCallbackDepth = ThreadLocal<Int>()
-
-private fun isInProofProgressCallback() = (proofProgressCallbackDepth.get() ?: 0) > 0
-
-private fun <T> runInProofProgressCallback(block: () -> T): T {
-    val depth = proofProgressCallbackDepth.get() ?: 0
-    proofProgressCallbackDepth.set(depth + 1)
-    try {
-        return block()
-    } finally {
-        if (depth == 0) {
-            proofProgressCallbackDepth.remove()
-        } else {
-            proofProgressCallbackDepth.set(depth)
-        }
-    }
-}
-
-private fun VotingProofProgressCallback.withVotingDbReentryGuard() =
-    VotingProofProgressCallback { progress ->
-        runInProofProgressCallback {
-            onProgress(progress)
-        }
-    }
+private const val PROOF_PROGRESS_REENTRY_ERROR =
+    "This VotingDb's methods must not be called from its proof progress callback"
 
 @Keep
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -94,6 +77,13 @@ class VotingRustBackend private constructor() {
                 ?: error("extractSpendAuthSig returned null")
         }
 
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun delegationProofResultFixtureForTesting(): JniDelegationProofResult =
+        withContext(Dispatchers.IO) {
+            delegationProofResultFixtureNative()
+                ?: error("delegationProofResultFixture returned null")
+        }
+
     suspend fun openVotingDb(dbPath: String, walletId: String): VotingDb =
         withContext(SdkDispatchers.DATABASE_IO) {
             openVotingDbNative(dbPath, walletId).let { dbHandle ->
@@ -109,8 +99,11 @@ class VotingRustBackend private constructor() {
         private var dbHandle: Long?
     ) {
         private val accessMutex = Mutex()
+        private val proofProgressCallbackDepth = AtomicInteger(0)
 
         suspend fun close() {
+            checkNotInProofProgressCallback()
+
             accessMutex.withLock {
                 dbHandle?.let { handle ->
                     withContext(SdkDispatchers.DATABASE_IO) {
@@ -221,21 +214,22 @@ class VotingRustBackend private constructor() {
         suspend fun storeWitnesses(
             roundId: String,
             bundleIndex: Int,
+            notesJson: String,
             witnessesJson: String
         ) = withHandle { handle ->
-            storeWitnessesNative(handle, roundId, bundleIndex, witnessesJson)
+            storeWitnessesNative(handle, roundId, bundleIndex, notesJson, witnessesJson)
         }
 
         @Throws(RuntimeException::class)
-        suspend fun precomputeDelegationPirJson(
+        suspend fun precomputeDelegationPir(
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
             notesJson: String
-        ): String =
+        ): JniDelegationPirPrecomputeResult =
             withHandle { handle ->
-                precomputeDelegationPirJsonNative(
+                precomputeDelegationPirNative(
                     handle,
                     roundId,
                     bundleIndex,
@@ -246,7 +240,7 @@ class VotingRustBackend private constructor() {
             }
 
         @Throws(RuntimeException::class)
-        suspend fun buildAndProveDelegationJson(
+        suspend fun buildAndProveDelegation(
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
@@ -256,9 +250,9 @@ class VotingRustBackend private constructor() {
             accountIndex: Int,
             addressIndex: Int,
             proofProgress: VotingProofProgressCallback?
-        ): String =
+        ): JniDelegationProofResult =
             withHandle { handle ->
-                buildAndProveDelegationJsonNative(
+                buildAndProveDelegationNative(
                     handle,
                     roundId,
                     bundleIndex,
@@ -273,15 +267,15 @@ class VotingRustBackend private constructor() {
             }
 
         @Throws(RuntimeException::class)
-        suspend fun getDelegationSubmissionJson(
+        suspend fun getDelegationSubmission(
             roundId: String,
             bundleIndex: Int,
             senderSeed: ByteArray,
             networkId: Int,
             accountIndex: Int
-        ): String =
+        ): JniDelegationSubmissionResult =
             withHandle { handle ->
-                getDelegationSubmissionJsonNative(
+                getDelegationSubmissionNative(
                     handle,
                     roundId,
                     bundleIndex,
@@ -292,14 +286,14 @@ class VotingRustBackend private constructor() {
             }
 
         @Throws(RuntimeException::class)
-        suspend fun getDelegationSubmissionWithKeystoneSigJson(
+        suspend fun getDelegationSubmissionWithKeystoneSig(
             roundId: String,
             bundleIndex: Int,
             keystoneSig: ByteArray,
             keystoneSighash: ByteArray
-        ): String =
+        ): JniDelegationSubmissionResult =
             withHandle { handle ->
-                getDelegationSubmissionWithKeystoneSigJsonNative(
+                getDelegationSubmissionWithKeystoneSigNative(
                     handle,
                     roundId,
                     bundleIndex,
@@ -308,10 +302,17 @@ class VotingRustBackend private constructor() {
                 ) ?: error("getDelegationSubmissionWithKeystoneSig returned null")
             }
 
+        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+        internal suspend fun storeDelegationProofFixtureForTesting(
+            roundId: String,
+            bundleIndex: Int,
+            proof: ByteArray
+        ) = withHandle { handle ->
+            storeDelegationProofFixtureNative(handle, roundId, bundleIndex, proof)
+        }
+
         private suspend fun <T> withHandle(block: (Long) -> T): T {
-            check(!isInProofProgressCallback()) {
-                "Voting DB methods must not be called from a proof progress callback"
-            }
+            checkNotInProofProgressCallback()
 
             return accessMutex.withLock {
                 val handle =
@@ -323,6 +324,22 @@ class VotingRustBackend private constructor() {
                 }
             }
         }
+
+        private fun checkNotInProofProgressCallback() {
+            check(proofProgressCallbackDepth.get() == 0) {
+                PROOF_PROGRESS_REENTRY_ERROR
+            }
+        }
+
+        private fun VotingProofProgressCallback.withVotingDbReentryGuard() =
+            VotingProofProgressCallback { progress ->
+                proofProgressCallbackDepth.incrementAndGet()
+                try {
+                    onProgress(progress)
+                } finally {
+                    proofProgressCallbackDepth.decrementAndGet()
+                }
+            }
     }
 
     companion object {
@@ -441,27 +458,32 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun delegationProofResultFixtureNative(): JniDelegationProofResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun storeWitnessesNative(
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
+            notesJson: String,
             witnessesJson: String
         )
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun precomputeDelegationPirJsonNative(
+        private external fun precomputeDelegationPirNative(
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
             notesJson: String
-        ): String?
+        ): JniDelegationPirPrecomputeResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun buildAndProveDelegationJsonNative(
+        private external fun buildAndProveDelegationNative(
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
@@ -472,27 +494,36 @@ class VotingRustBackend private constructor() {
             accountIndex: Int,
             addressIndex: Int,
             proofProgress: VotingProofProgressCallback?
-        ): String?
+        ): JniDelegationProofResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun getDelegationSubmissionJsonNative(
+        private external fun getDelegationSubmissionNative(
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
             senderSeed: ByteArray,
             networkId: Int,
             accountIndex: Int
-        ): String?
+        ): JniDelegationSubmissionResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun getDelegationSubmissionWithKeystoneSigJsonNative(
+        private external fun getDelegationSubmissionWithKeystoneSigNative(
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
             keystoneSig: ByteArray,
             keystoneSighash: ByteArray
-        ): String?
+        ): JniDelegationSubmissionResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeDelegationProofFixtureNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            proof: ByteArray
+        )
     }
 }

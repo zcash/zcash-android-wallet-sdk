@@ -1,18 +1,23 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.ext.fromHex
+import cash.z.ecc.android.sdk.internal.jni.JNI_DELEGATION_PUBLIC_INPUT_COUNT
+import cash.z.ecc.android.sdk.internal.jni.JNI_GOVERNANCE_NULLIFIER_COUNT
+import cash.z.ecc.android.sdk.internal.jni.JNI_PROTOCOL_FIELD_BYTES_SIZE
+import cash.z.ecc.android.sdk.internal.jni.JNI_SPEND_AUTH_SIG_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import org.json.JSONObject
 
-private const val PROTOCOL_FIELD_BYTES = 32
-private const val PCZT_SIGHASH_BYTES = PROTOCOL_FIELD_BYTES
-private const val SPEND_AUTH_SIG_BYTES = 64
+private const val PCZT_SIGHASH_BYTES = JNI_PROTOCOL_FIELD_BYTES_SIZE
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
@@ -29,7 +34,9 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         rustBackend().computeShareNullifier(voteCommitment, shareIndex, blind)
 
     override suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb =
-        TypesafeVotingDbImpl(rustBackend().openVotingDb(dbPath, walletId))
+        TypesafeVotingDbImpl(
+            RustVotingDbBackend(rustBackend().openVotingDb(dbPath, walletId))
+        )
 
     override suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult =
         rustBackend().computeBundleSetup(notesJson)
@@ -50,8 +57,253 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
-private class TypesafeVotingDbImpl(
+internal interface VotingDbBackend {
+    suspend fun close()
+
+    suspend fun initRound(
+        roundId: String,
+        snapshotHeight: Long,
+        eaPK: ByteArray,
+        ncRoot: ByteArray,
+        nullifierIMTRoot: ByteArray,
+        sessionJson: String?
+    )
+
+    suspend fun getRoundState(roundId: String): JniRoundState?
+
+    suspend fun listRounds(): Array<JniRoundSummary>
+
+    suspend fun getBundleCount(roundId: String): Int
+
+    suspend fun getVotes(roundId: String): Array<JniVoteRecord>
+
+    suspend fun clearRound(roundId: String)
+
+    suspend fun deleteSkippedBundles(
+        roundId: String,
+        keepCount: Int
+    ): Long
+
+    suspend fun setupBundles(
+        roundId: String,
+        notesJson: String
+    ): JniBundleSetupResult
+
+    suspend fun generateHotkey(
+        roundId: String,
+        seed: ByteArray
+    ): JniVotingHotkey
+
+    suspend fun buildGovernancePcztJson(
+        roundId: String,
+        bundleIndex: Int,
+        ufvk: String,
+        networkId: Int,
+        accountIndex: Int,
+        notesJson: String,
+        walletSeed: ByteArray,
+        seedFingerprint: ByteArray,
+        roundName: String,
+        addressIndex: Int
+    ): String
+
+    suspend fun storeWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notesJson: String,
+        witnessesJson: String
+    )
+
+    suspend fun precomputeDelegationPir(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String
+    ): JniDelegationPirPrecomputeResult
+
+    suspend fun buildAndProveDelegation(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String,
+        walletSeed: ByteArray,
+        accountIndex: Int,
+        addressIndex: Int,
+        proofProgress: VotingProofProgressCallback?
+    ): JniDelegationProofResult
+
+    suspend fun getDelegationSubmission(
+        roundId: String,
+        bundleIndex: Int,
+        senderSeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): JniDelegationSubmissionResult
+
+    suspend fun getDelegationSubmissionWithKeystoneSig(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray
+    ): JniDelegationSubmissionResult
+}
+
+@Suppress("TooManyFunctions", "LongParameterList")
+private class RustVotingDbBackend(
     private val votingDb: VotingRustBackend.VotingDb
+) : VotingDbBackend {
+    override suspend fun close() = votingDb.close()
+
+    override suspend fun initRound(
+        roundId: String,
+        snapshotHeight: Long,
+        eaPK: ByteArray,
+        ncRoot: ByteArray,
+        nullifierIMTRoot: ByteArray,
+        sessionJson: String?
+    ) = votingDb.initRound(
+        roundId,
+        snapshotHeight,
+        eaPK,
+        ncRoot,
+        nullifierIMTRoot,
+        sessionJson
+    )
+
+    override suspend fun getRoundState(roundId: String): JniRoundState? =
+        votingDb.getRoundState(roundId)
+
+    override suspend fun listRounds(): Array<JniRoundSummary> =
+        votingDb.listRounds()
+
+    override suspend fun getBundleCount(roundId: String): Int =
+        votingDb.getBundleCount(roundId)
+
+    override suspend fun getVotes(roundId: String): Array<JniVoteRecord> =
+        votingDb.getVotes(roundId)
+
+    override suspend fun clearRound(roundId: String) =
+        votingDb.clearRound(roundId)
+
+    override suspend fun deleteSkippedBundles(
+        roundId: String,
+        keepCount: Int
+    ): Long = votingDb.deleteSkippedBundles(roundId, keepCount)
+
+    override suspend fun setupBundles(
+        roundId: String,
+        notesJson: String
+    ): JniBundleSetupResult = votingDb.setupBundles(roundId, notesJson)
+
+    override suspend fun generateHotkey(
+        roundId: String,
+        seed: ByteArray
+    ): JniVotingHotkey = votingDb.generateHotkey(roundId, seed)
+
+    override suspend fun buildGovernancePcztJson(
+        roundId: String,
+        bundleIndex: Int,
+        ufvk: String,
+        networkId: Int,
+        accountIndex: Int,
+        notesJson: String,
+        walletSeed: ByteArray,
+        seedFingerprint: ByteArray,
+        roundName: String,
+        addressIndex: Int
+    ): String =
+        votingDb.buildGovernancePcztJson(
+            roundId,
+            bundleIndex,
+            ufvk,
+            networkId,
+            accountIndex,
+            notesJson,
+            walletSeed,
+            seedFingerprint,
+            roundName,
+            addressIndex
+        )
+
+    override suspend fun storeWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notesJson: String,
+        witnessesJson: String
+    ) = votingDb.storeWitnesses(roundId, bundleIndex, notesJson, witnessesJson)
+
+    override suspend fun precomputeDelegationPir(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String
+    ): JniDelegationPirPrecomputeResult =
+        votingDb.precomputeDelegationPir(
+            roundId,
+            bundleIndex,
+            pirServerUrl,
+            networkId,
+            notesJson
+        )
+
+    override suspend fun buildAndProveDelegation(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notesJson: String,
+        walletSeed: ByteArray,
+        accountIndex: Int,
+        addressIndex: Int,
+        proofProgress: VotingProofProgressCallback?
+    ): JniDelegationProofResult =
+        votingDb.buildAndProveDelegation(
+            roundId,
+            bundleIndex,
+            pirServerUrl,
+            networkId,
+            notesJson,
+            walletSeed,
+            accountIndex,
+            addressIndex,
+            proofProgress
+        )
+
+    override suspend fun getDelegationSubmission(
+        roundId: String,
+        bundleIndex: Int,
+        senderSeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): JniDelegationSubmissionResult =
+        votingDb.getDelegationSubmission(
+            roundId,
+            bundleIndex,
+            senderSeed,
+            networkId,
+            accountIndex
+        )
+
+    override suspend fun getDelegationSubmissionWithKeystoneSig(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray
+    ): JniDelegationSubmissionResult =
+        votingDb.getDelegationSubmissionWithKeystoneSig(
+            roundId,
+            bundleIndex,
+            keystoneSig,
+            keystoneSighash
+        )
+}
+
+@Suppress("TooManyFunctions", "LongParameterList")
+internal class TypesafeVotingDbImpl(
+    private val votingDb: VotingDbBackend
 ) : TypesafeVotingDb {
     override suspend fun close() = votingDb.close()
 
@@ -133,8 +385,9 @@ private class TypesafeVotingDbImpl(
     override suspend fun storeWitnesses(
         roundId: String,
         bundleIndex: Int,
+        notesJson: String,
         witnessesJson: String
-    ) = votingDb.storeWitnesses(roundId, bundleIndex, witnessesJson)
+    ) = votingDb.storeWitnesses(roundId, bundleIndex, notesJson, witnessesJson)
 
     override suspend fun precomputeDelegationPir(
         roundId: String,
@@ -143,15 +396,14 @@ private class TypesafeVotingDbImpl(
         networkId: Int,
         notesJson: String
     ): DelegationPirPrecomputeResult =
-        JSONObject(
-            votingDb.precomputeDelegationPirJson(
+        votingDb
+            .precomputeDelegationPir(
                 roundId,
                 bundleIndex,
                 pirServerUrl,
                 networkId,
                 notesJson
-            )
-        ).toDelegationPirPrecomputeResult()
+            ).toDelegationPirPrecomputeResult()
 
     override suspend fun buildAndProveDelegation(
         roundId: String,
@@ -164,8 +416,8 @@ private class TypesafeVotingDbImpl(
         addressIndex: Int,
         proofProgress: ((Double) -> Unit)?
     ): DelegationProofResult =
-        JSONObject(
-            votingDb.buildAndProveDelegationJson(
+        votingDb
+            .buildAndProveDelegation(
                 roundId,
                 bundleIndex,
                 pirServerUrl,
@@ -175,8 +427,7 @@ private class TypesafeVotingDbImpl(
                 accountIndex,
                 addressIndex,
                 proofProgress?.asVotingProgressCallback()
-            )
-        ).toDelegationProofResult()
+            ).toDelegationProofResult()
 
     override suspend fun getDelegationSubmission(
         roundId: String,
@@ -185,15 +436,14 @@ private class TypesafeVotingDbImpl(
         networkId: Int,
         accountIndex: Int
     ): DelegationSubmissionResult =
-        JSONObject(
-            votingDb.getDelegationSubmissionJson(
+        votingDb
+            .getDelegationSubmission(
                 roundId,
                 bundleIndex,
                 senderSeed,
                 networkId,
                 accountIndex
-            )
-        ).toDelegationSubmissionResult()
+            ).toDelegationSubmissionResult()
 
     override suspend fun getDelegationSubmissionWithKeystoneSig(
         roundId: String,
@@ -201,14 +451,13 @@ private class TypesafeVotingDbImpl(
         keystoneSig: ByteArray,
         keystoneSighash: ByteArray
     ): DelegationSubmissionResult =
-        JSONObject(
-            votingDb.getDelegationSubmissionWithKeystoneSigJson(
+        votingDb
+            .getDelegationSubmissionWithKeystoneSig(
                 roundId,
                 bundleIndex,
                 keystoneSig,
                 keystoneSighash
-            )
-        ).toDelegationSubmissionResult()
+            ).toDelegationSubmissionResult()
 }
 
 private fun JSONObject.getCheckedInt(name: String): Int =
@@ -217,65 +466,71 @@ private fun JSONObject.getCheckedInt(name: String): Int =
 internal fun JSONObject.toGovernancePcztResult() =
     GovernancePcztResult(
         pcztBytes = getHexBytes("pczt_bytes"),
-        rk = getHexBytes("rk", PROTOCOL_FIELD_BYTES),
+        rk = getHexBytes("rk", JNI_PROTOCOL_FIELD_BYTES_SIZE),
         sighash = getHexBytes("pczt_sighash", PCZT_SIGHASH_BYTES),
         actionIndex = getCheckedInt("action_index")
     )
 
-internal fun JSONObject.toDelegationPirPrecomputeResult() =
+internal fun JniDelegationPirPrecomputeResult.toDelegationPirPrecomputeResult() =
     DelegationPirPrecomputeResult(
-        cachedCount = getLong("cached_count"),
-        fetchedCount = getLong("fetched_count")
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount
     )
 
-internal fun JSONObject.toDelegationProofResult() =
-    DelegationProofResult(
-        proof = getHexBytes("proof"),
-        publicInputs =
-            getJSONArray("public_inputs").toHexByteArrayList(
-                "public_inputs",
-                PROTOCOL_FIELD_BYTES
-            ),
-        nfSigned = getHexBytes("nf_signed", PROTOCOL_FIELD_BYTES),
-        cmxNew = getHexBytes("cmx_new", PROTOCOL_FIELD_BYTES),
-        govNullifiers =
-            getJSONArray("gov_nullifiers").toHexByteArrayList(
-                "gov_nullifiers",
-                PROTOCOL_FIELD_BYTES
-            ),
-        vanComm = getHexBytes("van_comm", PROTOCOL_FIELD_BYTES),
-        rk = getHexBytes("rk", PROTOCOL_FIELD_BYTES)
+internal fun JniDelegationProofResult.toDelegationProofResult(): DelegationProofResult {
+    publicInputs.requireByteArrayCount(
+        "publicInputs",
+        JNI_DELEGATION_PUBLIC_INPUT_COUNT
     )
-
-internal fun JSONObject.toDelegationSubmissionResult() =
-    DelegationSubmissionResult(
-        proof = getHexBytes("proof"),
-        rk = getHexBytes("rk", PROTOCOL_FIELD_BYTES),
-        spendAuthSig = getHexBytes("spend_auth_sig", SPEND_AUTH_SIG_BYTES),
-        sighash = getHexBytes("sighash", PROTOCOL_FIELD_BYTES),
-        nfSigned = getHexBytes("nf_signed", PROTOCOL_FIELD_BYTES),
-        cmxNew = getHexBytes("cmx_new", PROTOCOL_FIELD_BYTES),
-        govComm = getHexBytes("gov_comm", PROTOCOL_FIELD_BYTES),
-        govNullifiers =
-            getJSONArray("gov_nullifiers").toHexByteArrayList(
-                "gov_nullifiers",
-                PROTOCOL_FIELD_BYTES
-            ),
-        alpha = getHexBytes("alpha", PROTOCOL_FIELD_BYTES),
-        voteRoundId = getString("vote_round_id")
+    publicInputs.requireEachByteArraySize("publicInputs", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    nfSigned.requireByteArraySize("nfSigned", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    cmxNew.requireByteArraySize("cmxNew", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    govNullifiers.requireByteArrayCount(
+        "govNullifiers",
+        JNI_GOVERNANCE_NULLIFIER_COUNT
     )
+    govNullifiers.requireEachByteArraySize("govNullifiers", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    vanComm.requireByteArraySize("vanComm", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    rk.requireByteArraySize("rk", JNI_PROTOCOL_FIELD_BYTES_SIZE)
 
-private fun JSONArray.toHexByteArrayList(
-    name: String,
-    expectedElementSize: Int
-): List<ByteArray> =
-    (0 until length()).map { index ->
-        getString(index).fromHex().also { bytes ->
-            require(bytes.size == expectedElementSize) {
-                "$name[$index] must be $expectedElementSize bytes, got ${bytes.size}"
-            }
-        }
-    }
+    return DelegationProofResult(
+        proof = proof,
+        publicInputs = publicInputs,
+        nfSigned = nfSigned,
+        cmxNew = cmxNew,
+        govNullifiers = govNullifiers,
+        vanComm = vanComm,
+        rk = rk
+    )
+}
+
+internal fun JniDelegationSubmissionResult.toDelegationSubmissionResult(): DelegationSubmissionResult {
+    rk.requireByteArraySize("rk", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    spendAuthSig.requireByteArraySize("spendAuthSig", JNI_SPEND_AUTH_SIG_BYTES_SIZE)
+    sighash.requireByteArraySize("sighash", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    nfSigned.requireByteArraySize("nfSigned", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    cmxNew.requireByteArraySize("cmxNew", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    govComm.requireByteArraySize("govComm", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    govNullifiers.requireByteArrayCount(
+        "govNullifiers",
+        JNI_GOVERNANCE_NULLIFIER_COUNT
+    )
+    govNullifiers.requireEachByteArraySize("govNullifiers", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    alpha.requireByteArraySize("alpha", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+
+    return DelegationSubmissionResult(
+        proof = proof,
+        rk = rk,
+        spendAuthSig = spendAuthSig,
+        sighash = sighash,
+        nfSigned = nfSigned,
+        cmxNew = cmxNew,
+        govComm = govComm,
+        govNullifiers = govNullifiers,
+        alpha = alpha,
+        voteRoundId = voteRoundId
+    )
+}
 
 private fun ((Double) -> Unit).asVotingProgressCallback() =
     VotingProofProgressCallback { progress -> invoke(progress) }
@@ -292,3 +547,18 @@ private fun JSONObject.getHexBytes(
 
     return bytes
 }
+
+private fun ByteArray.requireByteArraySize(name: String, expectedSize: Int) =
+    require(size == expectedSize) {
+        "$name must be $expectedSize bytes, got $size"
+    }
+
+private fun List<ByteArray>.requireByteArrayCount(name: String, expectedCount: Int) =
+    require(size == expectedCount) {
+        "$name must contain $expectedCount entries, got $size"
+    }
+
+private fun List<ByteArray>.requireEachByteArraySize(name: String, expectedSize: Int) =
+    forEachIndexed { index, bytes ->
+        bytes.requireByteArraySize("$name[$index]", expectedSize)
+    }

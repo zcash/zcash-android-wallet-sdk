@@ -12,6 +12,12 @@ const JNI_VOTE_RECORD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniV
 const JNI_VOTING_HOTKEY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey";
 const JNI_BUNDLE_SETUP_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult";
+const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationPirPrecomputeResult";
+const JNI_DELEGATION_PROOF_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationProofResult";
+const JNI_DELEGATION_SUBMISSION_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationSubmissionResult";
 
 // Must match JniVotingHotkey(ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";
@@ -26,6 +32,8 @@ pub(super) const BLIND_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const SHARE_NULLIFIER_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const HOTKEY_PUBLIC_KEY_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const SPEND_AUTH_SIG_BYTES: usize = 64;
+pub(super) const DELEGATION_PUBLIC_INPUT_COUNT: usize = 14;
+pub(super) const GOVERNANCE_NULLIFIER_COUNT: usize = 5;
 pub(super) const NETWORK_ID_TESTNET: jint = 0;
 pub(super) const NETWORK_ID_MAINNET: jint = 1;
 
@@ -405,6 +413,159 @@ pub(super) fn make_jni_bundle_setup_result<'local>(
         ],
     )?;
     Ok(obj.into_raw())
+}
+
+pub(super) fn make_jni_delegation_pir_precompute_result<'local>(
+    env: &mut JNIEnv<'local>,
+    result: DelegationPirPrecomputeResult,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_DELEGATION_PIR_PRECOMPUTE_RESULT)?;
+    let obj = env.new_object(
+        &class,
+        "(JJ)V",
+        &[
+            JValue::Long(u64_to_jlong(
+                u64::from(result.cached_count),
+                "cached_count",
+            )?),
+            JValue::Long(u64_to_jlong(
+                u64::from(result.fetched_count),
+                "fetched_count",
+            )?),
+        ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+pub(super) fn make_jni_delegation_proof_result<'local>(
+    env: &mut JNIEnv<'local>,
+    result: DelegationProofResult,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_DELEGATION_PROOF_RESULT)?;
+    let proof_obj = make_jni_bytes(env, &result.proof)?;
+    let public_inputs_array = make_jni_fixed_byte_array_vec(
+        env,
+        result.public_inputs,
+        "public_inputs",
+        DELEGATION_PUBLIC_INPUT_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let nf_signed = make_jni_fixed_bytes(env, result.nf_signed, "nf_signed", PROTOCOL_FIELD_BYTES)?;
+    let cmx_new = make_jni_fixed_bytes(env, result.cmx_new, "cmx_new", PROTOCOL_FIELD_BYTES)?;
+    let gov_nullifiers_array = make_jni_fixed_byte_array_vec(
+        env,
+        result.gov_nullifiers,
+        "gov_nullifiers",
+        GOVERNANCE_NULLIFIER_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let van_comm = make_jni_fixed_bytes(env, result.van_comm, "van_comm", PROTOCOL_FIELD_BYTES)?;
+    let rk = make_jni_fixed_bytes(env, result.rk, "rk", PROTOCOL_FIELD_BYTES)?;
+    let public_inputs_obj = JObject::from(public_inputs_array);
+    let gov_nullifiers_obj = JObject::from(gov_nullifiers_array);
+
+    let obj = env.new_object(
+        &class,
+        "([B[[B[B[B[[B[B[B)V",
+        &[
+            JValue::Object(&proof_obj),
+            JValue::Object(&public_inputs_obj),
+            JValue::Object(&nf_signed),
+            JValue::Object(&cmx_new),
+            JValue::Object(&gov_nullifiers_obj),
+            JValue::Object(&van_comm),
+            JValue::Object(&rk),
+        ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+pub(super) fn make_jni_delegation_submission_result<'local>(
+    env: &mut JNIEnv<'local>,
+    data: DelegationSubmissionData,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_DELEGATION_SUBMISSION_RESULT)?;
+    let proof = make_jni_bytes(env, &data.proof)?;
+    let rk = make_jni_fixed_bytes(env, data.rk, "rk", PROTOCOL_FIELD_BYTES)?;
+    let spend_auth_sig = make_jni_fixed_bytes(
+        env,
+        data.spend_auth_sig,
+        "spend_auth_sig",
+        SPEND_AUTH_SIG_BYTES,
+    )?;
+    let sighash = make_jni_fixed_bytes(env, data.sighash, "sighash", PROTOCOL_FIELD_BYTES)?;
+    let nf_signed = make_jni_fixed_bytes(env, data.nf_signed, "nf_signed", PROTOCOL_FIELD_BYTES)?;
+    let cmx_new = make_jni_fixed_bytes(env, data.cmx_new, "cmx_new", PROTOCOL_FIELD_BYTES)?;
+    let gov_comm = make_jni_fixed_bytes(env, data.gov_comm, "gov_comm", PROTOCOL_FIELD_BYTES)?;
+    let gov_nullifiers_array = make_jni_fixed_byte_array_vec(
+        env,
+        data.gov_nullifiers,
+        "gov_nullifiers",
+        GOVERNANCE_NULLIFIER_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let alpha = make_jni_fixed_bytes(env, data.alpha, "alpha", PROTOCOL_FIELD_BYTES)?;
+    let vote_round_id: JObject<'local> = env.new_string(data.vote_round_id)?.into();
+    let gov_nullifiers = JObject::from(gov_nullifiers_array);
+
+    let obj = env.new_object(
+        &class,
+        "([B[B[B[B[B[B[B[[B[BLjava/lang/String;)V",
+        &[
+            JValue::Object(&proof),
+            JValue::Object(&rk),
+            JValue::Object(&spend_auth_sig),
+            JValue::Object(&sighash),
+            JValue::Object(&nf_signed),
+            JValue::Object(&cmx_new),
+            JValue::Object(&gov_comm),
+            JValue::Object(&gov_nullifiers),
+            JValue::Object(&alpha),
+            JValue::Object(&vote_round_id),
+        ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+fn make_jni_bytes<'local>(
+    env: &mut JNIEnv<'local>,
+    bytes: &[u8],
+) -> anyhow::Result<JObject<'local>> {
+    Ok(env.byte_array_from_slice(bytes)?.into())
+}
+
+fn make_jni_fixed_bytes<'local>(
+    env: &mut JNIEnv<'local>,
+    bytes: Vec<u8>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<JObject<'local>> {
+    make_jni_bytes(env, &require_len(bytes, field, expected)?)
+}
+
+fn make_jni_fixed_byte_array_vec<'local>(
+    env: &mut JNIEnv<'local>,
+    values: Vec<Vec<u8>>,
+    field: &str,
+    expected_count: usize,
+    expected_size: usize,
+) -> anyhow::Result<JObjectArray<'local>> {
+    if values.len() != expected_count {
+        return Err(anyhow!(
+            "{field} must contain {expected_count} entries, got {}",
+            values.len()
+        ));
+    }
+
+    let values = values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| require_len(value, &format!("{field}[{index}]"), expected_size))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(rust_vec_to_java(env, values, "[B", |env, bytes| {
+        Ok(JObject::from(env.byte_array_from_slice(&bytes)?))
+    })?)
 }
 
 /// Runs the voting note chunker and returns total count, total eligible weight,

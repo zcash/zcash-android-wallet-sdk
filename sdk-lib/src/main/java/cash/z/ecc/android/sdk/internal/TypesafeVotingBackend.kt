@@ -82,6 +82,7 @@ internal interface TypesafeVotingDb {
     suspend fun storeWitnesses(
         roundId: String,
         bundleIndex: Int,
+        notesJson: String,
         witnessesJson: String
     )
 

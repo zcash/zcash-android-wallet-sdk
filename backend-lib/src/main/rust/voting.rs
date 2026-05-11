@@ -2,17 +2,17 @@
 
 use anyhow::anyhow;
 use jni::{
-    objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue},
-    sys::{jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
     JNIEnv, JavaVM,
+    objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
+    sys::{jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
 };
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicI64, Ordering},
         Arc, Mutex, OnceLock,
+        atomic::{AtomicI64, Ordering},
     },
 };
 use zcash_client_backend::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};

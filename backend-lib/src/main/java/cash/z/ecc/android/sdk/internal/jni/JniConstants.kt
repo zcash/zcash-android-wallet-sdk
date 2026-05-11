@@ -29,6 +29,26 @@ const val JNI_METADATA_KEY_CHAIN_CODE_SIZE = 32
 const val JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE = 32
 
 /**
+ * The number of bytes in a protocol field element crossing the voting JNI boundary.
+ */
+const val JNI_PROTOCOL_FIELD_BYTES_SIZE = 32
+
+/**
+ * The number of public input field elements emitted by delegation proof generation.
+ */
+const val JNI_DELEGATION_PUBLIC_INPUT_COUNT = 14
+
+/**
+ * The number of governance nullifiers emitted by delegation proof generation.
+ */
+const val JNI_GOVERNANCE_NULLIFIER_COUNT = 5
+
+/**
+ * The number of bytes in an Orchard spend authorization signature.
+ */
+const val JNI_SPEND_AUTH_SIG_BYTES_SIZE = 64
+
+/**
  * Voting JNI network id for testnet. Matches [cash.z.ecc.android.sdk.model.ZcashNetwork.ID_TESTNET].
  */
 const val JNI_VOTING_NETWORK_ID_TESTNET = 0
