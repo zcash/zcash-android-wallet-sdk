@@ -38,7 +38,6 @@ enum class FfiRoundPhase(
     }
 }
 
-@Keep
 data class FfiRoundSummary(
     val roundId: String,
     val phase: Int,
