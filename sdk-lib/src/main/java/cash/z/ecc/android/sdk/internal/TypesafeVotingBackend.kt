@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.VoteRecord
 
 @Suppress("TooManyFunctions", "LongParameterList")
 interface TypesafeVotingBackend {
@@ -34,10 +35,3 @@ interface TypesafeVotingDb {
         keepCount: Int
     ): Long
 }
-
-data class VoteRecord(
-    val proposalId: Int,
-    val bundleIndex: Int,
-    val choice: Int,
-    val submitted: Boolean
-)

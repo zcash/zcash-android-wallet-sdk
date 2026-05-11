@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.VoteRecord
 import org.json.JSONArray
 
 @Suppress("TooManyFunctions", "LongParameterList")

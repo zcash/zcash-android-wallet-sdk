@@ -46,3 +46,10 @@ data class FfiRoundSummary(
 ) {
     val roundPhase = FfiRoundPhase.fromInt(phase)
 }
+
+data class VoteRecord(
+    val proposalId: Int,
+    val bundleIndex: Int,
+    val choice: Int,
+    val submitted: Boolean
+)
