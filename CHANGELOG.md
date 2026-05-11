@@ -13,7 +13,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an account. This enables imported accounts to discover their history and funds, at the cost of
   other accounts being temporarily blocked by a short resync (specifically rescanning the incomplete
   shard at the tip).
-- 
+
+### Fixed
+- Fixed `rewindToHeight` semantics
+- Updated `zcash_client_sqlite` to 0.20.2
+
 ## [2.4.8] - 2025-04-02
 
 ### Added
