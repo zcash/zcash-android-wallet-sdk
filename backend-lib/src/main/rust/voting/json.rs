@@ -190,6 +190,41 @@ impl From<DelegationProofResult> for JsonDelegationProofResult {
     }
 }
 
+#[derive(Serialize)]
+pub(super) struct JsonDelegationSubmission {
+    pub(super) proof: String,
+    pub(super) rk: String,
+    pub(super) spend_auth_sig: String,
+    pub(super) sighash: String,
+    pub(super) nf_signed: String,
+    pub(super) cmx_new: String,
+    pub(super) gov_comm: String,
+    pub(super) gov_nullifiers: Vec<String>,
+    pub(super) alpha: String,
+    pub(super) vote_round_id: String,
+}
+
+impl From<DelegationSubmissionData> for JsonDelegationSubmission {
+    fn from(data: DelegationSubmissionData) -> Self {
+        JsonDelegationSubmission {
+            proof: hex_enc(&data.proof),
+            rk: hex_enc(&data.rk),
+            spend_auth_sig: hex_enc(&data.spend_auth_sig),
+            sighash: hex_enc(&data.sighash),
+            nf_signed: hex_enc(&data.nf_signed),
+            cmx_new: hex_enc(&data.cmx_new),
+            gov_comm: hex_enc(&data.gov_comm),
+            gov_nullifiers: data
+                .gov_nullifiers
+                .iter()
+                .map(|nullifier| hex_enc(nullifier))
+                .collect(),
+            alpha: hex_enc(&data.alpha),
+            vote_round_id: data.vote_round_id,
+        }
+    }
+}
+
 pub(super) fn json_to_jstring<T: Serialize>(
     env: &mut JNIEnv<'_>,
     value: &T,
@@ -328,6 +363,52 @@ mod tests {
         );
         assert_eq!(json!(hex_bytes(8, PROTOCOL_FIELD_BYTES)), value["van_comm"]);
         assert_eq!(json!(hex_bytes(9, PROTOCOL_FIELD_BYTES)), value["rk"]);
+    }
+
+    #[test]
+    fn json_delegation_submission_serializes_exact_hex_fields() {
+        let result = DelegationSubmissionData {
+            proof: bytes(1, 3),
+            rk: bytes(2, PROTOCOL_FIELD_BYTES),
+            nf_signed: bytes(3, PROTOCOL_FIELD_BYTES),
+            cmx_new: bytes(4, PROTOCOL_FIELD_BYTES),
+            gov_comm: bytes(5, PROTOCOL_FIELD_BYTES),
+            gov_nullifiers: vec![
+                bytes(6, PROTOCOL_FIELD_BYTES),
+                bytes(7, PROTOCOL_FIELD_BYTES),
+            ],
+            alpha: bytes(8, PROTOCOL_FIELD_BYTES),
+            vote_round_id: "round-1".to_string(),
+            spend_auth_sig: bytes(9, SPEND_AUTH_SIG_BYTES),
+            sighash: bytes(10, PROTOCOL_FIELD_BYTES),
+        };
+
+        let value =
+            serde_json::to_value(JsonDelegationSubmission::from(result)).expect("serializes");
+
+        assert_eq!(json!(hex_bytes(1, 3)), value["proof"]);
+        assert_eq!(json!(hex_bytes(2, PROTOCOL_FIELD_BYTES)), value["rk"]);
+        assert_eq!(
+            json!(hex_bytes(3, PROTOCOL_FIELD_BYTES)),
+            value["nf_signed"]
+        );
+        assert_eq!(json!(hex_bytes(4, PROTOCOL_FIELD_BYTES)), value["cmx_new"]);
+        assert_eq!(json!(hex_bytes(5, PROTOCOL_FIELD_BYTES)), value["gov_comm"]);
+        assert_eq!(
+            json!(hex_bytes(6, PROTOCOL_FIELD_BYTES)),
+            value["gov_nullifiers"][0]
+        );
+        assert_eq!(
+            json!(hex_bytes(7, PROTOCOL_FIELD_BYTES)),
+            value["gov_nullifiers"][1]
+        );
+        assert_eq!(json!(hex_bytes(8, PROTOCOL_FIELD_BYTES)), value["alpha"]);
+        assert_eq!(
+            json!(hex_bytes(9, SPEND_AUTH_SIG_BYTES)),
+            value["spend_auth_sig"]
+        );
+        assert_eq!(json!(hex_bytes(10, PROTOCOL_FIELD_BYTES)), value["sighash"]);
+        assert_eq!(json!("round-1"), value["vote_round_id"]);
     }
 
     fn witness_json(auth_path_len: usize) -> JsonWitnessData {

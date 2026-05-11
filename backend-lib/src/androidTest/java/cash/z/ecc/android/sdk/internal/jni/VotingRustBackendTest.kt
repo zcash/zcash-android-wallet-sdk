@@ -449,7 +449,7 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun delegation_proof_bridge_methods_reject_malformed_inputs_before_side_effects() =
+    fun delegation_bridge_methods_reject_malformed_inputs_before_side_effects() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
@@ -486,6 +486,23 @@ class VotingRustBackendTest {
                         accountIndex = ACCOUNT_INDEX,
                         addressIndex = ADDRESS_INDEX,
                         proofProgress = null
+                    )
+                }
+                assertFailsWith<RuntimeException> {
+                    db.getDelegationSubmissionJson(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        senderSeed = SHORT_FIELD,
+                        networkId = TESTNET_NETWORK_ID,
+                        accountIndex = ACCOUNT_INDEX
+                    )
+                }
+                assertFailsWith<RuntimeException> {
+                    db.getDelegationSubmissionWithKeystoneSigJson(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        keystoneSig = ByteArray(FIELD_BYTES),
+                        keystoneSighash = ByteArray(FIELD_BYTES)
                     )
                 }
             } finally {

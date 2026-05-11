@@ -12,6 +12,7 @@ import org.json.JSONObject
 
 private const val PROTOCOL_FIELD_BYTES = 32
 private const val PCZT_SIGHASH_BYTES = PROTOCOL_FIELD_BYTES
+private const val SPEND_AUTH_SIG_BYTES = 64
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
@@ -177,6 +178,37 @@ private class TypesafeVotingDbImpl(
             )
         ).toDelegationProofResult()
 
+    override suspend fun getDelegationSubmission(
+        roundId: String,
+        bundleIndex: Int,
+        senderSeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): DelegationSubmissionResult =
+        JSONObject(
+            votingDb.getDelegationSubmissionJson(
+                roundId,
+                bundleIndex,
+                senderSeed,
+                networkId,
+                accountIndex
+            )
+        ).toDelegationSubmissionResult()
+
+    override suspend fun getDelegationSubmissionWithKeystoneSig(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray
+    ): DelegationSubmissionResult =
+        JSONObject(
+            votingDb.getDelegationSubmissionWithKeystoneSigJson(
+                roundId,
+                bundleIndex,
+                keystoneSig,
+                keystoneSighash
+            )
+        ).toDelegationSubmissionResult()
 }
 
 private fun JSONObject.getCheckedInt(name: String): Int =
@@ -213,6 +245,24 @@ internal fun JSONObject.toDelegationProofResult() =
             ),
         vanComm = getHexBytes("van_comm", PROTOCOL_FIELD_BYTES),
         rk = getHexBytes("rk", PROTOCOL_FIELD_BYTES)
+    )
+
+internal fun JSONObject.toDelegationSubmissionResult() =
+    DelegationSubmissionResult(
+        proof = getHexBytes("proof"),
+        rk = getHexBytes("rk", PROTOCOL_FIELD_BYTES),
+        spendAuthSig = getHexBytes("spend_auth_sig", SPEND_AUTH_SIG_BYTES),
+        sighash = getHexBytes("sighash", PROTOCOL_FIELD_BYTES),
+        nfSigned = getHexBytes("nf_signed", PROTOCOL_FIELD_BYTES),
+        cmxNew = getHexBytes("cmx_new", PROTOCOL_FIELD_BYTES),
+        govComm = getHexBytes("gov_comm", PROTOCOL_FIELD_BYTES),
+        govNullifiers =
+            getJSONArray("gov_nullifiers").toHexByteArrayList(
+                "gov_nullifiers",
+                PROTOCOL_FIELD_BYTES
+            ),
+        alpha = getHexBytes("alpha", PROTOCOL_FIELD_BYTES),
+        voteRoundId = getString("vote_round_id")
     )
 
 private fun JSONArray.toHexByteArrayList(

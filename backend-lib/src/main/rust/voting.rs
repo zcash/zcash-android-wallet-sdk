@@ -21,8 +21,8 @@ use zcash_voting as voting;
 
 use voting::storage::{RoundPhase, RoundState, RoundSummary, VoteRecord, VotingDb};
 use voting::types::{
-    DelegationPirPrecomputeResult, DelegationProofResult, GovernancePczt, NoopProgressReporter,
-    NoteInfo, ProofProgressReporter, WitnessData,
+    DelegationPirPrecomputeResult, DelegationProofResult, DelegationSubmissionData, GovernancePczt,
+    NoopProgressReporter, NoteInfo, ProofProgressReporter, WitnessData,
 };
 
 use crate::utils::{

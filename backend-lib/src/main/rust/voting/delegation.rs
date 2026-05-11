@@ -273,6 +273,72 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getDelegationSubmissionJsonNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    sender_seed: JByteArray<'local>,
+    network_id: jint,
+    account_index: jint,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        network_from_id(network_id)?;
+        let seed =
+            java_secret_bytes_at_least(env, &sender_seed, "senderSeed", PROTOCOL_FIELD_BYTES)?;
+        let data = db
+            .get_delegation_submission(
+                &java_string_to_rust(env, &round_id)?,
+                jint_to_u32(bundle_index, "bundle_index")?,
+                seed.expose_secret(),
+                jint_to_u32(network_id, "network_id")?,
+                jint_to_u32(account_index, "account_index")?,
+            )
+            .map_err(|e| anyhow!("get_delegation_submission: {}", e))?;
+
+        json_to_jstring(env, &JsonDelegationSubmission::from(data))
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getDelegationSubmissionWithKeystoneSigJsonNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    keystone_sig: JByteArray<'local>,
+    keystone_sighash: JByteArray<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let data = db
+            .get_delegation_submission_with_keystone_sig(
+                &java_string_to_rust(env, &round_id)?,
+                jint_to_u32(bundle_index, "bundle_index")?,
+                &java_bytes_exact(env, &keystone_sig, "keystoneSig", SPEND_AUTH_SIG_BYTES)?,
+                &java_bytes_exact(
+                    env,
+                    &keystone_sighash,
+                    "keystoneSighash",
+                    PROTOCOL_FIELD_BYTES,
+                )?,
+            )
+            .map_err(|e| anyhow!("get_delegation_submission_with_keystone_sig: {}", e))?;
+
+        json_to_jstring(env, &JsonDelegationSubmission::from(data))
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

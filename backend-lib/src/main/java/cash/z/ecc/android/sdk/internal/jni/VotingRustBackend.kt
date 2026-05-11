@@ -272,6 +272,42 @@ class VotingRustBackend private constructor() {
                 ) ?: error("buildAndProveDelegation returned null")
             }
 
+        @Throws(RuntimeException::class)
+        suspend fun getDelegationSubmissionJson(
+            roundId: String,
+            bundleIndex: Int,
+            senderSeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): String =
+            withHandle { handle ->
+                getDelegationSubmissionJsonNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    senderSeed,
+                    networkId,
+                    accountIndex
+                ) ?: error("getDelegationSubmission returned null")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun getDelegationSubmissionWithKeystoneSigJson(
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray
+        ): String =
+            withHandle { handle ->
+                getDelegationSubmissionWithKeystoneSigJsonNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    keystoneSig,
+                    keystoneSighash
+                ) ?: error("getDelegationSubmissionWithKeystoneSig returned null")
+            }
+
         private suspend fun <T> withHandle(block: (Long) -> T): T {
             check(!isInProofProgressCallback()) {
                 "Voting DB methods must not be called from a proof progress callback"
@@ -438,5 +474,25 @@ class VotingRustBackend private constructor() {
             proofProgress: VotingProofProgressCallback?
         ): String?
 
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getDelegationSubmissionJsonNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            senderSeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): String?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getDelegationSubmissionWithKeystoneSigJsonNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray
+        ): String?
     }
 }

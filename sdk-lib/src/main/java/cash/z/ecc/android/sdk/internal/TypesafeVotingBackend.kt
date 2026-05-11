@@ -105,6 +105,20 @@ internal interface TypesafeVotingDb {
         proofProgress: ((Double) -> Unit)? = null
     ): DelegationProofResult
 
+    suspend fun getDelegationSubmission(
+        roundId: String,
+        bundleIndex: Int,
+        senderSeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): DelegationSubmissionResult
+
+    suspend fun getDelegationSubmissionWithKeystoneSig(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray
+    ): DelegationSubmissionResult
 }
 
 internal data class GovernancePcztResult(
@@ -165,6 +179,48 @@ internal data class DelegationProofResult(
         result = 31 * result + govNullifiers.contentDeepHashCode()
         result = 31 * result + vanComm.contentHashCode()
         result = 31 * result + rk.contentHashCode()
+        return result
+    }
+}
+
+internal data class DelegationSubmissionResult(
+    val proof: ByteArray,
+    val rk: ByteArray,
+    val spendAuthSig: ByteArray,
+    val sighash: ByteArray,
+    val nfSigned: ByteArray,
+    val cmxNew: ByteArray,
+    val govComm: ByteArray,
+    val govNullifiers: List<ByteArray>,
+    val alpha: ByteArray,
+    val voteRoundId: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DelegationSubmissionResult) return false
+        return proof.contentEquals(other.proof) &&
+            rk.contentEquals(other.rk) &&
+            spendAuthSig.contentEquals(other.spendAuthSig) &&
+            sighash.contentEquals(other.sighash) &&
+            nfSigned.contentEquals(other.nfSigned) &&
+            cmxNew.contentEquals(other.cmxNew) &&
+            govComm.contentEquals(other.govComm) &&
+            govNullifiers.contentDeepEquals(other.govNullifiers) &&
+            alpha.contentEquals(other.alpha) &&
+            voteRoundId == other.voteRoundId
+    }
+
+    override fun hashCode(): Int {
+        var result = proof.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        result = 31 * result + spendAuthSig.contentHashCode()
+        result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + nfSigned.contentHashCode()
+        result = 31 * result + cmxNew.contentHashCode()
+        result = 31 * result + govComm.contentHashCode()
+        result = 31 * result + govNullifiers.contentDeepHashCode()
+        result = 31 * result + alpha.contentHashCode()
+        result = 31 * result + voteRoundId.hashCode()
         return result
     }
 }
