@@ -108,11 +108,36 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
     let res = catch_unwind(&mut env, |env| {
         let bytes = java_bytes(env, &signed_pczt_bytes, "signedPcztBytes")?;
         let action_index = jint_to_usize(action_index, "action_index")?;
-        let sig = voting::action::extract_spend_auth_sig(&bytes, action_index)
-            .map_err(|e| anyhow!("extract_spend_auth_sig: {}", e))?;
+        let sig = extract_indexed_spend_auth_sig(&bytes, action_index)?;
         Ok(env.byte_array_from_slice(&sig)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+fn extract_indexed_spend_auth_sig(
+    signed_pczt_bytes: &[u8],
+    action_index: usize,
+) -> anyhow::Result<[u8; 64]> {
+    let pczt = pczt::Pczt::parse(signed_pczt_bytes).map_err(|e| {
+        anyhow!(
+            "extract_spend_auth_sig: failed to parse signed PCZT: {:?}",
+            e
+        )
+    })?;
+    let actions = pczt.orchard().actions();
+    if action_index < actions.len() {
+        if let Some(sig) = actions[action_index].spend().spend_auth_sig() {
+            return Ok(*sig);
+        }
+
+        return Err(anyhow!(
+            "extract_spend_auth_sig: action {action_index} has no spend_auth_sig"
+        ));
+    }
+    Err(anyhow!(
+        "extract_spend_auth_sig: action_index {action_index} out of bounds for {} actions",
+        actions.len()
+    ))
 }
 
 #[cfg(test)]
@@ -151,10 +176,41 @@ mod tests {
             .sign_orchard(result.action_index, &spend_authorizing_key)
             .expect("sign orchard action");
         let signed_pczt = signer.finish().serialize();
-        let sig =
-            voting::action::extract_spend_auth_sig(&signed_pczt, result.action_index).unwrap();
+        let sig = extract_indexed_spend_auth_sig(&signed_pczt, result.action_index).unwrap();
 
         assert_ne!(sig, [0u8; 64]);
+    }
+
+    #[test]
+    fn extract_spend_auth_sig_rejects_unsigned_governance_pczt() {
+        let result = test_governance_pczt();
+        let err =
+            extract_indexed_spend_auth_sig(&result.pczt_bytes, result.action_index).unwrap_err();
+
+        assert!(err.to_string().contains("has no spend_auth_sig"));
+    }
+
+    fn test_governance_pczt() -> GovernancePczt {
+        let spending_key = SpendingKey::from_bytes([0x42; 32]).expect("valid spending key");
+        let fvk = FullViewingKey::from(&spending_key);
+        let hotkey_spending_key = SpendingKey::from_bytes([0x43; 32]).expect("valid hotkey");
+        let hotkey_fvk = FullViewingKey::from(&hotkey_spending_key);
+        let hotkey_address = hotkey_fvk
+            .address_at(0u32, Scope::External)
+            .to_raw_address_bytes()
+            .to_vec();
+        voting::action::build_governance_pczt(
+            &[note_info()],
+            &round_params(),
+            &fvk.to_bytes().to_vec(),
+            &hotkey_address,
+            nu6_branch_id(),
+            Network::TestNetwork.coin_type(),
+            &[0xAA; 32],
+            0,
+            "Test Round",
+        )
+        .expect("governance PCZT")
     }
 
     fn note_info() -> NoteInfo {
