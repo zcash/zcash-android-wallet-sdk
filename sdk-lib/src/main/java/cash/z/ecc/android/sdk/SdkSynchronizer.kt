@@ -158,7 +158,7 @@ class SdkSynchronizer private constructor(
     private val torClient: TorClient?,
     private val walletClient: CombinedWalletClient,
     private val walletClientFactory: WalletClientFactory,
-    private val currentEndpoint: LightWalletEndpoint,
+    private val defaultSubmitEndpoint: LightWalletEndpoint,
     private val automaticResubmissionGuard: AutomaticResubmissionGuard,
     private val sdkFlags: SdkFlags
 ) : CloseableSynchronizer {
@@ -200,7 +200,7 @@ class SdkSynchronizer private constructor(
             torClient: TorClient?,
             walletClient: CombinedWalletClient,
             walletClientFactory: WalletClientFactory,
-            currentEndpoint: LightWalletEndpoint,
+            defaultSubmitEndpoint: LightWalletEndpoint,
             automaticResubmissionGuard: AutomaticResubmissionGuard,
             sdkFlags: SdkFlags
         ): CloseableSynchronizer {
@@ -221,7 +221,7 @@ class SdkSynchronizer private constructor(
                     torClient = torClient,
                     walletClient = walletClient,
                     walletClientFactory = walletClientFactory,
-                    currentEndpoint = currentEndpoint,
+                    defaultSubmitEndpoint = defaultSubmitEndpoint,
                     automaticResubmissionGuard = automaticResubmissionGuard,
                     sdkFlags = sdkFlags
                 ).apply {
@@ -1082,11 +1082,11 @@ class SdkSynchronizer private constructor(
         usk: UnifiedSpendingKey
     ): Flow<TransactionSubmitResult> {
         // This preserves the legacy API contract by creating locally, then submitting each
-        // created transaction to the synchronizer's current endpoint.
+        // created transaction to the builder-configured default endpoint.
         return sdkBroadcaster.createAndSubmitProposedTransactions(
             proposal = proposal,
             usk = usk,
-            endpoint = currentEndpoint
+            endpoint = defaultSubmitEndpoint
         )
     }
 
@@ -1106,11 +1106,11 @@ class SdkSynchronizer private constructor(
         pcztWithSignatures: Pczt
     ): Flow<TransactionSubmitResult> {
         // This preserves the legacy API contract by submitting the stored transaction to the
-        // synchronizer's current endpoint.
+        // builder-configured default endpoint.
         return sdkBroadcaster.createAndSubmitTransactionFromPczt(
             pcztWithProofs = pcztWithProofs,
             pcztWithSignatures = pcztWithSignatures,
-            endpoint = currentEndpoint
+            endpoint = defaultSubmitEndpoint
         )
     }
 

@@ -997,7 +997,7 @@ interface Synchronizer {
                 torClient = torClient,
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
-                currentEndpoint = lightWalletEndpoint,
+                defaultSubmitEndpoint = lightWalletEndpoint,
                 automaticResubmissionGuard = automaticResubmissionGuard,
                 sdkFlags = sdkFlags
             )
