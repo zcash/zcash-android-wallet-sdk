@@ -6715,8 +6715,6 @@ dependencies = [
  "rust_decimal",
  "sapling-crypto",
  "secrecy",
- "serde",
- "serde_json",
  "tonic",
  "tor-rtcompat",
  "tracing",

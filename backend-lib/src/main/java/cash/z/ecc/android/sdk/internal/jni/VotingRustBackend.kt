@@ -2,6 +2,8 @@ package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundState
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -69,12 +71,12 @@ class VotingRustBackend private constructor() {
             withHandle { handle -> getRoundStateNative(handle, roundId) }
 
         @Throws(RuntimeException::class)
-        suspend fun listRoundsJson(): String =
-            withHandle { handle -> listRoundsJsonNative(handle) }
+        suspend fun listRounds(): Array<JniRoundSummary> =
+            withHandle { handle -> listRoundsNative(handle) }
 
         @Throws(RuntimeException::class)
-        suspend fun getVotesJson(roundId: String): String =
-            withHandle { handle -> getVotesJsonNative(handle, roundId) }
+        suspend fun getVotes(roundId: String): Array<JniVoteRecord> =
+            withHandle { handle -> getVotesNative(handle, roundId) }
 
         @Throws(RuntimeException::class)
         suspend fun clearRound(roundId: String) =
@@ -140,11 +142,11 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun listRoundsJsonNative(dbHandle: Long): String
+        private external fun listRoundsNative(dbHandle: Long): Array<JniRoundSummary>
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun getVotesJsonNative(dbHandle: Long, roundId: String): String
+        private external fun getVotesNative(dbHandle: Long, roundId: String): Array<JniVoteRecord>
 
         @JvmStatic
         @Throws(RuntimeException::class)

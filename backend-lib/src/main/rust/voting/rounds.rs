@@ -1,6 +1,5 @@
 use super::db::*;
 use super::helpers::*;
-use super::json::*;
 use super::*;
 
 #[unsafe(no_mangle)]
@@ -64,44 +63,38 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_listRoundsJsonNative<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_listRoundsNative<
     'local,
 >(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     db_handle: jlong,
-) -> jstring {
+) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
-        let rounds: Vec<JsonRoundSummary> = db
+        let rounds = db
             .list_rounds()
-            .map_err(|e| anyhow!("list_rounds: {}", e))?
-            .into_iter()
-            .map(JsonRoundSummary::from)
-            .collect();
-        json_to_jstring(env, &rounds)
+            .map_err(|e| anyhow!("list_rounds: {}", e))?;
+        make_jni_round_summaries(env, rounds)
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getVotesJsonNative<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getVotesNative<
     'local,
 >(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     db_handle: jlong,
     round_id: JString<'local>,
-) -> jstring {
+) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
-        let votes: Vec<JsonVoteRecord> = db
+        let votes = db
             .get_votes(&java_string_to_rust(env, &round_id)?)
-            .map_err(|e| anyhow!("get_votes: {}", e))?
-            .into_iter()
-            .map(JsonVoteRecord::from)
-            .collect();
-        json_to_jstring(env, &votes)
+            .map_err(|e| anyhow!("get_votes: {}", e))?;
+        make_jni_vote_records(env, votes)
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }

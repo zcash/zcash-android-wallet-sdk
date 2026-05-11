@@ -2,7 +2,6 @@ package cash.z.ecc.android.sdk.internal.jni
 
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundPhase
 import kotlinx.coroutines.test.runTest
-import org.json.JSONArray
 import org.junit.Test
 import kotlin.io.path.createTempDirectory
 import kotlin.test.assertContentEquals
@@ -29,7 +28,6 @@ class VotingRustBackendTest {
         private const val OTHER_WALLET_ID = "wallet-2"
         private const val ROUND_ID = "round-1"
         private const val SNAPSHOT_HEIGHT = 123_456L
-        private const val JSON_ARRAY_START_INDEX = 0
         private const val SESSION_JSON = "{\"round\":\"one\"}"
         private val EA_PK = ByteArray(FIELD_BYTES) { 3 }
         private val NC_ROOT = ByteArray(FIELD_BYTES) { 4 }
@@ -88,14 +86,15 @@ class VotingRustBackendTest {
                 assertNull(state.delegatedWeight)
                 assertFalse(state.proofGenerated)
 
-                val rounds = JSONArray(db.listRoundsJson())
-                assertEquals(1, rounds.length())
-                val round = rounds.getJSONObject(0)
-                assertEquals(ROUND_ID, round.getString("round_id"))
-                assertEquals(FfiRoundPhase.INITIALIZED.value, round.getInt("phase"))
-                assertEquals(SNAPSHOT_HEIGHT, round.getLong("snapshot_height"))
+                val rounds = db.listRounds()
+                assertEquals(1, rounds.size)
+                val round = rounds.single()
+                assertEquals(ROUND_ID, round.roundId)
+                assertEquals(FfiRoundPhase.INITIALIZED.value, round.phase)
+                assertEquals(FfiRoundPhase.INITIALIZED, round.roundPhase)
+                assertEquals(SNAPSHOT_HEIGHT, round.snapshotHeight)
 
-                assertEquals(emptyList<Any>(), JSONArray(db.getVotesJson(ROUND_ID)).toList())
+                assertEquals(emptyList(), db.getVotes(ROUND_ID).asList())
 
                 db.clearRound(ROUND_ID)
                 assertNull(db.getRoundState(ROUND_ID))
@@ -163,7 +162,4 @@ class VotingRustBackendTest {
 
     private fun newDbPath() =
         createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
-
-    private fun JSONArray.toList(): List<Any> =
-        (JSON_ARRAY_START_INDEX until length()).map { index -> get(index) }
 }

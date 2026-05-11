@@ -1,8 +1,8 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundState
-import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundSummary
-import cash.z.ecc.android.sdk.internal.model.voting.VoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 
 @Suppress("TooManyFunctions", "LongParameterList")
 interface TypesafeVotingBackend {
@@ -24,9 +24,9 @@ interface TypesafeVotingDb {
 
     suspend fun getRoundState(roundId: String): FfiRoundState?
 
-    suspend fun listRounds(): List<FfiRoundSummary>
+    suspend fun listRounds(): List<JniRoundSummary>
 
-    suspend fun getVotes(roundId: String): List<VoteRecord>
+    suspend fun getVotes(roundId: String): List<JniVoteRecord>
 
     suspend fun clearRound(roundId: String)
 

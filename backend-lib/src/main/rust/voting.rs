@@ -4,9 +4,8 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv,
     objects::{JByteArray, JClass, JObject, JString, JValue},
-    sys::{jboolean, jbyteArray, jint, jlong, jobject, jstring},
+    sys::{jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
-use serde::Serialize;
 use std::{
     collections::HashMap,
     sync::{
@@ -20,10 +19,10 @@ use voting::storage::{RoundPhase, RoundState, RoundSummary, VoteRecord, VotingDb
 
 use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
+    rust_vec_to_java,
 };
 
 mod db;
 mod helpers;
-mod json;
 mod rounds;
 mod share_tracking;

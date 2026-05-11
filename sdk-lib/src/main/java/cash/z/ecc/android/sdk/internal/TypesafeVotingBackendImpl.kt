@@ -2,9 +2,8 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundState
-import cash.z.ecc.android.sdk.internal.model.voting.FfiRoundSummary
-import cash.z.ecc.android.sdk.internal.model.voting.VoteRecord
-import org.json.JSONArray
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 
 @Suppress("TooManyFunctions", "LongParameterList")
 class TypesafeVotingBackendImpl : TypesafeVotingBackend {
@@ -44,25 +43,11 @@ private class TypesafeVotingDbImpl(
     override suspend fun getRoundState(roundId: String): FfiRoundState? =
         votingDb.getRoundState(roundId)
 
-    override suspend fun listRounds(): List<FfiRoundSummary> =
-        JSONArray(votingDb.listRoundsJson()).toList { obj ->
-            FfiRoundSummary(
-                roundId = obj.getString("round_id"),
-                phase = obj.getCheckedInt("phase"),
-                snapshotHeight = obj.getLong("snapshot_height"),
-                createdAt = obj.getLong("created_at")
-            )
-        }
+    override suspend fun listRounds(): List<JniRoundSummary> =
+        votingDb.listRounds().asList()
 
-    override suspend fun getVotes(roundId: String): List<VoteRecord> =
-        JSONArray(votingDb.getVotesJson(roundId)).toList { obj ->
-            VoteRecord(
-                proposalId = obj.getCheckedInt("proposal_id"),
-                bundleIndex = obj.getCheckedInt("bundle_index"),
-                choice = obj.getCheckedInt("choice"),
-                submitted = obj.getBoolean("submitted")
-            )
-        }
+    override suspend fun getVotes(roundId: String): List<JniVoteRecord> =
+        votingDb.getVotes(roundId).asList()
 
     override suspend fun clearRound(roundId: String) =
         votingDb.clearRound(roundId)
@@ -72,13 +57,3 @@ private class TypesafeVotingDbImpl(
         keepCount: Int
     ): Long = votingDb.deleteSkippedBundles(roundId, keepCount)
 }
-
-private fun <T> JSONArray.toList(transform: (org.json.JSONObject) -> T): List<T> =
-    (JSON_ARRAY_START_INDEX until length()).map { index ->
-        transform(getJSONObject(index))
-    }
-
-private fun org.json.JSONObject.getCheckedInt(name: String): Int =
-    Math.toIntExact(getLong(name))
-
-private const val JSON_ARRAY_START_INDEX = 0

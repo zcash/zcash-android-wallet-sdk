@@ -2,7 +2,7 @@ package cash.z.ecc.android.sdk.internal.model.voting
 
 import androidx.annotation.Keep
 
-// Must match PHASE_* constants in backend-lib/src/main/rust/voting/json.rs.
+// Must match PHASE_* constants in backend-lib/src/main/rust/voting/helpers.rs.
 internal const val FFI_ROUND_PHASE_INITIALIZED = 0
 internal const val FFI_ROUND_PHASE_HOTKEY_GENERATED = 1
 internal const val FFI_ROUND_PHASE_DELEGATION_CONSTRUCTED = 2
@@ -38,7 +38,8 @@ enum class FfiRoundPhase(
     }
 }
 
-data class FfiRoundSummary(
+@Keep
+data class JniRoundSummary(
     val roundId: String,
     val phase: Int,
     val snapshotHeight: Long,
@@ -47,7 +48,8 @@ data class FfiRoundSummary(
     val roundPhase = FfiRoundPhase.fromInt(phase)
 }
 
-data class VoteRecord(
+@Keep
+data class JniVoteRecord(
     val proposalId: Int,
     val bundleIndex: Int,
     val choice: Int,
