@@ -8,8 +8,15 @@ import org.json.JSONArray
 
 @Suppress("TooManyFunctions", "LongParameterList")
 class TypesafeVotingBackendImpl : TypesafeVotingBackend {
+    private val rustBackendLazy =
+        SuspendingLazy<Unit, VotingRustBackend> {
+            VotingRustBackend.new()
+        }
+
     override suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb =
-        TypesafeVotingDbImpl(VotingRustBackend.new().openVotingDb(dbPath, walletId))
+        TypesafeVotingDbImpl(rustBackend().openVotingDb(dbPath, walletId))
+
+    private suspend fun rustBackend() = rustBackendLazy.getInstance(Unit)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
