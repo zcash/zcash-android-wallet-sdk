@@ -51,6 +51,22 @@ class AutomaticResubmissionGuardTest {
             assertEquals(1, preferenceProvider.putStringCount)
         }
 
+    @Test
+    fun prunes_exclusions_that_are_no_longer_resubmission_candidates() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val retainedTransaction = createdTransaction(1)
+            val prunedTransaction = createdTransaction(2)
+            val firstGuard = AutomaticResubmissionGuard(preferenceProvider)
+
+            firstGuard.excludeFromAutomaticResubmission(listOf(retainedTransaction, prunedTransaction))
+            firstGuard.retainExclusionsFor(listOf(retainedTransaction.txId))
+
+            val secondGuard = AutomaticResubmissionGuard(preferenceProvider)
+            assertFalse(secondGuard.shouldAutomaticallyResubmit(retainedTransaction.txId))
+            assertTrue(secondGuard.shouldAutomaticallyResubmit(prunedTransaction.txId))
+        }
+
     private class FakePreferenceProvider : PreferenceProvider {
         private val values = mutableMapOf<String, String?>()
         var putStringCount = 0

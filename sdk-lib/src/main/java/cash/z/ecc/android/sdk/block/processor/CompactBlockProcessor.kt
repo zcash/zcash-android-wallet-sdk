@@ -2728,6 +2728,7 @@ class CompactBlockProcessor internal constructor(
     }
 
     private suspend fun List<DbTransactionOverview>.filterAutomaticallyResubmittable(): List<DbTransactionOverview> {
+        automaticResubmissionGuard.retainExclusionsFor(map { it.rawId })
         val resubmittableTransactions = mutableListOf<DbTransactionOverview>()
         for (transaction in this) {
             if (automaticResubmissionGuard.shouldAutomaticallyResubmit(transaction.rawId)) {

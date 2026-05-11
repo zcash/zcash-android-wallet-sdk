@@ -35,6 +35,16 @@ internal class AutomaticResubmissionGuard(
             txId.toStableKey() !in callerManagedTransactionIds
         }
 
+    suspend fun retainExclusionsFor(txIds: List<FirstClassByteArray>) {
+        val retainedTransactionIds = txIds.map { it.toStableKey() }.toSet()
+        mutex.withLock {
+            loadFromPreferencesIfNeeded()
+            if (callerManagedTransactionIds.retainAll(retainedTransactionIds)) {
+                saveToPreferences()
+            }
+        }
+    }
+
     private suspend fun excludeFromAutomaticResubmission(txId: FirstClassByteArray) {
         mutex.withLock {
             loadFromPreferencesIfNeeded()
