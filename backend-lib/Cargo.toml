@@ -94,9 +94,11 @@ rust-analyzer = "0.0.1"
 # The transitive `voting-circuits` dependency contains the share-reveal circuit
 # and the Poseidon-based `share_nullifier_hash` implementation:
 # https://github.com/valargroup/voting-circuits/blob/v0.4.1/voting-circuits/src/share_reveal/circuit.rs
-# Default features stay disabled so this foundation change does not pull in the
-# optional client PIR, tree-sync, or networking stacks.
-zcash_voting = { version = "0.5.9", default-features = false }
+# Default features stay disabled. The `client-pir` feature is needed for
+# delegation proof precompute and proof generation; tree-sync remains later.
+# Expected PIR/networking transitives include `pir-client`, `pir-types`,
+# `valar-ypir`, `valar-spiral-rs`, and `hyper-rustls`.
+zcash_voting = { version = "0.5.9", default-features = false, features = ["client-pir"] }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]

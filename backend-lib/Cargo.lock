@@ -2104,6 +2104,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-rustls"
+version = "0.27.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
+dependencies = [
+ "http",
+ "hyper",
+ "hyper-util",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+ "webpki-roots",
+]
+
+[[package]]
 name = "hyper-timeout"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2171,6 +2187,20 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+
+[[package]]
+name = "imt-tree"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c378a3c5c44b985233906c966bd82a4f775a83aa4e1bde1635961c2eb8673d7b"
+dependencies = [
+ "anyhow",
+ "ff",
+ "halo2_gadgets",
+ "hex",
+ "pasta_curves",
+ "rayon",
+]
 
 [[package]]
 name = "incrementalmerkletree"
@@ -3096,6 +3126,38 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pir-client"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f18409a3bbbc58985c0ba79ec464c65e6ebab19cc1a82c5d4e184c3484520100"
+dependencies = [
+ "anyhow",
+ "ff",
+ "futures",
+ "hex",
+ "imt-tree",
+ "log",
+ "pasta_curves",
+ "pir-types",
+ "serde_json",
+ "tokio",
+ "valar-ypir",
+]
+
+[[package]]
+name = "pir-types"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fd3d6025cac852a7b3b81d6d07d6e21cc03bb3d5873fc13144a74c56f325b9d"
+dependencies = [
+ "anyhow",
+ "ff",
+ "imt-tree",
+ "pasta_curves",
+ "serde",
+]
 
 [[package]]
 name = "pkcs1"
@@ -5924,6 +5986,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "valar-spiral-rs"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "208d4b69c6a9b7b0c7d856133009a514e10236cdc698ad0b6b87f2e3c4e6d9cb"
+dependencies = [
+ "fastrand",
+ "getrandom 0.2.17",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+]
+
+[[package]]
+name = "valar-ypir"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c3852d9476a0e3efd6c3bfbfc54d3a21a68d8818c4779824ace78aec84a042"
+dependencies = [
+ "cc",
+ "fastrand",
+ "log",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
+ "sha1",
+ "valar-spiral-rs",
+]
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7046,16 +7140,23 @@ checksum = "e1bb9e0ae40320acb03358d257a6fdc951866a21fb5fdd94ce5a09d0bccf25d2"
 dependencies = [
  "anyhow",
  "blake2b_simd",
+ "bytes",
  "ff",
  "group",
  "halo2_gadgets",
  "halo2_proofs",
  "hex",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
  "incrementalmerkletree",
  "nonempty",
  "orchard",
  "pasta_curves",
  "pczt",
+ "pir-client",
  "rand 0.8.5",
  "rusqlite",
  "serde",
