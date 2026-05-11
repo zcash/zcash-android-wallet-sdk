@@ -6693,7 +6693,6 @@ version = "2.4.4"
 dependencies = [
  "anyhow",
  "bitflags 2.11.0",
- "blake2b_simd",
  "bytes",
  "component",
  "dlopen2",

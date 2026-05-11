@@ -56,7 +56,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 
         let round_id = java_string_to_rust(env, &round_id)?;
         require_round_phase_for_delegation_construction(&db, &round_id)?;
-        require_persisted_bundle_notes(&db, &round_id, bundle_index, &bundle_notes)?;
         let round_name = java_string_to_rust(env, &round_name)?;
         let pczt = db
             .build_governance_pczt(
