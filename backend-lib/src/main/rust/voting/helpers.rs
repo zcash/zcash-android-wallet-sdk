@@ -138,15 +138,6 @@ pub(super) fn round_phase_to_u32(phase: RoundPhase) -> u32 {
     }
 }
 
-pub(super) fn java_bytes_at_least(
-    env: &mut JNIEnv<'_>,
-    array: &JByteArray<'_>,
-    field: &str,
-    minimum: usize,
-) -> anyhow::Result<Vec<u8>> {
-    require_min_len(java_bytes(env, array, field)?, field, minimum)
-}
-
 pub(super) fn java_secret_bytes_at_least(
     env: &mut JNIEnv<'_>,
     array: &JByteArray<'_>,
@@ -454,24 +445,37 @@ pub(super) fn update_round_phase_forward(
 ) -> anyhow::Result<()> {
     let conn = db.conn();
     let wallet_id = db.wallet_id();
-    let current = voting::storage::queries::get_round_state(&conn, round_id, &wallet_id)
-        .map_err(|e| anyhow!("get_round_state before phase update: {}", e))?
-        .phase;
-    let current_rank = round_phase_to_u32(current);
     let requested_rank = round_phase_to_u32(phase);
 
-    if current_rank > requested_rank {
+    let rows = conn
+        .execute(
+            "UPDATE rounds
+             SET phase = ?1
+             WHERE round_id = ?2
+               AND wallet_id = ?3
+               AND phase < ?1",
+            rusqlite::params![phase as i32, round_id, wallet_id],
+        )
+        .map_err(|e| anyhow!("update_round_phase: {}", e))?;
+    if rows > 0 {
+        return Ok(());
+    }
+
+    let current = voting::storage::queries::get_round_state(&conn, round_id, &wallet_id)
+        .map_err(|e| anyhow!("get_round_state after phase update: {}", e))?
+        .phase;
+    let current_rank = round_phase_to_u32(current);
+    if current_rank < requested_rank {
+        return Err(anyhow!(
+            "failed to advance round phase for {round_id}: current={current_rank}, requested={requested_rank}"
+        ));
+    } else if current_rank > requested_rank {
         return Err(anyhow!(
             "refusing to regress round phase for {round_id}: current={current_rank}, requested={requested_rank}"
         ));
     }
 
-    if current_rank == requested_rank {
-        return Ok(());
-    }
-
-    voting::storage::queries::update_round_phase(&conn, round_id, &wallet_id, phase)
-        .map_err(|e| anyhow!("update_round_phase: {}", e))
+    Ok(())
 }
 
 /// Requires the hotkey step before PCZT construction and rejects calls after
@@ -508,6 +512,9 @@ pub(super) fn require_round_phase_for_delegation_construction(
 mod tests {
     use super::*;
 
+    const TEST_ROUND_ID: &str = "round-id";
+    const TEST_WALLET_ID: &str = "wallet-id";
+
     #[test]
     fn hotkey_orchard_raw_address_uses_address_index() {
         let seed = [0x42_u8; 64];
@@ -525,5 +532,48 @@ mod tests {
     #[test]
     fn nu6_branch_id_comes_from_protocol_crate() {
         assert_eq!(nu6_branch_id(), u32::from(BranchId::Nu6));
+    }
+
+    #[test]
+    fn update_round_phase_forward_is_idempotent() {
+        let db = test_db();
+
+        update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::HotkeyGenerated)
+            .expect("first phase update");
+        update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::HotkeyGenerated)
+            .expect("idempotent phase update");
+
+        let state = db.get_round_state(TEST_ROUND_ID).expect("round state");
+        assert_eq!(RoundPhase::HotkeyGenerated, state.phase);
+    }
+
+    #[test]
+    fn update_round_phase_forward_rejects_regression() {
+        let db = test_db();
+
+        update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::DelegationConstructed)
+            .expect("advance phase");
+        let err = update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::HotkeyGenerated)
+            .expect_err("regression rejected");
+
+        assert!(err.to_string().contains("refusing to regress round phase"));
+    }
+
+    fn test_db() -> VotingDb {
+        let db = VotingDb::open(":memory:").expect("test DB");
+        db.set_wallet_id(TEST_WALLET_ID);
+        db.init_round(&test_round_params(), None)
+            .expect("round initialized");
+        db
+    }
+
+    fn test_round_params() -> voting::types::VotingRoundParams {
+        voting::types::VotingRoundParams {
+            vote_round_id: TEST_ROUND_ID.to_string(),
+            snapshot_height: 100_000,
+            ea_pk: vec![0xEA; PROTOCOL_FIELD_BYTES],
+            nc_root: vec![0x01; PROTOCOL_FIELD_BYTES],
+            nullifier_imt_root: vec![0x02; PROTOCOL_FIELD_BYTES],
+        }
     }
 }
