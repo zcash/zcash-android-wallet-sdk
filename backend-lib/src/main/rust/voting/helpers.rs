@@ -643,6 +643,34 @@ pub(super) fn update_round_phase_forward(
         .map_err(|e| anyhow!("update_round_phase: {}", e))
 }
 
+pub(super) fn require_round_phase_for_delegation_construction(
+    db: &VotingDb,
+    round_id: &str,
+) -> anyhow::Result<()> {
+    let conn = db.conn();
+    let wallet_id = db.wallet_id();
+    let current = voting::storage::queries::get_round_state(&conn, round_id, &wallet_id)
+        .map_err(|e| anyhow!("get_round_state before delegation construction: {}", e))?
+        .phase;
+    let current_rank = round_phase_to_u32(current);
+    let hotkey_rank = round_phase_to_u32(RoundPhase::HotkeyGenerated);
+    let constructed_rank = round_phase_to_u32(RoundPhase::DelegationConstructed);
+
+    if current_rank < hotkey_rank {
+        return Err(anyhow!(
+            "round {round_id} must be HotkeyGenerated before building governance PCZT: current={current_rank}"
+        ));
+    }
+
+    if current_rank > constructed_rank {
+        return Err(anyhow!(
+            "round {round_id} has already advanced beyond DelegationConstructed: current={current_rank}"
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -365,6 +365,35 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun build_governance_pczt_requires_hotkey_generated_phase() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val ufvk = deriveTestUfvk()
+                db.initRound(
+                    roundId = PCZT_ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+                db.setupBundles(PCZT_ROUND_ID, notesJson)
+
+                assertFailsWith<RuntimeException> {
+                    db.buildTestGovernancePcztJson(ufvk, notesJson)
+                }
+                assertEquals(
+                    FfiRoundPhase.INITIALIZED,
+                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
+                )
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun build_governance_pczt_returns_parseable_pczt_and_extractable_sighash() =
         runTest {
             val backend = VotingRustBackend.new()
@@ -449,6 +478,7 @@ class VotingRustBackendTest {
             sessionJson = null
         )
         setupBundles(roundId, notesJson)
+        generateHotkey(roundId, HOTKEY_SEED)
     }
 
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePcztJson(
