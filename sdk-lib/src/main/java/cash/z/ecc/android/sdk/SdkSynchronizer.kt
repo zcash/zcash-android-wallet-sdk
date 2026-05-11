@@ -506,14 +506,8 @@ class SdkSynchronizer private constructor(
     override suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight? =
         processor.rewindToNearestHeight(height)
 
-    override suspend fun rescanFromHeight(height: BlockHeight) {
-        val checkpoint =
-            CheckpointTool.loadNearest(
-                context = context,
-                network = network,
-                birthdayHeight = height
-            )
-        backend.truncateToChainState(checkpoint.treeState())
+    override suspend fun rewindToHeight(height: BlockHeight) {
+        backend.rewindToHeight(height)
     }
 
     override fun getMemos(transactionOverview: TransactionOverview): Flow<String> =
@@ -936,7 +930,6 @@ class SdkSynchronizer private constructor(
                     setup = setup,
                     treeState = treeState,
                 ).also {
-                    backend.truncateToChainState(treeState)
                     refreshAccountsBus.emit(Unit)
                 }
         }.onFailure {
