@@ -89,27 +89,6 @@ internal interface TransactionSubmitter {
     ): TransactionSubmitResult
 }
 
-// These helpers compose the public Broadcaster API, so they preserve
-// caller-managed exclusion semantics.
-internal suspend fun Broadcaster.createAndSubmitProposedTransactions(
-    proposal: Proposal,
-    usk: UnifiedSpendingKey,
-    endpoint: LightWalletEndpoint
-): Flow<TransactionSubmitResult> =
-    createProposedTransactions(proposal, usk)
-        .createSubmitResultFlow { transaction ->
-            submit(transaction, endpoint)
-        }
-
-internal suspend fun Broadcaster.createAndSubmitTransactionFromPczt(
-    pcztWithProofs: Pczt,
-    pcztWithSignatures: Pczt,
-    endpoint: LightWalletEndpoint
-): Flow<TransactionSubmitResult> =
-    createTransactionFromPczt(pcztWithProofs, pcztWithSignatures)
-        .asFlow()
-        .map { transaction -> submit(transaction, endpoint) }
-
 internal class EndpointTransactionSubmitter(
     private val walletClientFactory: WalletClientFactory,
     private val sdkFlags: SdkFlags
