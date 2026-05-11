@@ -85,13 +85,7 @@ class VotingRustBackend private constructor() {
             roundId: String,
             keepCount: Int
         ): Long =
-            withHandle { handle ->
-                deleteSkippedBundlesNative(handle, roundId, keepCount).also { deletedRows ->
-                    check(deletedRows >= 0) {
-                        "deleteSkippedBundles failed for roundId=$roundId keepCount=$keepCount"
-                    }
-                }
-            }
+            withHandle { handle -> deleteSkippedBundlesNative(handle, roundId, keepCount) }
 
         private suspend fun <T> withHandle(block: (Long) -> T): T =
             accessMutex.withLock {
