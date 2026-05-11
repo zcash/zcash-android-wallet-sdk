@@ -476,21 +476,63 @@ pub(super) fn init_voting_android_tables(db: &VotingDb) -> anyhow::Result<()> {
     .map_err(|e| anyhow!("failed to initialize Android voting tables: {e}"))
 }
 
-pub(super) fn store_bundle_note_identities(
+pub(super) fn setup_bundles_with_note_identities(
     db: &VotingDb,
     round_id: &str,
     notes: &[NoteInfo],
-) -> anyhow::Result<()> {
-    let conn = db.conn();
+) -> anyhow::Result<(u32, u64)> {
+    let chunk_result = voting::types::chunk_notes(notes);
+    if chunk_result.dropped_count > 0 {
+        eprintln!(
+            "[setup_bundles] Dropped {} notes in sub-threshold bundles (eligible: {} of {} notes)",
+            chunk_result.dropped_count,
+            notes.len() - chunk_result.dropped_count,
+            notes.len()
+        );
+    }
+
+    let count = u32::try_from(chunk_result.bundles.len())
+        .map_err(|_| anyhow!("bundle count is too large for u32"))?;
     let wallet_id = db.wallet_id();
+    let mut conn = db.conn();
+    let tx = conn
+        .transaction()
+        .map_err(|e| anyhow!("failed to begin bundle setup transaction: {e}"))?;
+
+    for (index, bundle) in chunk_result.bundles.iter().enumerate() {
+        let bundle_index =
+            u32::try_from(index).map_err(|_| anyhow!("bundle_index is too large for u32"))?;
+        let positions = bundle.iter().map(|note| note.position).collect::<Vec<_>>();
+        voting::storage::queries::insert_bundle(
+            &tx,
+            round_id,
+            &wallet_id,
+            bundle_index,
+            &positions,
+        )
+        .map_err(|e| anyhow!("insert_bundle: {e}"))?;
+    }
+
+    store_bundle_note_identities(&tx, &wallet_id, round_id, &chunk_result.bundles)?;
+    tx.commit()
+        .map_err(|e| anyhow!("failed to commit bundle setup transaction: {e}"))?;
+
+    Ok((count, chunk_result.eligible_weight))
+}
+
+fn store_bundle_note_identities(
+    conn: &rusqlite::Connection,
+    wallet_id: &str,
+    round_id: &str,
+    bundles: &[Vec<NoteInfo>],
+) -> anyhow::Result<()> {
     conn.execute(
         "DELETE FROM android_voting_bundle_note_identity WHERE round_id = ?1 AND wallet_id = ?2",
         rusqlite::params![round_id, wallet_id],
     )
     .map_err(|e| anyhow!("failed to clear bundle note identities: {e}"))?;
 
-    let chunk_result = voting::types::chunk_notes(notes);
-    for (bundle_index, bundle) in chunk_result.bundles.iter().enumerate() {
+    for (bundle_index, bundle) in bundles.iter().enumerate() {
         let bundle_index = i64::try_from(bundle_index)
             .map_err(|_| anyhow!("bundle_index is too large for SQLite"))?;
         for (note_order, note) in bundle.iter().enumerate() {

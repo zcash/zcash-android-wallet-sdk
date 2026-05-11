@@ -42,8 +42,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
             .collect::<anyhow::Result<_>>()?;
         let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        let (count, weight) = db
-            .setup_bundles(&round_id, &notes)
+        let (count, weight) = setup_bundles_with_note_identities(&db, &round_id, &notes)
             .map_err(|e| anyhow!("setup_bundles: {}", e))?;
         if count != expected_count || weight != expected_weight {
             return Err(anyhow!(
@@ -54,7 +53,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
                 expected_weight
             ));
         }
-        store_bundle_note_identities(&db, &round_id, &notes)?;
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())

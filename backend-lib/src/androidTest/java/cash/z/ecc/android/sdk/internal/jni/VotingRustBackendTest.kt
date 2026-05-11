@@ -385,7 +385,7 @@ class VotingRustBackendTest {
                     db.buildTestGovernancePcztJson(ufvk, notesJson)
                 }
                 assertEquals(
-                    FfiRoundPhase.INITIALIZED,
+                    JniRoundPhase.INITIALIZED,
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
                 )
             } finally {
