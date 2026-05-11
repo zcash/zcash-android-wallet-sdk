@@ -16,6 +16,7 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import org.mockito.Mockito.mock
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -284,18 +285,8 @@ class SdkBroadcasterTest {
                 expiryHeight = expiryHeight
             )
 
-        private fun fakeProposal(): Proposal = uninitializedInstance(Proposal::class.java)
+        private fun fakeProposal(): Proposal = mock(Proposal::class.java)
 
-        private fun fakeUsk(): UnifiedSpendingKey = uninitializedInstance(UnifiedSpendingKey::class.java)
-
-        private fun <T> uninitializedInstance(clazz: Class<T>): T {
-            val unsafeClass = Class.forName("sun.misc.Unsafe")
-            val unsafeField = unsafeClass.getDeclaredField("theUnsafe")
-            unsafeField.isAccessible = true
-            val unsafe = unsafeField.get(null)
-            val instance = unsafeClass.getMethod("allocateInstance", Class::class.java).invoke(unsafe, clazz)
-            @Suppress("UNCHECKED_CAST")
-            return instance as T
-        }
+        private fun fakeUsk(): UnifiedSpendingKey = mock(UnifiedSpendingKey::class.java)
     }
 }
