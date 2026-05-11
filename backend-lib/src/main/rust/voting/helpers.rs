@@ -187,6 +187,8 @@ pub(super) fn hotkey_orchard_raw_address_from_wallet_seed(
     let orchard_fvk = fvk
         .orchard()
         .ok_or_else(|| anyhow!("hotkey UFVK has no Orchard component"))?;
+    // voting-circuits treats address_index as the diversifier index for the
+    // external Orchard scope when reconstructing the hotkey address for ZKP #2.
     let addr = orchard_fvk.address_at(address_index, Scope::External);
     require_len(
         addr.to_raw_address_bytes().to_vec(),
