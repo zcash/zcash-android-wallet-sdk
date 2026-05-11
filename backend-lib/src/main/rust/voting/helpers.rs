@@ -16,7 +16,6 @@ pub(super) const PROTOCOL_FIELD_BYTES: usize = 32;
 pub(super) const VOTE_COMMITMENT_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const BLIND_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const SHARE_NULLIFIER_BYTES: usize = PROTOCOL_FIELD_BYTES;
-pub(super) const HOTKEY_SECRET_KEY_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const HOTKEY_PUBLIC_KEY_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const NETWORK_ID_TESTNET: jint = 0;
 pub(super) const NETWORK_ID_MAINNET: jint = 1;
@@ -351,34 +350,28 @@ impl TryFrom<VoteRecord> for JniVoteRecordPayload {
 }
 
 /// Builds the Kotlin hotkey JNI model after enforcing the expected key widths.
+/// The secret key is intentionally not surfaced across JNI.
 pub(super) fn make_jni_voting_hotkey<'local>(
     env: &mut JNIEnv<'local>,
     hotkey: voting::types::VotingHotkey,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class("cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey")?;
-    let secret_key = SecretVec::new(require_len(
+    let _secret_key = SecretVec::new(require_len(
         hotkey.secret_key,
         "hotkey_secret_key",
-        HOTKEY_SECRET_KEY_BYTES,
+        PROTOCOL_FIELD_BYTES,
     )?);
     let public_key = require_len(
         hotkey.public_key,
         "hotkey_public_key",
         HOTKEY_PUBLIC_KEY_BYTES,
     )?;
-    let sk_obj: JObject<'local> = env
-        .byte_array_from_slice(secret_key.expose_secret())?
-        .into();
     let pk_obj: JObject<'local> = env.byte_array_from_slice(&public_key)?.into();
     let addr_obj: JObject<'local> = env.new_string(&hotkey.address)?.into();
     let obj = env.new_object(
         &class,
-        "([B[BLjava/lang/String;)V",
-        &[
-            JValue::Object(&sk_obj),
-            JValue::Object(&pk_obj),
-            JValue::Object(&addr_obj),
-        ],
+        "([BLjava/lang/String;)V",
+        &[JValue::Object(&pk_obj), JValue::Object(&addr_obj)],
     )?;
     Ok(obj.into_raw())
 }

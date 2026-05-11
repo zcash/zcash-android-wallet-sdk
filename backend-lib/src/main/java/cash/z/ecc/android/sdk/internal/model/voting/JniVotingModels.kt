@@ -2,53 +2,6 @@ package cash.z.ecc.android.sdk.internal.model.voting
 
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE
-import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_SECRET_KEY_BYTES_SIZE
-
-/**
- * JVM-owned voting hotkey secret bytes.
- *
- * Call [useSecret], [clear], or [close] as soon as the secret is no longer needed. The JVM
- * byte array cannot be zeroized automatically by Rust after it crosses JNI.
- */
-@Keep
-@ConsistentCopyVisibility
-data class HotkeySecretKey internal constructor(
-    val value: ByteArray
-) : AutoCloseable {
-    init {
-        require(value.size == JNI_HOTKEY_SECRET_KEY_BYTES_SIZE) {
-            "HotkeySecretKey must be $JNI_HOTKEY_SECRET_KEY_BYTES_SIZE bytes, got ${value.size}"
-        }
-    }
-
-    fun clear() {
-        value.fill(0)
-    }
-
-    fun <T> useSecret(block: (ByteArray) -> T): T =
-        try {
-            block(value)
-        } finally {
-            clear()
-        }
-
-    override fun close() = clear()
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is HotkeySecretKey) return false
-        return value.contentEquals(other.value)
-    }
-
-    override fun hashCode(): Int = value.contentHashCode()
-
-    // Do not include secret key bytes in logs.
-    override fun toString(): String = "HotkeySecretKey(size=${value.size})"
-
-    companion object {
-        internal fun new(bytes: ByteArray) = HotkeySecretKey(bytes)
-    }
-}
 
 @Keep
 @ConsistentCopyVisibility
@@ -81,12 +34,11 @@ private fun ByteArray.toHexString() = joinToString("") { "%02x".format(it) }
 @Keep
 @ConsistentCopyVisibility
 data class JniVotingHotkey internal constructor(
-    val secretKey: HotkeySecretKey,
     val publicKey: HotkeyPublicKey,
     val address: String
 ) {
-    internal constructor(sk: ByteArray, pk: ByteArray, addr: String) :
-        this(HotkeySecretKey.new(sk), HotkeyPublicKey.new(pk), addr)
+    internal constructor(pk: ByteArray, addr: String) :
+        this(HotkeyPublicKey.new(pk), addr)
 }
 
 // Must match PHASE_* constants in backend-lib/src/main/rust/voting/helpers.rs.

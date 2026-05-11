@@ -308,21 +308,15 @@ class VotingRustBackendTest {
                 val second = db.generateHotkey(ROUND_ID, HOTKEY_SEED)
                 val other = db.generateHotkey(ROUND_ID, OTHER_HOTKEY_SEED)
 
-                assertContentEquals(first.secretKey.value, second.secretKey.value)
                 assertContentEquals(first.publicKey.value, second.publicKey.value)
                 assertEquals(first.address, second.address)
-                assertFalse(first.secretKey.value.contentEquals(other.secretKey.value))
                 assertFalse(first.publicKey.value.contentEquals(other.publicKey.value))
-                assertEquals(FIELD_BYTES, first.secretKey.value.size)
                 assertEquals(FIELD_BYTES, first.publicKey.value.size)
                 assertTrue(first.address.startsWith("sv1"))
                 assertEquals(
                     JniRoundPhase.HOTKEY_GENERATED,
                     assertNotNull(db.getRoundState(ROUND_ID)).roundPhase
                 )
-
-                first.secretKey.clear()
-                assertTrue(first.secretKey.value.all { it == 0.toByte() })
 
                 assertFailsWith<RuntimeException> {
                     db.generateHotkey(ROUND_ID, SHORT_FIELD)
