@@ -256,7 +256,7 @@ interface Backend {
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
-    suspend fun rewindToChainState(chainState: ByteArray)
+    suspend fun truncateToChainState(chainState: ByteArray)
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure

@@ -163,7 +163,7 @@ internal interface TypesafeBackend {
      * database to a precise height by providing additional chain state information needed for
      * note commitment tree maintenance after the truncation.
      */
-    suspend fun rewindToChainState(chainState: TreeState)
+    suspend fun truncateToChainState(chainState: TreeState)
 
     suspend fun getLatestCacheHeight(): BlockHeight?
 
