@@ -183,9 +183,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
             // after the snapshot remain eligible for that snapshot.
             let notes = wallet_db
                 .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
-                .map_err(|e| {
-                    anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e)
-                })?;
+                .map_err(|e| anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e))?;
 
             notes
                 .iter()
@@ -334,7 +332,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
                 expected_weight
             ));
         }
-        store_bundle_note_identities(&db, &round_id, &notes)?;
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())

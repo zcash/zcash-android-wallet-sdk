@@ -72,8 +72,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sig
         // through instead of reconstructing the sighash locally.
         let sig = voting::vote_commitment::sign_cast_vote(
             hotkey_seed.expose_secret(),
-            u32::try_from(network_id)
-                .map_err(|_| anyhow!("network_id must be non-negative, got {network_id}"))?,
+            jint_to_u32(network_id, "network_id")?,
             &commitment.vote_round_id,
             &commitment.r_vpk_bytes,
             &commitment.van_nullifier,
@@ -128,8 +127,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 &round_id,
                 jint_to_u32(bundle_index, "bundle_index")?,
                 hotkey_seed.expose_secret(),
-                u32::try_from(network_id)
-                    .map_err(|_| anyhow!("network_id must be non-negative, got {network_id}"))?,
+                jint_to_u32(network_id, "network_id")?,
                 jint_to_u32(proposal_id, "proposal_id")?,
                 jint_to_u32(choice, "choice")?,
                 jint_to_u32(num_options, "num_options")?,

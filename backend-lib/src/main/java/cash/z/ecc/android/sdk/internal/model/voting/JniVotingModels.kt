@@ -251,6 +251,12 @@ data class JniVoteCommitmentResult(
 }
 
 @Keep
+data class JniCommitmentBundleRecord(
+    val commitment: JniVoteCommitmentResult,
+    val vcTreePosition: Long
+)
+
+@Keep
 data class JniSharePayload(
     val sharesHash: ByteArray,
     val proposalId: Int,
@@ -303,6 +309,68 @@ data class JniSharePayload(
         result = 31 * result + allEncShares.hashCode()
         result = 31 * result + shareComms.contentDeepHashCode()
         result = 31 * result + primaryBlind.contentHashCode()
+        return result
+    }
+}
+
+@Keep
+data class JniShareDelegationRecord(
+    val roundId: String,
+    val bundleIndex: Int,
+    val proposalId: Int,
+    val shareIndex: Int,
+    val sentToUrls: List<String>,
+    val nullifier: ByteArray,
+    val confirmed: Boolean,
+    val submitAt: Long,
+    val createdAt: Long
+) {
+    internal constructor(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        sentToUrls: Array<String>,
+        nullifier: ByteArray,
+        confirmed: Boolean,
+        submitAt: Long,
+        createdAt: Long
+    ) : this(
+        roundId = roundId,
+        bundleIndex = bundleIndex,
+        proposalId = proposalId,
+        shareIndex = shareIndex,
+        sentToUrls = sentToUrls.toList(),
+        nullifier = nullifier,
+        confirmed = confirmed,
+        submitAt = submitAt,
+        createdAt = createdAt
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniShareDelegationRecord) return false
+        return roundId == other.roundId &&
+            bundleIndex == other.bundleIndex &&
+            proposalId == other.proposalId &&
+            shareIndex == other.shareIndex &&
+            sentToUrls == other.sentToUrls &&
+            nullifier.contentEquals(other.nullifier) &&
+            confirmed == other.confirmed &&
+            submitAt == other.submitAt &&
+            createdAt == other.createdAt
+    }
+
+    override fun hashCode(): Int {
+        var result = roundId.hashCode()
+        result = 31 * result + bundleIndex
+        result = 31 * result + proposalId
+        result = 31 * result + shareIndex
+        result = 31 * result + sentToUrls.hashCode()
+        result = 31 * result + nullifier.contentHashCode()
+        result = 31 * result + confirmed.hashCode()
+        result = 31 * result + submitAt.hashCode()
+        result = 31 * result + createdAt.hashCode()
         return result
     }
 }

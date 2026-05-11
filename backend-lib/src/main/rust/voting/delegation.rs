@@ -19,6 +19,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     account_index: jint,
     notes: JObjectArray<'local>,
     wallet_seed: JByteArray<'local>,
+    hotkey_seed: JByteArray<'local>,
     seed_fingerprint: JByteArray<'local>,
     round_name: JString<'local>,
     address_index: jint,
@@ -35,6 +36,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 
         let seed_bytes =
             java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
+        let hotkey_seed =
+            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
         let derived_fvk_bytes =
             orchard_fvk_bytes_from_wallet_seed(seed_bytes.expose_secret(), network, account_index)?;
         if derived_fvk_bytes != fvk_bytes {
@@ -42,19 +45,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 "ufvk does not match walletSeed for network_id={network_id} account_index={account_index}"
             ));
         }
-        let hotkey_raw_address = hotkey_orchard_raw_address_from_wallet_seed(
-            seed_bytes.expose_secret(),
-            network,
-            account_index,
-            address_index,
-        )?;
+        let hotkey_raw_address =
+            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, 0)?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
 
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
 
         let round_id = java_string_to_rust(env, &round_id)?;
-        require_persisted_bundle_notes(&db, &round_id, bundle_index, &bundle_notes)?;
         require_round_phase_for_delegation_construction(&db, &round_id)?;
         let round_name = java_string_to_rust(env, &round_name)?;
         let pczt = db
@@ -225,9 +223,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     pir_server_url: JString<'local>,
     network_id: jint,
     notes: JObjectArray<'local>,
-    wallet_seed: JByteArray<'local>,
-    account_index: jint,
-    address_index: jint,
+    hotkey_seed: JByteArray<'local>,
     progress_callback: JObject<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -236,17 +232,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let network = network_from_id(network_id)?;
         let network_id = jint_to_u32(network_id, "network_id")?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let account_index = jint_to_u32(account_index, "account_index")?;
-        let address_index = jint_to_u32(address_index, "address_index")?;
-        let seed_bytes =
-            java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
-        let hotkey_raw_address = hotkey_orchard_raw_address_from_wallet_seed(
-            seed_bytes.expose_secret(),
-            network,
-            account_index,
-            address_index,
-        )?;
-        drop(seed_bytes);
+        let hotkey_seed =
+            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
+        let hotkey_raw_address =
+            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, 0)?;
 
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
@@ -402,7 +391,10 @@ fn require_bundle_notes_match(
     bundle_index: u32,
     notes: &[NoteInfo],
 ) -> anyhow::Result<()> {
-    require_persisted_bundle_notes(db, round_id, bundle_index, notes)
+    let conn = db.conn();
+    let wallet_id = db.wallet_id();
+    voting::storage::queries::require_bundle_notes(&conn, round_id, &wallet_id, bundle_index, notes)
+        .map_err(|e| anyhow!("bundle notes do not match persisted setup: {}", e))
 }
 
 fn require_witnesses_match_bundle(
@@ -412,9 +404,16 @@ fn require_witnesses_match_bundle(
     notes: &[NoteInfo],
     witnesses: &[WitnessData],
 ) -> anyhow::Result<()> {
-    require_persisted_bundle_notes(db, round_id, bundle_index, notes)?;
     let conn = db.conn();
     let wallet_id = db.wallet_id();
+    voting::storage::queries::require_bundle_notes(
+        &conn,
+        round_id,
+        &wallet_id,
+        bundle_index,
+        notes,
+    )
+    .map_err(|e| anyhow!("bundle notes do not match persisted setup: {}", e))?;
     let params = voting::storage::queries::load_round_params(&conn, round_id, &wallet_id)
         .map_err(|e| anyhow!("load_round_params: {}", e))?;
 

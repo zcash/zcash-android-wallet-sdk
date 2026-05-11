@@ -6,6 +6,7 @@ use jni::{
     objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::{
         JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jlongArray, jobject, jobjectArray,
+        jstring,
     },
 };
 use orchard::keys::Scope;
@@ -39,6 +40,7 @@ mod delegation;
 mod helpers;
 mod notes;
 mod progress;
+mod recovery;
 mod rounds;
 mod share_tracking;
 mod tree;
