@@ -5959,6 +5959,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 
 [[package]]
+name = "voting-circuits"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ba6635f8e207689c290634f6e34f7eddaf1b254aa0f9b0ef65418d89d1d1ae7"
+dependencies = [
+ "blake2b_simd",
+ "ff",
+ "group",
+ "halo2_gadgets",
+ "halo2_poseidon",
+ "halo2_proofs",
+ "incrementalmerkletree",
+ "lazy_static",
+ "orchard",
+ "pasta_curves",
+ "rand 0.8.5",
+ "sinsemilla",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6710,6 +6730,7 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_transparent",
+ "zcash_voting",
  "zip32",
 ]
 
@@ -7011,6 +7032,37 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_spec",
+ "zip32",
+]
+
+[[package]]
+name = "zcash_voting"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90abca13341b344d82315895bf50f26e93a66b5c4d2fbd8591728af604d4d4db"
+dependencies = [
+ "anyhow",
+ "blake2b_simd",
+ "ff",
+ "group",
+ "halo2_gadgets",
+ "halo2_proofs",
+ "hex",
+ "incrementalmerkletree",
+ "nonempty",
+ "orchard",
+ "pasta_curves",
+ "pczt",
+ "rand 0.8.5",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "subtle",
+ "thiserror 2.0.18",
+ "voting-circuits",
+ "zcash_keys",
+ "zcash_primitives",
+ "zcash_protocol",
  "zip32",
 ]
 

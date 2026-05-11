@@ -12,7 +12,7 @@ rust-version = "1.92"
 
 [dependencies]
 # Zcash dependencies
-orchard = "0.13"
+orchard = { version = "=0.13.1", features = ["unstable-voting-circuits"] }
 pczt = { version = "0.6", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.7", default-features = false }
@@ -76,6 +76,24 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 component = "0.1.1"
 rust-analyzer = "0.0.1"
+
+# Shielded voting
+#
+# `zcash_voting` provides client-side primitives for shielded voting. It depends
+# on Orchard's unstable voting-circuits APIs, so the direct Orchard dependency is
+# pinned to the same version and enables the same feature. Remove the exact pin
+# once these circuit APIs are available through a stable Orchard feature.
+# The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
+# Its share-nullifier entry point forwards to
+# `zcash_voting::share_tracking::compute_share_nullifier`:
+# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.5.3/zcash_voting/src/share_tracking.rs
+#
+# The transitive `voting-circuits` dependency contains the share-reveal circuit
+# and the Poseidon-based `share_nullifier_hash` implementation:
+# https://github.com/valargroup/voting-circuits/blob/v0.4.1/voting-circuits/src/share_reveal/circuit.rs
+# Default features stay disabled so this foundation change does not pull in the
+# optional client PIR, tree-sync, or networking stacks.
+zcash_voting = { version = "0.5.3", default-features = false }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]
