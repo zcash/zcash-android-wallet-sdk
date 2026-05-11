@@ -1,5 +1,6 @@
 use super::*;
 
+// Must match FFI_ROUND_PHASE_* constants in FfiVotingModels.kt.
 const PHASE_INITIALIZED: u32 = 0;
 const PHASE_HOTKEY_GENERATED: u32 = 1;
 const PHASE_DELEGATION_CONSTRUCTED: u32 = 2;

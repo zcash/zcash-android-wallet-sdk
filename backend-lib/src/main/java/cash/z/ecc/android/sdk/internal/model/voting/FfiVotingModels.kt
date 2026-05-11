@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal.model.voting
 
 import androidx.annotation.Keep
 
+// Must match PHASE_* constants in backend-lib/src/main/rust/voting/json.rs.
 internal const val FFI_ROUND_PHASE_INITIALIZED = 0
 internal const val FFI_ROUND_PHASE_HOTKEY_GENERATED = 1
 internal const val FFI_ROUND_PHASE_DELEGATION_CONSTRUCTED = 2
