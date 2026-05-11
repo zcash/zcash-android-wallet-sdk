@@ -188,20 +188,6 @@ pub(super) fn make_jni_vote_records(
     )
 }
 
-pub(super) fn round_exists(db: &VotingDb, round_id: &str) -> anyhow::Result<bool> {
-    let conn = db.conn();
-    let wallet_id = db.wallet_id();
-    match conn.query_row(
-        "SELECT 1 FROM rounds WHERE round_id = ?1 AND wallet_id = ?2 LIMIT 1",
-        rusqlite::params![round_id, wallet_id],
-        |_| Ok(()),
-    ) {
-        Ok(()) => Ok(true),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
-        Err(e) => Err(anyhow!("round_exists query failed: {}", e)),
-    }
-}
-
 impl TryFrom<RoundSummary> for JniRoundSummaryPayload {
     type Error = anyhow::Error;
 

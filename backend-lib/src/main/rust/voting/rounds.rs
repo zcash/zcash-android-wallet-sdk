@@ -50,7 +50,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        if !round_exists(&db, &round_id)? {
+        if !db
+            .has_round(&round_id)
+            .map_err(|e| anyhow!("has_round: {}", e))?
+        {
             Ok(JObject::null().into_raw())
         } else {
             let state = db
