@@ -1,8 +1,6 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
 import cash.z.ecc.android.sdk.Broadcaster
-import cash.z.ecc.android.sdk.internal.Twig
-import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.Pczt
@@ -11,10 +9,7 @@ import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.util.WalletClientFactory
-import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
-import co.electriccoin.lightwallet.client.model.Response
-import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
@@ -125,14 +120,7 @@ internal class EndpointTransactionSubmitter(
     ): TransactionSubmitResult {
         val walletClient = walletClientFactory.create(endpoint)
         try {
-            val response =
-                walletClient.submitTransaction(
-                    tx = transaction.raw.byteArray,
-                    serviceMode =
-                        sdkFlags ifTor
-                            ServiceMode.Group("submit-${transaction.txId.byteArray.toHexReversed()}")
-                )
-            return response.toSubmitResult(transaction)
+            return walletClient.submitTransaction(transaction.raw, transaction.txId, sdkFlags)
         } finally {
             withContext(NonCancellable) {
                 walletClient.dispose()
@@ -172,39 +160,3 @@ private fun List<CreatedTransaction>.createSubmitResultFlow(
             }
         }
 }
-
-private fun Response<SendResponseUnsafe>.toSubmitResult(transaction: CreatedTransaction): TransactionSubmitResult =
-    when (this) {
-        is Response.Success -> {
-            if (result.code == 0) {
-                Twig.info {
-                    "SUCCESS: submit transaction completed for:" +
-                        " ${transaction.txId.byteArray.toHexReversed()}"
-                }
-                TransactionSubmitResult.Success(transaction.txId)
-            } else {
-                Twig.error {
-                    "FAILURE! submit transaction ${transaction.txId.byteArray.toHexReversed()} " +
-                        "completed with response: ${result.code}: ${result.message}"
-                }
-                TransactionSubmitResult.Failure(
-                    txId = transaction.txId,
-                    grpcError = false,
-                    code = result.code,
-                    description = result.message
-                )
-            }
-        }
-
-        is Response.Failure -> {
-            Twig.error {
-                "FAILURE! submit transaction failed with gRPC response: $code: $description"
-            }
-            TransactionSubmitResult.Failure(
-                txId = transaction.txId,
-                grpcError = true,
-                code = code,
-                description = description
-            )
-        }
-    }
