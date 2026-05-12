@@ -121,6 +121,16 @@ class TypesafeVotingBackendImplTest {
     }
 
     @Test
+    fun voting_note_info_maps_to_and_from_jni_shape() {
+        val jniNote = jniNoteInfo().copy(scope = 1)
+
+        val note = jniNote.toVotingNoteInfo()
+
+        assertEquals(VotingNoteScope.INTERNAL, note.scope)
+        assertEquals(jniNote, note.toJniNoteInfo())
+    }
+
+    @Test
     fun delegation_methods_forward_arguments_and_map_results() =
         runTest {
             val proofJniResult =
@@ -164,14 +174,15 @@ class TypesafeVotingBackendImplTest {
             val keystoneSig = byteArrayOf(7, 8)
             val keystoneSighash = byteArrayOf(9, 10)
             val treeStateBytes = byteArrayOf(11, 12, 13)
-            val notes = listOf(jniNoteInfo())
+            val notes = listOf(votingNoteInfo())
+            val jniNotes = notes.map { it.toJniNoteInfo() }
             val witnesses = listOf(jniWitnessData())
             var progressValue: Double? = null
 
             db.storeWitnesses("round-1", 2, notes, witnesses)
             assertEquals("round-1", backend.storeWitnessesRoundId)
             assertEquals(2, backend.storeWitnessesBundleIndex)
-            assertEquals(notes, backend.storeWitnessesNotes)
+            assertEquals(jniNotes, backend.storeWitnessesNotes)
             assertEquals(witnesses, backend.storeWitnessesWitnesses)
 
             val precompute =
@@ -188,7 +199,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals(3, backend.precomputeBundleIndex)
             assertEquals("https://pir.example", backend.precomputePirServerUrl)
             assertEquals(0, backend.precomputeNetworkId)
-            assertEquals(notes, backend.precomputeNotes)
+            assertEquals(jniNotes, backend.precomputeNotes)
 
             val proof =
                 db.buildAndProveDelegation(
@@ -207,7 +218,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals(4, backend.buildAndProveBundleIndex)
             assertEquals("https://pir.example", backend.buildAndProvePirServerUrl)
             assertEquals(1, backend.buildAndProveNetworkId)
-            assertEquals(notes, backend.buildAndProveNotes)
+            assertEquals(jniNotes, backend.buildAndProveNotes)
             assertContentEquals(walletSeed, backend.buildAndProveWalletSeed)
             assertEquals(5, backend.buildAndProveAccountIndex)
             assertEquals(6, backend.buildAndProveAddressIndex)
@@ -261,7 +272,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals(10, backend.generateNoteWitnessesBundleIndex)
             assertEquals("/tmp/wallet.db", backend.generateNoteWitnessesWalletDbPath)
             assertEquals(1, backend.generateNoteWitnessesNetworkId)
-            assertEquals(notes, backend.generateNoteWitnessesNotes)
+            assertEquals(jniNotes, backend.generateNoteWitnessesNotes)
             assertEquals(generatedWitnesses.asList(), generated)
         }
 
@@ -338,6 +349,8 @@ class TypesafeVotingBackendImplTest {
             scope = 0,
             ufvk = "ufvk"
         )
+
+    private fun votingNoteInfo() = jniNoteInfo().toVotingNoteInfo()
 
     private fun jniWitnessData() =
         JniWitnessData(

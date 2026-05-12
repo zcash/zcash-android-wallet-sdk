@@ -1,7 +1,6 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
@@ -20,7 +19,7 @@ internal interface TypesafeVotingBackend {
         blind: ByteArray
     ): ByteArray
 
-    suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult
+    suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): JniBundleSetupResult
 
     suspend fun warmProvingCaches()
 
@@ -35,7 +34,7 @@ internal interface TypesafeVotingBackend {
         snapshotHeight: BlockHeight,
         networkId: Int,
         accountUuid: AccountUuid
-    ): List<JniNoteInfo>
+    ): List<VotingNoteInfo>
 
     suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
 
@@ -75,7 +74,7 @@ internal interface TypesafeVotingDb {
 
     suspend fun setupBundles(
         roundId: String,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): JniBundleSetupResult
 
     suspend fun generateHotkey(
@@ -89,7 +88,7 @@ internal interface TypesafeVotingDb {
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String,
@@ -99,7 +98,7 @@ internal interface TypesafeVotingDb {
     suspend fun storeWitnesses(
         roundId: String,
         bundleIndex: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         witnesses: List<JniWitnessData>
     )
 
@@ -108,7 +107,7 @@ internal interface TypesafeVotingDb {
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult
 
     suspend fun buildAndProveDelegation(
@@ -116,7 +115,7 @@ internal interface TypesafeVotingDb {
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
         accountIndex: Int,
         addressIndex: Int,
@@ -145,8 +144,60 @@ internal interface TypesafeVotingDb {
         bundleIndex: Int,
         walletDbPath: String,
         networkId: Int,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): List<JniWitnessData>
+}
+
+internal data class VotingNoteInfo(
+    val commitment: ByteArray,
+    val nullifier: ByteArray,
+    val value: Long,
+    val position: Long,
+    val diversifier: ByteArray,
+    val rho: ByteArray,
+    val rseed: ByteArray,
+    val scope: VotingNoteScope,
+    val ufvk: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is VotingNoteInfo) return false
+        return commitment.contentEquals(other.commitment) &&
+            nullifier.contentEquals(other.nullifier) &&
+            value == other.value &&
+            position == other.position &&
+            diversifier.contentEquals(other.diversifier) &&
+            rho.contentEquals(other.rho) &&
+            rseed.contentEquals(other.rseed) &&
+            scope == other.scope &&
+            ufvk == other.ufvk
+    }
+
+    override fun hashCode(): Int {
+        var result = commitment.contentHashCode()
+        result = 31 * result + nullifier.contentHashCode()
+        result = 31 * result + value.hashCode()
+        result = 31 * result + position.hashCode()
+        result = 31 * result + diversifier.contentHashCode()
+        result = 31 * result + rho.contentHashCode()
+        result = 31 * result + rseed.contentHashCode()
+        result = 31 * result + scope.hashCode()
+        result = 31 * result + ufvk.hashCode()
+        return result
+    }
+}
+
+internal enum class VotingNoteScope(
+    val jniValue: Int
+) {
+    EXTERNAL(0),
+    INTERNAL(1);
+
+    companion object {
+        fun fromJniValue(value: Int) =
+            entries.firstOrNull { it.jniValue == value }
+                ?: error("Unknown voting note scope: $value")
+    }
 }
 
 internal data class GovernancePcztResult(

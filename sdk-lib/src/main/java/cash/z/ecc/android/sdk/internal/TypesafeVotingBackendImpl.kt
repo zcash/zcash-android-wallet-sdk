@@ -39,8 +39,8 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
             RustVotingDbBackend(rustBackend().openVotingDb(dbPath, walletId))
         )
 
-    override suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
-        rustBackend().computeBundleSetup(notes)
+    override suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): JniBundleSetupResult =
+        rustBackend().computeBundleSetup(notes.toJniNoteInfos())
 
     override suspend fun warmProvingCaches() =
         rustBackend().warmProvingCaches()
@@ -59,14 +59,14 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         snapshotHeight: BlockHeight,
         networkId: Int,
         accountUuid: AccountUuid
-    ): List<JniNoteInfo> =
+    ): List<VotingNoteInfo> =
         rustBackend()
             .getWalletNotes(
                 walletDbPath,
                 snapshotHeight.value,
                 networkId,
                 accountUuid.value
-            ).asList()
+            ).map { it.toVotingNoteInfo() }
 
     override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
         rustBackend().extractPcztSighash(pcztBytes)
@@ -397,9 +397,9 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun setupBundles(
         roundId: String,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): JniBundleSetupResult =
-        votingDb.setupBundles(roundId, notes)
+        votingDb.setupBundles(roundId, notes.toJniNoteInfos())
 
     override suspend fun generateHotkey(
         roundId: String,
@@ -413,7 +413,7 @@ internal class TypesafeVotingDbImpl(
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String,
@@ -426,7 +426,7 @@ internal class TypesafeVotingDbImpl(
                 ufvk,
                 networkId,
                 accountIndex,
-                notes,
+                notes.toJniNoteInfos(),
                 walletSeed,
                 seedFingerprint,
                 roundName,
@@ -436,16 +436,16 @@ internal class TypesafeVotingDbImpl(
     override suspend fun storeWitnesses(
         roundId: String,
         bundleIndex: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         witnesses: List<JniWitnessData>
-    ) = votingDb.storeWitnesses(roundId, bundleIndex, notes, witnesses)
+    ) = votingDb.storeWitnesses(roundId, bundleIndex, notes.toJniNoteInfos(), witnesses)
 
     override suspend fun precomputeDelegationPir(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult =
         votingDb
             .precomputeDelegationPir(
@@ -453,7 +453,7 @@ internal class TypesafeVotingDbImpl(
                 bundleIndex,
                 pirServerUrl,
                 networkId,
-                notes
+                notes.toJniNoteInfos()
             ).toDelegationPirPrecomputeResult()
 
     override suspend fun buildAndProveDelegation(
@@ -461,7 +461,7 @@ internal class TypesafeVotingDbImpl(
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
         accountIndex: Int,
         addressIndex: Int,
@@ -473,7 +473,7 @@ internal class TypesafeVotingDbImpl(
                 bundleIndex,
                 pirServerUrl,
                 networkId,
-                notes,
+                notes.toJniNoteInfos(),
                 walletSeed,
                 accountIndex,
                 addressIndex,
@@ -518,7 +518,7 @@ internal class TypesafeVotingDbImpl(
         bundleIndex: Int,
         walletDbPath: String,
         networkId: Int,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): List<JniWitnessData> {
         val witnesses =
             votingDb.generateNoteWitnesses(
@@ -526,7 +526,7 @@ internal class TypesafeVotingDbImpl(
                 bundleIndex,
                 walletDbPath,
                 networkId,
-                notes
+                notes.toJniNoteInfos()
             )
         return witnesses.asList()
     }
