@@ -485,6 +485,16 @@ class TypesafeVotingBackendImplTest {
             return keystoneSubmissionResult
         }
 
+        override suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray) = unused()
+
+        override suspend fun generateNoteWitnesses(
+            roundId: String,
+            bundleIndex: Int,
+            walletDbPath: String,
+            networkId: Int,
+            notes: List<JniNoteInfo>
+        ): Array<JniWitnessData> = unused()
+
         private fun unused(): Nothing = error("unused")
     }
 

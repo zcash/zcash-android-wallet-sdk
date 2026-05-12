@@ -22,6 +22,19 @@ internal interface TypesafeVotingBackend {
 
     suspend fun warmProvingCaches()
 
+    suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
+
+    suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
+
+    suspend fun verifyWitness(witness: JniWitnessData): Boolean
+
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): List<JniNoteInfo>
+
     suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
 
     suspend fun extractSpendAuthSig(
@@ -122,6 +135,16 @@ internal interface TypesafeVotingDb {
         keystoneSig: ByteArray,
         keystoneSighash: ByteArray
     ): DelegationSubmissionResult
+
+    suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray)
+
+    suspend fun generateNoteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        walletDbPath: String,
+        networkId: Int,
+        notes: List<JniNoteInfo>
+    ): List<JniWitnessData>
 }
 
 internal data class GovernancePcztResult(

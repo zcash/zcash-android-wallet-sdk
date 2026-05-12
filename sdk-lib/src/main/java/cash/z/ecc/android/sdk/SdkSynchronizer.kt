@@ -123,6 +123,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -695,6 +696,17 @@ class SdkSynchronizer private constructor(
                 Twig.error { message }
                 throw throwable
             }
+        }
+
+    internal suspend fun getWalletDbPathForVoting(): String =
+        withContext(Dispatchers.IO) {
+            val dataDbFile =
+                DatabaseCoordinator.getInstance(context).dataDbFile(
+                    network = synchronizerKey.zcashNetwork,
+                    alias = synchronizerKey.alias
+                )
+
+            dataDbFile.absolutePath
         }
 
     suspend fun isValidAddress(address: String): Boolean = !validateAddress(address).isNotValid
