@@ -672,6 +672,16 @@ class VotingRustBackendTest {
                 assertEquals(5, submission.govNullifiers.size)
                 assertEquals(PCZT_ROUND_ID, submission.voteRoundId)
 
+                assertFailsWith<RuntimeException> {
+                    db.getDelegationSubmission(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        senderSeed = OTHER_HOTKEY_SEED,
+                        networkId = TESTNET_NETWORK_ID,
+                        accountIndex = ACCOUNT_INDEX
+                    )
+                }
+
                 val keystoneSubmission =
                     db.getDelegationSubmissionWithKeystoneSig(
                         roundId = PCZT_ROUND_ID,

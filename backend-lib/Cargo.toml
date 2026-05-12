@@ -10,6 +10,11 @@ publish = false
 edition = "2024"
 rust-version = "1.92"
 
+[features]
+# Enables JNI helpers that are only used by Android instrumentation tests.
+# This feature must not be enabled for production native builds.
+android-test-fixtures = []
+
 [dependencies]
 # Zcash dependencies
 orchard = { version = "=0.13.1", features = ["unstable-voting-circuits"] }

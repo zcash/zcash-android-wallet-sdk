@@ -15,6 +15,13 @@ plugins {
     id("zcash-sdk.publishing-conventions")
 }
 
+val enableAndroidTestNativeFixtures =
+    gradle.startParameter.taskNames.any { taskName ->
+        taskName.contains("AndroidTest", ignoreCase = true) ||
+            taskName.contains("EmulatorWtf", ignoreCase = true) ||
+            taskName.contains("connected", ignoreCase = true)
+    }
+
 // Publishing information
 
 mavenPublishing {
@@ -79,6 +86,12 @@ cargo {
         "x86_64" to minSdkVersion,
     )
     profile = "release"
+    extraCargoBuildArguments =
+        if (enableAndroidTestNativeFixtures) {
+            listOf("--features", "android-test-fixtures")
+        } else {
+            emptyList()
+        }
     prebuiltToolchains = true
     // To force the compiler to use the given page size
     // See the new Android 16 KB page size requirement for more details:
@@ -100,6 +113,13 @@ project.afterEvaluate {
             dependsOn("cargoBuild", "cargoBuildArm64", "cargoBuildX86", "cargoBuildX86_64")
             // Fix for mergeDebugJniLibFolders UP-TO-DATE
             inputs.dir(layout.buildDirectory.dir("rustJniLibs/android").get().asFile)
+        }
+    tasks
+        .matching {
+            name.startsWith("cargoBuild")
+        }
+        .configureEach {
+            inputs.property("androidTestNativeFixtures", enableAndroidTestNativeFixtures)
         }
 }
 

@@ -23,6 +23,15 @@ const JNI_DELEGATION_SUBMISSION_RESULT: &str =
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";
 // Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
 const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
+// Must match JniDelegationPirPrecomputeResult(Long, Long) in JniVotingModels.kt.
+const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ)V";
+// Must match JniDelegationProofResult(ByteArray, Array<ByteArray>, ByteArray,
+// ByteArray, Array<ByteArray>, ByteArray, ByteArray) in JniVotingModels.kt.
+const JNI_DELEGATION_PROOF_RESULT_CTOR_SIG: &str = "([B[[B[B[B[[B[B[B)V";
+// Must match JniDelegationSubmissionResult(ByteArray, ByteArray, ByteArray,
+// ByteArray, ByteArray, ByteArray, ByteArray, Array<ByteArray>, ByteArray,
+// String) in JniVotingModels.kt.
+const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str = "([B[B[B[B[B[B[B[[B[BLjava/lang/String;)V";
 
 pub(super) const ORCHARD_RAW_ADDRESS_BYTES: usize = 43;
 pub(super) const ORCHARD_FVK_BYTES: usize = 96;
@@ -422,7 +431,7 @@ pub(super) fn make_jni_delegation_pir_precompute_result<'local>(
     let class = env.find_class(JNI_DELEGATION_PIR_PRECOMPUTE_RESULT)?;
     let obj = env.new_object(
         &class,
-        "(JJ)V",
+        JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG,
         &[
             JValue::Long(u64_to_jlong(
                 u64::from(result.cached_count),
@@ -466,7 +475,7 @@ pub(super) fn make_jni_delegation_proof_result<'local>(
 
     let obj = env.new_object(
         &class,
-        "([B[[B[B[B[[B[B[B)V",
+        JNI_DELEGATION_PROOF_RESULT_CTOR_SIG,
         &[
             JValue::Object(&proof_obj),
             JValue::Object(&public_inputs_obj),
@@ -510,7 +519,7 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
 
     let obj = env.new_object(
         &class,
-        "([B[B[B[B[B[B[B[[B[BLjava/lang/String;)V",
+        JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG,
         &[
             JValue::Object(&proof),
             JValue::Object(&rk),

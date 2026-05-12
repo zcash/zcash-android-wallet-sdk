@@ -163,6 +163,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
         let notes: Vec<NoteInfo> = json_notes
             .into_iter()
@@ -200,6 +201,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         network_from_id(network_id)?;
         let network_id = jint_to_u32(network_id, "network_id")?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
@@ -247,6 +249,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let network = network_from_id(network_id)?;
         let network_id = jint_to_u32(network_id, "network_id")?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
@@ -306,6 +309,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         network_from_id(network_id)?;
         let seed =
             java_secret_bytes_at_least(env, &sender_seed, "senderSeed", PROTOCOL_FIELD_BYTES)?;
@@ -319,6 +323,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
             )
             .map_err(|e| anyhow!("get_delegation_submission: {}", e))?;
 
+        verify_delegation_submission_sig(&data)?;
         make_jni_delegation_submission_result(env, data)
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
@@ -338,6 +343,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let data = db
             .get_delegation_submission_with_keystone_sig(
                 &java_string_to_rust(env, &round_id)?,
@@ -359,6 +365,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+#[cfg(feature = "android-test-fixtures")]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_delegationProofResultFixtureNative<
     'local,
@@ -383,6 +390,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_del
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+#[cfg(feature = "android-test-fixtures")]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeDelegationProofFixtureNative<
     'local,
@@ -396,6 +404,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let proof = java_bytes(env, &proof, "proof")?;
@@ -519,6 +528,7 @@ fn verify_delegation_submission_sig(data: &DelegationSubmissionData) -> anyhow::
         .map_err(|_| anyhow!("spend_auth_sig does not verify against rk and sighash"))
 }
 
+#[cfg(feature = "android-test-fixtures")]
 fn fixed_field_vec(start: u8, count: usize) -> Vec<Vec<u8>> {
     (0..count)
         .map(|index| vec![start.wrapping_add(index as u8); PROTOCOL_FIELD_BYTES])
