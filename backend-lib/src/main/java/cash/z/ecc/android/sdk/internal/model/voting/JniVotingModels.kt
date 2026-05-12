@@ -3,7 +3,6 @@ package cash.z.ecc.android.sdk.internal.model.voting
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE
 
-@Keep
 @ConsistentCopyVisibility
 data class HotkeyPublicKey internal constructor(
     val value: ByteArray
