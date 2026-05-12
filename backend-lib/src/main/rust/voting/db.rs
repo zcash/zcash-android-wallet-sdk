@@ -142,3 +142,40 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_clo
     });
     unwrap_exc_or(&mut env, res, ())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn managed_db_reuses_access_lock_for_same_path_and_wallet() {
+        let db_path = unique_db_path();
+        let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
+        let first = open_managed_db(db_path_str, "wallet-1").expect("first DB open");
+        let second = open_managed_db(db_path_str, "wallet-1").expect("second DB open");
+
+        assert!(Arc::ptr_eq(&first, &second));
+        let guard = first.access_lock().expect("first access lock");
+        assert!(second.access_mutex.try_lock().is_err());
+        drop(guard);
+
+        drop(first);
+        drop(second);
+        let _ = fs::remove_file(db_path);
+    }
+
+    fn unique_db_path() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "zcash-android-voting-db-test-{}-{nanos}.sqlite",
+            std::process::id()
+        ))
+    }
+}
