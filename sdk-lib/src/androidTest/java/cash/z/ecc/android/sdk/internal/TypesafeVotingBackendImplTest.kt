@@ -13,6 +13,8 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
@@ -627,6 +629,35 @@ class TypesafeVotingBackendImplTest {
             generateNoteWitnessesNotes = notes
             return generatedWitnesses
         }
+
+        override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = unused()
+
+        override suspend fun resetTreeClient(roundId: String) = unused()
+
+        override suspend fun storeVanPosition(
+            roundId: String,
+            bundleIndex: Int,
+            position: Long
+        ) = unused()
+
+        override suspend fun generateVanWitness(
+            roundId: String,
+            bundleIndex: Int,
+            anchorHeight: Long
+        ): JniVanWitness = unused()
+
+        override suspend fun buildVoteCommitment(
+            roundId: String,
+            bundleIndex: Int,
+            hotkeySeed: ByteArray,
+            proposalId: Int,
+            choice: Int,
+            numOptions: Int,
+            witness: JniVanWitness,
+            networkId: Int,
+            singleShare: Boolean,
+            proofProgress: VotingProofProgressCallback?
+        ): JniVoteCommitmentResult = unused()
 
         private fun unused(): Nothing = error("unused")
     }
