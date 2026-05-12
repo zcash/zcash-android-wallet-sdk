@@ -10,8 +10,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Synchronizer.fullyScannedHeight` and `Synchronizer.getTreeState` accessors
   for snapshot-height consumers.
 
+### Changed
+- `String.fromHex` now rejects odd-length and non-hex input instead of silently coercing malformed
+  strings.
+
 ### Internal
-- Added the Rust `zcash_voting` dependency foundation for future shielded voting backend work.
+- Added internal `VotingRustBackend` / `TypesafeVotingBackend` plumbing for future shielded voting backend work.
+- Pinned `orchard` to `=0.13.1` with `unstable-voting-circuits` to match `zcash_voting` / `voting-circuits` requirements.
 
 ## [2.5.0] - 2026-05-01
 

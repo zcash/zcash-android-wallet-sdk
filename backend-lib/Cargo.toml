@@ -54,6 +54,9 @@ anyhow = "1"
 jni = { version = "0.21", default-features = false }
 uuid = "1"
 bitflags = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
 
 # lightwalletd
 tonic = "0.14"
@@ -81,8 +84,8 @@ rust-analyzer = "0.0.1"
 #
 # `zcash_voting` provides client-side primitives for shielded voting. It depends
 # on Orchard's unstable voting-circuits APIs, so the direct Orchard dependency is
-# pinned to the same version and enables the same feature. Remove the exact pin
-# once these circuit APIs are available through a stable Orchard feature.
+# pinned to the same version and enables the same feature. Revisit the exact pin
+# if the upstream voting crates relax their Orchard requirement.
 # The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
 # Its share-nullifier entry point forwards to
 # `zcash_voting::share_tracking::compute_share_nullifier`:

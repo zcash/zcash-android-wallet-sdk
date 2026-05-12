@@ -1,9 +1,12 @@
 package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
+import cash.z.ecc.android.sdk.internal.SdkDispatchers
+import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -13,14 +16,47 @@ import kotlinx.coroutines.withContext
 @Suppress("TooManyFunctions", "LongParameterList")
 class VotingRustBackend private constructor() {
     @Throws(RuntimeException::class)
-    fun computeShareNullifier(
+    suspend fun computeShareNullifier(
         voteCommitment: ByteArray,
         shareIndex: Int,
         blind: ByteArray
-    ): ByteArray = computeShareNullifierNative(voteCommitment, shareIndex, blind)
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            computeShareNullifierNative(voteCommitment, shareIndex, blind)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult =
+        withContext(Dispatchers.IO) {
+            computeBundleSetupNative(notesJson)
+                ?: error("computeBundleSetup returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun warmProvingCaches() =
+        withContext(Dispatchers.IO) {
+            warmProvingCachesNative()
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractPcztSighashNative(pcztBytes)
+                ?: error("extractPcztSighash returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractSpendAuthSigNative(signedPcztBytes, actionIndex)
+                ?: error("extractSpendAuthSig returned null")
+        }
 
     suspend fun openVotingDb(dbPath: String, walletId: String): VotingDb =
-        withContext(Dispatchers.IO) {
+        withContext(SdkDispatchers.DATABASE_IO) {
             openVotingDbNative(dbPath, walletId).let { dbHandle ->
                 check(dbHandle != 0L) {
                     "openVotingDb failed for dbPath=$dbPath"
@@ -38,7 +74,7 @@ class VotingRustBackend private constructor() {
         suspend fun close() {
             accessMutex.withLock {
                 dbHandle?.let { handle ->
-                    withContext(Dispatchers.IO) {
+                    withContext(SdkDispatchers.DATABASE_IO) {
                         closeVotingDbNative(handle)
                     }
                     dbHandle = null
@@ -75,6 +111,10 @@ class VotingRustBackend private constructor() {
             withHandle { handle -> listRoundsNative(handle) }
 
         @Throws(RuntimeException::class)
+        suspend fun getBundleCount(roundId: String): Int =
+            withHandle { handle -> getBundleCountNative(handle, roundId) }
+
+        @Throws(RuntimeException::class)
         suspend fun getVotes(roundId: String): Array<JniVoteRecord> =
             withHandle { handle -> getVotesNative(handle, roundId) }
 
@@ -89,13 +129,62 @@ class VotingRustBackend private constructor() {
         ): Long =
             withHandle { handle -> deleteSkippedBundlesNative(handle, roundId, keepCount) }
 
+        @Throws(RuntimeException::class)
+        suspend fun setupBundles(
+            roundId: String,
+            notesJson: String
+        ): JniBundleSetupResult =
+            withHandle { handle ->
+                setupBundlesNative(handle, roundId, notesJson)
+                    ?: error("setupBundles returned null for roundId=$roundId")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun generateHotkey(
+            roundId: String,
+            seed: ByteArray
+        ): JniVotingHotkey =
+            withHandle { handle ->
+                generateHotkeyNative(handle, roundId, seed)
+                    ?: error("generateHotkey returned null for roundId=$roundId")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun buildGovernancePcztJson(
+            roundId: String,
+            bundleIndex: Int,
+            ufvk: String,
+            networkId: Int,
+            accountIndex: Int,
+            notesJson: String,
+            walletSeed: ByteArray,
+            seedFingerprint: ByteArray,
+            roundName: String,
+            addressIndex: Int
+        ): String =
+            withHandle { handle ->
+                buildGovernancePcztJsonNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    ufvk,
+                    networkId,
+                    accountIndex,
+                    notesJson,
+                    walletSeed,
+                    seedFingerprint,
+                    roundName,
+                    addressIndex
+                ) ?: error("buildGovernancePczt returned null")
+            }
+
         private suspend fun <T> withHandle(block: (Long) -> T): T =
             accessMutex.withLock {
                 val handle =
                     checkNotNull(dbHandle) {
                         "Voting DB handle is closed"
                     }
-                withContext(Dispatchers.IO) {
+                withContext(SdkDispatchers.DATABASE_IO) {
                     block(handle)
                 }
             }
@@ -115,6 +204,10 @@ class VotingRustBackend private constructor() {
             shareIndex: Int,
             blind: ByteArray
         ): ByteArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun warmProvingCachesNative()
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -146,6 +239,10 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun getBundleCountNative(dbHandle: Long, roundId: String): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun getVotesNative(dbHandle: Long, roundId: String): Array<JniVoteRecord>
 
         @JvmStatic
@@ -159,5 +256,52 @@ class VotingRustBackend private constructor() {
             roundId: String,
             keepCount: Int
         ): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun computeBundleSetupNative(notesJson: String): JniBundleSetupResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun setupBundlesNative(
+            dbHandle: Long,
+            roundId: String,
+            notesJson: String
+        ): JniBundleSetupResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun generateHotkeyNative(
+            dbHandle: Long,
+            roundId: String,
+            seed: ByteArray
+        ): JniVotingHotkey?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildGovernancePcztJsonNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            ufvk: String,
+            networkId: Int,
+            accountIndex: Int,
+            notesJson: String,
+            walletSeed: ByteArray,
+            seedFingerprint: ByteArray,
+            roundName: String,
+            addressIndex: Int
+        ): String?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractPcztSighashNative(pcztBytes: ByteArray): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractSpendAuthSigNative(
+            signedPcztBytes: ByteArray,
+            actionIndex: Int
+        ): ByteArray?
     }
 }
