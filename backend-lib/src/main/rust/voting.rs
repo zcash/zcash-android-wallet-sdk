@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
-    sys::{jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
+    sys::{jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
@@ -33,7 +33,6 @@ use crate::utils::{
 mod db;
 mod delegation;
 mod helpers;
-mod json;
 mod notes;
 mod progress;
 mod rounds;

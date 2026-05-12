@@ -12,6 +12,7 @@ const JNI_VOTE_RECORD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniV
 const JNI_VOTING_HOTKEY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey";
 const JNI_BUNDLE_SETUP_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult";
+const JNI_GOVERNANCE_PCZT: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniGovernancePczt";
 const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationPirPrecomputeResult";
 const JNI_DELEGATION_PROOF_RESULT: &str =
@@ -23,6 +24,9 @@ const JNI_DELEGATION_SUBMISSION_RESULT: &str =
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";
 // Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
 const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
+// Must match JniGovernancePczt(ByteArray, ByteArray, ByteArray, Int) in
+// JniVotingModels.kt.
+const JNI_GOVERNANCE_PCZT_CTOR_SIG: &str = "([B[B[BI)V";
 // Must match JniDelegationPirPrecomputeResult(Long, Long) in JniVotingModels.kt.
 const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ)V";
 // Must match JniDelegationProofResult(ByteArray, Array<ByteArray>, ByteArray,
@@ -41,6 +45,10 @@ pub(super) const BLIND_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const SHARE_NULLIFIER_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const HOTKEY_PUBLIC_KEY_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const SPEND_AUTH_SIG_BYTES: usize = 64;
+pub(super) const NOTE_SCOPE_EXTERNAL: u32 = 0;
+pub(super) const NOTE_SCOPE_INTERNAL: u32 = 1;
+pub(super) const ORCHARD_DIVERSIFIER_BYTES: usize = 11;
+pub(super) const ORCHARD_WITNESS_PATH_DEPTH: usize = 32;
 pub(super) const DELEGATION_PUBLIC_INPUT_COUNT: usize = 14;
 pub(super) const GOVERNANCE_NULLIFIER_COUNT: usize = 5;
 pub(super) const NETWORK_ID_TESTNET: jint = 0;
@@ -181,6 +189,46 @@ pub(super) fn java_bytes32(
     require_32(java_bytes(env, array, field)?, field)
 }
 
+fn java_byte_array_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let field = JByteArray::from(env.get_field(obj, name, "[B")?.l()?);
+    java_bytes(env, &field, name)
+}
+
+fn java_string_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<String> {
+    let field = JString::from(env.get_field(obj, name, "Ljava/lang/String;")?.l()?);
+    java_string_to_rust(env, &field)
+}
+
+fn java_byte_array_list_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let list = env.get_field(obj, name, "Ljava/util/List;")?.l()?;
+    let count = env.call_method(&list, "size", "()I", &[])?.i()?;
+    if count < 0 {
+        return Err(anyhow!("{name}.size() returned negative count {count}"));
+    }
+
+    (0..count)
+        .map(|index| {
+            let element = env
+                .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(index)])?
+                .l()?;
+            let bytes = JByteArray::from(element);
+            java_bytes(env, &bytes, &format!("{name}[{index}]"))
+        })
+        .collect()
+}
+
 pub(super) fn network_from_id(id: jint) -> anyhow::Result<Network> {
     match id {
         NETWORK_ID_TESTNET => Ok(Network::TestNetwork),
@@ -240,6 +288,113 @@ pub(super) fn orchard_fvk_bytes(ufvk_str: &str, network: Network) -> anyhow::Res
         .orchard()
         .ok_or_else(|| anyhow!("UFVK has no Orchard component"))?;
     require_len(fvk.to_bytes().to_vec(), "orchard_fvk", ORCHARD_FVK_BYTES)
+}
+
+pub(super) fn java_note_info_array(
+    env: &mut JNIEnv<'_>,
+    notes: &JObjectArray<'_>,
+    field: &str,
+) -> anyhow::Result<Vec<NoteInfo>> {
+    let count = env.get_array_length(notes)?;
+    (0..count)
+        .map(|index| {
+            let note = env.get_object_array_element(notes, index)?;
+            java_note_info(env, &note).map_err(|e| anyhow!("{field}[{index}]: {e}"))
+        })
+        .collect()
+}
+
+fn java_note_info(env: &mut JNIEnv<'_>, note: &JObject<'_>) -> anyhow::Result<NoteInfo> {
+    let scope = require_note_scope(u32::try_from(env.get_field(note, "scope", "I")?.i()?)?)?;
+
+    Ok(NoteInfo {
+        commitment: require_len(
+            java_byte_array_field(env, note, "commitment")?,
+            "commitment",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        nullifier: require_len(
+            java_byte_array_field(env, note, "nullifier")?,
+            "nullifier",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        value: jlong_to_u64(env.get_field(note, "value", "J")?.j()?, "value")?,
+        position: jlong_to_u64(env.get_field(note, "position", "J")?.j()?, "position")?,
+        diversifier: require_len(
+            java_byte_array_field(env, note, "diversifier")?,
+            "diversifier",
+            ORCHARD_DIVERSIFIER_BYTES,
+        )?,
+        rho: require_len(
+            java_byte_array_field(env, note, "rho")?,
+            "rho",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        rseed: require_len(
+            java_byte_array_field(env, note, "rseed")?,
+            "rseed",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        scope,
+        ufvk_str: java_string_field(env, note, "ufvk")?,
+    })
+}
+
+pub(super) fn java_witness_data_array(
+    env: &mut JNIEnv<'_>,
+    witnesses: &JObjectArray<'_>,
+    field: &str,
+) -> anyhow::Result<Vec<WitnessData>> {
+    let count = env.get_array_length(witnesses)?;
+    (0..count)
+        .map(|index| {
+            let witness = env.get_object_array_element(witnesses, index)?;
+            java_witness_data(env, &witness).map_err(|e| anyhow!("{field}[{index}]: {e}"))
+        })
+        .collect()
+}
+
+pub(super) fn java_witness_data(
+    env: &mut JNIEnv<'_>,
+    witness: &JObject<'_>,
+) -> anyhow::Result<WitnessData> {
+    let auth_path = java_byte_array_list_field(env, witness, "authPath")?;
+    if auth_path.len() != ORCHARD_WITNESS_PATH_DEPTH {
+        return Err(anyhow!(
+            "authPath must contain {ORCHARD_WITNESS_PATH_DEPTH} entries, got {}",
+            auth_path.len()
+        ));
+    }
+
+    Ok(WitnessData {
+        note_commitment: require_len(
+            java_byte_array_field(env, witness, "noteCommitment")?,
+            "noteCommitment",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        position: jlong_to_u64(env.get_field(witness, "position", "J")?.j()?, "position")?,
+        root: require_len(
+            java_byte_array_field(env, witness, "root")?,
+            "root",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        auth_path: auth_path
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| {
+                require_len(path, &format!("authPath[{index}]"), PROTOCOL_FIELD_BYTES)
+            })
+            .collect::<anyhow::Result<_>>()?,
+    })
+}
+
+fn require_note_scope(scope: u32) -> anyhow::Result<u32> {
+    match scope {
+        NOTE_SCOPE_EXTERNAL | NOTE_SCOPE_INTERNAL => Ok(scope),
+        _ => Err(anyhow!(
+            "scope must be {NOTE_SCOPE_EXTERNAL} (external) or {NOTE_SCOPE_INTERNAL} (internal), got {scope}"
+        )),
+    }
 }
 
 // NU6 branch ID used by the governance PCZT signer path. Revisit this when
@@ -419,6 +574,34 @@ pub(super) fn make_jni_bundle_setup_result<'local>(
             JValue::Int(u32_to_jint(count, "bundle_count")?),
             JValue::Long(u64_to_jlong(weight, "eligible_weight")?),
             JValue::Object(&weights_array_obj),
+        ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+pub(super) fn make_jni_governance_pczt<'local>(
+    env: &mut JNIEnv<'local>,
+    pczt: GovernancePczt,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_GOVERNANCE_PCZT)?;
+    let action_index = u32_to_jint(
+        u32::try_from(pczt.action_index)
+            .map_err(|_| anyhow!("action_index is too large for u32: {}", pczt.action_index))?,
+        "action_index",
+    )?;
+    let pczt_bytes = make_jni_bytes(env, &pczt.pczt_bytes)?;
+    let rk = make_jni_fixed_bytes(env, pczt.rk, "rk", PROTOCOL_FIELD_BYTES)?;
+    let sighash =
+        make_jni_fixed_bytes(env, pczt.pczt_sighash, "pczt_sighash", PROTOCOL_FIELD_BYTES)?;
+
+    let obj = env.new_object(
+        &class,
+        JNI_GOVERNANCE_PCZT_CTOR_SIG,
+        &[
+            JValue::Object(&pczt_bytes),
+            JValue::Object(&rk),
+            JValue::Object(&sighash),
+            JValue::Int(action_index),
         ],
     )?;
     Ok(obj.into_raw())
@@ -687,6 +870,7 @@ pub(super) fn require_round_phase_for_delegation_construction(
 
     Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {

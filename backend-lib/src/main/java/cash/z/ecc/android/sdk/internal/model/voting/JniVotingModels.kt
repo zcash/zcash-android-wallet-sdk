@@ -3,6 +3,83 @@ package cash.z.ecc.android.sdk.internal.model.voting
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE
 
+@Keep
+data class JniNoteInfo(
+    val commitment: ByteArray,
+    val nullifier: ByteArray,
+    val value: Long,
+    val position: Long,
+    val diversifier: ByteArray,
+    val rho: ByteArray,
+    val rseed: ByteArray,
+    val scope: Int,
+    val ufvk: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniNoteInfo) return false
+        return commitment.contentEquals(other.commitment) &&
+            nullifier.contentEquals(other.nullifier) &&
+            value == other.value &&
+            position == other.position &&
+            diversifier.contentEquals(other.diversifier) &&
+            rho.contentEquals(other.rho) &&
+            rseed.contentEquals(other.rseed) &&
+            scope == other.scope &&
+            ufvk == other.ufvk
+    }
+
+    override fun hashCode(): Int {
+        var result = commitment.contentHashCode()
+        result = 31 * result + nullifier.contentHashCode()
+        result = 31 * result + value.hashCode()
+        result = 31 * result + position.hashCode()
+        result = 31 * result + diversifier.contentHashCode()
+        result = 31 * result + rho.contentHashCode()
+        result = 31 * result + rseed.contentHashCode()
+        result = 31 * result + scope
+        result = 31 * result + ufvk.hashCode()
+        return result
+    }
+}
+
+@Keep
+data class JniWitnessData(
+    val noteCommitment: ByteArray,
+    val position: Long,
+    val root: ByteArray,
+    val authPath: List<ByteArray>
+) {
+    internal constructor(
+        noteCommitment: ByteArray,
+        position: Long,
+        root: ByteArray,
+        authPath: Array<ByteArray>
+    ) : this(
+        noteCommitment = noteCommitment,
+        position = position,
+        root = root,
+        authPath = authPath.toList()
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniWitnessData) return false
+        return noteCommitment.contentEquals(other.noteCommitment) &&
+            position == other.position &&
+            root.contentEquals(other.root) &&
+            authPath.contentDeepEquals(other.authPath)
+    }
+
+    override fun hashCode(): Int {
+        var result = noteCommitment.contentHashCode()
+        result = 31 * result + position.hashCode()
+        result = 31 * result + root.contentHashCode()
+        result = 31 * result + authPath.contentDeepHashCode()
+        return result
+    }
+}
+
 @ConsistentCopyVisibility
 data class HotkeyPublicKey internal constructor(
     val value: ByteArray
@@ -55,6 +132,31 @@ data class JniBundleSetupResult(
 ) {
     internal constructor(bundleCount: Int, eligibleWeight: Long, bundleWeights: LongArray) :
         this(bundleCount, eligibleWeight, bundleWeights.toList())
+}
+
+@Keep
+data class JniGovernancePczt(
+    val pcztBytes: ByteArray,
+    val rk: ByteArray,
+    val sighash: ByteArray,
+    val actionIndex: Int
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniGovernancePczt) return false
+        return pcztBytes.contentEquals(other.pcztBytes) &&
+            rk.contentEquals(other.rk) &&
+            sighash.contentEquals(other.sighash) &&
+            actionIndex == other.actionIndex
+    }
+
+    override fun hashCode(): Int {
+        var result = pcztBytes.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + actionIndex
+        return result
+    }
 }
 
 @Keep

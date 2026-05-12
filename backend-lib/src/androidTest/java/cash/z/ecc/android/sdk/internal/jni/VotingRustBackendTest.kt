@@ -1,9 +1,9 @@
 package cash.z.ecc.android.sdk.internal.jni
 
+import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
+import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
-import org.json.JSONArray
-import org.json.JSONObject
 import org.junit.Test
 import kotlin.io.path.createTempDirectory
 import kotlin.test.assertContentEquals
@@ -264,7 +264,7 @@ class VotingRustBackendTest {
     @Test
     fun compute_bundle_setup_returns_exact_weights() =
         runTest {
-            val setup = VotingRustBackend.new().computeBundleSetup(notesJson(noteCount = 6))
+            val setup = VotingRustBackend.new().computeBundleSetup(notes(noteCount = 6))
 
             assertEquals(2, setup.bundleCount)
             assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
@@ -275,28 +275,25 @@ class VotingRustBackendTest {
     @Test
     fun compute_bundle_setup_rejects_unknown_note_scope() =
         runTest {
-            val notesJson =
-                JSONArray()
-                    .put(noteJson(value = NOTE_VALUE, position = 0, byteValue = 1, scope = 2))
-                    .toString()
+            val notes =
+                listOf(note(value = NOTE_VALUE, position = 0, byteValue = 1, scope = 2))
 
             assertFailsWith<RuntimeException> {
-                VotingRustBackend.new().computeBundleSetup(notesJson)
+                VotingRustBackend.new().computeBundleSetup(notes)
             }
         }
 
     @Test
     fun compute_bundle_setup_rejects_malformed_diversifier() =
         runTest {
-            val notesJson =
-                JSONArray()
-                    .put(
-                        noteJson(value = NOTE_VALUE, position = 0, byteValue = 1)
-                            .put("diversifier", repeatedHex(0, DIVERSIFIER_BYTES - 1))
-                    ).toString()
+            val notes =
+                listOf(
+                    note(value = NOTE_VALUE, position = 0, byteValue = 1)
+                        .copy(diversifier = ByteArray(DIVERSIFIER_BYTES - 1))
+                )
 
             assertFailsWith<RuntimeException> {
-                VotingRustBackend.new().computeBundleSetup(notesJson)
+                VotingRustBackend.new().computeBundleSetup(notes)
             }
         }
 
@@ -314,7 +311,7 @@ class VotingRustBackendTest {
                     sessionJson = null
                 )
 
-                val setup = db.setupBundles(ROUND_ID, notesJson(noteCount = 6))
+                val setup = db.setupBundles(ROUND_ID, notes(noteCount = 6))
 
                 assertEquals(2, setup.bundleCount)
                 assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
@@ -371,27 +368,27 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val mismatchedNotesJson = notesJson(noteCount = 1, value = PCZT_NOTE_VALUE)
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val mismatchedNotesJson = notes(noteCount = 1, value = PCZT_NOTE_VALUE)
                 val mismatchedSameIndexNotesJson =
-                    notesJson(noteCount = 6, value = PCZT_NOTE_VALUE, positionOffset = 10)
+                    notes(noteCount = 6, value = PCZT_NOTE_VALUE, positionOffset = 10)
                 val mismatchedSamePositionNotesJson =
-                    notesJson(noteCount = 6, value = PCZT_NOTE_VALUE, ufvkString = "different")
+                    notes(noteCount = 6, value = PCZT_NOTE_VALUE, ufvkString = "different")
                 val ufvk = deriveTestUfvk()
                 val mismatchedUfvk = deriveTestUfvk(seed = OTHER_HOTKEY_SEED)
-                db.initPcztRoundWithBundles(notesJson)
+                db.initPcztRoundWithBundles(notes)
 
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztJson(ufvk, mismatchedNotesJson)
+                    db.buildTestGovernancePczt(ufvk, mismatchedNotesJson)
                 }
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztJson(ufvk, mismatchedSameIndexNotesJson)
+                    db.buildTestGovernancePczt(ufvk, mismatchedSameIndexNotesJson)
                 }
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztJson(ufvk, mismatchedSamePositionNotesJson)
+                    db.buildTestGovernancePczt(ufvk, mismatchedSamePositionNotesJson)
                 }
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztJson(mismatchedUfvk, notesJson)
+                    db.buildTestGovernancePczt(mismatchedUfvk, notes)
                 }
             } finally {
                 db.close()
@@ -403,7 +400,7 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
                 db.initRound(
                     roundId = PCZT_ROUND_ID,
@@ -413,10 +410,10 @@ class VotingRustBackendTest {
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
                     sessionJson = null
                 )
-                db.setupBundles(PCZT_ROUND_ID, notesJson)
+                db.setupBundles(PCZT_ROUND_ID, notes)
 
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztJson(ufvk, notesJson)
+                    db.buildTestGovernancePczt(ufvk, notes)
                 }
                 assertEquals(
                     JniRoundPhase.INITIALIZED,
@@ -433,21 +430,18 @@ class VotingRustBackendTest {
             val backend = VotingRustBackend.new()
             val db = backend.openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
-                db.initPcztRoundWithBundles(notesJson)
+                db.initPcztRoundWithBundles(notes)
 
-                val pcztJson =
-                    JSONObject(db.buildTestGovernancePcztJson(ufvk, notesJson))
-                val pcztBytes = pcztJson.getString("pczt_bytes").hexToByteArray()
-                val sighash = pcztJson.getString("pczt_sighash").hexToByteArray()
-                val extractedSighash = backend.extractPcztSighash(pcztBytes)
+                val pczt = db.buildTestGovernancePczt(ufvk, notes)
+                val extractedSighash = backend.extractPcztSighash(pczt.pcztBytes)
 
-                assertTrue(pcztBytes.isNotEmpty())
-                assertEquals(FIELD_BYTES, pcztJson.getString("rk").hexToByteArray().size)
-                assertEquals(FIELD_BYTES, sighash.size)
-                assertTrue(pcztJson.getInt("action_index") >= 0)
-                assertContentEquals(sighash, extractedSighash)
+                assertTrue(pczt.pcztBytes.isNotEmpty())
+                assertEquals(FIELD_BYTES, pczt.rk.size)
+                assertEquals(FIELD_BYTES, pczt.sighash.size)
+                assertTrue(pczt.actionIndex >= 0)
+                assertContentEquals(pczt.sighash, extractedSighash)
                 assertEquals(
                     JniRoundPhase.DELEGATION_CONSTRUCTED,
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
@@ -456,7 +450,7 @@ class VotingRustBackendTest {
                     db.generateHotkey(PCZT_ROUND_ID, HOTKEY_SEED)
                 }
                 assertFailsWith<RuntimeException> {
-                    backend.extractSpendAuthSig(pcztBytes, pcztJson.getInt("action_index"))
+                    backend.extractSpendAuthSig(pczt.pcztBytes, pczt.actionIndex)
                 }
             } finally {
                 db.close()
@@ -468,20 +462,18 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk(networkId = MAINNET_NETWORK_ID)
-                db.initPcztRoundWithBundles(notesJson)
+                db.initPcztRoundWithBundles(notes)
 
-                val pcztJson =
-                    JSONObject(
-                        db.buildTestGovernancePcztJson(
-                            ufvk = ufvk,
-                            notesJson = notesJson,
-                            networkId = MAINNET_NETWORK_ID
-                        )
+                val pczt =
+                    db.buildTestGovernancePczt(
+                        ufvk = ufvk,
+                        notes = notes,
+                        networkId = MAINNET_NETWORK_ID
                     )
 
-                assertTrue(pcztJson.getString("pczt_bytes").hexToByteArray().isNotEmpty())
+                assertTrue(pczt.pcztBytes.isNotEmpty())
             } finally {
                 db.close()
             }
@@ -492,17 +484,17 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = witnessNotesJson()
+                val notes = witnessNotes()
                 db.initPcztRoundWithBundles(
-                    notesJson,
+                    notes,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray()
                 )
 
                 db.storeWitnesses(
                     roundId = PCZT_ROUND_ID,
                     bundleIndex = 0,
-                    notesJson = notesJson,
-                    witnessesJson = witnessesJson()
+                    notes = notes,
+                    witnesses = witnesses()
                 )
 
                 assertEquals(
@@ -512,8 +504,8 @@ class VotingRustBackendTest {
                 db.storeWitnesses(
                     roundId = PCZT_ROUND_ID,
                     bundleIndex = 0,
-                    notesJson = notesJson,
-                    witnessesJson = witnessesJson()
+                    notes = notes,
+                    witnesses = witnesses()
                 )
             } finally {
                 db.close()
@@ -525,15 +517,15 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = witnessNotesJson()
-                db.initPcztRoundWithBundles(notesJson)
+                val notes = witnessNotes()
+                db.initPcztRoundWithBundles(notes)
 
                 assertFailsWith<RuntimeException> {
                     db.storeWitnesses(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 0,
-                        notesJson = notesJson,
-                        witnessesJson = witnessesJson()
+                        notes = notes,
+                        witnesses = witnesses()
                     )
                 }
             } finally {
@@ -546,9 +538,9 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = witnessNotesJson()
+                val notes = witnessNotes()
                 db.initPcztRoundWithBundles(
-                    notesJson,
+                    notes,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray()
                 )
 
@@ -556,8 +548,8 @@ class VotingRustBackendTest {
                     db.storeWitnesses(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 0,
-                        notesJson = notesJson,
-                        witnessesJson = witnessesJson(noteCommitment = repeatedHex(9))
+                        notes = notes,
+                        witnesses = witnesses(noteCommitment = repeatedHex(9))
                     )
                 }
             } finally {
@@ -570,16 +562,16 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
-                db.initPcztRoundWithBundles(notesJson)
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
+                db.initPcztRoundWithBundles(notes)
 
                 assertFailsWith<RuntimeException> {
                     db.storeWitnesses(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 1,
-                        notesJson = notesJson,
-                        witnessesJson =
-                            witnessesJson(
+                        notes = notes,
+                        witnesses =
+                            witnesses(
                                 authPathEntries = ORCHARD_WITNESS_PATH_DEPTH - 1
                             )
                     )
@@ -590,7 +582,7 @@ class VotingRustBackendTest {
                         bundleIndex = 1,
                         pirServerUrl = "http://127.0.0.1:1",
                         networkId = -1,
-                        notesJson = notesJson
+                        notes = notes
                     )
                 }
                 assertFailsWith<RuntimeException> {
@@ -599,7 +591,7 @@ class VotingRustBackendTest {
                         bundleIndex = 1,
                         pirServerUrl = "http://127.0.0.1:1",
                         networkId = TESTNET_NETWORK_ID,
-                        notesJson = notesJson,
+                        notes = notes,
                         walletSeed = SHORT_FIELD,
                         accountIndex = ACCOUNT_INDEX,
                         addressIndex = ADDRESS_INDEX,
@@ -645,11 +637,11 @@ class VotingRustBackendTest {
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
-                val notesJson = notesJson(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
                 val proof = ByteArray(96) { 0x7A }
-                db.initPcztRoundWithBundles(notesJson)
-                db.buildTestGovernancePcztJson(ufvk, notesJson)
+                db.initPcztRoundWithBundles(notes)
+                db.buildTestGovernancePczt(ufvk, notes)
                 db.storeDelegationProofFixtureForTesting(
                     roundId = PCZT_ROUND_ID,
                     bundleIndex = 1,
@@ -711,7 +703,7 @@ class VotingRustBackendTest {
             .first()
 
     private suspend fun VotingRustBackend.VotingDb.initPcztRoundWithBundles(
-        notesJson: String,
+        notes: List<JniNoteInfo>,
         roundId: String = PCZT_ROUND_ID,
         ncRoot: ByteArray = NC_ROOT
     ) {
@@ -723,96 +715,86 @@ class VotingRustBackendTest {
             nullifierIMTRoot = NULLIFIER_IMT_ROOT,
             sessionJson = null
         )
-        setupBundles(roundId, notesJson)
+        setupBundles(roundId, notes)
         generateHotkey(roundId, HOTKEY_SEED)
     }
 
-    private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePcztJson(
+    private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePczt(
         ufvk: String,
-        notesJson: String,
+        notes: List<JniNoteInfo>,
         walletSeed: ByteArray = HOTKEY_SEED,
         networkId: Int = TESTNET_NETWORK_ID,
         roundId: String = PCZT_ROUND_ID
-    ) = buildGovernancePcztJson(
+    ) = buildGovernancePczt(
         roundId = roundId,
         bundleIndex = 1,
         ufvk = ufvk,
         networkId = networkId,
         accountIndex = ACCOUNT_INDEX,
-        notesJson = notesJson,
+        notes = notes,
         walletSeed = walletSeed,
         seedFingerprint = SEED_FINGERPRINT,
         roundName = ROUND_NAME,
         addressIndex = ADDRESS_INDEX
     )
 
-    private fun notesJson(
+    private fun notes(
         noteCount: Int,
         value: Long = NOTE_VALUE,
         positionOffset: Long = 0,
         ufvkString: String = ""
-    ): String =
-        JSONArray()
-            .apply {
-                repeat(noteCount) { index ->
-                    put(
-                        noteJson(
-                            value = value,
-                            position = positionOffset + index.toLong(),
-                            byteValue = index + 1,
-                            ufvkString = ufvkString
-                        )
-                    )
-                }
-            }.toString()
+    ): List<JniNoteInfo> =
+        List(noteCount) { index ->
+            note(
+                value = value,
+                position = positionOffset + index.toLong(),
+                byteValue = index + 1,
+                ufvkString = ufvkString
+            )
+        }
 
-    private fun noteJson(
+    private fun note(
         value: Long,
         position: Long,
         byteValue: Int,
         scope: Int = 0,
         ufvkString: String = ""
-    ) = JSONObject()
-        .put("commitment", repeatedHex(byteValue))
-        .put("nullifier", repeatedHex(byteValue + 1))
-        .put("value", value)
-        .put("position", position)
-        .put("diversifier", repeatedHex(0, DIVERSIFIER_BYTES))
-        .put("rho", repeatedHex(0))
-        .put("rseed", repeatedHex(0))
-        .put("scope", scope)
-        .put("ufvk_str", ufvkString)
+    ) = JniNoteInfo(
+        commitment = ByteArray(FIELD_BYTES) { byteValue.toByte() },
+        nullifier = ByteArray(FIELD_BYTES) { (byteValue + 1).toByte() },
+        value = value,
+        position = position,
+        diversifier = ByteArray(DIVERSIFIER_BYTES),
+        rho = ByteArray(FIELD_BYTES),
+        rseed = ByteArray(FIELD_BYTES),
+        scope = scope,
+        ufvk = ufvkString
+    )
 
-    private fun witnessNotesJson() =
-        JSONArray()
-            .put(
-                noteJson(
-                    value = PCZT_NOTE_VALUE,
-                    position = 0,
-                    byteValue = 1
-                ).put("commitment", EMPTY_ORCHARD_NOTE_COMMITMENT)
-            ).toString()
+    private fun witnessNotes() =
+        listOf(
+            note(
+                value = PCZT_NOTE_VALUE,
+                position = 0,
+                byteValue = 1
+            ).copy(commitment = EMPTY_ORCHARD_NOTE_COMMITMENT.hexToByteArray())
+        )
 
-    private fun witnessesJson(
+    private fun witnesses(
         authPathEntries: Int = ORCHARD_WITNESS_PATH_DEPTH,
         noteCommitment: String = EMPTY_ORCHARD_NOTE_COMMITMENT,
         position: Long = 0
-    ) =
-        JSONArray()
-            .put(
-                JSONObject()
-                    .put("note_commitment", noteCommitment)
-                    .put("position", position)
-                    .put("root", EMPTY_ORCHARD_WITNESS_ROOT)
-                    .put(
-                        "auth_path",
-                        JSONArray().apply {
-                            repeat(authPathEntries) { index ->
-                                put(EMPTY_ORCHARD_AUTH_PATH[index])
-                            }
-                        }
-                    )
-            ).toString()
+    ) = listOf(
+        JniWitnessData(
+            noteCommitment = noteCommitment.hexToByteArray(),
+            position = position,
+            root = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
+            authPath =
+                List(authPathEntries) { index ->
+                    EMPTY_ORCHARD_AUTH_PATH[index].hexToByteArray()
+                }
+        )
+    )
 
     private fun repeatedHex(
         byteValue: Int,

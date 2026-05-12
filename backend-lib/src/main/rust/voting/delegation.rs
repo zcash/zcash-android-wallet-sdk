@@ -1,13 +1,12 @@
 use super::db::*;
 use super::helpers::*;
-use super::json::*;
 use super::progress::*;
 use super::*;
 use orchard::primitives::redpallas::{Signature, SpendAuth, VerificationKey};
 use std::collections::HashMap;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_buildGovernancePcztJsonNative<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_buildGovernancePcztNative<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -18,12 +17,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     ufvk: JString<'local>,
     network_id: jint,
     account_index: jint,
-    notes_json: JString<'local>,
+    notes: JObjectArray<'local>,
     wallet_seed: JByteArray<'local>,
     seed_fingerprint: JByteArray<'local>,
     round_name: JString<'local>,
     address_index: jint,
-) -> jstring {
+) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
@@ -51,11 +50,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         )?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
 
-        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
-        let notes: Vec<NoteInfo> = json_notes
-            .into_iter()
-            .map(NoteInfo::try_from)
-            .collect::<anyhow::Result<_>>()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
 
         let round_id = java_string_to_rust(env, &round_id)?;
@@ -78,9 +73,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
             .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
         update_round_phase_forward(&db, &round_id, RoundPhase::DelegationConstructed)?;
 
-        json_to_jstring(env, &JsonGovernancePczt::try_from(pczt)?)
+        make_jni_governance_pczt(env, pczt)
     });
-    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
 
 #[unsafe(no_mangle)]
@@ -158,23 +153,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
     db_handle: jlong,
     round_id: JString<'local>,
     bundle_index: jint,
-    notes_json: JString<'local>,
-    witnesses_json: JString<'local>,
+    notes: JObjectArray<'local>,
+    witnesses: JObjectArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
-        let notes: Vec<NoteInfo> = json_notes
-            .into_iter()
-            .map(NoteInfo::try_from)
-            .collect::<anyhow::Result<_>>()?;
-        let json_witnesses: Vec<JsonWitnessData> =
-            json_from_jstring(env, &witnesses_json, "witnessesJson")?;
-        let witnesses: Vec<WitnessData> = json_witnesses
-            .into_iter()
-            .map(WitnessData::try_from)
-            .collect::<anyhow::Result<_>>()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
+        let witnesses = java_witness_data_array(env, &witnesses, "witnesses")?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
@@ -197,7 +183,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     bundle_index: jint,
     pir_server_url: JString<'local>,
     network_id: jint,
-    notes_json: JString<'local>,
+    notes: JObjectArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
@@ -205,11 +191,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         network_from_id(network_id)?;
         let network_id = jint_to_u32(network_id, "network_id")?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
-        let notes: Vec<NoteInfo> = json_notes
-            .into_iter()
-            .map(NoteInfo::try_from)
-            .collect::<anyhow::Result<_>>()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
@@ -241,7 +223,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     bundle_index: jint,
     pir_server_url: JString<'local>,
     network_id: jint,
-    notes_json: JString<'local>,
+    notes: JObjectArray<'local>,
     wallet_seed: JByteArray<'local>,
     account_index: jint,
     address_index: jint,
@@ -265,11 +247,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         )?;
         drop(seed_bytes);
 
-        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
-        let notes: Vec<NoteInfo> = json_notes
-            .into_iter()
-            .map(NoteInfo::try_from)
-            .collect::<anyhow::Result<_>>()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;

@@ -1,6 +1,5 @@
 use super::db::*;
 use super::helpers::*;
-use super::json::*;
 use super::*;
 
 #[unsafe(no_mangle)]
@@ -9,14 +8,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_com
 >(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
-    notes_json: JString<'local>,
+    notes: JObjectArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
-        let notes: Vec<NoteInfo> = json_notes
-            .into_iter()
-            .map(NoteInfo::try_from)
-            .collect::<anyhow::Result<_>>()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
         let (count, weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
@@ -31,16 +26,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
     _: JClass<'local>,
     db_handle: jlong,
     round_id: JString<'local>,
-    notes_json: JString<'local>,
+    notes: JObjectArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let json_notes: Vec<JsonNoteInfo> = json_from_jstring(env, &notes_json, "notesJson")?;
-        let notes: Vec<NoteInfo> = json_notes
-            .into_iter()
-            .map(NoteInfo::try_from)
-            .collect::<anyhow::Result<_>>()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
         let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let (count, weight) = db

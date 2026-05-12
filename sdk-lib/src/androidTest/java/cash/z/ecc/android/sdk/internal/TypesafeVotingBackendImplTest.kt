@@ -9,10 +9,13 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
+import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -137,13 +140,15 @@ class TypesafeVotingBackendImplTest {
             val senderSeed = byteArrayOf(4, 5, 6)
             val keystoneSig = byteArrayOf(7, 8)
             val keystoneSighash = byteArrayOf(9, 10)
+            val notes = listOf(jniNoteInfo())
+            val witnesses = listOf(jniWitnessData())
             var progressValue: Double? = null
 
-            db.storeWitnesses("round-1", 2, "notes-json", "witnesses-json")
+            db.storeWitnesses("round-1", 2, notes, witnesses)
             assertEquals("round-1", backend.storeWitnessesRoundId)
             assertEquals(2, backend.storeWitnessesBundleIndex)
-            assertEquals("notes-json", backend.storeWitnessesNotesJson)
-            assertEquals("witnesses-json", backend.storeWitnessesWitnessesJson)
+            assertEquals(notes, backend.storeWitnessesNotes)
+            assertEquals(witnesses, backend.storeWitnessesWitnesses)
 
             val precompute =
                 db.precomputeDelegationPir(
@@ -151,7 +156,7 @@ class TypesafeVotingBackendImplTest {
                     bundleIndex = 3,
                     pirServerUrl = "https://pir.example",
                     networkId = 0,
-                    notesJson = "pir-notes"
+                    notes = notes
                 )
             assertEquals(11L, precompute.cachedCount)
             assertEquals(12L, precompute.fetchedCount)
@@ -159,7 +164,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals(3, backend.precomputeBundleIndex)
             assertEquals("https://pir.example", backend.precomputePirServerUrl)
             assertEquals(0, backend.precomputeNetworkId)
-            assertEquals("pir-notes", backend.precomputeNotesJson)
+            assertEquals(notes, backend.precomputeNotes)
 
             val proof =
                 db.buildAndProveDelegation(
@@ -167,7 +172,7 @@ class TypesafeVotingBackendImplTest {
                     bundleIndex = 4,
                     pirServerUrl = "https://pir.example",
                     networkId = 1,
-                    notesJson = "proof-notes",
+                    notes = notes,
                     walletSeed = walletSeed,
                     accountIndex = 5,
                     addressIndex = 6
@@ -178,7 +183,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals(4, backend.buildAndProveBundleIndex)
             assertEquals("https://pir.example", backend.buildAndProvePirServerUrl)
             assertEquals(1, backend.buildAndProveNetworkId)
-            assertEquals("proof-notes", backend.buildAndProveNotesJson)
+            assertEquals(notes, backend.buildAndProveNotes)
             assertContentEquals(walletSeed, backend.buildAndProveWalletSeed)
             assertEquals(5, backend.buildAndProveAccountIndex)
             assertEquals(6, backend.buildAndProveAddressIndex)
@@ -281,6 +286,27 @@ class TypesafeVotingBackendImplTest {
         size: Int = JNI_PROTOCOL_FIELD_BYTES_SIZE
     ) = List(count) { ByteArray(size) { byteValue.toByte() } }
 
+    private fun jniNoteInfo() =
+        JniNoteInfo(
+            commitment = field(1),
+            nullifier = field(2),
+            value = 10L,
+            position = 0L,
+            diversifier = ByteArray(11),
+            rho = field(3),
+            rseed = field(4),
+            scope = 0,
+            ufvk = "ufvk"
+        )
+
+    private fun jniWitnessData() =
+        JniWitnessData(
+            noteCommitment = field(1),
+            position = 0L,
+            root = field(5),
+            authPath = fieldElements(32)
+        )
+
     private class RecordingVotingDbBackend(
         private val proofResult: JniDelegationProofResult,
         private val submissionResult: JniDelegationSubmissionResult,
@@ -288,18 +314,18 @@ class TypesafeVotingBackendImplTest {
     ) : VotingDbBackend {
         var storeWitnessesRoundId: String? = null
         var storeWitnessesBundleIndex: Int? = null
-        var storeWitnessesNotesJson: String? = null
-        var storeWitnessesWitnessesJson: String? = null
+        var storeWitnessesNotes: List<JniNoteInfo>? = null
+        var storeWitnessesWitnesses: List<JniWitnessData>? = null
         var precomputeRoundId: String? = null
         var precomputeBundleIndex: Int? = null
         var precomputePirServerUrl: String? = null
         var precomputeNetworkId: Int? = null
-        var precomputeNotesJson: String? = null
+        var precomputeNotes: List<JniNoteInfo>? = null
         var buildAndProveRoundId: String? = null
         var buildAndProveBundleIndex: Int? = null
         var buildAndProvePirServerUrl: String? = null
         var buildAndProveNetworkId: Int? = null
-        var buildAndProveNotesJson: String? = null
+        var buildAndProveNotes: List<JniNoteInfo>? = null
         var buildAndProveWalletSeed: ByteArray = ByteArray(0)
         var buildAndProveAccountIndex: Int? = null
         var buildAndProveAddressIndex: Int? = null
@@ -342,7 +368,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun setupBundles(
             roundId: String,
-            notesJson: String
+            notes: List<JniNoteInfo>
         ): JniBundleSetupResult = unused()
 
         override suspend fun generateHotkey(
@@ -350,29 +376,29 @@ class TypesafeVotingBackendImplTest {
             seed: ByteArray
         ): JniVotingHotkey = unused()
 
-        override suspend fun buildGovernancePcztJson(
+        override suspend fun buildGovernancePczt(
             roundId: String,
             bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
-            notesJson: String,
+            notes: List<JniNoteInfo>,
             walletSeed: ByteArray,
             seedFingerprint: ByteArray,
             roundName: String,
             addressIndex: Int
-        ): String = unused()
+        ): JniGovernancePczt = unused()
 
         override suspend fun storeWitnesses(
             roundId: String,
             bundleIndex: Int,
-            notesJson: String,
-            witnessesJson: String
+            notes: List<JniNoteInfo>,
+            witnesses: List<JniWitnessData>
         ) {
             storeWitnessesRoundId = roundId
             storeWitnessesBundleIndex = bundleIndex
-            storeWitnessesNotesJson = notesJson
-            storeWitnessesWitnessesJson = witnessesJson
+            storeWitnessesNotes = notes
+            storeWitnessesWitnesses = witnesses
         }
 
         override suspend fun precomputeDelegationPir(
@@ -380,13 +406,13 @@ class TypesafeVotingBackendImplTest {
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
-            notesJson: String
+            notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult {
             precomputeRoundId = roundId
             precomputeBundleIndex = bundleIndex
             precomputePirServerUrl = pirServerUrl
             precomputeNetworkId = networkId
-            precomputeNotesJson = notesJson
+            precomputeNotes = notes
             return JniDelegationPirPrecomputeResult(cachedCount = 11, fetchedCount = 12)
         }
 
@@ -395,7 +421,7 @@ class TypesafeVotingBackendImplTest {
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
-            notesJson: String,
+            notes: List<JniNoteInfo>,
             walletSeed: ByteArray,
             accountIndex: Int,
             addressIndex: Int,
@@ -405,7 +431,7 @@ class TypesafeVotingBackendImplTest {
             buildAndProveBundleIndex = bundleIndex
             buildAndProvePirServerUrl = pirServerUrl
             buildAndProveNetworkId = networkId
-            buildAndProveNotesJson = notesJson
+            buildAndProveNotes = notes
             buildAndProveWalletSeed = walletSeed
             buildAndProveAccountIndex = accountIndex
             buildAndProveAddressIndex = addressIndex

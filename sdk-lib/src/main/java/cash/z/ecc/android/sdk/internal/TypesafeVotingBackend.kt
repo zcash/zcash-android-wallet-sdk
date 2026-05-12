@@ -1,10 +1,12 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal interface TypesafeVotingBackend {
@@ -16,7 +18,7 @@ internal interface TypesafeVotingBackend {
         blind: ByteArray
     ): ByteArray
 
-    suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult
+    suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult
 
     suspend fun warmProvingCaches()
 
@@ -58,7 +60,7 @@ internal interface TypesafeVotingDb {
 
     suspend fun setupBundles(
         roundId: String,
-        notesJson: String
+        notes: List<JniNoteInfo>
     ): JniBundleSetupResult
 
     suspend fun generateHotkey(
@@ -72,7 +74,7 @@ internal interface TypesafeVotingDb {
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
-        notesJson: String,
+        notes: List<JniNoteInfo>,
         walletSeed: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String,
@@ -82,8 +84,8 @@ internal interface TypesafeVotingDb {
     suspend fun storeWitnesses(
         roundId: String,
         bundleIndex: Int,
-        notesJson: String,
-        witnessesJson: String
+        notes: List<JniNoteInfo>,
+        witnesses: List<JniWitnessData>
     )
 
     suspend fun precomputeDelegationPir(
@@ -91,7 +93,7 @@ internal interface TypesafeVotingDb {
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notesJson: String
+        notes: List<JniNoteInfo>
     ): DelegationPirPrecomputeResult
 
     suspend fun buildAndProveDelegation(
@@ -99,7 +101,7 @@ internal interface TypesafeVotingDb {
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notesJson: String,
+        notes: List<JniNoteInfo>,
         walletSeed: ByteArray,
         accountIndex: Int,
         addressIndex: Int,

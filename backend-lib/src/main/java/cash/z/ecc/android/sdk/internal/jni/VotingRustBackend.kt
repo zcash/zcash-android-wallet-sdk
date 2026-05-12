@@ -7,10 +7,13 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
+import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -48,9 +51,9 @@ class VotingRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
-    suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult =
+    suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
         withContext(Dispatchers.IO) {
-            computeBundleSetupNative(notesJson)
+            computeBundleSetupNative(notes.toTypedArray())
                 ?: error("computeBundleSetup returned null")
         }
 
@@ -164,10 +167,10 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         suspend fun setupBundles(
             roundId: String,
-            notesJson: String
+            notes: List<JniNoteInfo>
         ): JniBundleSetupResult =
             withHandle { handle ->
-                setupBundlesNative(handle, roundId, notesJson)
+                setupBundlesNative(handle, roundId, notes.toTypedArray())
                     ?: error("setupBundles returned null for roundId=$roundId")
             }
 
@@ -182,27 +185,27 @@ class VotingRustBackend private constructor() {
             }
 
         @Throws(RuntimeException::class)
-        suspend fun buildGovernancePcztJson(
+        suspend fun buildGovernancePczt(
             roundId: String,
             bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
-            notesJson: String,
+            notes: List<JniNoteInfo>,
             walletSeed: ByteArray,
             seedFingerprint: ByteArray,
             roundName: String,
             addressIndex: Int
-        ): String =
+        ): JniGovernancePczt =
             withHandle { handle ->
-                buildGovernancePcztJsonNative(
+                buildGovernancePcztNative(
                     handle,
                     roundId,
                     bundleIndex,
                     ufvk,
                     networkId,
                     accountIndex,
-                    notesJson,
+                    notes.toTypedArray(),
                     walletSeed,
                     seedFingerprint,
                     roundName,
@@ -214,10 +217,16 @@ class VotingRustBackend private constructor() {
         suspend fun storeWitnesses(
             roundId: String,
             bundleIndex: Int,
-            notesJson: String,
-            witnessesJson: String
+            notes: List<JniNoteInfo>,
+            witnesses: List<JniWitnessData>
         ) = withHandle { handle ->
-            storeWitnessesNative(handle, roundId, bundleIndex, notesJson, witnessesJson)
+            storeWitnessesNative(
+                handle,
+                roundId,
+                bundleIndex,
+                notes.toTypedArray(),
+                witnesses.toTypedArray()
+            )
         }
 
         @Throws(RuntimeException::class)
@@ -226,7 +235,7 @@ class VotingRustBackend private constructor() {
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
-            notesJson: String
+            notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult =
             withHandle { handle ->
                 precomputeDelegationPirNative(
@@ -235,7 +244,7 @@ class VotingRustBackend private constructor() {
                     bundleIndex,
                     pirServerUrl,
                     networkId,
-                    notesJson
+                    notes.toTypedArray()
                 ) ?: error("precomputeDelegationPir returned null")
             }
 
@@ -245,7 +254,7 @@ class VotingRustBackend private constructor() {
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
-            notesJson: String,
+            notes: List<JniNoteInfo>,
             walletSeed: ByteArray,
             accountIndex: Int,
             addressIndex: Int,
@@ -258,7 +267,7 @@ class VotingRustBackend private constructor() {
                     bundleIndex,
                     pirServerUrl,
                     networkId,
-                    notesJson,
+                    notes.toTypedArray(),
                     walletSeed,
                     accountIndex,
                     addressIndex,
@@ -411,14 +420,14 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun computeBundleSetupNative(notesJson: String): JniBundleSetupResult?
+        private external fun computeBundleSetupNative(notes: Array<JniNoteInfo>): JniBundleSetupResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun setupBundlesNative(
             dbHandle: Long,
             roundId: String,
-            notesJson: String
+            notes: Array<JniNoteInfo>
         ): JniBundleSetupResult?
 
         @JvmStatic
@@ -431,19 +440,19 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun buildGovernancePcztJsonNative(
+        private external fun buildGovernancePcztNative(
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
-            notesJson: String,
+            notes: Array<JniNoteInfo>,
             walletSeed: ByteArray,
             seedFingerprint: ByteArray,
             roundName: String,
             addressIndex: Int
-        ): String?
+        ): JniGovernancePczt?
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -466,8 +475,8 @@ class VotingRustBackend private constructor() {
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
-            notesJson: String,
-            witnessesJson: String
+            notes: Array<JniNoteInfo>,
+            witnesses: Array<JniWitnessData>
         )
 
         @JvmStatic
@@ -478,7 +487,7 @@ class VotingRustBackend private constructor() {
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
-            notesJson: String
+            notes: Array<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult?
 
         @JvmStatic
@@ -489,7 +498,7 @@ class VotingRustBackend private constructor() {
             bundleIndex: Int,
             pirServerUrl: String,
             networkId: Int,
-            notesJson: String,
+            notes: Array<JniNoteInfo>,
             walletSeed: ByteArray,
             accountIndex: Int,
             addressIndex: Int,
