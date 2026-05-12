@@ -1049,7 +1049,7 @@ pub(super) fn select_bundle_notes(
 }
 
 pub(super) fn replace_bundle_witnesses(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     round_id: &str,
     wallet_id: &str,
     bundle_index: u32,
@@ -1067,7 +1067,7 @@ pub(super) fn replace_bundle_witnesses(
     }
 
     let tx = conn
-        .unchecked_transaction()
+        .transaction()
         .map_err(|e| anyhow!("begin replace witnesses transaction: {}", e))?;
 
     tx.execute(
