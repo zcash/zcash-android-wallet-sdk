@@ -143,7 +143,6 @@ class TypesafeVotingBackendImplTest {
                     cmxNew = field(26),
                     govComm = field(27),
                     govNullifiers = fieldElements(JNI_GOVERNANCE_NULLIFIER_COUNT, 28),
-                    alpha = field(29),
                     voteRoundId = "round-submission"
                 )
             val keystoneJniResult =
@@ -228,7 +227,6 @@ class TypesafeVotingBackendImplTest {
             assertEquals(0, backend.submissionNetworkId)
             assertEquals(8, backend.submissionAccountIndex)
             assertContentEquals(field(22), submission.rk)
-            assertContentEquals(field(29), submission.alpha)
             assertEquals("round-submission", submission.voteRoundId)
 
             val keystoneSubmission =
@@ -284,7 +282,6 @@ class TypesafeVotingBackendImplTest {
                 count = JNI_GOVERNANCE_NULLIFIER_COUNT,
                 byteValue = 2
             ),
-        alpha: ByteArray = field(10),
         voteRoundId: String = "round-1"
     ) = JniDelegationSubmissionResult(
         proof = proof,
@@ -295,7 +292,6 @@ class TypesafeVotingBackendImplTest {
         cmxNew = cmxNew,
         govComm = govComm,
         govNullifiers = govNullifiers,
-        alpha = alpha,
         voteRoundId = voteRoundId
     )
 

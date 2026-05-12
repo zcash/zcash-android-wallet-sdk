@@ -33,9 +33,9 @@ const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ)V";
 // ByteArray, Array<ByteArray>, ByteArray, ByteArray) in JniVotingModels.kt.
 const JNI_DELEGATION_PROOF_RESULT_CTOR_SIG: &str = "([B[[B[B[B[[B[B[B)V";
 // Must match JniDelegationSubmissionResult(ByteArray, ByteArray, ByteArray,
-// ByteArray, ByteArray, ByteArray, ByteArray, Array<ByteArray>, ByteArray,
-// String) in JniVotingModels.kt.
-const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str = "([B[B[B[B[B[B[B[[B[BLjava/lang/String;)V";
+// ByteArray, ByteArray, ByteArray, ByteArray, Array<ByteArray>, String) in
+// JniVotingModels.kt.
+const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str = "([B[B[B[B[B[B[B[[BLjava/lang/String;)V";
 
 pub(super) const ORCHARD_RAW_ADDRESS_BYTES: usize = 43;
 pub(super) const ORCHARD_FVK_BYTES: usize = 96;
@@ -696,7 +696,6 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
         GOVERNANCE_NULLIFIER_COUNT,
         PROTOCOL_FIELD_BYTES,
     )?;
-    let alpha = make_jni_fixed_bytes(env, data.alpha, "alpha", PROTOCOL_FIELD_BYTES)?;
     let vote_round_id: JObject<'local> = env.new_string(data.vote_round_id)?.into();
     let gov_nullifiers = JObject::from(gov_nullifiers_array);
 
@@ -712,7 +711,6 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
             JValue::Object(&cmx_new),
             JValue::Object(&gov_comm),
             JValue::Object(&gov_nullifiers),
-            JValue::Object(&alpha),
             JValue::Object(&vote_round_id),
         ],
     )?;
@@ -870,7 +868,6 @@ pub(super) fn require_round_phase_for_delegation_construction(
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

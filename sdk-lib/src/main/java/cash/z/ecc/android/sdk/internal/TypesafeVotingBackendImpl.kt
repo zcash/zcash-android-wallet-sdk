@@ -517,7 +517,6 @@ internal fun JniDelegationSubmissionResult.toDelegationSubmissionResult(): Deleg
         JNI_GOVERNANCE_NULLIFIER_COUNT
     )
     govNullifiers.requireEachByteArraySize("govNullifiers", JNI_PROTOCOL_FIELD_BYTES_SIZE)
-    alpha.requireByteArraySize("alpha", JNI_PROTOCOL_FIELD_BYTES_SIZE)
 
     return DelegationSubmissionResult(
         proof = proof,
@@ -528,7 +527,6 @@ internal fun JniDelegationSubmissionResult.toDelegationSubmissionResult(): Deleg
         cmxNew = cmxNew,
         govComm = govComm,
         govNullifiers = govNullifiers,
-        alpha = alpha,
         voteRoundId = voteRoundId
     )
 }

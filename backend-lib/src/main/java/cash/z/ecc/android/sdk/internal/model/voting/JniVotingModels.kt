@@ -274,7 +274,6 @@ data class JniDelegationSubmissionResult(
     val cmxNew: ByteArray,
     val govComm: ByteArray,
     val govNullifiers: List<ByteArray>,
-    val alpha: ByteArray,
     val voteRoundId: String
 ) {
     internal constructor(
@@ -286,7 +285,6 @@ data class JniDelegationSubmissionResult(
         cmxNew: ByteArray,
         govComm: ByteArray,
         govNullifiers: Array<ByteArray>,
-        alpha: ByteArray,
         voteRoundId: String
     ) : this(
         proof = proof,
@@ -297,7 +295,6 @@ data class JniDelegationSubmissionResult(
         cmxNew = cmxNew,
         govComm = govComm,
         govNullifiers = govNullifiers.toList(),
-        alpha = alpha,
         voteRoundId = voteRoundId
     )
 
@@ -312,7 +309,6 @@ data class JniDelegationSubmissionResult(
             cmxNew.contentEquals(other.cmxNew) &&
             govComm.contentEquals(other.govComm) &&
             govNullifiers.contentDeepEquals(other.govNullifiers) &&
-            alpha.contentEquals(other.alpha) &&
             voteRoundId == other.voteRoundId
     }
 
@@ -325,7 +321,6 @@ data class JniDelegationSubmissionResult(
         result = 31 * result + cmxNew.contentHashCode()
         result = 31 * result + govComm.contentHashCode()
         result = 31 * result + govNullifiers.contentDeepHashCode()
-        result = 31 * result + alpha.contentHashCode()
         result = 31 * result + voteRoundId.hashCode()
         return result
     }

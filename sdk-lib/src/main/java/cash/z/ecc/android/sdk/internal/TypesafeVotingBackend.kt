@@ -195,7 +195,6 @@ internal data class DelegationSubmissionResult(
     val cmxNew: ByteArray,
     val govComm: ByteArray,
     val govNullifiers: List<ByteArray>,
-    val alpha: ByteArray,
     val voteRoundId: String
 ) {
     override fun equals(other: Any?): Boolean {
@@ -209,7 +208,6 @@ internal data class DelegationSubmissionResult(
             cmxNew.contentEquals(other.cmxNew) &&
             govComm.contentEquals(other.govComm) &&
             govNullifiers.contentDeepEquals(other.govNullifiers) &&
-            alpha.contentEquals(other.alpha) &&
             voteRoundId == other.voteRoundId
     }
 
@@ -222,7 +220,6 @@ internal data class DelegationSubmissionResult(
         result = 31 * result + cmxNew.contentHashCode()
         result = 31 * result + govComm.contentHashCode()
         result = 31 * result + govNullifiers.contentDeepHashCode()
-        result = 31 * result + alpha.contentHashCode()
         result = 31 * result + voteRoundId.hashCode()
         return result
     }
