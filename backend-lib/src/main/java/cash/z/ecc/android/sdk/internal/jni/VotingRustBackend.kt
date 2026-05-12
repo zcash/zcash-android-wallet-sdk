@@ -1,16 +1,46 @@
 package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
+import androidx.annotation.VisibleForTesting
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
+import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Synchronous native proof progress callback.
+ *
+ * Native proof generation currently reports coarse progress from the proof call
+ * thread before and after the spawned Halo2 proving worker. The JNI bridge
+ * attaches whichever native thread invokes this callback, so callers must not
+ * assume Android main-thread or coroutine-dispatcher affinity.
+ *
+ * This callback runs while the owning voting DB handle is locked by the in-flight
+ * proof operation. Implementations must not call back into this VotingDb's methods.
+ * Native code treats callback failures as best-effort progress reporting and
+ * continues proof generation after logging the failure.
+ */
+@Keep
+fun interface VotingProofProgressCallback {
+    @Keep
+    fun onProgress(progress: Double)
+}
+
+private const val PROOF_PROGRESS_REENTRY_ERROR =
+    "This VotingDb's methods must not be called from its proof progress callback"
 
 @Keep
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -26,9 +56,9 @@ class VotingRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
-    suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult =
+    suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
         withContext(Dispatchers.IO) {
-            computeBundleSetupNative(notesJson)
+            computeBundleSetupNative(notes.toTypedArray())
                 ?: error("computeBundleSetup returned null")
         }
 
@@ -55,6 +85,13 @@ class VotingRustBackend private constructor() {
                 ?: error("extractSpendAuthSig returned null")
         }
 
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun delegationProofResultFixtureForTesting(): JniDelegationProofResult =
+        withContext(Dispatchers.IO) {
+            delegationProofResultFixtureNative()
+                ?: error("delegationProofResultFixture returned null")
+        }
+
     suspend fun openVotingDb(dbPath: String, walletId: String): VotingDb =
         withContext(SdkDispatchers.DATABASE_IO) {
             openVotingDbNative(dbPath, walletId).let { dbHandle ->
@@ -70,8 +107,11 @@ class VotingRustBackend private constructor() {
         private var dbHandle: Long?
     ) {
         private val accessMutex = Mutex()
+        private val proofProgressCallbackDepth = AtomicInteger(0)
 
         suspend fun close() {
+            checkNotInProofProgressCallback()
+
             accessMutex.withLock {
                 dbHandle?.let { handle ->
                     withContext(SdkDispatchers.DATABASE_IO) {
@@ -132,10 +172,10 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         suspend fun setupBundles(
             roundId: String,
-            notesJson: String
+            notes: List<JniNoteInfo>
         ): JniBundleSetupResult =
             withHandle { handle ->
-                setupBundlesNative(handle, roundId, notesJson)
+                setupBundlesNative(handle, roundId, notes.toTypedArray())
                     ?: error("setupBundles returned null for roundId=$roundId")
             }
 
@@ -150,27 +190,27 @@ class VotingRustBackend private constructor() {
             }
 
         @Throws(RuntimeException::class)
-        suspend fun buildGovernancePcztJson(
+        suspend fun buildGovernancePczt(
             roundId: String,
             bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
-            notesJson: String,
+            notes: List<JniNoteInfo>,
             walletSeed: ByteArray,
             seedFingerprint: ByteArray,
             roundName: String,
             addressIndex: Int
-        ): String =
+        ): JniGovernancePczt =
             withHandle { handle ->
-                buildGovernancePcztJsonNative(
+                buildGovernancePcztNative(
                     handle,
                     roundId,
                     bundleIndex,
                     ufvk,
                     networkId,
                     accountIndex,
-                    notesJson,
+                    notes.toTypedArray(),
                     walletSeed,
                     seedFingerprint,
                     roundName,
@@ -178,14 +218,140 @@ class VotingRustBackend private constructor() {
                 ) ?: error("buildGovernancePczt returned null")
             }
 
-        private suspend fun <T> withHandle(block: (Long) -> T): T =
-            accessMutex.withLock {
+        @Throws(RuntimeException::class)
+        suspend fun storeWitnesses(
+            roundId: String,
+            bundleIndex: Int,
+            notes: List<JniNoteInfo>,
+            witnesses: List<JniWitnessData>
+        ) = withHandle { handle ->
+            storeWitnessesNative(
+                handle,
+                roundId,
+                bundleIndex,
+                notes.toTypedArray(),
+                witnesses.toTypedArray()
+            )
+        }
+
+        @Throws(RuntimeException::class)
+        suspend fun precomputeDelegationPir(
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notes: List<JniNoteInfo>
+        ): JniDelegationPirPrecomputeResult =
+            withHandle { handle ->
+                precomputeDelegationPirNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    pirServerUrl,
+                    networkId,
+                    notes.toTypedArray()
+                ) ?: error("precomputeDelegationPir returned null")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun buildAndProveDelegation(
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notes: List<JniNoteInfo>,
+            walletSeed: ByteArray,
+            accountIndex: Int,
+            addressIndex: Int,
+            proofProgress: VotingProofProgressCallback?
+        ): JniDelegationProofResult =
+            withHandle { handle ->
+                buildAndProveDelegationNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    pirServerUrl,
+                    networkId,
+                    notes.toTypedArray(),
+                    walletSeed,
+                    accountIndex,
+                    addressIndex,
+                    proofProgress?.withVotingDbReentryGuard()
+                ) ?: error("buildAndProveDelegation returned null")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun getDelegationSubmission(
+            roundId: String,
+            bundleIndex: Int,
+            senderSeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): JniDelegationSubmissionResult =
+            withHandle { handle ->
+                getDelegationSubmissionNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    senderSeed,
+                    networkId,
+                    accountIndex
+                ) ?: error("getDelegationSubmission returned null")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun getDelegationSubmissionWithKeystoneSig(
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray
+        ): JniDelegationSubmissionResult =
+            withHandle { handle ->
+                getDelegationSubmissionWithKeystoneSigNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    keystoneSig,
+                    keystoneSighash
+                ) ?: error("getDelegationSubmissionWithKeystoneSig returned null")
+            }
+
+        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+        internal suspend fun storeDelegationProofFixtureForTesting(
+            roundId: String,
+            bundleIndex: Int,
+            proof: ByteArray
+        ) = withHandle { handle ->
+            storeDelegationProofFixtureNative(handle, roundId, bundleIndex, proof)
+        }
+
+        private suspend fun <T> withHandle(block: (Long) -> T): T {
+            checkNotInProofProgressCallback()
+
+            return accessMutex.withLock {
                 val handle =
                     checkNotNull(dbHandle) {
                         "Voting DB handle is closed"
                     }
                 withContext(SdkDispatchers.DATABASE_IO) {
                     block(handle)
+                }
+            }
+        }
+
+        private fun checkNotInProofProgressCallback() {
+            check(proofProgressCallbackDepth.get() == 0) {
+                PROOF_PROGRESS_REENTRY_ERROR
+            }
+        }
+
+        private fun VotingProofProgressCallback.withVotingDbReentryGuard() =
+            VotingProofProgressCallback { progress ->
+                proofProgressCallbackDepth.incrementAndGet()
+                try {
+                    onProgress(progress)
+                } finally {
+                    proofProgressCallbackDepth.decrementAndGet()
                 }
             }
     }
@@ -259,14 +425,14 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun computeBundleSetupNative(notesJson: String): JniBundleSetupResult?
+        private external fun computeBundleSetupNative(notes: Array<JniNoteInfo>): JniBundleSetupResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun setupBundlesNative(
             dbHandle: Long,
             roundId: String,
-            notesJson: String
+            notes: Array<JniNoteInfo>
         ): JniBundleSetupResult?
 
         @JvmStatic
@@ -279,19 +445,19 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun buildGovernancePcztJsonNative(
+        private external fun buildGovernancePcztNative(
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
-            notesJson: String,
+            notes: Array<JniNoteInfo>,
             walletSeed: ByteArray,
             seedFingerprint: ByteArray,
             roundName: String,
             addressIndex: Int
-        ): String?
+        ): JniGovernancePczt?
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -303,5 +469,75 @@ class VotingRustBackend private constructor() {
             signedPcztBytes: ByteArray,
             actionIndex: Int
         ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun delegationProofResultFixtureNative(): JniDelegationProofResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeWitnessesNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            notes: Array<JniNoteInfo>,
+            witnesses: Array<JniWitnessData>
+        )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun precomputeDelegationPirNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notes: Array<JniNoteInfo>
+        ): JniDelegationPirPrecomputeResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildAndProveDelegationNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            pirServerUrl: String,
+            networkId: Int,
+            notes: Array<JniNoteInfo>,
+            walletSeed: ByteArray,
+            accountIndex: Int,
+            addressIndex: Int,
+            proofProgress: VotingProofProgressCallback?
+        ): JniDelegationProofResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getDelegationSubmissionNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            senderSeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): JniDelegationSubmissionResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getDelegationSubmissionWithKeystoneSigNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray
+        ): JniDelegationSubmissionResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeDelegationProofFixtureNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            proof: ByteArray
+        )
     }
 }

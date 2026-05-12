@@ -1,10 +1,12 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal interface TypesafeVotingBackend {
@@ -16,7 +18,7 @@ internal interface TypesafeVotingBackend {
         blind: ByteArray
     ): ByteArray
 
-    suspend fun computeBundleSetup(notesJson: String): JniBundleSetupResult
+    suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult
 
     suspend fun warmProvingCaches()
 
@@ -58,7 +60,7 @@ internal interface TypesafeVotingDb {
 
     suspend fun setupBundles(
         roundId: String,
-        notesJson: String
+        notes: List<JniNoteInfo>
     ): JniBundleSetupResult
 
     suspend fun generateHotkey(
@@ -72,12 +74,54 @@ internal interface TypesafeVotingDb {
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
-        notesJson: String,
+        notes: List<JniNoteInfo>,
         walletSeed: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String,
         addressIndex: Int
     ): GovernancePcztResult
+
+    suspend fun storeWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<JniNoteInfo>,
+        witnesses: List<JniWitnessData>
+    )
+
+    suspend fun precomputeDelegationPir(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notes: List<JniNoteInfo>
+    ): DelegationPirPrecomputeResult
+
+    suspend fun buildAndProveDelegation(
+        roundId: String,
+        bundleIndex: Int,
+        pirServerUrl: String,
+        networkId: Int,
+        notes: List<JniNoteInfo>,
+        walletSeed: ByteArray,
+        accountIndex: Int,
+        addressIndex: Int,
+        proofProgress: ((Double) -> Unit)? = null
+    ): DelegationProofResult
+
+    suspend fun getDelegationSubmission(
+        roundId: String,
+        bundleIndex: Int,
+        senderSeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): DelegationSubmissionResult
+
+    suspend fun getDelegationSubmissionWithKeystoneSig(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray
+    ): DelegationSubmissionResult
 }
 
 internal data class GovernancePcztResult(
@@ -103,3 +147,86 @@ internal data class GovernancePcztResult(
         return result
     }
 }
+
+internal data class DelegationPirPrecomputeResult(
+    val cachedCount: Long,
+    val fetchedCount: Long
+)
+
+internal data class DelegationProofResult(
+    val proof: ByteArray,
+    val publicInputs: List<ByteArray>,
+    val nfSigned: ByteArray,
+    val cmxNew: ByteArray,
+    val govNullifiers: List<ByteArray>,
+    val vanComm: ByteArray,
+    val rk: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DelegationProofResult) return false
+        return proof.contentEquals(other.proof) &&
+            publicInputs.contentDeepEquals(other.publicInputs) &&
+            nfSigned.contentEquals(other.nfSigned) &&
+            cmxNew.contentEquals(other.cmxNew) &&
+            govNullifiers.contentDeepEquals(other.govNullifiers) &&
+            vanComm.contentEquals(other.vanComm) &&
+            rk.contentEquals(other.rk)
+    }
+
+    override fun hashCode(): Int {
+        var result = proof.contentHashCode()
+        result = 31 * result + publicInputs.contentDeepHashCode()
+        result = 31 * result + nfSigned.contentHashCode()
+        result = 31 * result + cmxNew.contentHashCode()
+        result = 31 * result + govNullifiers.contentDeepHashCode()
+        result = 31 * result + vanComm.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        return result
+    }
+}
+
+internal data class DelegationSubmissionResult(
+    val proof: ByteArray,
+    val rk: ByteArray,
+    val spendAuthSig: ByteArray,
+    val sighash: ByteArray,
+    val nfSigned: ByteArray,
+    val cmxNew: ByteArray,
+    val govComm: ByteArray,
+    val govNullifiers: List<ByteArray>,
+    val voteRoundId: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DelegationSubmissionResult) return false
+        return proof.contentEquals(other.proof) &&
+            rk.contentEquals(other.rk) &&
+            spendAuthSig.contentEquals(other.spendAuthSig) &&
+            sighash.contentEquals(other.sighash) &&
+            nfSigned.contentEquals(other.nfSigned) &&
+            cmxNew.contentEquals(other.cmxNew) &&
+            govComm.contentEquals(other.govComm) &&
+            govNullifiers.contentDeepEquals(other.govNullifiers) &&
+            voteRoundId == other.voteRoundId
+    }
+
+    override fun hashCode(): Int {
+        var result = proof.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        result = 31 * result + spendAuthSig.contentHashCode()
+        result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + nfSigned.contentHashCode()
+        result = 31 * result + cmxNew.contentHashCode()
+        result = 31 * result + govComm.contentHashCode()
+        result = 31 * result + govNullifiers.contentDeepHashCode()
+        result = 31 * result + voteRoundId.hashCode()
+        return result
+    }
+}
+
+private fun List<ByteArray>.contentDeepEquals(other: List<ByteArray>): Boolean =
+    size == other.size && zip(other).all { (left, right) -> left.contentEquals(right) }
+
+private fun List<ByteArray>.contentDeepHashCode(): Int =
+    toTypedArray().contentDeepHashCode()

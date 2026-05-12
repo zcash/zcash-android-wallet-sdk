@@ -3,6 +3,83 @@ package cash.z.ecc.android.sdk.internal.model.voting
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE
 
+@Keep
+data class JniNoteInfo(
+    val commitment: ByteArray,
+    val nullifier: ByteArray,
+    val value: Long,
+    val position: Long,
+    val diversifier: ByteArray,
+    val rho: ByteArray,
+    val rseed: ByteArray,
+    val scope: Int,
+    val ufvk: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniNoteInfo) return false
+        return commitment.contentEquals(other.commitment) &&
+            nullifier.contentEquals(other.nullifier) &&
+            value == other.value &&
+            position == other.position &&
+            diversifier.contentEquals(other.diversifier) &&
+            rho.contentEquals(other.rho) &&
+            rseed.contentEquals(other.rseed) &&
+            scope == other.scope &&
+            ufvk == other.ufvk
+    }
+
+    override fun hashCode(): Int {
+        var result = commitment.contentHashCode()
+        result = 31 * result + nullifier.contentHashCode()
+        result = 31 * result + value.hashCode()
+        result = 31 * result + position.hashCode()
+        result = 31 * result + diversifier.contentHashCode()
+        result = 31 * result + rho.contentHashCode()
+        result = 31 * result + rseed.contentHashCode()
+        result = 31 * result + scope
+        result = 31 * result + ufvk.hashCode()
+        return result
+    }
+}
+
+@Keep
+data class JniWitnessData(
+    val noteCommitment: ByteArray,
+    val position: Long,
+    val root: ByteArray,
+    val authPath: List<ByteArray>
+) {
+    internal constructor(
+        noteCommitment: ByteArray,
+        position: Long,
+        root: ByteArray,
+        authPath: Array<ByteArray>
+    ) : this(
+        noteCommitment = noteCommitment,
+        position = position,
+        root = root,
+        authPath = authPath.toList()
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniWitnessData) return false
+        return noteCommitment.contentEquals(other.noteCommitment) &&
+            position == other.position &&
+            root.contentEquals(other.root) &&
+            authPath.contentDeepEquals(other.authPath)
+    }
+
+    override fun hashCode(): Int {
+        var result = noteCommitment.contentHashCode()
+        result = 31 * result + position.hashCode()
+        result = 31 * result + root.contentHashCode()
+        result = 31 * result + authPath.contentDeepHashCode()
+        return result
+    }
+}
+
 @ConsistentCopyVisibility
 data class HotkeyPublicKey internal constructor(
     val value: ByteArray
@@ -58,6 +135,31 @@ data class JniBundleSetupResult(
 }
 
 @Keep
+data class JniGovernancePczt(
+    val pcztBytes: ByteArray,
+    val rk: ByteArray,
+    val sighash: ByteArray,
+    val actionIndex: Int
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniGovernancePczt) return false
+        return pcztBytes.contentEquals(other.pcztBytes) &&
+            rk.contentEquals(other.rk) &&
+            sighash.contentEquals(other.sighash) &&
+            actionIndex == other.actionIndex
+    }
+
+    override fun hashCode(): Int {
+        var result = pcztBytes.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + actionIndex
+        return result
+    }
+}
+
+@Keep
 data class JniRoundState(
     val roundId: String,
     val phase: Int,
@@ -103,3 +205,129 @@ data class JniVoteRecord(
     val choice: Int,
     val submitted: Boolean
 )
+
+@Keep
+data class JniDelegationPirPrecomputeResult(
+    val cachedCount: Long,
+    val fetchedCount: Long
+)
+
+@Keep
+data class JniDelegationProofResult(
+    val proof: ByteArray,
+    val publicInputs: List<ByteArray>,
+    val nfSigned: ByteArray,
+    val cmxNew: ByteArray,
+    val govNullifiers: List<ByteArray>,
+    val vanComm: ByteArray,
+    val rk: ByteArray
+) {
+    internal constructor(
+        proof: ByteArray,
+        publicInputs: Array<ByteArray>,
+        nfSigned: ByteArray,
+        cmxNew: ByteArray,
+        govNullifiers: Array<ByteArray>,
+        vanComm: ByteArray,
+        rk: ByteArray
+    ) : this(
+        proof = proof,
+        publicInputs = publicInputs.toList(),
+        nfSigned = nfSigned,
+        cmxNew = cmxNew,
+        govNullifiers = govNullifiers.toList(),
+        vanComm = vanComm,
+        rk = rk
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniDelegationProofResult) return false
+        return proof.contentEquals(other.proof) &&
+            publicInputs.contentDeepEquals(other.publicInputs) &&
+            nfSigned.contentEquals(other.nfSigned) &&
+            cmxNew.contentEquals(other.cmxNew) &&
+            govNullifiers.contentDeepEquals(other.govNullifiers) &&
+            vanComm.contentEquals(other.vanComm) &&
+            rk.contentEquals(other.rk)
+    }
+
+    override fun hashCode(): Int {
+        var result = proof.contentHashCode()
+        result = 31 * result + publicInputs.contentDeepHashCode()
+        result = 31 * result + nfSigned.contentHashCode()
+        result = 31 * result + cmxNew.contentHashCode()
+        result = 31 * result + govNullifiers.contentDeepHashCode()
+        result = 31 * result + vanComm.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        return result
+    }
+}
+
+@Keep
+data class JniDelegationSubmissionResult(
+    val proof: ByteArray,
+    val rk: ByteArray,
+    val spendAuthSig: ByteArray,
+    val sighash: ByteArray,
+    val nfSigned: ByteArray,
+    val cmxNew: ByteArray,
+    val govComm: ByteArray,
+    val govNullifiers: List<ByteArray>,
+    val voteRoundId: String
+) {
+    internal constructor(
+        proof: ByteArray,
+        rk: ByteArray,
+        spendAuthSig: ByteArray,
+        sighash: ByteArray,
+        nfSigned: ByteArray,
+        cmxNew: ByteArray,
+        govComm: ByteArray,
+        govNullifiers: Array<ByteArray>,
+        voteRoundId: String
+    ) : this(
+        proof = proof,
+        rk = rk,
+        spendAuthSig = spendAuthSig,
+        sighash = sighash,
+        nfSigned = nfSigned,
+        cmxNew = cmxNew,
+        govComm = govComm,
+        govNullifiers = govNullifiers.toList(),
+        voteRoundId = voteRoundId
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniDelegationSubmissionResult) return false
+        return proof.contentEquals(other.proof) &&
+            rk.contentEquals(other.rk) &&
+            spendAuthSig.contentEquals(other.spendAuthSig) &&
+            sighash.contentEquals(other.sighash) &&
+            nfSigned.contentEquals(other.nfSigned) &&
+            cmxNew.contentEquals(other.cmxNew) &&
+            govComm.contentEquals(other.govComm) &&
+            govNullifiers.contentDeepEquals(other.govNullifiers) &&
+            voteRoundId == other.voteRoundId
+    }
+
+    override fun hashCode(): Int {
+        var result = proof.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        result = 31 * result + spendAuthSig.contentHashCode()
+        result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + nfSigned.contentHashCode()
+        result = 31 * result + cmxNew.contentHashCode()
+        result = 31 * result + govComm.contentHashCode()
+        result = 31 * result + govNullifiers.contentDeepHashCode()
+        result = 31 * result + voteRoundId.hashCode()
+        return result
+    }
+}
+
+private fun List<ByteArray>.contentDeepEquals(other: List<ByteArray>): Boolean =
+    size == other.size && zip(other).all { (left, right) -> left.contentEquals(right) }
+
+private fun List<ByteArray>.contentDeepHashCode(): Int =
+    toTypedArray().contentDeepHashCode()
