@@ -1022,7 +1022,7 @@ pub(super) fn select_bundle_notes(
         }
     }
 
-    positions
+    let bundle_notes = positions
         .into_iter()
         .map(|position| {
             notes_by_position.remove(&position).ok_or_else(|| {
@@ -1033,7 +1033,18 @@ pub(super) fn select_bundle_notes(
                 )
             })
         })
-        .collect()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    voting::storage::queries::require_bundle_notes(
+        conn,
+        round_id,
+        wallet_id,
+        bundle_index,
+        &bundle_notes,
+    )
+    .map_err(|e| anyhow!("require_bundle_notes: {}", e))?;
+
+    Ok(bundle_notes)
 }
 
 pub(super) fn replace_bundle_witnesses(
@@ -1043,7 +1054,22 @@ pub(super) fn replace_bundle_witnesses(
     bundle_index: u32,
     witnesses: &[WitnessData],
 ) -> anyhow::Result<()> {
-    conn.execute(
+    for witness in witnesses {
+        let valid = voting::witness::verify_witness(witness)
+            .map_err(|e| anyhow!("verify_witness: {}", e))?;
+        if !valid {
+            return Err(anyhow!(
+                "witness verification failed for position {}",
+                witness.position
+            ));
+        }
+    }
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| anyhow!("begin replace witnesses transaction: {}", e))?;
+
+    tx.execute(
         "DELETE FROM witnesses
          WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! {
@@ -1054,8 +1080,11 @@ pub(super) fn replace_bundle_witnesses(
     )
     .map_err(|e| anyhow!("clear_witnesses: {}", e))?;
 
-    voting::storage::queries::store_witnesses(conn, round_id, wallet_id, bundle_index, witnesses)
-        .map_err(|e| anyhow!("store_witnesses: {}", e))
+    voting::storage::queries::store_witnesses(&tx, round_id, wallet_id, bundle_index, witnesses)
+        .map_err(|e| anyhow!("store_witnesses: {}", e))?;
+
+    tx.commit()
+        .map_err(|e| anyhow!("commit replace witnesses transaction: {}", e))
 }
 
 pub(super) fn received_note_to_note_info(
@@ -1074,8 +1103,8 @@ pub(super) fn received_note_to_note_info(
     let nullifier = orchard_note.nullifier(fvk);
     let cmx: orchard::note::ExtractedNoteCommitment = orchard_note.commitment().into();
     let scope = match note.spending_key_scope() {
-        Scope::External => 0u32,
-        Scope::Internal => 1u32,
+        Scope::External => NOTE_SCOPE_EXTERNAL,
+        Scope::Internal => NOTE_SCOPE_INTERNAL,
     };
 
     Ok(NoteInfo {
