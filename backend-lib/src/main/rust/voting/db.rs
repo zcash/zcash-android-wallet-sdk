@@ -16,6 +16,7 @@ struct DbKey {
 
 pub(super) struct VotingDbHandle {
     db: VotingDb,
+    pub(super) tree_sync: VoteTreeSync,
     access_mutex: Mutex<()>,
 }
 
@@ -26,6 +27,7 @@ impl VotingDbHandle {
 
         Ok(Self {
             db,
+            tree_sync: VoteTreeSync::new(),
             access_mutex: Mutex::new(()),
         })
     }

@@ -6053,6 +6053,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 
 [[package]]
+name = "vote-commitment-tree"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0fb2456313f571003c0bed8d38fb166d78da85653caf828823c1a82f4e1aef1"
+dependencies = [
+ "anyhow",
+ "ff",
+ "halo2_gadgets",
+ "imt-tree",
+ "incrementalmerkletree",
+ "lazy_static",
+ "libc",
+ "pasta_curves",
+ "shardtree",
+]
+
+[[package]]
+name = "vote-commitment-tree-client"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb05b7a0434a89c2d9017bbab9a5157f1992fb746dce58a1077669e9dd0a13c5"
+dependencies = [
+ "base64",
+ "ff",
+ "hex",
+ "pasta_curves",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "vote-commitment-tree",
+]
+
+[[package]]
 name = "voting-circuits"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7131,6 +7164,9 @@ dependencies = [
  "serde_json",
  "subtle",
  "thiserror 2.0.18",
+ "tokio",
+ "vote-commitment-tree",
+ "vote-commitment-tree-client",
  "voting-circuits",
  "zcash_keys",
  "zcash_primitives",

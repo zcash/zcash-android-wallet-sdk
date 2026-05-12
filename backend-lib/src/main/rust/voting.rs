@@ -4,7 +4,9 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
-    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
+    sys::{
+        JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jlongArray, jobject, jobjectArray,
+    },
 };
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
@@ -20,9 +22,11 @@ use zcash_protocol::consensus::{BranchId, Network, NetworkConstants};
 use zcash_voting as voting;
 
 use voting::storage::{RoundPhase, RoundState, RoundSummary, VoteRecord, VotingDb};
+use voting::tree_sync::VoteTreeSync;
 use voting::types::{
     DelegationPirPrecomputeResult, DelegationProofResult, DelegationSubmissionData, GovernancePczt,
-    NoopProgressReporter, NoteInfo, ProofProgressReporter, WitnessData,
+    NoopProgressReporter, NoteInfo, ProofProgressReporter, SharePayload, VoteCommitmentBundle,
+    WireEncryptedShare, WitnessData,
 };
 
 use crate::utils::{
@@ -37,4 +41,6 @@ mod notes;
 mod progress;
 mod rounds;
 mod share_tracking;
+mod tree;
 mod util;
+mod vote;

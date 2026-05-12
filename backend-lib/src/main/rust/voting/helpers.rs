@@ -11,6 +11,12 @@ const JNI_ROUND_SUMMARY: &str = "cash/z/ecc/android/sdk/internal/model/voting/Jn
 const JNI_VOTE_RECORD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVoteRecord";
 const JNI_NOTE_INFO: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniNoteInfo";
 const JNI_WITNESS_DATA: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniWitnessData";
+const JNI_VAN_WITNESS: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVanWitness";
+const JNI_WIRE_ENCRYPTED_SHARE: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare";
+const JNI_VOTE_COMMITMENT_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitmentResult";
+const JNI_SHARE_PAYLOAD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniSharePayload";
 const JNI_VOTING_HOTKEY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey";
 const JNI_BUNDLE_SETUP_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult";
@@ -29,6 +35,21 @@ const JNI_NOTE_INFO_CTOR_SIG: &str = "([B[BJJ[B[B[BILjava/lang/String;)V";
 // Must match JniWitnessData(ByteArray, Long, ByteArray, Array<ByteArray>)
 // in JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_WITNESS_DATA_CTOR_SIG: &str = "([BJ[B[[B)V";
+// Must match JniVanWitness(Array<ByteArray>, Long, Long) in
+// JniVotingModels.kt.
+const JNI_VAN_WITNESS_CTOR_SIG: &str = "([[BJJ)V";
+// Must match JniWireEncryptedShare(ByteArray, ByteArray, Int) in
+// JniVotingModels.kt.
+const JNI_WIRE_ENCRYPTED_SHARE_CTOR_SIG: &str = "([B[BI)V";
+// Must match JniVoteCommitmentResult(ByteArray, ByteArray, ByteArray, Int,
+// ByteArray, Array<JniWireEncryptedShare>, Long, String, ByteArray,
+// Array<ByteArray>, Array<ByteArray>, ByteArray, ByteArray) in
+// JniVotingModels.kt.
+const JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG: &str = "([B[B[BI[B[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V";
+// Must match JniSharePayload(ByteArray, Int, Int, JniWireEncryptedShare,
+// Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray) in
+// JniVotingModels.kt.
+const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[[B[B)V";
 // Must match JniVotingHotkey(ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";
 // Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
@@ -58,6 +79,8 @@ pub(super) const NOTE_SCOPE_EXTERNAL: u32 = 0;
 pub(super) const NOTE_SCOPE_INTERNAL: u32 = 1;
 pub(super) const ORCHARD_DIVERSIFIER_BYTES: usize = 11;
 pub(super) const ORCHARD_WITNESS_PATH_DEPTH: usize = 32;
+pub(super) const VAN_WITNESS_PATH_DEPTH: usize = 24;
+pub(super) const VOTE_SHARE_COUNT: usize = 16;
 pub(super) const DELEGATION_PUBLIC_INPUT_COUNT: usize = 14;
 pub(super) const GOVERNANCE_NULLIFIER_COUNT: usize = 5;
 pub(super) const ACCOUNT_UUID_BYTES: usize = 16;
@@ -408,6 +431,132 @@ pub(super) fn java_witness_data(
     })
 }
 
+pub(super) fn java_van_witness(
+    env: &mut JNIEnv<'_>,
+    witness: &JObject<'_>,
+) -> anyhow::Result<voting::tree_sync::VanWitness> {
+    let auth_path = java_byte_array_list_field(env, witness, "authPath")?;
+    if auth_path.len() != VAN_WITNESS_PATH_DEPTH {
+        return Err(anyhow!(
+            "authPath must contain {VAN_WITNESS_PATH_DEPTH} entries, got {}",
+            auth_path.len()
+        ));
+    }
+
+    let auth_path = auth_path
+        .into_iter()
+        .enumerate()
+        .map(|(index, bytes)| fixed_bytes(bytes, &format!("authPath[{index}]")))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(voting::tree_sync::VanWitness {
+        auth_path,
+        position: jlong_to_u32(env.get_field(witness, "position", "J")?.j()?, "position")?,
+        anchor_height: jlong_to_u32(
+            env.get_field(witness, "anchorHeight", "J")?.j()?,
+            "anchorHeight",
+        )?,
+    })
+}
+
+fn java_wire_encrypted_share(
+    env: &mut JNIEnv<'_>,
+    share: &JObject<'_>,
+) -> anyhow::Result<WireEncryptedShare> {
+    Ok(WireEncryptedShare {
+        c1: require_len(
+            java_byte_array_field(env, share, "c1")?,
+            "c1",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        c2: require_len(
+            java_byte_array_field(env, share, "c2")?,
+            "c2",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        share_index: jint_to_u32(env.get_field(share, "shareIndex", "I")?.i()?, "shareIndex")?,
+    })
+}
+
+fn java_wire_encrypted_share_list_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<Vec<WireEncryptedShare>> {
+    let list = env.get_field(obj, name, "Ljava/util/List;")?.l()?;
+    let count = env.call_method(&list, "size", "()I", &[])?.i()?;
+    if count < 0 {
+        return Err(anyhow!("{name}.size() returned negative count {count}"));
+    }
+
+    (0..count)
+        .map(|index| {
+            let share = env
+                .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(index)])?
+                .l()?;
+            java_wire_encrypted_share(env, &share).map_err(|e| anyhow!("{name}[{index}]: {e}"))
+        })
+        .collect()
+}
+
+pub(super) fn java_vote_commitment_bundle(
+    env: &mut JNIEnv<'_>,
+    commitment: &JObject<'_>,
+) -> anyhow::Result<(Vec<WireEncryptedShare>, VoteCommitmentBundle)> {
+    let enc_shares = java_wire_encrypted_share_list_field(env, commitment, "encShares")?;
+    let share_blinds = java_byte_array_list_field(env, commitment, "shareBlinds")?;
+    let share_comms = java_byte_array_list_field(env, commitment, "shareComms")?;
+
+    Ok((
+        enc_shares,
+        VoteCommitmentBundle {
+            van_nullifier: require_len(
+                java_byte_array_field(env, commitment, "vanNullifier")?,
+                "vanNullifier",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            vote_authority_note_new: require_len(
+                java_byte_array_field(env, commitment, "voteAuthorityNoteNew")?,
+                "voteAuthorityNoteNew",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            vote_commitment: require_len(
+                java_byte_array_field(env, commitment, "voteCommitment")?,
+                "voteCommitment",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            proposal_id: jint_to_u32(
+                env.get_field(commitment, "proposalId", "I")?.i()?,
+                "proposalId",
+            )?,
+            proof: java_byte_array_field(env, commitment, "proof")?,
+            enc_shares: Vec::new(),
+            anchor_height: jlong_to_u32(
+                env.get_field(commitment, "anchorHeight", "J")?.j()?,
+                "anchorHeight",
+            )?,
+            vote_round_id: java_string_field(env, commitment, "voteRoundId")?,
+            shares_hash: require_len(
+                java_byte_array_field(env, commitment, "sharesHash")?,
+                "sharesHash",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            share_blinds: require_each_len(share_blinds, "shareBlinds", PROTOCOL_FIELD_BYTES)?,
+            share_comms: require_each_len(share_comms, "shareComms", PROTOCOL_FIELD_BYTES)?,
+            r_vpk_bytes: require_len(
+                java_byte_array_field(env, commitment, "rVpk")?,
+                "rVpk",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            alpha_v: require_len(
+                java_byte_array_field(env, commitment, "alphaV")?,
+                "alphaV",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+        },
+    ))
+}
+
 fn require_note_scope(scope: u32) -> anyhow::Result<u32> {
     match scope {
         NOTE_SCOPE_EXTERNAL | NOTE_SCOPE_INTERNAL => Ok(scope),
@@ -660,6 +809,224 @@ fn make_jni_witness_data<'local>(
             ],
         )?)
     })
+}
+
+pub(super) fn make_jni_van_witness<'local>(
+    env: &mut JNIEnv<'local>,
+    witness: voting::tree_sync::VanWitness,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_VAN_WITNESS)?;
+    let auth_path = witness
+        .auth_path
+        .into_iter()
+        .map(|bytes| bytes.to_vec())
+        .collect();
+    let auth_path = make_jni_fixed_byte_array_vec(
+        env,
+        auth_path,
+        "auth_path",
+        VAN_WITNESS_PATH_DEPTH,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let auth_path = JObject::from(auth_path);
+
+    Ok(env
+        .new_object(
+            &class,
+            JNI_VAN_WITNESS_CTOR_SIG,
+            &[
+                JValue::Object(&auth_path),
+                JValue::Long(u64_to_jlong(u64::from(witness.position), "position")?),
+                JValue::Long(u64_to_jlong(
+                    u64::from(witness.anchor_height),
+                    "anchor_height",
+                )?),
+            ],
+        )?
+        .into_raw())
+}
+
+fn make_jni_wire_encrypted_share<'local>(
+    env: &mut JNIEnv<'local>,
+    share: WireEncryptedShare,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_WIRE_ENCRYPTED_SHARE)?;
+    let c1 = make_jni_fixed_bytes(env, share.c1, "c1", PROTOCOL_FIELD_BYTES)?;
+    let c2 = make_jni_fixed_bytes(env, share.c2, "c2", PROTOCOL_FIELD_BYTES)?;
+
+    Ok(env.new_object(
+        &class,
+        JNI_WIRE_ENCRYPTED_SHARE_CTOR_SIG,
+        &[
+            JValue::Object(&c1),
+            JValue::Object(&c2),
+            JValue::Int(u32_to_jint(share.share_index, "share_index")?),
+        ],
+    )?)
+}
+
+fn make_jni_wire_encrypted_share_array<'local>(
+    env: &mut JNIEnv<'local>,
+    shares: Vec<WireEncryptedShare>,
+) -> anyhow::Result<JObjectArray<'local>> {
+    let len = usize_to_jint(shares.len(), "shares length")?;
+    let class = env.find_class(JNI_WIRE_ENCRYPTED_SHARE)?;
+    let mut shares = shares.into_iter().enumerate();
+    if let Some((_, first)) = shares.next() {
+        let first = make_jni_wire_encrypted_share(env, first)?;
+        let array = env.new_object_array(len, &class, &first)?;
+        for (index, share) in shares {
+            let share = make_jni_wire_encrypted_share(env, share)?;
+            env.set_object_array_element(&array, usize_to_jint(index, "shares index")?, share)?;
+        }
+        Ok(array)
+    } else {
+        Ok(env.new_object_array(0, &class, JObject::null())?)
+    }
+}
+
+pub(super) fn make_jni_vote_commitment_result<'local>(
+    env: &mut JNIEnv<'local>,
+    bundle: VoteCommitmentBundle,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_VOTE_COMMITMENT_RESULT)?;
+    let enc_shares = bundle
+        .enc_shares
+        .into_iter()
+        .map(WireEncryptedShare::from)
+        .collect();
+    let van_nullifier = make_jni_fixed_bytes(
+        env,
+        bundle.van_nullifier,
+        "van_nullifier",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let vote_authority_note_new = make_jni_fixed_bytes(
+        env,
+        bundle.vote_authority_note_new,
+        "vote_authority_note_new",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let vote_commitment = make_jni_fixed_bytes(
+        env,
+        bundle.vote_commitment,
+        "vote_commitment",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let proof = make_jni_bytes(env, &bundle.proof)?;
+    let enc_shares = make_jni_wire_encrypted_share_array(env, enc_shares)?;
+    let enc_shares = JObject::from(enc_shares);
+    let vote_round_id: JObject<'local> = env.new_string(bundle.vote_round_id)?.into();
+    let shares_hash =
+        make_jni_fixed_bytes(env, bundle.shares_hash, "shares_hash", PROTOCOL_FIELD_BYTES)?;
+    let share_blinds = make_jni_fixed_byte_array_vec(
+        env,
+        bundle.share_blinds,
+        "share_blinds",
+        VOTE_SHARE_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let share_comms = make_jni_fixed_byte_array_vec(
+        env,
+        bundle.share_comms,
+        "share_comms",
+        VOTE_SHARE_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let share_blinds = JObject::from(share_blinds);
+    let share_comms = JObject::from(share_comms);
+    let r_vpk = make_jni_fixed_bytes(env, bundle.r_vpk_bytes, "r_vpk", PROTOCOL_FIELD_BYTES)?;
+    let alpha_v = make_jni_fixed_bytes(env, bundle.alpha_v, "alpha_v", PROTOCOL_FIELD_BYTES)?;
+
+    Ok(env
+        .new_object(
+            &class,
+            JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG,
+            &[
+                JValue::Object(&van_nullifier),
+                JValue::Object(&vote_authority_note_new),
+                JValue::Object(&vote_commitment),
+                JValue::Int(u32_to_jint(bundle.proposal_id, "proposal_id")?),
+                JValue::Object(&proof),
+                JValue::Object(&enc_shares),
+                JValue::Long(u64_to_jlong(
+                    u64::from(bundle.anchor_height),
+                    "anchor_height",
+                )?),
+                JValue::Object(&vote_round_id),
+                JValue::Object(&shares_hash),
+                JValue::Object(&share_blinds),
+                JValue::Object(&share_comms),
+                JValue::Object(&r_vpk),
+                JValue::Object(&alpha_v),
+            ],
+        )?
+        .into_raw())
+}
+
+pub(super) fn make_jni_share_payload_array<'local>(
+    env: &mut JNIEnv<'local>,
+    payloads: Vec<SharePayload>,
+) -> anyhow::Result<jobjectArray> {
+    let len = usize_to_jint(payloads.len(), "payloads length")?;
+    let class = env.find_class(JNI_SHARE_PAYLOAD)?;
+    let mut payloads = payloads.into_iter().enumerate();
+    if let Some((_, first)) = payloads.next() {
+        let first = make_jni_share_payload(env, first)?;
+        let array = env.new_object_array(len, &class, &first)?;
+        for (index, payload) in payloads {
+            let payload = make_jni_share_payload(env, payload)?;
+            env.set_object_array_element(&array, usize_to_jint(index, "payloads index")?, payload)?;
+        }
+        Ok(array.into_raw())
+    } else {
+        Ok(env.new_object_array(0, &class, JObject::null())?.into_raw())
+    }
+}
+
+fn make_jni_share_payload<'local>(
+    env: &mut JNIEnv<'local>,
+    payload: SharePayload,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_SHARE_PAYLOAD)?;
+    let shares_hash = make_jni_fixed_bytes(
+        env,
+        payload.shares_hash,
+        "shares_hash",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let enc_share = make_jni_wire_encrypted_share(env, payload.enc_share)?;
+    let all_enc_shares = make_jni_wire_encrypted_share_array(env, payload.all_enc_shares)?;
+    let share_comms = make_jni_fixed_byte_array_vec(
+        env,
+        payload.share_comms,
+        "share_comms",
+        VOTE_SHARE_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let primary_blind = make_jni_fixed_bytes(
+        env,
+        payload.primary_blind,
+        "primary_blind",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let all_enc_shares = JObject::from(all_enc_shares);
+    let share_comms = JObject::from(share_comms);
+
+    Ok(env.new_object(
+        &class,
+        JNI_SHARE_PAYLOAD_CTOR_SIG,
+        &[
+            JValue::Object(&shares_hash),
+            JValue::Int(u32_to_jint(payload.proposal_id, "proposal_id")?),
+            JValue::Int(u32_to_jint(payload.vote_decision, "vote_decision")?),
+            JValue::Object(&enc_share),
+            JValue::Long(u64_to_jlong(payload.tree_position, "tree_position")?),
+            JValue::Object(&all_enc_shares),
+            JValue::Object(&share_comms),
+            JValue::Object(&primary_blind),
+        ],
+    )?)
 }
 
 /// Builds the Kotlin hotkey JNI model after enforcing the expected key widths.
