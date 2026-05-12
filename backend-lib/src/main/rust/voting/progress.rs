@@ -11,6 +11,9 @@ struct JniProgressReporter {
 
 impl ProofProgressReporter for JniProgressReporter {
     fn on_progress(&self, progress: f64) {
+        // zcash_voting 0.5.9 calls this at coarse milestones outside the spawned
+        // Halo2 proving closure. Attach on each callback so the bridge remains
+        // correct if future progress calls come from another native thread.
         match self.vm.attach_current_thread() {
             Ok(mut env) => {
                 if let Err(e) = env.call_method(

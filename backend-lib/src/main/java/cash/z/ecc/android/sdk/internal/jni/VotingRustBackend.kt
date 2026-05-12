@@ -23,6 +23,11 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Synchronous native proof progress callback.
  *
+ * Native proof generation currently reports coarse progress from the proof call
+ * thread before and after the spawned Halo2 proving worker. The JNI bridge
+ * attaches whichever native thread invokes this callback, so callers must not
+ * assume Android main-thread or coroutine-dispatcher affinity.
+ *
  * This callback runs while the owning voting DB handle is locked by the in-flight
  * proof operation. Implementations must not call back into this VotingDb's methods.
  * Native code treats callback failures as best-effort progress reporting and
