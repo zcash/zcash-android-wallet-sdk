@@ -80,6 +80,208 @@ data class JniWitnessData(
     }
 }
 
+@Keep
+data class JniVanWitness(
+    val authPath: List<ByteArray>,
+    val position: Long,
+    val anchorHeight: Long
+) {
+    internal constructor(
+        authPath: Array<ByteArray>,
+        position: Long,
+        anchorHeight: Long
+    ) : this(
+        authPath = authPath.toList(),
+        position = position,
+        anchorHeight = anchorHeight
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniVanWitness) return false
+        return authPath.contentDeepEquals(other.authPath) &&
+            position == other.position &&
+            anchorHeight == other.anchorHeight
+    }
+
+    override fun hashCode(): Int {
+        var result = authPath.contentDeepHashCode()
+        result = 31 * result + position.hashCode()
+        result = 31 * result + anchorHeight.hashCode()
+        return result
+    }
+}
+
+@Keep
+data class JniWireEncryptedShare(
+    val c1: ByteArray,
+    val c2: ByteArray,
+    val shareIndex: Int
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniWireEncryptedShare) return false
+        return c1.contentEquals(other.c1) &&
+            c2.contentEquals(other.c2) &&
+            shareIndex == other.shareIndex
+    }
+
+    override fun hashCode(): Int {
+        var result = c1.contentHashCode()
+        result = 31 * result + c2.contentHashCode()
+        result = 31 * result + shareIndex
+        return result
+    }
+}
+
+@Keep
+data class JniVoteCommitmentResult(
+    val vanNullifier: ByteArray,
+    val voteAuthorityNoteNew: ByteArray,
+    val voteCommitment: ByteArray,
+    val proposalId: Int,
+    val proof: ByteArray,
+    val encShares: List<JniWireEncryptedShare>,
+    val anchorHeight: Long,
+    val voteRoundId: String,
+    val sharesHash: ByteArray,
+    val shareBlinds: List<ByteArray>,
+    val shareComms: List<ByteArray>,
+    val rVpk: ByteArray,
+    val alphaV: ByteArray
+) {
+    internal constructor(
+        vanNullifier: ByteArray,
+        voteAuthorityNoteNew: ByteArray,
+        voteCommitment: ByteArray,
+        proposalId: Int,
+        proof: ByteArray,
+        encShares: Array<JniWireEncryptedShare>,
+        anchorHeight: Long,
+        voteRoundId: String,
+        sharesHash: ByteArray,
+        shareBlinds: Array<ByteArray>,
+        shareComms: Array<ByteArray>,
+        rVpk: ByteArray,
+        alphaV: ByteArray
+    ) : this(
+        vanNullifier = vanNullifier,
+        voteAuthorityNoteNew = voteAuthorityNoteNew,
+        voteCommitment = voteCommitment,
+        proposalId = proposalId,
+        proof = proof,
+        encShares = encShares.toList(),
+        anchorHeight = anchorHeight,
+        voteRoundId = voteRoundId,
+        sharesHash = sharesHash,
+        shareBlinds = shareBlinds.toList(),
+        shareComms = shareComms.toList(),
+        rVpk = rVpk,
+        alphaV = alphaV
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniVoteCommitmentResult) return false
+        return scalarFieldsEqual(other) &&
+            byteFieldsEqual(other) &&
+            listFieldsEqual(other)
+    }
+
+    private fun scalarFieldsEqual(other: JniVoteCommitmentResult) =
+        proposalId == other.proposalId &&
+            anchorHeight == other.anchorHeight &&
+            voteRoundId == other.voteRoundId
+
+    private fun byteFieldsEqual(other: JniVoteCommitmentResult) =
+        vanNullifier.contentEquals(other.vanNullifier) &&
+            voteAuthorityNoteNew.contentEquals(other.voteAuthorityNoteNew) &&
+            voteCommitment.contentEquals(other.voteCommitment) &&
+            proof.contentEquals(other.proof) &&
+            sharesHash.contentEquals(other.sharesHash) &&
+            rVpk.contentEquals(other.rVpk) &&
+            alphaV.contentEquals(other.alphaV)
+
+    private fun listFieldsEqual(other: JniVoteCommitmentResult) =
+        encShares == other.encShares &&
+            shareBlinds.contentDeepEquals(other.shareBlinds) &&
+            shareComms.contentDeepEquals(other.shareComms)
+
+    override fun hashCode(): Int {
+        var result = vanNullifier.contentHashCode()
+        result = 31 * result + voteAuthorityNoteNew.contentHashCode()
+        result = 31 * result + voteCommitment.contentHashCode()
+        result = 31 * result + proposalId
+        result = 31 * result + proof.contentHashCode()
+        result = 31 * result + encShares.hashCode()
+        result = 31 * result + anchorHeight.hashCode()
+        result = 31 * result + voteRoundId.hashCode()
+        result = 31 * result + sharesHash.contentHashCode()
+        result = 31 * result + shareBlinds.contentDeepHashCode()
+        result = 31 * result + shareComms.contentDeepHashCode()
+        result = 31 * result + rVpk.contentHashCode()
+        result = 31 * result + alphaV.contentHashCode()
+        return result
+    }
+}
+
+@Keep
+data class JniSharePayload(
+    val sharesHash: ByteArray,
+    val proposalId: Int,
+    val voteDecision: Int,
+    val encShare: JniWireEncryptedShare,
+    val treePosition: Long,
+    val allEncShares: List<JniWireEncryptedShare>,
+    val shareComms: List<ByteArray>,
+    val primaryBlind: ByteArray
+) {
+    internal constructor(
+        sharesHash: ByteArray,
+        proposalId: Int,
+        voteDecision: Int,
+        encShare: JniWireEncryptedShare,
+        treePosition: Long,
+        allEncShares: Array<JniWireEncryptedShare>,
+        shareComms: Array<ByteArray>,
+        primaryBlind: ByteArray
+    ) : this(
+        sharesHash = sharesHash,
+        proposalId = proposalId,
+        voteDecision = voteDecision,
+        encShare = encShare,
+        treePosition = treePosition,
+        allEncShares = allEncShares.toList(),
+        shareComms = shareComms.toList(),
+        primaryBlind = primaryBlind
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniSharePayload) return false
+        return sharesHash.contentEquals(other.sharesHash) &&
+            proposalId == other.proposalId &&
+            voteDecision == other.voteDecision &&
+            encShare == other.encShare &&
+            treePosition == other.treePosition &&
+            allEncShares == other.allEncShares &&
+            shareComms.contentDeepEquals(other.shareComms) &&
+            primaryBlind.contentEquals(other.primaryBlind)
+    }
+
+    override fun hashCode(): Int {
+        var result = sharesHash.contentHashCode()
+        result = 31 * result + proposalId
+        result = 31 * result + voteDecision
+        result = 31 * result + encShare.hashCode()
+        result = 31 * result + treePosition.hashCode()
+        result = 31 * result + allEncShares.hashCode()
+        result = 31 * result + shareComms.contentDeepHashCode()
+        result = 31 * result + primaryBlind.contentHashCode()
+        return result
+    }
+}
+
 @ConsistentCopyVisibility
 data class HotkeyPublicKey internal constructor(
     val value: ByteArray
