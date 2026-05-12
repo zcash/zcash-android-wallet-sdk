@@ -932,39 +932,8 @@ pub(super) fn update_round_phase_forward(
     round_id: &str,
     phase: RoundPhase,
 ) -> anyhow::Result<()> {
-    let conn = db.conn();
-    let wallet_id = db.wallet_id();
-    let requested_rank = round_phase_to_u32(phase);
-
-    let rows = conn
-        .execute(
-            "UPDATE rounds
-             SET phase = ?1
-             WHERE round_id = ?2
-               AND wallet_id = ?3
-               AND phase < ?1",
-            rusqlite::params![phase as i32, round_id, wallet_id],
-        )
-        .map_err(|e| anyhow!("update_round_phase: {}", e))?;
-    if rows > 0 {
-        return Ok(());
-    }
-
-    let current = voting::storage::queries::get_round_state(&conn, round_id, &wallet_id)
-        .map_err(|e| anyhow!("get_round_state after phase update: {}", e))?
-        .phase;
-    let current_rank = round_phase_to_u32(current);
-    if current_rank < requested_rank {
-        return Err(anyhow!(
-            "failed to advance round phase for {round_id}: current={current_rank}, requested={requested_rank}"
-        ));
-    } else if current_rank > requested_rank {
-        return Err(anyhow!(
-            "refusing to regress round phase for {round_id}: current={current_rank}, requested={requested_rank}"
-        ));
-    }
-
-    Ok(())
+    db.advance_round_phase(round_id, phase)
+        .map_err(|e| anyhow!("advance_round_phase: {}", e))
 }
 
 /// Requires the hotkey step before PCZT construction and rejects calls after
@@ -1049,43 +1018,13 @@ pub(super) fn select_bundle_notes(
 }
 
 pub(super) fn replace_bundle_witnesses(
-    conn: &mut rusqlite::Connection,
+    db: &VotingDb,
     round_id: &str,
-    wallet_id: &str,
     bundle_index: u32,
     witnesses: &[WitnessData],
 ) -> anyhow::Result<()> {
-    for witness in witnesses {
-        let valid = voting::witness::verify_witness(witness)
-            .map_err(|e| anyhow!("verify_witness: {}", e))?;
-        if !valid {
-            return Err(anyhow!(
-                "witness verification failed for position {}",
-                witness.position
-            ));
-        }
-    }
-
-    let tx = conn
-        .transaction()
-        .map_err(|e| anyhow!("begin replace witnesses transaction: {}", e))?;
-
-    tx.execute(
-        "DELETE FROM witnesses
-         WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
-        named_params! {
-            ":round_id": round_id,
-            ":wallet_id": wallet_id,
-            ":bundle_index": bundle_index as i64,
-        },
-    )
-    .map_err(|e| anyhow!("clear_witnesses: {}", e))?;
-
-    voting::storage::queries::store_witnesses(&tx, round_id, wallet_id, bundle_index, witnesses)
-        .map_err(|e| anyhow!("store_witnesses: {}", e))?;
-
-    tx.commit()
-        .map_err(|e| anyhow!("commit replace witnesses transaction: {}", e))
+    db.replace_bundle_witnesses(round_id, bundle_index, witnesses)
+        .map_err(|e| anyhow!("replace_bundle_witnesses: {}", e))
 }
 
 pub(super) fn received_note_to_note_info(

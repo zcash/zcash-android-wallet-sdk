@@ -235,8 +235,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
             })
             .collect::<Vec<_>>();
 
-        let mut conn = db.conn();
-        replace_bundle_witnesses(&mut conn, &round_id, &wallet_id, bundle_index, &witnesses)?;
+        replace_bundle_witnesses(&db, &round_id, bundle_index, &witnesses)?;
 
         make_jni_witness_data_array(env, witnesses)
     });

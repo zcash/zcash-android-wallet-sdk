@@ -103,7 +103,7 @@ rust-analyzer = "0.0.1"
 # delegation proof precompute and proof generation; tree-sync remains later.
 # Expected PIR/networking transitives include `pir-client`, `pir-types`,
 # `valar-ypir`, `valar-spiral-rs`, and `hyper-rustls`.
-zcash_voting = { version = "0.5.9", default-features = false, features = ["client-pir"] }
+zcash_voting = { version = "0.5.11", default-features = false, features = ["client-pir"] }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]

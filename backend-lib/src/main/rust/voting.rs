@@ -7,7 +7,6 @@ use jni::{
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use orchard::keys::Scope;
-use rusqlite::named_params;
 use secrecy::{ExposeSecret, SecretVec};
 use std::{
     collections::HashMap,
