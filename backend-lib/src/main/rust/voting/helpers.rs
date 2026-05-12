@@ -24,9 +24,10 @@ const JNI_DELEGATION_SUBMISSION_RESULT: &str =
 
 // Must match JniNoteInfo(ByteArray, ByteArray, Long, Long, ByteArray,
 // ByteArray, ByteArray, Int, String) in JniVotingModels.kt.
+// Guarded by JniVotingModelsTest.
 const JNI_NOTE_INFO_CTOR_SIG: &str = "([B[BJJ[B[B[BILjava/lang/String;)V";
 // Must match JniWitnessData(ByteArray, Long, ByteArray, Array<ByteArray>)
-// in JniVotingModels.kt.
+// in JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_WITNESS_DATA_CTOR_SIG: &str = "([BJ[B[[B)V";
 // Must match JniVotingHotkey(ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";
