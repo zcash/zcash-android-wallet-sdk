@@ -31,6 +31,28 @@ fn validate_cached_tree_state_for_round(
     Ok(())
 }
 
+type ReadOnlyWalletDb = zcash_client_sqlite::WalletDb<
+    rusqlite::Connection,
+    Network,
+    zcash_client_sqlite::util::SystemClock,
+    rand::rngs::OsRng,
+>;
+
+fn open_wallet_db_read_only(path: &str, network: Network) -> anyhow::Result<ReadOnlyWalletDb> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| anyhow!("open wallet DB read-only: {}", e))?;
+    rusqlite::vtab::array::load_module(&conn)
+        .map_err(|e| anyhow!("load sqlite array module: {}", e))?;
+
+    Ok(zcash_client_sqlite::WalletDb::from_connection(
+        conn,
+        network,
+        zcash_client_sqlite::util::SystemClock,
+        rand::rngs::OsRng,
+    ))
+}
+
 // =============================================================================
 // C. Note setup
 // =============================================================================
@@ -95,13 +117,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
         let account_uuid =
             zcash_client_sqlite::AccountUuid::from_uuid(uuid::Uuid::from_bytes(account_uuid_bytes));
 
-        let wallet_db = zcash_client_sqlite::WalletDb::for_path(
-            &path,
-            network,
-            zcash_client_sqlite::util::SystemClock,
-            rand::rngs::OsRng,
-        )
-        .map_err(|e| anyhow!("failed to open wallet DB: {}", e))?;
+        let wallet_db = open_wallet_db_read_only(&path, network)?;
 
         let account = wallet_db
             .get_account(account_uuid)
@@ -187,13 +203,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
                 )
             })?);
 
-        let wallet_db = zcash_client_sqlite::WalletDb::for_path(
-            &wallet_path,
-            network,
-            zcash_client_sqlite::util::SystemClock,
-            rand::rngs::OsRng,
-        )
-        .map_err(|e| anyhow!("open wallet DB: {}", e))?;
+        let wallet_db = open_wallet_db_read_only(&wallet_path, network)?;
 
         let positions = bundle_notes
             .iter()
