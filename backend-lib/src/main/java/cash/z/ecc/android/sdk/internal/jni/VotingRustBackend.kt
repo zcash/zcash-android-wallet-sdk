@@ -98,7 +98,7 @@ class VotingRustBackend private constructor() {
         networkId: Int,
         accountUuidBytes: ByteArray
     ): Array<JniNoteInfo> =
-        withContext(Dispatchers.IO) {
+        withContext(SdkDispatchers.DATABASE_IO) {
             getWalletNotesNative(
                 walletDbPath,
                 snapshotHeight,
