@@ -22,6 +22,7 @@ class VotingRustBackendTest {
         private const val SHARE_INDEX = 5
         private const val OUT_OF_RANGE_SHARE_INDEX = 16
         private const val DIVERSIFIER_BYTES = 11
+        private const val ORCHARD_FVK_BYTES = 96
         private const val ORCHARD_WITNESS_PATH_DEPTH = 32
         private val VOTE_COMMITMENT = ByteArray(FIELD_BYTES) { 1 }
         private val BLIND = ByteArray(FIELD_BYTES) { 2 }
@@ -125,6 +126,52 @@ class VotingRustBackendTest {
     fun warm_proving_caches_smoke() =
         runTest {
             VotingRustBackend.new().warmProvingCaches()
+        }
+
+    @Test
+    fun extract_orchard_fvk_from_ufvk_is_deterministic() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val ufvk = deriveTestUfvk()
+
+            val first = backend.extractOrchardFvkFromUfvk(ufvk, TESTNET_NETWORK_ID)
+            val second = backend.extractOrchardFvkFromUfvk(ufvk, TESTNET_NETWORK_ID)
+
+            assertEquals(ORCHARD_FVK_BYTES, first.size)
+            assertContentEquals(first, second)
+            assertFailsWith<RuntimeException> {
+                backend.extractOrchardFvkFromUfvk("not-a-ufvk", TESTNET_NETWORK_ID)
+            }
+        }
+
+    @Test
+    fun extract_nc_root_decodes_tree_state() =
+        runTest {
+            val backend = VotingRustBackend.new()
+
+            val root = backend.extractNcRoot(backend.treeStateFixtureForTesting())
+
+            assertContentEquals(EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(), root)
+            assertFailsWith<RuntimeException> {
+                backend.extractNcRoot(byteArrayOf(1, 2, 3))
+            }
+        }
+
+    @Test
+    fun verify_witness_returns_boolean() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val validWitness = witnesses().single()
+
+            assertTrue(backend.verifyWitness(validWitness))
+            assertFalse(backend.verifyWitness(validWitness.copy(root = NC_ROOT)))
+            assertFailsWith<RuntimeException> {
+                backend.verifyWitness(
+                    validWitness.copy(
+                        authPath = validWitness.authPath.dropLast(1)
+                    )
+                )
+            }
         }
 
     @Test
@@ -322,6 +369,26 @@ class VotingRustBackendTest {
                 val deletedRows = db.deleteSkippedBundles(ROUND_ID, keepCount = 1)
                 assertEquals(1L, deletedRows)
                 assertEquals(1, db.getBundleCount(ROUND_ID))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun store_tree_state_accepts_cached_bytes() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+
+                db.storeTreeState(ROUND_ID, byteArrayOf(1, 2, 3))
             } finally {
                 db.close()
             }
@@ -630,6 +697,30 @@ class VotingRustBackendTest {
             assertContentEquals(ByteArray(FIELD_BYTES) { 0x10 }, result.publicInputs.first())
             assertEquals(5, result.govNullifiers.size)
             assertContentEquals(ByteArray(FIELD_BYTES) { 0x42 }, result.rk)
+        }
+
+    @Test
+    fun note_and_witness_array_fixtures_cross_rust_to_kotlin_construction() =
+        runTest {
+            val backend = VotingRustBackend.new()
+
+            val note = backend.noteInfoArrayFixtureForTesting().single()
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x01 }, note.commitment)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x02 }, note.nullifier)
+            assertEquals(123_456L, note.value)
+            assertEquals(7L, note.position)
+            assertContentEquals(ByteArray(DIVERSIFIER_BYTES) { 0x03 }, note.diversifier)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x04 }, note.rho)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x05 }, note.rseed)
+            assertEquals(1, note.scope)
+            assertEquals("ufvk-fixture", note.ufvk)
+
+            val witness = backend.witnessDataArrayFixtureForTesting().single()
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x11 }, witness.noteCommitment)
+            assertEquals(9L, witness.position)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x12 }, witness.root)
+            assertEquals(ORCHARD_WITNESS_PATH_DEPTH, witness.authPath.size)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x20 }, witness.authPath.first())
         }
 
     @Test

@@ -150,17 +150,20 @@ class TypesafeVotingBackendImplTest {
                     proof = ByteArray(PROOF_BYTES) { 31 },
                     voteRoundId = "round-keystone"
                 )
+            val generatedWitnesses = arrayOf(jniWitnessData().copy(position = 11L))
             val backend =
                 RecordingVotingDbBackend(
                     proofResult = proofJniResult,
                     submissionResult = submissionJniResult,
-                    keystoneSubmissionResult = keystoneJniResult
+                    keystoneSubmissionResult = keystoneJniResult,
+                    generatedWitnesses = generatedWitnesses
                 )
             val db = TypesafeVotingDbImpl(backend)
             val walletSeed = byteArrayOf(1, 2, 3)
             val senderSeed = byteArrayOf(4, 5, 6)
             val keystoneSig = byteArrayOf(7, 8)
             val keystoneSighash = byteArrayOf(9, 10)
+            val treeStateBytes = byteArrayOf(11, 12, 13)
             val notes = listOf(jniNoteInfo())
             val witnesses = listOf(jniWitnessData())
             var progressValue: Double? = null
@@ -241,6 +244,25 @@ class TypesafeVotingBackendImplTest {
             assertContentEquals(keystoneSig, backend.keystoneSig)
             assertContentEquals(keystoneSighash, backend.keystoneSighash)
             assertEquals("round-keystone", keystoneSubmission.voteRoundId)
+
+            db.storeTreeState("round-6", treeStateBytes)
+            assertEquals("round-6", backend.storeTreeStateRoundId)
+            assertContentEquals(treeStateBytes, backend.storeTreeStateBytes)
+
+            val generated =
+                db.generateNoteWitnesses(
+                    roundId = "round-7",
+                    bundleIndex = 10,
+                    walletDbPath = "/tmp/wallet.db",
+                    networkId = 1,
+                    notes = notes
+                )
+            assertEquals("round-7", backend.generateNoteWitnessesRoundId)
+            assertEquals(10, backend.generateNoteWitnessesBundleIndex)
+            assertEquals("/tmp/wallet.db", backend.generateNoteWitnessesWalletDbPath)
+            assertEquals(1, backend.generateNoteWitnessesNetworkId)
+            assertEquals(notes, backend.generateNoteWitnessesNotes)
+            assertEquals(generatedWitnesses.asList(), generated)
         }
 
     private fun jniDelegationProofResult(
@@ -328,7 +350,8 @@ class TypesafeVotingBackendImplTest {
     private class RecordingVotingDbBackend(
         private val proofResult: JniDelegationProofResult,
         private val submissionResult: JniDelegationSubmissionResult,
-        private val keystoneSubmissionResult: JniDelegationSubmissionResult
+        private val keystoneSubmissionResult: JniDelegationSubmissionResult,
+        private val generatedWitnesses: Array<JniWitnessData>
     ) : VotingDbBackend {
         var storeWitnessesRoundId: String? = null
         var storeWitnessesBundleIndex: Int? = null
@@ -357,6 +380,13 @@ class TypesafeVotingBackendImplTest {
         var keystoneBundleIndex: Int? = null
         var keystoneSig: ByteArray = ByteArray(0)
         var keystoneSighash: ByteArray = ByteArray(0)
+        var storeTreeStateRoundId: String? = null
+        var storeTreeStateBytes: ByteArray = ByteArray(0)
+        var generateNoteWitnessesRoundId: String? = null
+        var generateNoteWitnessesBundleIndex: Int? = null
+        var generateNoteWitnessesWalletDbPath: String? = null
+        var generateNoteWitnessesNetworkId: Int? = null
+        var generateNoteWitnessesNotes: List<JniNoteInfo>? = null
 
         override suspend fun close() = unused()
 
@@ -485,7 +515,10 @@ class TypesafeVotingBackendImplTest {
             return keystoneSubmissionResult
         }
 
-        override suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray) = unused()
+        override suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray) {
+            storeTreeStateRoundId = roundId
+            storeTreeStateBytes = treeStateBytes
+        }
 
         override suspend fun generateNoteWitnesses(
             roundId: String,
@@ -493,7 +526,14 @@ class TypesafeVotingBackendImplTest {
             walletDbPath: String,
             networkId: Int,
             notes: List<JniNoteInfo>
-        ): Array<JniWitnessData> = unused()
+        ): Array<JniWitnessData> {
+            generateNoteWitnessesRoundId = roundId
+            generateNoteWitnessesBundleIndex = bundleIndex
+            generateNoteWitnessesWalletDbPath = walletDbPath
+            generateNoteWitnessesNetworkId = networkId
+            generateNoteWitnessesNotes = notes
+            return generatedWitnesses
+        }
 
         private fun unused(): Nothing = error("unused")
     }
