@@ -128,6 +128,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
             .ok_or_else(|| anyhow!("account has no UFVK"))?
             .clone();
 
+        // Upstream interprets "unspent" at the requested height: spends mined
+        // after the snapshot remain eligible for that snapshot.
         let notes = wallet_db
             .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
             .map_err(|e| anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e))?;
