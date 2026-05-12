@@ -9,6 +9,14 @@ const PHASE_VOTE_READY: u32 = 4;
 
 const JNI_ROUND_SUMMARY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniRoundSummary";
 const JNI_VOTE_RECORD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVoteRecord";
+const JNI_VOTING_HOTKEY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey";
+const JNI_BUNDLE_SETUP_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult";
+
+// Must match JniVotingHotkey(ByteArray, String) in JniVotingModels.kt.
+const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";
+// Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
+const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
 
 pub(super) const ORCHARD_RAW_ADDRESS_BYTES: usize = 43;
 pub(super) const ORCHARD_FVK_BYTES: usize = 96;
@@ -346,7 +354,7 @@ pub(super) fn make_jni_voting_hotkey<'local>(
     env: &mut JNIEnv<'local>,
     hotkey: voting::types::VotingHotkey,
 ) -> anyhow::Result<jobject> {
-    let class = env.find_class("cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey")?;
+    let class = env.find_class(JNI_VOTING_HOTKEY)?;
     let _secret_key = SecretVec::new(require_len(
         hotkey.secret_key,
         "hotkey_secret_key",
@@ -361,7 +369,7 @@ pub(super) fn make_jni_voting_hotkey<'local>(
     let addr_obj: JObject<'local> = env.new_string(&hotkey.address)?.into();
     let obj = env.new_object(
         &class,
-        "([BLjava/lang/String;)V",
+        JNI_VOTING_HOTKEY_CTOR_SIG,
         &[JValue::Object(&pk_obj), JValue::Object(&addr_obj)],
     )?;
     Ok(obj.into_raw())
@@ -374,8 +382,7 @@ pub(super) fn make_jni_bundle_setup_result<'local>(
     weight: u64,
     bundle_weights: &[u64],
 ) -> anyhow::Result<jobject> {
-    let class =
-        env.find_class("cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult")?;
+    let class = env.find_class(JNI_BUNDLE_SETUP_RESULT)?;
     let weights = bundle_weights
         .iter()
         .enumerate()
@@ -387,7 +394,7 @@ pub(super) fn make_jni_bundle_setup_result<'local>(
     let weights_array_obj = JObject::from(weights_array);
     let obj = env.new_object(
         &class,
-        "(IJ[J)V",
+        JNI_BUNDLE_SETUP_RESULT_CTOR_SIG,
         &[
             JValue::Int(u32_to_jint(count, "bundle_count")?),
             JValue::Long(u64_to_jlong(weight, "eligible_weight")?),
