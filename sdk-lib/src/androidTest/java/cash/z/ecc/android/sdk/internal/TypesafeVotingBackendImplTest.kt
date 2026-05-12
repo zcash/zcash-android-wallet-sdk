@@ -27,6 +27,17 @@ import kotlin.test.assertTrue
 @Suppress("LongMethod", "LongParameterList", "MagicNumber", "TooManyFunctions")
 class TypesafeVotingBackendImplTest {
     @Test
+    fun delegation_proof_result_checks_non_empty_proof() {
+        val error =
+            assertFailsWith<IllegalArgumentException> {
+                jniDelegationProofResult(proof = ByteArray(0))
+                    .toDelegationProofResult()
+            }
+
+        assertTrue(error.message.orEmpty().contains("proof"))
+    }
+
+    @Test
     fun delegation_proof_result_checks_public_input_count() {
         val error =
             assertFailsWith<IllegalArgumentException> {
@@ -51,6 +62,17 @@ class TypesafeVotingBackendImplTest {
             }
 
         assertTrue(error.message.orEmpty().contains("publicInputs[0]"))
+    }
+
+    @Test
+    fun delegation_submission_result_checks_non_empty_proof() {
+        val error =
+            assertFailsWith<IllegalArgumentException> {
+                jniDelegationSubmissionResult(proof = ByteArray(0))
+                    .toDelegationSubmissionResult()
+            }
+
+        assertTrue(error.message.orEmpty().contains("proof"))
     }
 
     @Test

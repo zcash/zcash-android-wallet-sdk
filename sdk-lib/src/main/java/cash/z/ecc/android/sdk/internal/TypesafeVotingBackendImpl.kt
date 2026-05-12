@@ -477,6 +477,7 @@ internal fun JniDelegationPirPrecomputeResult.toDelegationPirPrecomputeResult() 
     )
 
 internal fun JniDelegationProofResult.toDelegationProofResult(): DelegationProofResult {
+    proof.requireByteArrayNotEmpty("proof")
     publicInputs.requireByteArrayCount(
         "publicInputs",
         JNI_DELEGATION_PUBLIC_INPUT_COUNT
@@ -504,6 +505,7 @@ internal fun JniDelegationProofResult.toDelegationProofResult(): DelegationProof
 }
 
 internal fun JniDelegationSubmissionResult.toDelegationSubmissionResult(): DelegationSubmissionResult {
+    proof.requireByteArrayNotEmpty("proof")
     rk.requireByteArraySize("rk", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     spendAuthSig.requireByteArraySize("spendAuthSig", JNI_SPEND_AUTH_SIG_BYTES_SIZE)
     sighash.requireByteArraySize("sighash", JNI_PROTOCOL_FIELD_BYTES_SIZE)
@@ -537,6 +539,11 @@ private fun ((Double) -> Unit).asVotingProgressCallback() =
 private fun ByteArray.requireByteArraySize(name: String, expectedSize: Int) =
     require(size == expectedSize) {
         "$name must be $expectedSize bytes, got $size"
+    }
+
+private fun ByteArray.requireByteArrayNotEmpty(name: String) =
+    require(isNotEmpty()) {
+        "$name must not be empty"
     }
 
 private fun List<ByteArray>.requireByteArrayCount(name: String, expectedCount: Int) =
