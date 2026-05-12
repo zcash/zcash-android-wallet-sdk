@@ -18,6 +18,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ini
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let params = voting::types::VotingRoundParams {
             vote_round_id: java_string_to_rust(env, &round_id)?,
             snapshot_height: jlong_to_u64(snapshot_height, "snapshot_height")?,
@@ -49,6 +50,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let round_id = java_string_to_rust(env, &round_id)?;
         if !db
             .has_round(&round_id)
@@ -75,6 +77,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_lis
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let rounds = db
             .list_rounds()
             .map_err(|e| anyhow!("list_rounds: {}", e))?;
@@ -94,6 +97,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let count = db
             .get_bundle_count(&java_string_to_rust(env, &round_id)?)
             .map_err(|e| anyhow!("get_bundle_count: {}", e))?;
@@ -113,6 +117,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let votes = db
             .get_votes(&java_string_to_rust(env, &round_id)?)
             .map_err(|e| anyhow!("get_votes: {}", e))?;
@@ -132,6 +137,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_cle
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         db.clear_round(&java_string_to_rust(env, &round_id)?)
             .map_err(|e| anyhow!("clear_round: {}", e))?;
         Ok(())
@@ -151,6 +157,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_del
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let deleted_rows = db
             .delete_skipped_bundles(
                 &java_string_to_rust(env, &round_id)?,

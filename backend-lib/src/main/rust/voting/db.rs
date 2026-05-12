@@ -1,10 +1,56 @@
 use super::*;
+use std::{
+    ops::Deref,
+    sync::{MutexGuard, Weak},
+};
 
 static NEXT_DB_HANDLE: AtomicI64 = AtomicI64::new(1);
-static DB_REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<VotingDb>>>> = OnceLock::new();
+static DB_REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<VotingDbHandle>>>> = OnceLock::new();
+static DB_BY_KEY: OnceLock<Mutex<HashMap<DbKey, Weak<VotingDbHandle>>>> = OnceLock::new();
 
-fn registry() -> &'static Mutex<HashMap<jlong, Arc<VotingDb>>> {
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct DbKey {
+    path: String,
+    wallet_id: String,
+}
+
+pub(super) struct VotingDbHandle {
+    db: VotingDb,
+    access_mutex: Mutex<()>,
+}
+
+impl VotingDbHandle {
+    fn open(path: &str, wallet_id: &str) -> anyhow::Result<Self> {
+        let db = VotingDb::open(path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
+        db.set_wallet_id(wallet_id);
+
+        Ok(Self {
+            db,
+            access_mutex: Mutex::new(()),
+        })
+    }
+
+    pub(super) fn access_lock(&self) -> anyhow::Result<MutexGuard<'_, ()>> {
+        self.access_mutex
+            .lock()
+            .map_err(|_| anyhow!("voting DB access mutex poisoned"))
+    }
+}
+
+impl Deref for VotingDbHandle {
+    type Target = VotingDb;
+
+    fn deref(&self) -> &Self::Target {
+        &self.db
+    }
+}
+
+fn registry() -> &'static Mutex<HashMap<jlong, Arc<VotingDbHandle>>> {
     DB_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn db_by_key() -> &'static Mutex<HashMap<DbKey, Weak<VotingDbHandle>>> {
+    DB_BY_KEY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn next_handle() -> anyhow::Result<jlong> {
@@ -13,7 +59,7 @@ fn next_handle() -> anyhow::Result<jlong> {
         .map_err(|_| anyhow!("voting DB handle space exhausted"))
 }
 
-pub(super) fn db_from_handle(handle: jlong) -> anyhow::Result<Arc<VotingDb>> {
+pub(super) fn db_from_handle(handle: jlong) -> anyhow::Result<Arc<VotingDbHandle>> {
     if handle <= 0 {
         return Err(anyhow!("Voting DB handle must be positive, got {handle}"));
     }
@@ -24,6 +70,29 @@ pub(super) fn db_from_handle(handle: jlong) -> anyhow::Result<Arc<VotingDb>> {
         .get(&handle)
         .cloned()
         .ok_or_else(|| anyhow!("Voting DB handle is closed or unknown: {handle}"))
+}
+
+fn open_managed_db(path: &str, wallet_id: &str) -> anyhow::Result<Arc<VotingDbHandle>> {
+    if path == ":memory:" {
+        return Ok(Arc::new(VotingDbHandle::open(path, wallet_id)?));
+    }
+
+    let key = DbKey {
+        path: path.to_string(),
+        wallet_id: wallet_id.to_string(),
+    };
+    let mut dbs = db_by_key()
+        .lock()
+        .map_err(|_| anyhow!("voting DB key registry mutex poisoned"))?;
+    dbs.retain(|_, db| db.strong_count() > 0);
+
+    if let Some(db) = dbs.get(&key).and_then(Weak::upgrade) {
+        return Ok(db);
+    }
+
+    let db = Arc::new(VotingDbHandle::open(path, wallet_id)?);
+    dbs.insert(key, Arc::downgrade(&db));
+    Ok(db)
 }
 
 #[unsafe(no_mangle)]
@@ -42,13 +111,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
             return Err(anyhow!("walletId must not be empty"));
         }
 
-        let db = VotingDb::open(&path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
-        db.set_wallet_id(&wallet_id);
+        let db = open_managed_db(&path, &wallet_id)?;
         let handle = next_handle()?;
         registry()
             .lock()
             .map_err(|_| anyhow!("voting DB registry mutex poisoned"))?
-            .insert(handle, Arc::new(db));
+            .insert(handle, db);
 
         Ok(handle)
     });

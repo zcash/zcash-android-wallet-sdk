@@ -23,6 +23,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 ) -> jstring {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
         let network = network_from_id(network_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let account_index = jint_to_u32(account_index, "account_index")?;
