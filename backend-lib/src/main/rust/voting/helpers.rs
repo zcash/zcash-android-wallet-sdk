@@ -551,9 +551,11 @@ pub(super) fn make_jni_note_info_array<'local>(
     if let Some((_, first)) = notes.next() {
         let first = make_jni_note_info(env, first)?;
         let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
         for (index, note) in notes {
             let note = make_jni_note_info(env, note)?;
-            env.set_object_array_element(&array, usize_to_jint(index, "notes index")?, note)?;
+            env.set_object_array_element(&array, usize_to_jint(index, "notes index")?, &note)?;
+            env.delete_local_ref(note)?;
         }
         Ok(array.into_raw())
     } else {
@@ -565,35 +567,38 @@ fn make_jni_note_info<'local>(
     env: &mut JNIEnv<'local>,
     note: NoteInfo,
 ) -> anyhow::Result<JObject<'local>> {
-    let class = env.find_class(JNI_NOTE_INFO)?;
-    let commitment =
-        make_jni_fixed_bytes(env, note.commitment, "commitment", PROTOCOL_FIELD_BYTES)?;
-    let nullifier = make_jni_fixed_bytes(env, note.nullifier, "nullifier", PROTOCOL_FIELD_BYTES)?;
-    let diversifier = make_jni_fixed_bytes(
-        env,
-        note.diversifier,
-        "diversifier",
-        ORCHARD_DIVERSIFIER_BYTES,
-    )?;
-    let rho = make_jni_fixed_bytes(env, note.rho, "rho", PROTOCOL_FIELD_BYTES)?;
-    let rseed = make_jni_fixed_bytes(env, note.rseed, "rseed", PROTOCOL_FIELD_BYTES)?;
-    let ufvk: JObject<'local> = env.new_string(note.ufvk_str)?.into();
+    env.with_local_frame_returning_local(16, |env| {
+        let class = env.find_class(JNI_NOTE_INFO)?;
+        let commitment =
+            make_jni_fixed_bytes(env, note.commitment, "commitment", PROTOCOL_FIELD_BYTES)?;
+        let nullifier =
+            make_jni_fixed_bytes(env, note.nullifier, "nullifier", PROTOCOL_FIELD_BYTES)?;
+        let diversifier = make_jni_fixed_bytes(
+            env,
+            note.diversifier,
+            "diversifier",
+            ORCHARD_DIVERSIFIER_BYTES,
+        )?;
+        let rho = make_jni_fixed_bytes(env, note.rho, "rho", PROTOCOL_FIELD_BYTES)?;
+        let rseed = make_jni_fixed_bytes(env, note.rseed, "rseed", PROTOCOL_FIELD_BYTES)?;
+        let ufvk: JObject<'_> = env.new_string(note.ufvk_str)?.into();
 
-    Ok(env.new_object(
-        &class,
-        JNI_NOTE_INFO_CTOR_SIG,
-        &[
-            JValue::Object(&commitment),
-            JValue::Object(&nullifier),
-            JValue::Long(u64_to_jlong(note.value, "value")?),
-            JValue::Long(u64_to_jlong(note.position, "position")?),
-            JValue::Object(&diversifier),
-            JValue::Object(&rho),
-            JValue::Object(&rseed),
-            JValue::Int(u32_to_jint(note.scope, "scope")?),
-            JValue::Object(&ufvk),
-        ],
-    )?)
+        Ok(env.new_object(
+            &class,
+            JNI_NOTE_INFO_CTOR_SIG,
+            &[
+                JValue::Object(&commitment),
+                JValue::Object(&nullifier),
+                JValue::Long(u64_to_jlong(note.value, "value")?),
+                JValue::Long(u64_to_jlong(note.position, "position")?),
+                JValue::Object(&diversifier),
+                JValue::Object(&rho),
+                JValue::Object(&rseed),
+                JValue::Int(u32_to_jint(note.scope, "scope")?),
+                JValue::Object(&ufvk),
+            ],
+        )?)
+    })
 }
 
 pub(super) fn make_jni_witness_data_array<'local>(
@@ -606,13 +611,15 @@ pub(super) fn make_jni_witness_data_array<'local>(
     if let Some((_, first)) = witnesses.next() {
         let first = make_jni_witness_data(env, first)?;
         let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
         for (index, witness) in witnesses {
             let witness = make_jni_witness_data(env, witness)?;
             env.set_object_array_element(
                 &array,
                 usize_to_jint(index, "witnesses index")?,
-                witness,
+                &witness,
             )?;
+            env.delete_local_ref(witness)?;
         }
         Ok(array.into_raw())
     } else {
@@ -624,33 +631,35 @@ fn make_jni_witness_data<'local>(
     env: &mut JNIEnv<'local>,
     witness: WitnessData,
 ) -> anyhow::Result<JObject<'local>> {
-    let class = env.find_class(JNI_WITNESS_DATA)?;
-    let note_commitment = make_jni_fixed_bytes(
-        env,
-        witness.note_commitment,
-        "note_commitment",
-        PROTOCOL_FIELD_BYTES,
-    )?;
-    let root = make_jni_fixed_bytes(env, witness.root, "root", PROTOCOL_FIELD_BYTES)?;
-    let auth_path = make_jni_fixed_byte_array_vec(
-        env,
-        witness.auth_path,
-        "auth_path",
-        ORCHARD_WITNESS_PATH_DEPTH,
-        PROTOCOL_FIELD_BYTES,
-    )?;
-    let auth_path = JObject::from(auth_path);
+    env.with_local_frame_returning_local(48, |env| {
+        let class = env.find_class(JNI_WITNESS_DATA)?;
+        let note_commitment = make_jni_fixed_bytes(
+            env,
+            witness.note_commitment,
+            "note_commitment",
+            PROTOCOL_FIELD_BYTES,
+        )?;
+        let root = make_jni_fixed_bytes(env, witness.root, "root", PROTOCOL_FIELD_BYTES)?;
+        let auth_path = make_jni_fixed_byte_array_vec(
+            env,
+            witness.auth_path,
+            "auth_path",
+            ORCHARD_WITNESS_PATH_DEPTH,
+            PROTOCOL_FIELD_BYTES,
+        )?;
+        let auth_path = JObject::from(auth_path);
 
-    Ok(env.new_object(
-        &class,
-        JNI_WITNESS_DATA_CTOR_SIG,
-        &[
-            JValue::Object(&note_commitment),
-            JValue::Long(u64_to_jlong(witness.position, "position")?),
-            JValue::Object(&root),
-            JValue::Object(&auth_path),
-        ],
-    )?)
+        Ok(env.new_object(
+            &class,
+            JNI_WITNESS_DATA_CTOR_SIG,
+            &[
+                JValue::Object(&note_commitment),
+                JValue::Long(u64_to_jlong(witness.position, "position")?),
+                JValue::Object(&root),
+                JValue::Object(&auth_path),
+            ],
+        )?)
+    })
 }
 
 /// Builds the Kotlin hotkey JNI model after enforcing the expected key widths.
