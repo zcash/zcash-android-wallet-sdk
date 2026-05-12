@@ -69,6 +69,45 @@ class VotingRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
+    suspend fun extractOrchardFvkFromUfvk(
+        ufvk: String,
+        networkId: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractOrchardFvkFromUfvkNative(ufvk, networkId)
+                ?: error("extractOrchardFvkFromUfvk returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractNcRootNative(treeStateBytes)
+                ?: error("extractNcRoot returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun verifyWitness(witness: JniWitnessData): Int =
+        withContext(Dispatchers.IO) {
+            verifyWitnessNative(witness)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<JniNoteInfo> =
+        withContext(Dispatchers.IO) {
+            getWalletNotesNative(
+                walletDbPath,
+                snapshotHeight,
+                networkId,
+                accountUuidBytes
+            ) ?: error("getWalletNotes returned null")
+        }
+
+    @Throws(RuntimeException::class)
     suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
         withContext(Dispatchers.IO) {
             extractPcztSighashNative(pcztBytes)
@@ -316,6 +355,35 @@ class VotingRustBackend private constructor() {
                 ) ?: error("getDelegationSubmissionWithKeystoneSig returned null")
             }
 
+        @Throws(RuntimeException::class)
+        suspend fun storeTreeState(
+            roundId: String,
+            treeStateBytes: ByteArray
+        ) = withHandle { handle ->
+            check(storeTreeStateNative(handle, roundId, treeStateBytes)) {
+                "storeTreeState failed for roundId=$roundId"
+            }
+        }
+
+        @Throws(RuntimeException::class)
+        suspend fun generateNoteWitnesses(
+            roundId: String,
+            bundleIndex: Int,
+            walletDbPath: String,
+            networkId: Int,
+            notes: List<JniNoteInfo>
+        ): Array<JniWitnessData> =
+            withHandle { handle ->
+                generateNoteWitnessesNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    walletDbPath,
+                    networkId,
+                    notes.toTypedArray()
+                ) ?: error("generateNoteWitnesses returned null")
+            }
+
         @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
         internal suspend fun storeDelegationProofFixtureForTesting(
             roundId: String,
@@ -374,6 +442,30 @@ class VotingRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun warmProvingCachesNative()
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractOrchardFvkFromUfvkNative(
+            ufvk: String,
+            networkId: Int
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractNcRootNative(treeStateBytes: ByteArray): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun verifyWitnessNative(witness: JniWitnessData): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getWalletNotesNative(
+            walletDbPath: String,
+            snapshotHeight: Long,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Array<JniNoteInfo>?
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -530,6 +622,25 @@ class VotingRustBackend private constructor() {
             keystoneSig: ByteArray,
             keystoneSighash: ByteArray
         ): JniDelegationSubmissionResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeTreeStateNative(
+            dbHandle: Long,
+            roundId: String,
+            treeStateBytes: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun generateNoteWitnessesNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            walletDbPath: String,
+            networkId: Int,
+            notes: Array<JniNoteInfo>
+        ): Array<JniWitnessData>?
 
         @JvmStatic
         @Throws(RuntimeException::class)

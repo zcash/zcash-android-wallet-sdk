@@ -9,6 +9,8 @@ const PHASE_VOTE_READY: u32 = 4;
 
 const JNI_ROUND_SUMMARY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniRoundSummary";
 const JNI_VOTE_RECORD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVoteRecord";
+const JNI_NOTE_INFO: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniNoteInfo";
+const JNI_WITNESS_DATA: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniWitnessData";
 const JNI_VOTING_HOTKEY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey";
 const JNI_BUNDLE_SETUP_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult";
@@ -20,6 +22,12 @@ const JNI_DELEGATION_PROOF_RESULT: &str =
 const JNI_DELEGATION_SUBMISSION_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationSubmissionResult";
 
+// Must match JniNoteInfo(ByteArray, ByteArray, Long, Long, ByteArray,
+// ByteArray, ByteArray, Int, String) in JniVotingModels.kt.
+const JNI_NOTE_INFO_CTOR_SIG: &str = "([B[BJJ[B[B[BILjava/lang/String;)V";
+// Must match JniWitnessData(ByteArray, Long, ByteArray, Array<ByteArray>)
+// in JniVotingModels.kt.
+const JNI_WITNESS_DATA_CTOR_SIG: &str = "([BJ[B[[B)V";
 // Must match JniVotingHotkey(ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";
 // Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
@@ -51,6 +59,7 @@ pub(super) const ORCHARD_DIVERSIFIER_BYTES: usize = 11;
 pub(super) const ORCHARD_WITNESS_PATH_DEPTH: usize = 32;
 pub(super) const DELEGATION_PUBLIC_INPUT_COUNT: usize = 14;
 pub(super) const GOVERNANCE_NULLIFIER_COUNT: usize = 5;
+pub(super) const ACCOUNT_UUID_BYTES: usize = 16;
 pub(super) const NETWORK_ID_TESTNET: jint = 0;
 pub(super) const NETWORK_ID_MAINNET: jint = 1;
 
@@ -74,6 +83,10 @@ pub(super) fn jint_to_u32(value: jint, field: &str) -> anyhow::Result<u32> {
 
 pub(super) fn jlong_to_u64(value: jlong, field: &str) -> anyhow::Result<u64> {
     u64::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
+}
+
+pub(super) fn jlong_to_u32(value: jlong, field: &str) -> anyhow::Result<u32> {
+    u32::try_from(value).map_err(|_| anyhow!("{field} must be in range 0..=u32::MAX, got {value}"))
 }
 
 pub(super) fn jint_to_usize(value: jint, field: &str) -> anyhow::Result<usize> {
@@ -527,6 +540,118 @@ impl TryFrom<VoteRecord> for JniVoteRecordPayload {
     }
 }
 
+pub(super) fn make_jni_note_info_array<'local>(
+    env: &mut JNIEnv<'local>,
+    notes: Vec<NoteInfo>,
+) -> anyhow::Result<jobjectArray> {
+    let len = usize_to_jint(notes.len(), "notes length")?;
+    let class = env.find_class(JNI_NOTE_INFO)?;
+    let mut notes = notes.into_iter().enumerate();
+    if let Some((_, first)) = notes.next() {
+        let first = make_jni_note_info(env, first)?;
+        let array = env.new_object_array(len, &class, &first)?;
+        for (index, note) in notes {
+            let note = make_jni_note_info(env, note)?;
+            env.set_object_array_element(&array, usize_to_jint(index, "notes index")?, note)?;
+        }
+        Ok(array.into_raw())
+    } else {
+        Ok(env.new_object_array(0, &class, JObject::null())?.into_raw())
+    }
+}
+
+fn make_jni_note_info<'local>(
+    env: &mut JNIEnv<'local>,
+    note: NoteInfo,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_NOTE_INFO)?;
+    let commitment =
+        make_jni_fixed_bytes(env, note.commitment, "commitment", PROTOCOL_FIELD_BYTES)?;
+    let nullifier = make_jni_fixed_bytes(env, note.nullifier, "nullifier", PROTOCOL_FIELD_BYTES)?;
+    let diversifier = make_jni_fixed_bytes(
+        env,
+        note.diversifier,
+        "diversifier",
+        ORCHARD_DIVERSIFIER_BYTES,
+    )?;
+    let rho = make_jni_fixed_bytes(env, note.rho, "rho", PROTOCOL_FIELD_BYTES)?;
+    let rseed = make_jni_fixed_bytes(env, note.rseed, "rseed", PROTOCOL_FIELD_BYTES)?;
+    let ufvk: JObject<'local> = env.new_string(note.ufvk_str)?.into();
+
+    Ok(env.new_object(
+        &class,
+        JNI_NOTE_INFO_CTOR_SIG,
+        &[
+            JValue::Object(&commitment),
+            JValue::Object(&nullifier),
+            JValue::Long(u64_to_jlong(note.value, "value")?),
+            JValue::Long(u64_to_jlong(note.position, "position")?),
+            JValue::Object(&diversifier),
+            JValue::Object(&rho),
+            JValue::Object(&rseed),
+            JValue::Int(u32_to_jint(note.scope, "scope")?),
+            JValue::Object(&ufvk),
+        ],
+    )?)
+}
+
+pub(super) fn make_jni_witness_data_array<'local>(
+    env: &mut JNIEnv<'local>,
+    witnesses: Vec<WitnessData>,
+) -> anyhow::Result<jobjectArray> {
+    let len = usize_to_jint(witnesses.len(), "witnesses length")?;
+    let class = env.find_class(JNI_WITNESS_DATA)?;
+    let mut witnesses = witnesses.into_iter().enumerate();
+    if let Some((_, first)) = witnesses.next() {
+        let first = make_jni_witness_data(env, first)?;
+        let array = env.new_object_array(len, &class, &first)?;
+        for (index, witness) in witnesses {
+            let witness = make_jni_witness_data(env, witness)?;
+            env.set_object_array_element(
+                &array,
+                usize_to_jint(index, "witnesses index")?,
+                witness,
+            )?;
+        }
+        Ok(array.into_raw())
+    } else {
+        Ok(env.new_object_array(0, &class, JObject::null())?.into_raw())
+    }
+}
+
+fn make_jni_witness_data<'local>(
+    env: &mut JNIEnv<'local>,
+    witness: WitnessData,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_WITNESS_DATA)?;
+    let note_commitment = make_jni_fixed_bytes(
+        env,
+        witness.note_commitment,
+        "note_commitment",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let root = make_jni_fixed_bytes(env, witness.root, "root", PROTOCOL_FIELD_BYTES)?;
+    let auth_path = make_jni_fixed_byte_array_vec(
+        env,
+        witness.auth_path,
+        "auth_path",
+        ORCHARD_WITNESS_PATH_DEPTH,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let auth_path = JObject::from(auth_path);
+
+    Ok(env.new_object(
+        &class,
+        JNI_WITNESS_DATA_CTOR_SIG,
+        &[
+            JValue::Object(&note_commitment),
+            JValue::Long(u64_to_jlong(witness.position, "position")?),
+            JValue::Object(&root),
+            JValue::Object(&auth_path),
+        ],
+    )?)
+}
+
 /// Builds the Kotlin hotkey JNI model after enforcing the expected key widths.
 /// The secret key is intentionally not surfaced across JNI.
 pub(super) fn make_jni_voting_hotkey<'local>(
@@ -869,6 +994,101 @@ pub(super) fn require_round_phase_for_delegation_construction(
     }
 
     Ok(())
+}
+
+pub(super) fn select_bundle_notes(
+    conn: &rusqlite::Connection,
+    round_id: &str,
+    wallet_id: &str,
+    bundle_index: u32,
+    notes: &[NoteInfo],
+) -> anyhow::Result<Vec<NoteInfo>> {
+    let positions = voting::storage::queries::load_bundle_note_positions(
+        conn,
+        round_id,
+        wallet_id,
+        bundle_index,
+    )
+    .map_err(|e| anyhow!("load_bundle_note_positions: {}", e))?;
+
+    let mut notes_by_position = HashMap::with_capacity(notes.len());
+    for note in notes.iter().cloned() {
+        let position = note.position;
+        if notes_by_position.insert(position, note).is_some() {
+            return Err(anyhow!(
+                "duplicate note position {} in provided notes",
+                position
+            ));
+        }
+    }
+
+    positions
+        .into_iter()
+        .map(|position| {
+            notes_by_position.remove(&position).ok_or_else(|| {
+                anyhow!(
+                    "bundle {} is missing note position {} from provided notes",
+                    bundle_index,
+                    position
+                )
+            })
+        })
+        .collect()
+}
+
+pub(super) fn replace_bundle_witnesses(
+    conn: &rusqlite::Connection,
+    round_id: &str,
+    wallet_id: &str,
+    bundle_index: u32,
+    witnesses: &[WitnessData],
+) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM witnesses
+         WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        named_params! {
+            ":round_id": round_id,
+            ":wallet_id": wallet_id,
+            ":bundle_index": bundle_index as i64,
+        },
+    )
+    .map_err(|e| anyhow!("clear_witnesses: {}", e))?;
+
+    voting::storage::queries::store_witnesses(conn, round_id, wallet_id, bundle_index, witnesses)
+        .map_err(|e| anyhow!("store_witnesses: {}", e))
+}
+
+pub(super) fn received_note_to_note_info(
+    note: &zcash_client_backend::wallet::ReceivedNote<
+        zcash_client_sqlite::ReceivedNoteId,
+        orchard::note::Note,
+    >,
+    ufvk: &UnifiedFullViewingKey,
+    network: &Network,
+) -> anyhow::Result<NoteInfo> {
+    let orchard_note = note.note();
+    let fvk = ufvk
+        .orchard()
+        .ok_or_else(|| anyhow!("UFVK has no Orchard component"))?;
+
+    let nullifier = orchard_note.nullifier(fvk);
+    let cmx: orchard::note::ExtractedNoteCommitment = orchard_note.commitment().into();
+    let scope = match note.spending_key_scope() {
+        Scope::External => 0u32,
+        Scope::Internal => 1u32,
+    };
+
+    Ok(NoteInfo {
+        commitment: cmx.to_bytes().to_vec(),
+        nullifier: nullifier.to_bytes().to_vec(),
+        value: orchard_note.value().inner(),
+        position: u64::from(note.note_commitment_tree_position()),
+        diversifier: orchard_note.recipient().diversifier().as_array().to_vec(),
+        rho: orchard_note.rho().to_bytes().to_vec(),
+        rseed: orchard_note.rseed().as_bytes().to_vec(),
+        scope,
+        ufvk_str: ufvk.encode(network),
+    })
 }
 
 #[cfg(test)]

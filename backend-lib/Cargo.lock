@@ -6795,6 +6795,7 @@ dependencies = [
  "hex",
  "http",
  "http-body-util",
+ "incrementalmerkletree",
  "jni",
  "libc",
  "log-panics",

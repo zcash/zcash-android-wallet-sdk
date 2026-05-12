@@ -4,9 +4,10 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
-    sys::{jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
+    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use orchard::keys::Scope;
+use rusqlite::named_params;
 use secrecy::{ExposeSecret, SecretVec};
 use std::{
     collections::HashMap,

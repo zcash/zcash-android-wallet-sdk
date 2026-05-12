@@ -2,6 +2,39 @@ use super::db::*;
 use super::helpers::*;
 use super::*;
 
+/// Validate that a cached lightwalletd TreeState is anchored to the voting
+/// round it will be used for.
+///
+/// Witness generation trusts the cached Orchard frontier as the historical
+/// checkpoint input. The generated Merkle path can verify against that
+/// frontier's own root, so also enforce that the frontier is exactly the round
+/// snapshot: same block height and same note commitment tree root.
+fn validate_cached_tree_state_for_round(
+    tree_state: &zcash_client_backend::proto::service::TreeState,
+    orchard_root: &[u8],
+    params: &voting::types::VotingRoundParams,
+) -> anyhow::Result<()> {
+    if tree_state.height != params.snapshot_height {
+        return Err(anyhow!(
+            "cached TreeState height {} does not match round snapshot_height {}",
+            tree_state.height,
+            params.snapshot_height
+        ));
+    }
+
+    if orchard_root != params.nc_root.as_slice() {
+        return Err(anyhow!(
+            "cached TreeState orchard root does not match round nc_root"
+        ));
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// C. Note setup
+// =============================================================================
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_computeBundleSetupNative<
     'local,
@@ -16,6 +49,186 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_com
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeTreeStateNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    tree_state_bytes: JByteArray<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let bytes = java_bytes(env, &tree_state_bytes, "treeStateBytes")?;
+        db.store_tree_state(&java_string_to_rust(env, &round_id)?, &bytes)
+            .map_err(|e| anyhow!("store_tree_state: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getWalletNotesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    wallet_db_path: JString<'local>,
+    snapshot_height: jlong,
+    network_id: jint,
+    account_uuid_bytes: JByteArray<'local>,
+) -> jobjectArray {
+    let res = catch_unwind(&mut env, |env| {
+        use zcash_client_backend::data_api::{Account, WalletRead};
+        use zcash_protocol::consensus::BlockHeight;
+
+        let path = java_string_to_rust(env, &wallet_db_path)?;
+        let network = network_from_id(network_id)?;
+        let height = BlockHeight::from_u32(jlong_to_u32(snapshot_height, "snapshot_height")?);
+        let account_uuid_bytes =
+            java_fixed_bytes::<ACCOUNT_UUID_BYTES>(env, &account_uuid_bytes, "accountUuidBytes")?;
+        let account_uuid =
+            zcash_client_sqlite::AccountUuid::from_uuid(uuid::Uuid::from_bytes(account_uuid_bytes));
+
+        let wallet_db = zcash_client_sqlite::WalletDb::for_path(
+            &path,
+            network,
+            zcash_client_sqlite::util::SystemClock,
+            rand::rngs::OsRng,
+        )
+        .map_err(|e| anyhow!("failed to open wallet DB: {}", e))?;
+
+        let account = wallet_db
+            .get_account(account_uuid)
+            .map_err(|e| anyhow!("get_account: {}", e))?
+            .ok_or_else(|| anyhow!("account not found in wallet DB"))?;
+        let ufvk = account
+            .ufvk()
+            .ok_or_else(|| anyhow!("account has no UFVK"))?
+            .clone();
+
+        let notes = wallet_db
+            .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
+            .map_err(|e| anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e))?;
+
+        let notes = notes
+            .iter()
+            .map(|note| received_note_to_note_info(note, &ufvk, &network))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        make_jni_note_info_array(env, notes)
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_generateNoteWitnessesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    wallet_db_path: JString<'local>,
+    network_id: jint,
+    notes: JObjectArray<'local>,
+) -> jobjectArray {
+    let res = catch_unwind(&mut env, |env| {
+        use incrementalmerkletree::Position;
+        use orchard::tree::MerkleHashOrchard;
+        use prost::Message;
+        use zcash_client_backend::proto::service::TreeState;
+        use zcash_protocol::consensus::BlockHeight;
+
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let wallet_path = java_string_to_rust(env, &wallet_db_path)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let network = network_from_id(network_id)?;
+
+        let core_notes = java_note_info_array(env, &notes, "notes")?;
+
+        let conn = db.conn();
+        let wallet_id = db.wallet_id();
+        let bundle_notes =
+            select_bundle_notes(&conn, &round_id, &wallet_id, bundle_index, &core_notes)?;
+        let tree_state_bytes =
+            voting::storage::queries::load_tree_state(&conn, &round_id, &wallet_id)
+                .map_err(|e| anyhow!("load_tree_state: {}", e))?;
+        let params = voting::storage::queries::load_round_params(&conn, &round_id, &wallet_id)
+            .map_err(|e| anyhow!("load_round_params: {}", e))?;
+        drop(conn);
+
+        let tree_state = TreeState::decode(tree_state_bytes.as_slice())
+            .map_err(|e| anyhow!("decode TreeState: {}", e))?;
+        let orchard_ct = tree_state
+            .orchard_tree()
+            .map_err(|e| anyhow!("parse orchard_tree: {}", e))?;
+        let frontier_root = orchard_ct.root();
+        let frontier_root_bytes = frontier_root.to_bytes();
+        validate_cached_tree_state_for_round(&tree_state, &frontier_root_bytes[..], &params)?;
+        let nonempty_frontier = orchard_ct
+            .to_frontier()
+            .take()
+            .ok_or_else(|| anyhow!("empty orchard frontier - no Orchard activity at snapshot"))?;
+
+        let height =
+            BlockHeight::from_u32(u32::try_from(params.snapshot_height).map_err(|_| {
+                anyhow!(
+                    "stored snapshot_height must be in range 0..=u32::MAX, got {}",
+                    params.snapshot_height
+                )
+            })?);
+
+        let wallet_db = zcash_client_sqlite::WalletDb::for_path(
+            &wallet_path,
+            network,
+            zcash_client_sqlite::util::SystemClock,
+            rand::rngs::OsRng,
+        )
+        .map_err(|e| anyhow!("open wallet DB: {}", e))?;
+
+        let positions = bundle_notes
+            .iter()
+            .map(|note| Position::from(note.position))
+            .collect::<Vec<_>>();
+
+        let merkle_paths = wallet_db
+            .generate_orchard_witnesses_at_historical_height(&positions, nonempty_frontier, height)
+            .map_err(|e| anyhow!("generate_orchard_witnesses_at_historical_height: {}", e))?;
+
+        let root_bytes = frontier_root_bytes.to_vec();
+        let witnesses = merkle_paths
+            .into_iter()
+            .zip(bundle_notes.iter())
+            .map(|(path, note)| {
+                let auth_path = path
+                    .path_elems()
+                    .iter()
+                    .map(|hash: &MerkleHashOrchard| hash.to_bytes().to_vec())
+                    .collect();
+                WitnessData {
+                    note_commitment: note.commitment.clone(),
+                    position: note.position,
+                    root: root_bytes.clone(),
+                    auth_path,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let conn = db.conn();
+        replace_bundle_witnesses(&conn, &round_id, &wallet_id, bundle_index, &witnesses)?;
+
+        make_jni_witness_data_array(env, witnesses)
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
