@@ -31,6 +31,43 @@ fn validate_cached_tree_state_for_round(
     Ok(())
 }
 
+fn validate_tree_state_bytes_for_round(
+    tree_state_bytes: &[u8],
+    params: &voting::types::VotingRoundParams,
+) -> anyhow::Result<()> {
+    use prost::Message;
+    use zcash_client_backend::proto::service::TreeState;
+
+    let tree_state =
+        TreeState::decode(tree_state_bytes).map_err(|e| anyhow!("decode TreeState: {}", e))?;
+    let orchard_ct = tree_state
+        .orchard_tree()
+        .map_err(|e| anyhow!("parse orchard_tree: {}", e))?;
+    let orchard_root = orchard_ct.root().to_bytes();
+    validate_cached_tree_state_for_round(&tree_state, &orchard_root[..], params)
+}
+
+fn require_fully_scanned_to_snapshot(
+    fully_scanned_height: Option<zcash_protocol::consensus::BlockHeight>,
+    snapshot_height: zcash_protocol::consensus::BlockHeight,
+) -> anyhow::Result<()> {
+    let snapshot_height_u32 = u32::from(snapshot_height);
+    let Some(fully_scanned_height) = fully_scanned_height else {
+        return Err(anyhow!(
+            "wallet DB has no fully scanned height; snapshot_height={snapshot_height_u32}"
+        ));
+    };
+
+    let fully_scanned_height_u32 = u32::from(fully_scanned_height);
+    if fully_scanned_height_u32 < snapshot_height_u32 {
+        return Err(anyhow!(
+            "wallet DB fully scanned height {fully_scanned_height_u32} is below snapshot_height {snapshot_height_u32}"
+        ));
+    }
+
+    Ok(())
+}
+
 type ReadOnlyWalletDb = zcash_client_sqlite::WalletDb<
     rusqlite::Connection,
     Network,
@@ -87,7 +124,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let bytes = java_bytes(env, &tree_state_bytes, "treeStateBytes")?;
-        db.store_tree_state(&java_string_to_rust(env, &round_id)?, &bytes)
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let params = {
+            let conn = db.conn();
+            let wallet_id = db.wallet_id();
+            voting::storage::queries::load_round_params(&conn, &round_id, &wallet_id)
+                .map_err(|e| anyhow!("load_round_params: {}", e))?
+        };
+        validate_tree_state_bytes_for_round(&bytes, &params)?;
+        db.store_tree_state(&round_id, &bytes)
             .map_err(|e| anyhow!("store_tree_state: {}", e))?;
         Ok(())
     });
@@ -118,6 +163,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
             zcash_client_sqlite::AccountUuid::from_uuid(uuid::Uuid::from_bytes(account_uuid_bytes));
 
         let wallet_db = open_wallet_db_read_only(&path, network)?;
+        let fully_scanned_height = wallet_db
+            .block_fully_scanned()
+            .map_err(|e| anyhow!("block_fully_scanned: {}", e))?
+            .map(|metadata| metadata.block_height());
+        require_fully_scanned_to_snapshot(fully_scanned_height, height)?;
 
         let account = wallet_db
             .get_account(account_uuid)
@@ -299,4 +349,38 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
         make_jni_voting_hotkey(env, hotkey)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zcash_protocol::consensus::BlockHeight;
+
+    #[test]
+    fn fully_scanned_guard_allows_snapshot_height() {
+        require_fully_scanned_to_snapshot(
+            Some(BlockHeight::from_u32(100)),
+            BlockHeight::from_u32(100),
+        )
+        .unwrap();
+        require_fully_scanned_to_snapshot(
+            Some(BlockHeight::from_u32(101)),
+            BlockHeight::from_u32(100),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fully_scanned_guard_rejects_missing_or_low_height() {
+        let missing =
+            require_fully_scanned_to_snapshot(None, BlockHeight::from_u32(100)).unwrap_err();
+        assert!(missing.to_string().contains("no fully scanned height"));
+
+        let low = require_fully_scanned_to_snapshot(
+            Some(BlockHeight::from_u32(99)),
+            BlockHeight::from_u32(100),
+        )
+        .unwrap_err();
+        assert!(low.to_string().contains("below snapshot_height"));
+    }
 }
