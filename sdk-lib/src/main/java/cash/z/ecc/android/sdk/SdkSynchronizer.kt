@@ -46,11 +46,12 @@ import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferencePro
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.StandardPreferenceKeys.SDK_VERSION_OF_LAST_FIX_WITNESSES_CALL
-import cash.z.ecc.android.sdk.internal.transaction.AutomaticResubmissionGuard
 import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManager
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManagerImpl
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
 import cash.z.ecc.android.sdk.internal.transaction.SdkBroadcaster
+import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoder
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoderImpl
 import cash.z.ecc.android.sdk.model.Account
@@ -159,7 +160,7 @@ class SdkSynchronizer private constructor(
     private val walletClient: CombinedWalletClient,
     private val walletClientFactory: WalletClientFactory,
     private val defaultSubmitEndpoint: LightWalletEndpoint,
-    private val automaticResubmissionGuard: AutomaticResubmissionGuard,
+    private val pendingSubmitPlanStore: PendingSubmitPlanStore,
     private val sdkFlags: SdkFlags
 ) : CloseableSynchronizer {
     companion object {
@@ -201,7 +202,7 @@ class SdkSynchronizer private constructor(
             walletClient: CombinedWalletClient,
             walletClientFactory: WalletClientFactory,
             defaultSubmitEndpoint: LightWalletEndpoint,
-            automaticResubmissionGuard: AutomaticResubmissionGuard,
+            pendingSubmitPlanStore: PendingSubmitPlanStore,
             sdkFlags: SdkFlags
         ): CloseableSynchronizer {
             val synchronizerKey = SynchronizerKey(zcashNetwork, alias)
@@ -222,7 +223,7 @@ class SdkSynchronizer private constructor(
                     walletClient = walletClient,
                     walletClientFactory = walletClientFactory,
                     defaultSubmitEndpoint = defaultSubmitEndpoint,
-                    automaticResubmissionGuard = automaticResubmissionGuard,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore,
                     sdkFlags = sdkFlags
                 ).apply {
                     instances[synchronizerKey] = InstanceState.Active
@@ -304,7 +305,7 @@ class SdkSynchronizer private constructor(
                     walletClientFactory = walletClientFactory,
                     sdkFlags = sdkFlags
                 ),
-            automaticResubmissionGuard = automaticResubmissionGuard
+            pendingSubmitPlanStore = pendingSubmitPlanStore
         )
 
     override val broadcaster: Broadcaster = sdkBroadcaster
@@ -1394,7 +1395,8 @@ internal object DefaultSynchronizerFactory {
         txManager: OutboundTransactionManager,
         sdkFlags: SdkFlags,
         saplingParamFetcher: SaplingParamFetcher,
-        automaticResubmissionGuard: AutomaticResubmissionGuard
+        pendingSubmitPlanStore: PendingSubmitPlanStore,
+        submitPlanExecutor: SubmitPlanExecutor
     ): CompactBlockProcessor =
         CompactBlockProcessor(
             backend = backend,
@@ -1404,7 +1406,8 @@ internal object DefaultSynchronizerFactory {
             txManager = txManager,
             sdkFlags = sdkFlags,
             saplingParamFetcher = saplingParamFetcher,
-            automaticResubmissionGuard = automaticResubmissionGuard
+            pendingSubmitPlanStore = pendingSubmitPlanStore,
+            submitPlanExecutor = submitPlanExecutor
         )
 }
 

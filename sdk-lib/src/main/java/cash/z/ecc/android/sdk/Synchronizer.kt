@@ -19,8 +19,11 @@ import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
+import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
-import cash.z.ecc.android.sdk.internal.transaction.AutomaticResubmissionGuard
+import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
+import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -963,7 +966,18 @@ interface Synchronizer {
             val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
             val standardPreferenceProvider = StandardPreferenceProvider(context)
             val preferenceProvider = standardPreferenceProvider()
-            val automaticResubmissionGuard = AutomaticResubmissionGuard(preferenceProvider)
+            val encryptedPreferenceProvider = EncryptedPreferenceProvider(applicationContext)
+            val pendingSubmitPlanStore =
+                PendingSubmitPlanStore(
+                    preferenceProvider = encryptedPreferenceProvider(),
+                    namespace = "${zcashNetwork.id}_$alias"
+                )
+            val transactionSubmitter =
+                EndpointTransactionSubmitter(
+                    walletClientFactory = walletClientFactory,
+                    sdkFlags = sdkFlags
+                )
+            val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
             val processor =
                 DefaultSynchronizerFactory.defaultProcessor(
                     backend = backend,
@@ -973,7 +987,8 @@ interface Synchronizer {
                     txManager = txManager,
                     sdkFlags = sdkFlags,
                     saplingParamFetcher = saplingParamFetcher,
-                    automaticResubmissionGuard = automaticResubmissionGuard
+                    pendingSubmitPlanStore = pendingSubmitPlanStore,
+                    submitPlanExecutor = submitPlanExecutor
                 )
 
             return SdkSynchronizer.new(
@@ -998,7 +1013,7 @@ interface Synchronizer {
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
                 defaultSubmitEndpoint = lightWalletEndpoint,
-                automaticResubmissionGuard = automaticResubmissionGuard,
+                pendingSubmitPlanStore = pendingSubmitPlanStore,
                 sdkFlags = sdkFlags
             )
         }

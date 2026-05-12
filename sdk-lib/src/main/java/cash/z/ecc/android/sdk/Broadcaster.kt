@@ -11,15 +11,16 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
  * Creates transactions without immediately submitting them, and submits stored
  * transaction bytes to a specific lightwalletd endpoint.
  *
- * Transactions created or submitted through this API are caller-managed. The
- * synchronizer will not automatically resubmit them through its own endpoint.
+ * Transactions created through this API wait for the caller to submit them.
+ * Once submitted, automatic retry uses the submitted endpoints instead of the
+ * synchronizer's default endpoint.
  */
 interface Broadcaster {
     /**
      * Creates and stores the transactions in [proposal] without submitting them.
      *
-     * Created transactions are caller-managed and excluded from the synchronizer's
-     * automatic resubmission path.
+     * Created transactions will not be automatically resubmitted until they are
+     * submitted through this API.
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
@@ -29,8 +30,8 @@ interface Broadcaster {
     /**
      * Finalizes and stores a separately proven and signed PCZT without submitting it.
      *
-     * Created transactions are caller-managed and excluded from the synchronizer's
-     * automatic resubmission path.
+     * Created transactions will not be automatically resubmitted until they are
+     * submitted through this API.
      */
     suspend fun createTransactionFromPczt(
         pcztWithProofs: Pczt,
@@ -40,8 +41,7 @@ interface Broadcaster {
     /**
      * Submits [transaction] to the provided [endpoint].
      *
-     * Submitted transactions are caller-managed and excluded from the synchronizer's
-     * automatic resubmission path.
+     * The endpoint is also remembered for automatic retry.
      */
     suspend fun submit(
         transaction: CreatedTransaction,

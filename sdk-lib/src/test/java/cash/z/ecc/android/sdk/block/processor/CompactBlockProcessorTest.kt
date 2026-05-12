@@ -6,8 +6,11 @@ import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
 import cash.z.ecc.android.sdk.internal.model.DbTransactionOverview
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
-import cash.z.ecc.android.sdk.internal.transaction.AutomaticResubmissionGuard
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManager
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
+import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
+import cash.z.ecc.android.sdk.internal.transaction.TransactionSubmitPlan
+import cash.z.ecc.android.sdk.internal.transaction.TransactionSubmitter
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
@@ -15,6 +18,7 @@ import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.runBlocking
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
@@ -51,30 +55,32 @@ class CompactBlockProcessorTest {
     }
 
     @Test
-    fun resubmission_skips_caller_managed_transactions() {
+    fun resubmission_skips_broadcaster_transactions_until_submit_plan_is_registered() {
         runBlocking {
-            val excludedTransaction = transactionOverview(1)
+            val pendingPlanTransaction = transactionOverview(1)
             val resubmittableTransaction = transactionOverview(2)
             val repository = mock(DerivedDataRepository::class.java)
             val txManager = mock(OutboundTransactionManager::class.java)
             val resubmittableEncodedTransaction = encodedTransaction(resubmittableTransaction.rawId)
-            val automaticResubmissionGuard = AutomaticResubmissionGuard()
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
             val processor =
                 processor(
                     repository = repository,
                     txManager = txManager,
-                    automaticResubmissionGuard = automaticResubmissionGuard
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
                 )
 
-            automaticResubmissionGuard.excludeFromAutomaticResubmission(
-                CreatedTransaction(
-                    txId = excludedTransaction.rawId,
-                    raw = FirstClassByteArray(byteArrayOf(0x01)),
-                    expiryHeight = excludedTransaction.expiryHeight
+            pendingSubmitPlanStore.markAwaitingSubmitPlan(
+                listOf(
+                    CreatedTransaction(
+                        txId = pendingPlanTransaction.rawId,
+                        raw = FirstClassByteArray(byteArrayOf(0x01)),
+                        expiryHeight = pendingPlanTransaction.expiryHeight
+                    )
                 )
             )
             `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(
-                listOf(excludedTransaction, resubmittableTransaction)
+                listOf(pendingPlanTransaction, resubmittableTransaction)
             )
             `when`(repository.findEncodedTransactionByTxId(resubmittableTransaction.rawId)).thenReturn(
                 resubmittableEncodedTransaction
@@ -85,8 +91,44 @@ class CompactBlockProcessorTest {
 
             processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
 
-            verify(repository, never()).findEncodedTransactionByTxId(excludedTransaction.rawId)
+            verify(repository, never()).findEncodedTransactionByTxId(pendingPlanTransaction.rawId)
             verify(txManager).submit(resubmittableEncodedTransaction)
+        }
+    }
+
+    @Test
+    fun resubmission_uses_registered_submit_plan() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val encodedTransaction = encodedTransaction(transaction.rawId)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val submitter = FakeTransactionSubmitter()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore,
+                    submitter = submitter
+                )
+
+            pendingSubmitPlanStore.storeSubmitPlan(
+                CreatedTransaction(
+                    txId = transaction.rawId,
+                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                    expiryHeight = transaction.expiryHeight
+                ),
+                TransactionSubmitPlan(listOf(endpoint))
+            )
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(listOf(transaction))
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId)).thenReturn(encodedTransaction)
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            verify(txManager, never()).submit(encodedTransaction)
+            assertTrue(submitter.submissions.contains(Submission(encodedTransaction.txId, endpoint)))
         }
     }
 
@@ -103,7 +145,8 @@ class CompactBlockProcessorTest {
     private fun processor(
         repository: DerivedDataRepository,
         txManager: OutboundTransactionManager,
-        automaticResubmissionGuard: AutomaticResubmissionGuard
+        pendingSubmitPlanStore: PendingSubmitPlanStore,
+        submitter: TransactionSubmitter = FakeTransactionSubmitter()
     ): CompactBlockProcessor {
         val backend = mock(TypesafeBackend::class.java)
         `when`(backend.network).thenReturn(ZcashNetwork.Testnet)
@@ -116,9 +159,27 @@ class CompactBlockProcessorTest {
             txManager = txManager,
             sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
             saplingParamFetcher = mock(SaplingParamFetcher::class.java),
-            automaticResubmissionGuard = automaticResubmissionGuard
+            pendingSubmitPlanStore = pendingSubmitPlanStore,
+            submitPlanExecutor = SubmitPlanExecutor(submitter)
         )
     }
+
+    private class FakeTransactionSubmitter : TransactionSubmitter {
+        val submissions = mutableListOf<Submission>()
+
+        override suspend fun submit(
+            transaction: CreatedTransaction,
+            endpoint: LightWalletEndpoint
+        ): TransactionSubmitResult {
+            submissions += Submission(transaction.txId, endpoint)
+            return TransactionSubmitResult.Success(transaction.txId)
+        }
+    }
+
+    private data class Submission(
+        val txId: FirstClassByteArray,
+        val endpoint: LightWalletEndpoint
+    )
 
     companion object {
         private fun transactionOverview(index: Int) =

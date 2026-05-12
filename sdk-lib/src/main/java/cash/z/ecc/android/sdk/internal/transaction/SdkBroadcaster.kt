@@ -1,7 +1,6 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
 import cash.z.ecc.android.sdk.Broadcaster
-import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
@@ -19,7 +18,7 @@ import kotlinx.coroutines.withContext
 internal class SdkBroadcaster(
     private val txManager: OutboundTransactionManager,
     private val transactionSubmitter: TransactionSubmitter,
-    private val automaticResubmissionGuard: AutomaticResubmissionGuard
+    private val pendingSubmitPlanStore: PendingSubmitPlanStore
 ) : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
@@ -29,7 +28,7 @@ internal class SdkBroadcaster(
             txManager
                 .createProposedTransactions(proposal, usk)
                 .map { it.toCreatedTransaction() }
-        automaticResubmissionGuard.excludeFromAutomaticResubmission(transactions)
+        pendingSubmitPlanStore.markAwaitingSubmitPlan(transactions)
         return transactions
     }
 
@@ -43,7 +42,7 @@ internal class SdkBroadcaster(
                     .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
                     .toCreatedTransaction()
             )
-        automaticResubmissionGuard.excludeFromAutomaticResubmission(transactions)
+        pendingSubmitPlanStore.markAwaitingSubmitPlan(transactions)
         return transactions
     }
 
@@ -51,12 +50,12 @@ internal class SdkBroadcaster(
         transaction: CreatedTransaction,
         endpoint: LightWalletEndpoint
     ): TransactionSubmitResult {
-        automaticResubmissionGuard.excludeFromAutomaticResubmission(transaction)
+        pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
         return transactionSubmitter.submit(transaction, endpoint)
     }
 
     // Legacy Synchronizer APIs stay eligible for automatic resubmission, so these helpers
-    // bypass public Broadcaster methods that mark transactions caller-managed.
+    // bypass public Broadcaster methods that record submitted endpoints.
     internal suspend fun createAndSubmitProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
@@ -107,13 +106,6 @@ internal class EndpointTransactionSubmitter(
         }
     }
 }
-
-private fun EncodedTransaction.toCreatedTransaction() =
-    CreatedTransaction(
-        txId = txId,
-        raw = raw,
-        expiryHeight = expiryHeight
-    )
 
 private fun List<CreatedTransaction>.createSubmitResultFlow(
     submit: suspend (CreatedTransaction) -> TransactionSubmitResult
