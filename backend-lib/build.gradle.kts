@@ -1,5 +1,6 @@
 import com.google.protobuf.gradle.id
 import com.google.protobuf.gradle.proto
+import org.gradle.api.GradleException
 
 plugins {
     id("org.mozilla.rust-android-gradle.rust-android")
@@ -15,12 +16,50 @@ plugins {
     id("zcash-sdk.publishing-conventions")
 }
 
+val requestedTaskNames = gradle.startParameter.taskNames
+
+fun String.requestsAndroidTestNativeFixtures() =
+    contains("AndroidTest", ignoreCase = true) ||
+        contains("EmulatorWtf", ignoreCase = true) ||
+        contains("connected", ignoreCase = true)
+
+fun String.requestsProductionNativeArtifact(): Boolean {
+    val taskName = substringAfterLast(":")
+    val isAssembleTask = taskName.startsWith("assemble", ignoreCase = true)
+    val isBundleTask = taskName.startsWith("bundle", ignoreCase = true)
+    val isReleaseTask = taskName.contains("Release", ignoreCase = true)
+    val isBenchmarkTask = taskName.contains("Benchmark", ignoreCase = true)
+
+    return taskName.equals("assemble", ignoreCase = true) ||
+        taskName.equals("build", ignoreCase = true) ||
+        taskName.startsWith("publish", ignoreCase = true) ||
+        isAssembleTask && (isReleaseTask || isBenchmarkTask) ||
+        isBundleTask && (isReleaseTask || isBenchmarkTask)
+}
+
 val enableAndroidTestNativeFixtures =
-    gradle.startParameter.taskNames.any { taskName ->
-        taskName.contains("AndroidTest", ignoreCase = true) ||
-            taskName.contains("EmulatorWtf", ignoreCase = true) ||
-            taskName.contains("connected", ignoreCase = true)
+    requestedTaskNames.any { taskName ->
+        taskName.requestsAndroidTestNativeFixtures()
     }
+
+val productionNativeArtifactTasksWithAndroidFixtures =
+    if (enableAndroidTestNativeFixtures) {
+        requestedTaskNames.filter { taskName ->
+            taskName.requestsProductionNativeArtifact()
+        }
+    } else {
+        emptyList()
+    }
+
+if (productionNativeArtifactTasksWithAndroidFixtures.isNotEmpty()) {
+    throw GradleException(
+        "Do not run Android test tasks and production native artifact tasks in the same " +
+            "Gradle invocation. Android test tasks enable the android-test-fixtures Cargo " +
+            "feature globally for backend-lib native builds. Split these into separate " +
+            "commands. Conflicting production task(s): " +
+            productionNativeArtifactTasksWithAndroidFixtures.joinToString()
+    )
+}
 
 // Publishing information
 
