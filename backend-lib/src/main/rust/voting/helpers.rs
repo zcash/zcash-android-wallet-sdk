@@ -103,6 +103,18 @@ pub(super) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyho
     }
 }
 
+fn require_each_len(
+    values: Vec<Vec<u8>>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| require_len(value, &format!("{field}[{index}]"), expected))
+        .collect()
+}
+
 pub(super) fn require_min_len(
     bytes: Vec<u8>,
     field: &str,
@@ -378,13 +390,7 @@ pub(super) fn java_witness_data(
             "root",
             PROTOCOL_FIELD_BYTES,
         )?,
-        auth_path: auth_path
-            .into_iter()
-            .enumerate()
-            .map(|(index, path)| {
-                require_len(path, &format!("authPath[{index}]"), PROTOCOL_FIELD_BYTES)
-            })
-            .collect::<anyhow::Result<_>>()?,
+        auth_path: require_each_len(auth_path, "authPath", PROTOCOL_FIELD_BYTES)?,
     })
 }
 
@@ -747,11 +753,7 @@ fn make_jni_fixed_byte_array_vec<'local>(
         ));
     }
 
-    let values = values
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| require_len(value, &format!("{field}[{index}]"), expected_size))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let values = require_each_len(values, field, expected_size)?;
 
     Ok(rust_vec_to_java(env, values, "[B", |env, bytes| {
         Ok(JObject::from(env.byte_array_from_slice(&bytes)?))
