@@ -1,5 +1,9 @@
 use super::*;
 
+// Must match VotingProofProgressCallback.onProgress(Double) in VotingRustBackend.kt.
+const VOTING_PROOF_PROGRESS_CALLBACK_METHOD: &str = "onProgress";
+const VOTING_PROOF_PROGRESS_CALLBACK_SIG: &str = "(D)V";
+
 struct JniProgressReporter {
     vm: JavaVM,
     callback: GlobalRef,
@@ -11,8 +15,8 @@ impl ProofProgressReporter for JniProgressReporter {
             Ok(mut env) => {
                 if let Err(e) = env.call_method(
                     self.callback.as_obj(),
-                    "onProgress",
-                    "(D)V",
+                    VOTING_PROOF_PROGRESS_CALLBACK_METHOD,
+                    VOTING_PROOF_PROGRESS_CALLBACK_SIG,
                     &[JValue::Double(progress)],
                 ) {
                     let _ = env.exception_clear();
