@@ -86,14 +86,14 @@ rust-analyzer = "0.0.1"
 # The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
 # Its share-nullifier entry point forwards to
 # `zcash_voting::share_tracking::compute_share_nullifier`:
-# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.5.3/zcash_voting/src/share_tracking.rs
+# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.5.9/zcash_voting/src/share_tracking.rs
 #
 # The transitive `voting-circuits` dependency contains the share-reveal circuit
 # and the Poseidon-based `share_nullifier_hash` implementation:
 # https://github.com/valargroup/voting-circuits/blob/v0.4.1/voting-circuits/src/share_reveal/circuit.rs
 # Default features stay disabled so this foundation change does not pull in the
 # optional client PIR, tree-sync, or networking stacks.
-zcash_voting = { version = "0.5.3", default-features = false }
+zcash_voting = { version = "0.5.9", default-features = false }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]

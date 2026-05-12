@@ -1,0 +1,57 @@
+package cash.z.ecc.android.sdk.internal.model.voting
+
+import androidx.annotation.Keep
+
+// Must match PHASE_* constants in backend-lib/src/main/rust/voting/helpers.rs.
+internal const val JNI_ROUND_PHASE_INITIALIZED = 0
+internal const val JNI_ROUND_PHASE_HOTKEY_GENERATED = 1
+internal const val JNI_ROUND_PHASE_DELEGATION_CONSTRUCTED = 2
+internal const val JNI_ROUND_PHASE_DELEGATION_PROVED = 3
+internal const val JNI_ROUND_PHASE_VOTE_READY = 4
+
+@Keep
+data class JniRoundState(
+    val roundId: String,
+    val phase: Int,
+    val snapshotHeight: Long,
+    val hotkeyAddress: String?,
+    val delegatedWeight: Long?,
+    val proofGenerated: Boolean
+) {
+    val roundPhase = JniRoundPhase.fromInt(phase)
+}
+
+@Keep
+enum class JniRoundPhase(
+    val value: Int
+) {
+    INITIALIZED(JNI_ROUND_PHASE_INITIALIZED),
+    HOTKEY_GENERATED(JNI_ROUND_PHASE_HOTKEY_GENERATED),
+    DELEGATION_CONSTRUCTED(JNI_ROUND_PHASE_DELEGATION_CONSTRUCTED),
+    DELEGATION_PROVED(JNI_ROUND_PHASE_DELEGATION_PROVED),
+    VOTE_READY(JNI_ROUND_PHASE_VOTE_READY);
+
+    companion object {
+        fun fromInt(value: Int) =
+            entries.firstOrNull { it.value == value }
+                ?: error("Unknown round phase: $value")
+    }
+}
+
+@Keep
+data class JniRoundSummary(
+    val roundId: String,
+    val phase: Int,
+    val snapshotHeight: Long,
+    val createdAt: Long
+) {
+    val roundPhase = JniRoundPhase.fromInt(phase)
+}
+
+@Keep
+data class JniVoteRecord(
+    val proposalId: Int,
+    val bundleIndex: Int,
+    val choice: Int,
+    val submitted: Boolean
+)
