@@ -86,7 +86,7 @@ class VotingRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
-    suspend fun verifyWitness(witness: JniWitnessData): Int =
+    suspend fun verifyWitness(witness: JniWitnessData): Boolean =
         withContext(Dispatchers.IO) {
             verifyWitnessNative(witness)
         }
@@ -129,6 +129,27 @@ class VotingRustBackend private constructor() {
         withContext(Dispatchers.IO) {
             delegationProofResultFixtureNative()
                 ?: error("delegationProofResultFixture returned null")
+        }
+
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun noteInfoArrayFixtureForTesting(): Array<JniNoteInfo> =
+        withContext(Dispatchers.IO) {
+            noteInfoArrayFixtureNative()
+                ?: error("noteInfoArrayFixture returned null")
+        }
+
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun witnessDataArrayFixtureForTesting(): Array<JniWitnessData> =
+        withContext(Dispatchers.IO) {
+            witnessDataArrayFixtureNative()
+                ?: error("witnessDataArrayFixture returned null")
+        }
+
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun treeStateFixtureForTesting(): ByteArray =
+        withContext(Dispatchers.IO) {
+            treeStateFixtureNative()
+                ?: error("treeStateFixture returned null")
         }
 
     suspend fun openVotingDb(dbPath: String, walletId: String): VotingDb =
@@ -360,9 +381,7 @@ class VotingRustBackend private constructor() {
             roundId: String,
             treeStateBytes: ByteArray
         ) = withHandle { handle ->
-            check(storeTreeStateNative(handle, roundId, treeStateBytes)) {
-                "storeTreeState failed for roundId=$roundId"
-            }
+            storeTreeStateNative(handle, roundId, treeStateBytes)
         }
 
         @Throws(RuntimeException::class)
@@ -456,7 +475,7 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun verifyWitnessNative(witness: JniWitnessData): Int
+        private external fun verifyWitnessNative(witness: JniWitnessData): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -568,6 +587,18 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun noteInfoArrayFixtureNative(): Array<JniNoteInfo>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun witnessDataArrayFixtureNative(): Array<JniWitnessData>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun treeStateFixtureNative(): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun storeWitnessesNative(
             dbHandle: Long,
             roundId: String,
@@ -629,7 +660,7 @@ class VotingRustBackend private constructor() {
             dbHandle: Long,
             roundId: String,
             treeStateBytes: ByteArray
-        ): Boolean
+        )
 
         @JvmStatic
         @Throws(RuntimeException::class)

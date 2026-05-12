@@ -17,6 +17,8 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
@@ -50,19 +52,21 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         rustBackend().extractNcRoot(treeStateBytes)
 
     override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
-        when (val result = rustBackend().verifyWitness(witness)) {
-            0 -> false
-            1 -> true
-            else -> error("verifyWitness failed with result=$result")
-        }
+        rustBackend().verifyWitness(witness)
 
     override suspend fun getWalletNotes(
         walletDbPath: String,
-        snapshotHeight: Long,
+        snapshotHeight: BlockHeight,
         networkId: Int,
-        accountUuidBytes: ByteArray
+        accountUuid: AccountUuid
     ): List<JniNoteInfo> =
-        rustBackend().getWalletNotes(walletDbPath, snapshotHeight, networkId, accountUuidBytes).asList()
+        rustBackend()
+            .getWalletNotes(
+                walletDbPath,
+                snapshotHeight.value,
+                networkId,
+                accountUuid.value
+            ).asList()
 
     override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
         rustBackend().extractPcztSighash(pcztBytes)

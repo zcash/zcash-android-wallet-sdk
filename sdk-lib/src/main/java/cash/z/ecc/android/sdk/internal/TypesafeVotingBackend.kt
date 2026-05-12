@@ -7,6 +7,8 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal interface TypesafeVotingBackend {
@@ -30,9 +32,9 @@ internal interface TypesafeVotingBackend {
 
     suspend fun getWalletNotes(
         walletDbPath: String,
-        snapshotHeight: Long,
+        snapshotHeight: BlockHeight,
         networkId: Int,
-        accountUuidBytes: ByteArray
+        accountUuid: AccountUuid
     ): List<JniNoteInfo>
 
     suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray

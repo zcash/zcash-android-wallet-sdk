@@ -60,16 +60,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
     db_handle: jlong,
     round_id: JString<'local>,
     tree_state_bytes: JByteArray<'local>,
-) -> jboolean {
+) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let bytes = java_bytes(env, &tree_state_bytes, "treeStateBytes")?;
         db.store_tree_state(&java_string_to_rust(env, &round_id)?, &bytes)
             .map_err(|e| anyhow!("store_tree_state: {}", e))?;
-        Ok(JNI_TRUE)
+        Ok(())
     });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
+    unwrap_exc_or(&mut env, res, ())
 }
 
 #[unsafe(no_mangle)]
