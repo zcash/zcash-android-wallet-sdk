@@ -112,13 +112,7 @@ class VotingRustBackend private constructor() {
 
         @Throws(RuntimeException::class)
         suspend fun getBundleCount(roundId: String): Int =
-            withHandle { handle ->
-                getBundleCountNative(handle, roundId).also { count ->
-                    check(count >= 0) {
-                        "getBundleCount failed for roundId=$roundId"
-                    }
-                }
-            }
+            withHandle { handle -> getBundleCountNative(handle, roundId) }
 
         @Throws(RuntimeException::class)
         suspend fun getVotes(roundId: String): Array<JniVoteRecord> =
