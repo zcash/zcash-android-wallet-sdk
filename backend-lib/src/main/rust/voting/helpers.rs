@@ -355,11 +355,13 @@ pub(super) fn make_jni_voting_hotkey<'local>(
     hotkey: voting::types::VotingHotkey,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_VOTING_HOTKEY)?;
-    let _secret_key = SecretVec::new(require_len(
-        hotkey.secret_key,
-        "hotkey_secret_key",
-        PROTOCOL_FIELD_BYTES,
-    )?);
+    let secret_key = SecretVec::new(hotkey.secret_key);
+    let secret_key_len = secret_key.expose_secret().len();
+    if secret_key_len != PROTOCOL_FIELD_BYTES {
+        return Err(anyhow!(
+            "hotkey_secret_key must be exactly {PROTOCOL_FIELD_BYTES} bytes, got {secret_key_len}"
+        ));
+    }
     let public_key = require_len(
         hotkey.public_key,
         "hotkey_public_key",
