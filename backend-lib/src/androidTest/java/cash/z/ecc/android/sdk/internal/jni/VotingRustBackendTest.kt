@@ -4,6 +4,9 @@ import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
+import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -124,6 +127,14 @@ class VotingRustBackendTest {
             assertFailsWith<RuntimeException> {
                 backend.computeShareNullifier(VOTE_COMMITMENT, OUT_OF_RANGE_SHARE_INDEX, BLIND)
             }
+        }
+
+    @Test
+    fun decompose_weight_returns_exact_shares() =
+        runTest {
+            val shares = VotingRustBackend.new().decomposeWeight(65_535).toList()
+
+            assertEquals((0 until JNI_VOTE_SHARE_COUNT).map { 1L shl it }, shares)
         }
 
     @Test
@@ -887,6 +898,99 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun build_share_payloads_round_trips_commitment_fields() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val commitment = jniVoteCommitmentResult()
+
+            val payloads =
+                backend.buildSharePayloads(
+                    commitment = commitment,
+                    voteDecision = 1,
+                    numOptions = 2,
+                    vcTreePosition = 42,
+                    singleShareMode = false
+                )
+
+            assertEquals(JNI_VOTE_SHARE_COUNT, payloads.size)
+            assertContentEquals(commitment.sharesHash, payloads.first().sharesHash)
+            assertEquals(commitment.proposalId, payloads.first().proposalId)
+            assertEquals(1, payloads.first().voteDecision)
+            assertEquals(42, payloads.first().treePosition)
+            assertEquals(commitment.encShares.first(), payloads.first().encShare)
+            assertEquals(commitment.encShares, payloads.first().allEncShares)
+            assertContentEquals(commitment.shareComms.first(), payloads.first().shareComms.first())
+            assertContentEquals(commitment.shareBlinds.first(), payloads.first().primaryBlind)
+        }
+
+    @Test
+    fun build_share_payloads_rejects_malformed_share_counts() =
+        runTest {
+            val backend = VotingRustBackend.new()
+
+            assertFailsWith<RuntimeException> {
+                backend.buildSharePayloads(
+                    commitment = jniVoteCommitmentResult(encShares = emptyList()),
+                    voteDecision = 1,
+                    numOptions = 2,
+                    vcTreePosition = 42,
+                    singleShareMode = false
+                )
+            }
+        }
+
+    @Test
+    fun sign_cast_vote_rejects_unsupported_account_index() =
+        runTest {
+            val backend = VotingRustBackend.new()
+
+            assertFailsWith<RuntimeException> {
+                backend.signCastVote(
+                    hotkeySeed = HOTKEY_SEED,
+                    networkId = TESTNET_NETWORK_ID,
+                    accountIndex = 1,
+                    commitment = jniVoteCommitmentResult()
+                )
+            }
+        }
+
+    @Test
+    fun build_vote_commitment_requires_delegation_ready() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val ufvk = deriveTestUfvk()
+                db.initPcztRoundWithBundles(notes)
+                db.buildTestGovernancePczt(ufvk, notes)
+
+                assertFailsWith<RuntimeException> {
+                    db.buildVoteCommitment(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        hotkeySeed = HOTKEY_SEED,
+                        proposalId = 1,
+                        choice = 0,
+                        numOptions = 2,
+                        witness = jniVanWitness(),
+                        networkId = TESTNET_NETWORK_ID,
+                        accountIndex = ACCOUNT_INDEX,
+                        singleShare = false,
+                        proofProgress = null
+                    )
+                }
+
+                assertEquals(emptyList(), db.getVotes(PCZT_ROUND_ID).asList())
+                assertEquals(
+                    JniRoundPhase.DELEGATION_CONSTRUCTED,
+                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
+                )
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun delegation_proof_result_fixture_crosses_rust_to_kotlin_object_construction() =
         runTest {
             val result = VotingRustBackend.new().delegationProofResultFixtureForTesting()
@@ -1199,6 +1303,50 @@ class VotingRustBackendTest {
                 }
         )
     )
+
+    private fun jniVanWitness(
+        position: Long = 1,
+        anchorHeight: Long = SNAPSHOT_HEIGHT
+    ) = JniVanWitness(
+        authPath = List(JNI_VAN_WITNESS_PATH_DEPTH) { ByteArray(FIELD_BYTES) },
+        position = position,
+        anchorHeight = anchorHeight
+    )
+
+    private fun jniVoteCommitmentResult(
+        encShares: List<JniWireEncryptedShare> = wireShares(),
+        shareBlinds: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 5),
+        shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 6)
+    ) = JniVoteCommitmentResult(
+        vanNullifier = ByteArray(FIELD_BYTES) { 1 },
+        voteAuthorityNoteNew = ByteArray(FIELD_BYTES) { 2 },
+        voteCommitment = ByteArray(FIELD_BYTES) { 3 },
+        proposalId = 1,
+        proof = byteArrayOf(4),
+        encShares = encShares,
+        anchorHeight = SNAPSHOT_HEIGHT,
+        voteRoundId = PCZT_ROUND_ID,
+        sharesHash = ByteArray(FIELD_BYTES) { 4 },
+        shareBlinds = shareBlinds,
+        shareComms = shareComms,
+        rVpk = ByteArray(FIELD_BYTES) { 7 },
+        alphaV = ByteArray(FIELD_BYTES) { 8 }
+    )
+
+    private fun wireShares(
+        count: Int = JNI_VOTE_SHARE_COUNT
+    ) = List(count) { index ->
+        JniWireEncryptedShare(
+            c1 = ByteArray(FIELD_BYTES) { (index + 1).toByte() },
+            c2 = ByteArray(FIELD_BYTES) { (index + 2).toByte() },
+            shareIndex = index
+        )
+    }
+
+    private fun fieldElements(
+        count: Int,
+        byteValue: Int
+    ) = List(count) { ByteArray(FIELD_BYTES) { byteValue.toByte() } }
 
     private fun repeatedHex(
         byteValue: Int,

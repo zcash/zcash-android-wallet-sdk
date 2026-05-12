@@ -79,7 +79,9 @@ pub(super) const NOTE_SCOPE_EXTERNAL: u32 = 0;
 pub(super) const NOTE_SCOPE_INTERNAL: u32 = 1;
 pub(super) const ORCHARD_DIVERSIFIER_BYTES: usize = 11;
 pub(super) const ORCHARD_WITNESS_PATH_DEPTH: usize = 32;
+// Must match JNI_VAN_WITNESS_PATH_DEPTH in JniConstants.kt.
 pub(super) const VAN_WITNESS_PATH_DEPTH: usize = 24;
+// Must match JNI_VOTE_SHARE_COUNT in JniConstants.kt.
 pub(super) const VOTE_SHARE_COUNT: usize = 16;
 pub(super) const DELEGATION_PUBLIC_INPUT_COUNT: usize = 14;
 pub(super) const GOVERNANCE_NULLIFIER_COUNT: usize = 5;
@@ -150,6 +152,21 @@ fn require_each_len(
         .enumerate()
         .map(|(index, value)| require_len(value, &format!("{field}[{index}]"), expected))
         .collect()
+}
+
+pub(super) fn require_count<T>(
+    values: Vec<T>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<Vec<T>> {
+    if values.len() == expected {
+        Ok(values)
+    } else {
+        Err(anyhow!(
+            "{field} must contain {expected} entries, got {}",
+            values.len()
+        ))
+    }
 }
 
 pub(super) fn require_min_len(
@@ -463,6 +480,14 @@ fn java_wire_encrypted_share(
     env: &mut JNIEnv<'_>,
     share: &JObject<'_>,
 ) -> anyhow::Result<WireEncryptedShare> {
+    let share_index = jint_to_u32(env.get_field(share, "shareIndex", "I")?.i()?, "shareIndex")?;
+    if share_index >= VOTE_SHARE_COUNT as u32 {
+        return Err(anyhow!(
+            "shareIndex must be in 0..{}, got {share_index}",
+            VOTE_SHARE_COUNT - 1
+        ));
+    }
+
     Ok(WireEncryptedShare {
         c1: require_len(
             java_byte_array_field(env, share, "c1")?,
@@ -474,7 +499,7 @@ fn java_wire_encrypted_share(
             "c2",
             PROTOCOL_FIELD_BYTES,
         )?,
-        share_index: jint_to_u32(env.get_field(share, "shareIndex", "I")?.i()?, "shareIndex")?,
+        share_index,
     })
 }
 
@@ -499,17 +524,34 @@ fn java_wire_encrypted_share_list_field(
         .collect()
 }
 
+pub(super) struct JavaVoteCommitmentBundle {
+    pub(super) enc_shares: Vec<WireEncryptedShare>,
+    pub(super) bundle: VoteCommitmentBundle,
+}
+
 pub(super) fn java_vote_commitment_bundle(
     env: &mut JNIEnv<'_>,
     commitment: &JObject<'_>,
-) -> anyhow::Result<(Vec<WireEncryptedShare>, VoteCommitmentBundle)> {
-    let enc_shares = java_wire_encrypted_share_list_field(env, commitment, "encShares")?;
-    let share_blinds = java_byte_array_list_field(env, commitment, "shareBlinds")?;
-    let share_comms = java_byte_array_list_field(env, commitment, "shareComms")?;
+) -> anyhow::Result<JavaVoteCommitmentBundle> {
+    let enc_shares = require_count(
+        java_wire_encrypted_share_list_field(env, commitment, "encShares")?,
+        "encShares",
+        VOTE_SHARE_COUNT,
+    )?;
+    let share_blinds = require_count(
+        java_byte_array_list_field(env, commitment, "shareBlinds")?,
+        "shareBlinds",
+        VOTE_SHARE_COUNT,
+    )?;
+    let share_comms = require_count(
+        java_byte_array_list_field(env, commitment, "shareComms")?,
+        "shareComms",
+        VOTE_SHARE_COUNT,
+    )?;
 
-    Ok((
+    Ok(JavaVoteCommitmentBundle {
         enc_shares,
-        VoteCommitmentBundle {
+        bundle: VoteCommitmentBundle {
             van_nullifier: require_len(
                 java_byte_array_field(env, commitment, "vanNullifier")?,
                 "vanNullifier",
@@ -530,6 +572,8 @@ pub(super) fn java_vote_commitment_bundle(
                 "proposalId",
             )?,
             proof: java_byte_array_field(env, commitment, "proof")?,
+            // Java receives only WireEncryptedShare values; the secret share
+            // plaintext/randomness fields intentionally never cross JNI.
             enc_shares: Vec::new(),
             anchor_height: jlong_to_u32(
                 env.get_field(commitment, "anchorHeight", "J")?.j()?,
@@ -554,7 +598,7 @@ pub(super) fn java_vote_commitment_bundle(
                 PROTOCOL_FIELD_BYTES,
             )?,
         },
-    ))
+    })
 }
 
 fn require_note_scope(scope: u32) -> anyhow::Result<u32> {
@@ -895,6 +939,7 @@ pub(super) fn make_jni_vote_commitment_result<'local>(
         .into_iter()
         .map(WireEncryptedShare::from)
         .collect();
+    let enc_shares = require_count(enc_shares, "enc_shares", VOTE_SHARE_COUNT)?;
     let van_nullifier = make_jni_fixed_bytes(
         env,
         bundle.van_nullifier,
@@ -996,7 +1041,8 @@ fn make_jni_share_payload<'local>(
         PROTOCOL_FIELD_BYTES,
     )?;
     let enc_share = make_jni_wire_encrypted_share(env, payload.enc_share)?;
-    let all_enc_shares = make_jni_wire_encrypted_share_array(env, payload.all_enc_shares)?;
+    let all_enc_shares = require_count(payload.all_enc_shares, "all_enc_shares", VOTE_SHARE_COUNT)?;
+    let all_enc_shares = make_jni_wire_encrypted_share_array(env, all_enc_shares)?;
     let share_comms = make_jni_fixed_byte_array_vec(
         env,
         payload.share_comms,

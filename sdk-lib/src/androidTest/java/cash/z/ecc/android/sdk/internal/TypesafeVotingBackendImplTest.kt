@@ -4,6 +4,8 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_DELEGATION_PUBLIC_INPUT_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_GOVERNANCE_NULLIFIER_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_PROTOCOL_FIELD_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_SPEND_AUTH_SIG_BYTES_SIZE
+import cash.z.ecc.android.sdk.internal.jni.JNI_VAN_WITNESS_PATH_DEPTH
+import cash.z.ecc.android.sdk.internal.jni.JNI_VOTE_SHARE_COUNT
 import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
@@ -17,6 +19,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -303,6 +306,112 @@ class TypesafeVotingBackendImplTest {
             assertEquals(generatedWitnesses.asList(), generated)
         }
 
+    @Test
+    fun vote_methods_forward_arguments_and_map_results() =
+        runTest {
+            val witness =
+                jniVanWitness(
+                    position = 33,
+                    anchorHeight = 44
+                )
+            val commitment =
+                jniVoteCommitmentResult(
+                    voteCommitment = field(35),
+                    proposalId = 2,
+                    voteRoundId = "round-vote"
+                )
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    witnessResult = witness,
+                    commitmentResult = commitment,
+                    syncHeight = 55
+                )
+            val db = TypesafeVotingDbImpl(backend)
+            val hotkeySeed = byteArrayOf(1, 2, 3)
+            var progressValue: Double? = null
+
+            assertEquals(55, db.syncVoteTree("round-vote", "https://node.example"))
+            assertEquals("round-vote", backend.syncRoundId)
+            assertEquals("https://node.example", backend.syncNodeUrl)
+
+            db.resetTreeClient("round-vote")
+            assertEquals("round-vote", backend.resetRoundId)
+            db.resetAllTreeClients()
+            assertEquals("", backend.resetRoundId)
+
+            db.storeVanPosition("round-vote", 3, 77)
+            assertEquals("round-vote", backend.storeVanRoundId)
+            assertEquals(3, backend.storeVanBundleIndex)
+            assertEquals(77, backend.storeVanPosition)
+
+            val generatedWitness = db.generateVanWitness("round-vote", 3, 44)
+            assertEquals(witness, generatedWitness)
+            assertEquals("round-vote", backend.generateVanRoundId)
+            assertEquals(3, backend.generateVanBundleIndex)
+            assertEquals(44, backend.generateVanAnchorHeight)
+
+            val voteCommitment =
+                db.buildVoteCommitment(
+                    roundId = "round-vote",
+                    bundleIndex = 3,
+                    hotkeySeed = hotkeySeed,
+                    proposalId = 2,
+                    choice = 1,
+                    numOptions = 3,
+                    witness = witness,
+                    networkId = 0,
+                    accountIndex = 8
+                ) { progress ->
+                    progressValue = progress
+                }
+            assertEquals(commitment, voteCommitment)
+            assertEquals("round-vote", backend.buildVoteRoundId)
+            assertEquals(3, backend.buildVoteBundleIndex)
+            assertContentEquals(hotkeySeed, backend.buildVoteHotkeySeed)
+            assertEquals(2, backend.buildVoteProposalId)
+            assertEquals(1, backend.buildVoteChoice)
+            assertEquals(3, backend.buildVoteNumOptions)
+            assertEquals(witness, backend.buildVoteWitness)
+            assertEquals(0, backend.buildVoteNetworkId)
+            assertEquals(8, backend.buildVoteAccountIndex)
+            assertEquals(false, backend.buildVoteSingleShare)
+            assertNotNull(backend.buildVoteProgress).onProgress(0.5)
+            assertEquals(0.5, progressValue)
+        }
+
+    @Test
+    fun vote_commitment_wrapper_rejects_invalid_commitment_result() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    commitmentResult = jniVoteCommitmentResult(encShares = emptyList())
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.buildVoteCommitment(
+                        roundId = "round-vote",
+                        bundleIndex = 3,
+                        hotkeySeed = byteArrayOf(1, 2, 3),
+                        proposalId = 2,
+                        choice = 1,
+                        numOptions = 3,
+                        witness = jniVanWitness(),
+                        networkId = 0,
+                        accountIndex = 0
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("encShares"))
+        }
+
     private fun jniDelegationProofResult(
         proof: ByteArray = ByteArray(PROOF_BYTES) { 3 },
         publicInputs: List<ByteArray> =
@@ -354,6 +463,57 @@ class TypesafeVotingBackendImplTest {
         govNullifiers = govNullifiers,
         voteRoundId = voteRoundId
     )
+
+    private fun jniVanWitness(
+        authPath: List<ByteArray> = fieldElements(JNI_VAN_WITNESS_PATH_DEPTH),
+        position: Long = 1,
+        anchorHeight: Long = 2
+    ) = JniVanWitness(
+        authPath = authPath,
+        position = position,
+        anchorHeight = anchorHeight
+    )
+
+    private fun jniVoteCommitmentResult(
+        vanNullifier: ByteArray = field(10),
+        voteAuthorityNoteNew: ByteArray = field(11),
+        voteCommitment: ByteArray = field(12),
+        proposalId: Int = 1,
+        proof: ByteArray = ByteArray(PROOF_BYTES) { 13 },
+        encShares: List<JniWireEncryptedShare> = wireShares(),
+        anchorHeight: Long = 2,
+        voteRoundId: String = "round-vote",
+        sharesHash: ByteArray = field(14),
+        shareBlinds: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 15),
+        shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 16),
+        rVpk: ByteArray = field(17),
+        alphaV: ByteArray = field(18)
+    ) = JniVoteCommitmentResult(
+        vanNullifier = vanNullifier,
+        voteAuthorityNoteNew = voteAuthorityNoteNew,
+        voteCommitment = voteCommitment,
+        proposalId = proposalId,
+        proof = proof,
+        encShares = encShares,
+        anchorHeight = anchorHeight,
+        voteRoundId = voteRoundId,
+        sharesHash = sharesHash,
+        shareBlinds = shareBlinds,
+        shareComms = shareComms,
+        rVpk = rVpk,
+        alphaV = alphaV
+    )
+
+    private fun wireShares(
+        count: Int = JNI_VOTE_SHARE_COUNT,
+        fieldSize: Int = JNI_PROTOCOL_FIELD_BYTES_SIZE
+    ) = List(count) { index ->
+        JniWireEncryptedShare(
+            c1 = ByteArray(fieldSize) { (index + 1).toByte() },
+            c2 = ByteArray(fieldSize) { (index + 2).toByte() },
+            shareIndex = index
+        )
+    }
 
     private fun field(byteValue: Int) =
         ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) { byteValue.toByte() }
@@ -446,7 +606,37 @@ class TypesafeVotingBackendImplTest {
         private val proofResult: JniDelegationProofResult,
         private val submissionResult: JniDelegationSubmissionResult,
         private val keystoneSubmissionResult: JniDelegationSubmissionResult,
-        private val generatedWitnesses: Array<JniWitnessData>
+        private val generatedWitnesses: Array<JniWitnessData> = emptyArray(),
+        private val witnessResult: JniVanWitness =
+            JniVanWitness(
+                authPath = List(JNI_VAN_WITNESS_PATH_DEPTH) { ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) },
+                position = 1,
+                anchorHeight = 2
+            ),
+        private val commitmentResult: JniVoteCommitmentResult =
+            JniVoteCommitmentResult(
+                vanNullifier = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                voteAuthorityNoteNew = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                voteCommitment = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                proposalId = 1,
+                proof = ByteArray(PROOF_BYTES),
+                encShares =
+                    List(JNI_VOTE_SHARE_COUNT) { index ->
+                        JniWireEncryptedShare(
+                            c1 = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                            c2 = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                            shareIndex = index
+                        )
+                    },
+                anchorHeight = 2,
+                voteRoundId = "round-vote",
+                sharesHash = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                shareBlinds = List(JNI_VOTE_SHARE_COUNT) { ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) },
+                shareComms = List(JNI_VOTE_SHARE_COUNT) { ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) },
+                rVpk = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                alphaV = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE)
+            ),
+        private val syncHeight: Long = 1
     ) : VotingDbBackend {
         var storeWitnessesRoundId: String? = null
         var storeWitnessesBundleIndex: Int? = null
@@ -482,6 +672,26 @@ class TypesafeVotingBackendImplTest {
         var generateNoteWitnessesWalletDbPath: String? = null
         var generateNoteWitnessesNetworkId: Int? = null
         var generateNoteWitnessesNotes: List<JniNoteInfo>? = null
+        var syncRoundId: String? = null
+        var syncNodeUrl: String? = null
+        var resetRoundId: String? = null
+        var storeVanRoundId: String? = null
+        var storeVanBundleIndex: Int? = null
+        var storeVanPosition: Long? = null
+        var generateVanRoundId: String? = null
+        var generateVanBundleIndex: Int? = null
+        var generateVanAnchorHeight: Long? = null
+        var buildVoteRoundId: String? = null
+        var buildVoteBundleIndex: Int? = null
+        var buildVoteHotkeySeed: ByteArray = ByteArray(0)
+        var buildVoteProposalId: Int? = null
+        var buildVoteChoice: Int? = null
+        var buildVoteNumOptions: Int? = null
+        var buildVoteWitness: JniVanWitness? = null
+        var buildVoteNetworkId: Int? = null
+        var buildVoteAccountIndex: Int? = null
+        var buildVoteSingleShare: Boolean? = null
+        var buildVoteProgress: VotingProofProgressCallback? = null
 
         override suspend fun close() = unused()
 
@@ -630,21 +840,36 @@ class TypesafeVotingBackendImplTest {
             return generatedWitnesses
         }
 
-        override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = unused()
+        override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long {
+            syncRoundId = roundId
+            syncNodeUrl = nodeUrl
+            return syncHeight
+        }
 
-        override suspend fun resetTreeClient(roundId: String) = unused()
+        override suspend fun resetTreeClient(roundId: String) {
+            resetRoundId = roundId
+        }
 
         override suspend fun storeVanPosition(
             roundId: String,
             bundleIndex: Int,
             position: Long
-        ) = unused()
+        ) {
+            storeVanRoundId = roundId
+            storeVanBundleIndex = bundleIndex
+            storeVanPosition = position
+        }
 
         override suspend fun generateVanWitness(
             roundId: String,
             bundleIndex: Int,
             anchorHeight: Long
-        ): JniVanWitness = unused()
+        ): JniVanWitness {
+            generateVanRoundId = roundId
+            generateVanBundleIndex = bundleIndex
+            generateVanAnchorHeight = anchorHeight
+            return witnessResult
+        }
 
         override suspend fun buildVoteCommitment(
             roundId: String,
@@ -655,9 +880,23 @@ class TypesafeVotingBackendImplTest {
             numOptions: Int,
             witness: JniVanWitness,
             networkId: Int,
+            accountIndex: Int,
             singleShare: Boolean,
             proofProgress: VotingProofProgressCallback?
-        ): JniVoteCommitmentResult = unused()
+        ): JniVoteCommitmentResult {
+            buildVoteRoundId = roundId
+            buildVoteBundleIndex = bundleIndex
+            buildVoteHotkeySeed = hotkeySeed
+            buildVoteProposalId = proposalId
+            buildVoteChoice = choice
+            buildVoteNumOptions = numOptions
+            buildVoteWitness = witness
+            buildVoteNetworkId = networkId
+            buildVoteAccountIndex = accountIndex
+            buildVoteSingleShare = singleShare
+            buildVoteProgress = proofProgress
+            return commitmentResult
+        }
 
         private fun unused(): Nothing = error("unused")
     }

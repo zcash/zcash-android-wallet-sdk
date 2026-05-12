@@ -40,11 +40,15 @@ const val JNI_DELEGATION_PUBLIC_INPUT_COUNT = 14
 
 /**
  * The number of sibling hashes in a vote-authority-note witness.
+ *
+ * Must match VAN_WITNESS_PATH_DEPTH in backend-lib/src/main/rust/voting/helpers.rs.
  */
 const val JNI_VAN_WITNESS_PATH_DEPTH = 24
 
 /**
  * The number of encrypted vote shares produced by vote commitment generation.
+ *
+ * Must match VOTE_SHARE_COUNT in backend-lib/src/main/rust/voting/helpers.rs.
  */
 const val JNI_VOTE_SHARE_COUNT = 16
 

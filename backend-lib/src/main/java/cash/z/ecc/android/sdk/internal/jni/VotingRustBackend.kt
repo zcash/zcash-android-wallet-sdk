@@ -100,27 +100,15 @@ class VotingRustBackend private constructor() {
     suspend fun signCastVote(
         hotkeySeed: ByteArray,
         networkId: Int,
-        roundId: String,
-        rVpk: ByteArray,
-        vanNullifier: ByteArray,
-        vanNew: ByteArray,
-        voteCommitment: ByteArray,
-        proposalId: Int,
-        anchorHeight: Long,
-        alphaV: ByteArray
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
     ): ByteArray =
         withContext(Dispatchers.IO) {
             signCastVoteNative(
                 hotkeySeed,
                 networkId,
-                roundId,
-                rVpk,
-                vanNullifier,
-                vanNew,
-                voteCommitment,
-                proposalId,
-                anchorHeight,
-                alphaV
+                accountIndex,
+                commitment
             ) ?: error("signCastVote returned null")
         }
 
@@ -516,6 +504,7 @@ class VotingRustBackend private constructor() {
             numOptions: Int,
             witness: JniVanWitness,
             networkId: Int,
+            accountIndex: Int,
             singleShare: Boolean,
             proofProgress: VotingProofProgressCallback?
         ): JniVoteCommitmentResult =
@@ -530,6 +519,7 @@ class VotingRustBackend private constructor() {
                     numOptions,
                     witness,
                     networkId,
+                    accountIndex,
                     singleShare,
                     proofProgress?.withVotingDbReentryGuard()
                 ) ?: error("buildVoteCommitment returned null")
@@ -613,14 +603,8 @@ class VotingRustBackend private constructor() {
         private external fun signCastVoteNative(
             hotkeySeed: ByteArray,
             networkId: Int,
-            roundId: String,
-            rVpk: ByteArray,
-            vanNullifier: ByteArray,
-            vanNew: ByteArray,
-            voteCommitment: ByteArray,
-            proposalId: Int,
-            anchorHeight: Long,
-            alphaV: ByteArray
+            accountIndex: Int,
+            commitment: JniVoteCommitmentResult
         ): ByteArray?
 
         @JvmStatic
@@ -883,6 +867,7 @@ class VotingRustBackend private constructor() {
             numOptions: Int,
             witness: JniVanWitness,
             networkId: Int,
+            accountIndex: Int,
             singleShare: Boolean,
             proofProgress: VotingProofProgressCallback?
         ): JniVoteCommitmentResult?
