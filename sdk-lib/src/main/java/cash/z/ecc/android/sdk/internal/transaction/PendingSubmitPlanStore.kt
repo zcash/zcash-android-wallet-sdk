@@ -75,15 +75,16 @@ internal class PendingSubmitPlanStore(
             }
         }
 
-    suspend fun retainPlansFor(txIds: List<FirstClassByteArray>) {
-        val retainedTransactionIds = txIds.map { it.toStableKey() }.toSet()
+    suspend fun <T> loadTransactionsAndRetainSubmitPlans(
+        loadTransactions: suspend () -> List<T>,
+        transactionId: (T) -> FirstClassByteArray
+    ): List<T> =
         mutex.withLock {
             loadFromPreferencesIfNeeded()
-            if (plansByTransactionId.keys.removeAll { it.isInNamespace() && it !in retainedTransactionIds }) {
-                saveToPreferences()
+            loadTransactions().also { transactions ->
+                retainLoadedPlansFor(transactions.map(transactionId))
             }
         }
-    }
 
     private suspend fun storeSubmitPlan(
         txId: FirstClassByteArray,
@@ -123,9 +124,19 @@ internal class PendingSubmitPlanStore(
         )
     }
 
-    private fun FirstClassByteArray.toStableKey() = namespacePrefix + byteArray.toHexReversed()
+    private suspend fun retainLoadedPlansFor(txIds: List<FirstClassByteArray>) {
+        val retainedTransactionIds = txIds.map { it.toStableKey() }.toSet()
+        val removed =
+            plansByTransactionId.keys.removeAll { transactionId ->
+                (namespacePrefix.isBlank() || transactionId.startsWith(namespacePrefix)) &&
+                    transactionId !in retainedTransactionIds
+            }
+        if (removed) {
+            saveToPreferences()
+        }
+    }
 
-    private fun String.isInNamespace() = namespacePrefix.isBlank() || startsWith(namespacePrefix)
+    private fun FirstClassByteArray.toStableKey() = namespacePrefix + byteArray.toHexReversed()
 
     sealed interface StoredSubmitPlan {
         data object AwaitingPlan : StoredSubmitPlan

@@ -72,7 +72,10 @@ class SdkBroadcasterTest {
             val retainCompleted = CompletableDeferred<Unit>()
             val retainJob =
                 launch(start = CoroutineStart.UNDISPATCHED) {
-                    pendingSubmitPlanStore.retainPlansFor(listOf(encodedTransaction.txId))
+                    pendingSubmitPlanStore.loadTransactionsAndRetainSubmitPlans(
+                        loadTransactions = { listOf(encodedTransaction.txId) },
+                        transactionId = { it }
+                    )
                     retainCompleted.complete(Unit)
                 }
 

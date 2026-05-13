@@ -93,7 +93,10 @@ class PendingSubmitPlanStoreTest {
 
             firstStore.storeSubmitPlan(retainedTransaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
             firstStore.storeSubmitPlan(prunedTransaction, TransactionSubmitPlan(listOf(endpoint("b.z.cash"))))
-            firstStore.retainPlansFor(listOf(retainedTransaction.txId))
+            firstStore.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions = { listOf(retainedTransaction.txId) },
+                transactionId = { it }
+            )
 
             val secondStore = PendingSubmitPlanStore(preferenceProvider)
             assertEquals(

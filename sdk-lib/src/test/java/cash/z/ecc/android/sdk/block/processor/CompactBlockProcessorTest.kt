@@ -19,6 +19,10 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
@@ -28,6 +32,7 @@ import kotlin.reflect.full.callSuspend
 import kotlin.reflect.full.declaredMemberFunctions
 import kotlin.reflect.jvm.isAccessible
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -129,6 +134,52 @@ class CompactBlockProcessorTest {
 
             verify(txManager, never()).submit(encodedTransaction)
             assertTrue(submitter.submissions.contains(Submission(encodedTransaction.txId, endpoint)))
+        }
+    }
+
+    @Test
+    fun resubmission_does_not_prune_plan_created_after_candidate_list_lookup() {
+        runBlocking {
+            val createdTransaction = transactionOverview(1)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+            val createCompleted = CompletableDeferred<Unit>()
+            val testScope = this
+            lateinit var createJob: Job
+
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenAnswer {
+                createJob =
+                    testScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
+                            listOf(
+                                CreatedTransaction(
+                                    txId = createdTransaction.rawId,
+                                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                                    expiryHeight = createdTransaction.expiryHeight
+                                )
+                            )
+                        }
+                        createCompleted.complete(Unit)
+                    }
+
+                assertFalse(createCompleted.isCompleted)
+                emptyList<DbTransactionOverview>()
+            }
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+            createJob.join()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan,
+                pendingSubmitPlanStore.getSubmitPlan(createdTransaction.rawId)
+            )
         }
     }
 

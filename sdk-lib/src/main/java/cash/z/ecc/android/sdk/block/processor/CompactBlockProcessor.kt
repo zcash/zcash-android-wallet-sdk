@@ -2690,10 +2690,7 @@ class CompactBlockProcessor internal constructor(
         if (blockHeight == null) {
             return
         }
-        val list =
-            repository
-                .findUnminedTransactionsWithinExpiry(blockHeight)
-        pendingSubmitPlanStore.retainPlansFor(list.map { it.rawId })
+        val list = findTransactionsEligibleForResubmission(blockHeight)
 
         Twig.debug { "Trx resubmission: ${list.size}, ${list.joinToString(separator = ", ") { it.txIdString() }}" }
 
@@ -2755,6 +2752,16 @@ class CompactBlockProcessor internal constructor(
             Twig.debug { "Trx resubmission: No trx for resubmission found" }
         }
     }
+
+    private suspend fun findTransactionsEligibleForResubmission(
+        blockHeight: BlockHeight
+    ): List<DbTransactionOverview> =
+        pendingSubmitPlanStore.loadTransactionsAndRetainSubmitPlans(
+            loadTransactions = {
+                repository.findUnminedTransactionsWithinExpiry(blockHeight)
+            },
+            transactionId = { it.rawId }
+        )
 
     suspend fun getUtxoCacheBalance(address: String): Zatoshi = backend.getDownloadedUtxoBalance(address)
 
