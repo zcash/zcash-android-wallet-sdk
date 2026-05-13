@@ -1334,6 +1334,7 @@ class VotingRustBackendTest {
         accountIndex = ACCOUNT_INDEX,
         notes = notes,
         walletSeed = walletSeed,
+        hotkeySeed = HOTKEY_SEED,
         seedFingerprint = SEED_FINGERPRINT,
         roundName = ROUND_NAME,
         addressIndex = ADDRESS_INDEX
