@@ -67,6 +67,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sig
         let hotkey_seed =
             java_secret_bytes_at_least(env, &hotkey_seed, "hotkey_seed", PROTOCOL_FIELD_BYTES)?;
         let commitment = java_vote_commitment_bundle(env, &commitment)?.bundle;
+        // zcash_voting owns the canonical cast-vote sighash domain and field
+        // order. The JNI layer keeps this typed and passes the bundle fields
+        // through instead of reconstructing the sighash locally.
         let sig = voting::vote_commitment::sign_cast_vote(
             hotkey_seed.expose_secret(),
             u32::try_from(network_id)
