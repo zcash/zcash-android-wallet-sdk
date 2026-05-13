@@ -152,6 +152,23 @@ internal interface VotingBackendBridge {
 
     suspend fun warmProvingCaches()
 
+    suspend fun decomposeWeight(weight: Long): LongArray
+
+    suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean
+    ): Array<JniSharePayload>
+
+    suspend fun signCastVote(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
+    ): ByteArray
+
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
@@ -191,6 +208,32 @@ private class RustVotingBackendBridge(
 
     override suspend fun warmProvingCaches() =
         rustBackend.warmProvingCaches()
+
+    override suspend fun decomposeWeight(weight: Long): LongArray =
+        rustBackend.decomposeWeight(weight)
+
+    override suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean
+    ): Array<JniSharePayload> =
+        rustBackend.buildSharePayloads(
+            commitment,
+            voteDecision,
+            numOptions,
+            vcTreePosition,
+            singleShareMode
+        )
+
+    override suspend fun signCastVote(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
+    ): ByteArray =
+        rustBackend.signCastVote(hotkeySeed, networkId, accountIndex, commitment)
 
     override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
         rustBackend.extractOrchardFvkFromUfvk(ufvk, networkId)

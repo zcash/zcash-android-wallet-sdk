@@ -15,6 +15,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
 import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
@@ -569,6 +570,23 @@ class TypesafeVotingBackendImplTest {
             unused()
 
         override suspend fun warmProvingCaches() = unused()
+
+        override suspend fun decomposeWeight(weight: Long): LongArray = unused()
+
+        override suspend fun buildSharePayloads(
+            commitment: JniVoteCommitmentResult,
+            voteDecision: Int,
+            numOptions: Int,
+            vcTreePosition: Long,
+            singleShareMode: Boolean
+        ): Array<JniSharePayload> = unused()
+
+        override suspend fun signCastVote(
+            hotkeySeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int,
+            commitment: JniVoteCommitmentResult
+        ): ByteArray = unused()
 
         override suspend fun extractOrchardFvkFromUfvk(
             ufvk: String,
