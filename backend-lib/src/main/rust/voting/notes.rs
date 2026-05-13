@@ -162,32 +162,36 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
         let account_uuid =
             zcash_client_sqlite::AccountUuid::from_uuid(uuid::Uuid::from_bytes(account_uuid_bytes));
 
-        let wallet_db = open_wallet_db_read_only(&path, network)?;
-        let fully_scanned_height = wallet_db
-            .block_fully_scanned()
-            .map_err(|e| anyhow!("block_fully_scanned: {}", e))?
-            .map(|metadata| metadata.block_height());
-        require_fully_scanned_to_snapshot(fully_scanned_height, height)?;
+        let mut wallet_db = open_wallet_db_read_only(&path, network)?;
+        let notes = wallet_db.transactionally(|wallet_db| {
+            let fully_scanned_height = wallet_db
+                .block_fully_scanned()
+                .map_err(|e| anyhow!("block_fully_scanned: {}", e))?
+                .map(|metadata| metadata.block_height());
+            require_fully_scanned_to_snapshot(fully_scanned_height, height)?;
 
-        let account = wallet_db
-            .get_account(account_uuid)
-            .map_err(|e| anyhow!("get_account: {}", e))?
-            .ok_or_else(|| anyhow!("account not found in wallet DB"))?;
-        let ufvk = account
-            .ufvk()
-            .ok_or_else(|| anyhow!("account has no UFVK"))?
-            .clone();
+            let account = wallet_db
+                .get_account(account_uuid)
+                .map_err(|e| anyhow!("get_account: {}", e))?
+                .ok_or_else(|| anyhow!("account not found in wallet DB"))?;
+            let ufvk = account
+                .ufvk()
+                .ok_or_else(|| anyhow!("account has no UFVK"))?
+                .clone();
 
-        // Upstream interprets "unspent" at the requested height: spends mined
-        // after the snapshot remain eligible for that snapshot.
-        let notes = wallet_db
-            .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
-            .map_err(|e| anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e))?;
+            // Upstream interprets "unspent" at the requested height: spends mined
+            // after the snapshot remain eligible for that snapshot.
+            let notes = wallet_db
+                .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
+                .map_err(|e| {
+                    anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e)
+                })?;
 
-        let notes = notes
-            .iter()
-            .map(|note| received_note_to_note_info(note, &ufvk, &network))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            notes
+                .iter()
+                .map(|note| received_note_to_note_info(note, &ufvk, &network))
+                .collect::<anyhow::Result<Vec<_>>>()
+        })?;
 
         make_jni_note_info_array(env, notes)
     });
