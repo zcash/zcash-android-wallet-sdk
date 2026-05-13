@@ -397,6 +397,52 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun store_tree_state_rejects_snapshot_height_mismatch() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val db = backend.openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+
+                assertFailsWith<RuntimeException> {
+                    db.storeTreeState(ROUND_ID, backend.treeStateFixtureForTesting())
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun store_tree_state_rejects_nc_root_mismatch() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val db = backend.openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = 1,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+
+                assertFailsWith<RuntimeException> {
+                    db.storeTreeState(ROUND_ID, backend.treeStateFixtureForTesting())
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun store_tree_state_accepts_matching_snapshot_fixture() =
         runTest {
             val backend = VotingRustBackend.new()
