@@ -2,8 +2,37 @@ package cash.z.ecc.android.sdk.internal.model.voting
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class JniVotingModelsTest {
+    @Test
+    fun vote_commitment_result_to_string_redacts_signing_material() {
+        val text =
+            JniVoteCommitmentResult(
+                vanNullifier = byteArrayOf(1),
+                voteAuthorityNoteNew = byteArrayOf(2),
+                voteCommitment = byteArrayOf(3),
+                proposalId = 4,
+                proof = byteArrayOf(5),
+                encShares = listOf(JniWireEncryptedShare(byteArrayOf(6), byteArrayOf(7), 0)),
+                anchorHeight = 8,
+                voteRoundId = "round",
+                sharesHash = byteArrayOf(9),
+                shareBlinds = listOf(byteArrayOf(101)),
+                shareComms = listOf(byteArrayOf(10)),
+                rVpk = byteArrayOf(102),
+                alphaV = byteArrayOf(103)
+            ).toString()
+
+        assertTrue(text.contains("shareBlinds=***"))
+        assertTrue(text.contains("rVpk=***"))
+        assertTrue(text.contains("alphaV=***"))
+        assertFalse(text.contains("101"))
+        assertFalse(text.contains("102"))
+        assertFalse(text.contains("103"))
+    }
+
     @Test
     fun note_info_constructor_matches_rust_jni_signature() {
         val constructor =

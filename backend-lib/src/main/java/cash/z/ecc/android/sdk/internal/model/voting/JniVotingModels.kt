@@ -137,10 +137,11 @@ data class JniWireEncryptedShare(
 /**
  * Typed JNI carrier for vote commitment outputs.
  *
- * `shareBlinds` and `alphaV` are transient reveal/signing inputs. They should
- * not be persisted or logged; they are carried here only because follow-up JNI
- * calls consume the typed commitment result. Encrypted-share plaintext and
- * encryption randomness remain Rust-only and are not included in [encShares].
+ * `shareBlinds`, `rVpk`, and `alphaV` are transient reveal/signing inputs.
+ * They should not be persisted or logged; they are carried here only because
+ * follow-up JNI calls consume the typed commitment result. Encrypted-share
+ * plaintext and encryption randomness remain Rust-only and are not included in
+ * [encShares].
  */
 @Keep
 data class JniVoteCommitmentResult(
@@ -187,6 +188,22 @@ data class JniVoteCommitmentResult(
         rVpk = rVpk,
         alphaV = alphaV
     )
+
+    override fun toString(): String =
+        "JniVoteCommitmentResult(" +
+            "vanNullifierBytes=${vanNullifier.size}, " +
+            "voteAuthorityNoteNewBytes=${voteAuthorityNoteNew.size}, " +
+            "voteCommitmentBytes=${voteCommitment.size}, " +
+            "proposalId=$proposalId, " +
+            "proofBytes=${proof.size}, " +
+            "encShares=${encShares.size}, " +
+            "anchorHeight=$anchorHeight, " +
+            "voteRoundId=$voteRoundId, " +
+            "sharesHashBytes=${sharesHash.size}, " +
+            "shareBlinds=***, " +
+            "shareComms=${shareComms.size}, " +
+            "rVpk=***, " +
+            "alphaV=***)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
