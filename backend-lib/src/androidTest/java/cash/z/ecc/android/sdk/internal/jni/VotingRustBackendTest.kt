@@ -924,6 +924,35 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun build_share_payloads_single_share_mode_keeps_commitment_context() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val commitment = jniVoteCommitmentResult()
+
+            val payloads =
+                backend.buildSharePayloads(
+                    commitment = commitment,
+                    voteDecision = 1,
+                    numOptions = 2,
+                    vcTreePosition = 42,
+                    singleShareMode = true
+                )
+
+            assertEquals(1, payloads.size)
+            val payload = payloads.single()
+            assertContentEquals(commitment.sharesHash, payload.sharesHash)
+            assertEquals(commitment.proposalId, payload.proposalId)
+            assertEquals(1, payload.voteDecision)
+            assertEquals(42, payload.treePosition)
+            assertEquals(0, payload.encShare.shareIndex)
+            assertEquals(commitment.encShares.first(), payload.encShare)
+            assertEquals(commitment.encShares, payload.allEncShares)
+            assertEquals(JNI_VOTE_SHARE_COUNT, payload.allEncShares.size)
+            assertContentEquals(commitment.shareComms.first(), payload.shareComms.first())
+            assertContentEquals(commitment.shareBlinds.first(), payload.primaryBlind)
+        }
+
+    @Test
     fun build_share_payloads_rejects_malformed_share_counts() =
         runTest {
             val backend = VotingRustBackend.new()
