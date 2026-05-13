@@ -159,6 +159,10 @@ fn require_delegation_ready_for_vote(
     bundle_index: u32,
     witness: &voting::tree_sync::VanWitness,
 ) -> anyhow::Result<()> {
+    // Callers hold VotingDbHandle::access_lock while this read-check sequence
+    // runs. Managed handles for the same DB path and wallet share that lock, so
+    // SDK-exposed writers cannot change delegation/VAN state between these
+    // reads and the subsequent vote commitment build.
     let conn = db.conn();
     let wallet_id = db.wallet_id();
     voting::storage::queries::load_delegation_submission_data(
