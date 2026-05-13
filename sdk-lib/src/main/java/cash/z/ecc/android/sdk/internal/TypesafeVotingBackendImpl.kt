@@ -1,9 +1,13 @@
+@file:Suppress("TooManyFunctions")
+
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.JNI_DELEGATION_PUBLIC_INPUT_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_GOVERNANCE_NULLIFIER_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_PROTOCOL_FIELD_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_SPEND_AUTH_SIG_BYTES_SIZE
+import cash.z.ecc.android.sdk.internal.jni.JNI_VAN_WITNESS_PATH_DEPTH
+import cash.z.ecc.android.sdk.internal.jni.JNI_VOTE_SHARE_COUNT
 import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
@@ -14,8 +18,12 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
+import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -48,6 +56,52 @@ internal class TypesafeVotingBackendImpl(
 
     override suspend fun warmProvingCaches() =
         rustBackend().warmProvingCaches()
+
+    override suspend fun decomposeWeight(weight: Long): List<Long> =
+        rustBackend().decomposeWeight(weight).asList()
+
+    override suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean
+    ): List<JniSharePayload> {
+        commitment.requireValid()
+        return rustBackend()
+            .buildSharePayloads(
+                commitment,
+                voteDecision,
+                numOptions,
+                vcTreePosition,
+                singleShareMode
+            ).also { payloads ->
+                val expectedCount = if (singleShareMode) 1 else JNI_VOTE_SHARE_COUNT
+                require(payloads.size == expectedCount) {
+                    "sharePayloads must contain $expectedCount entries, got ${payloads.size}"
+                }
+            }.onEach { payload ->
+                payload.requireValid()
+            }.asList()
+    }
+
+    override suspend fun signCastVote(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
+    ): ByteArray {
+        commitment.requireValid()
+        return rustBackend()
+            .signCastVote(
+                hotkeySeed,
+                networkId,
+                accountIndex,
+                commitment
+            ).also { sig ->
+                sig.requireByteArraySize("voteAuthSig", JNI_SPEND_AUTH_SIG_BYTES_SIZE)
+            }
+    }
 
     override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
         rustBackend().extractOrchardFvkFromUfvk(ufvk, networkId)
@@ -98,6 +152,23 @@ internal interface VotingBackendBridge {
 
     suspend fun warmProvingCaches()
 
+    suspend fun decomposeWeight(weight: Long): LongArray
+
+    suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean
+    ): Array<JniSharePayload>
+
+    suspend fun signCastVote(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
+    ): ByteArray
+
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
@@ -137,6 +208,32 @@ private class RustVotingBackendBridge(
 
     override suspend fun warmProvingCaches() =
         rustBackend.warmProvingCaches()
+
+    override suspend fun decomposeWeight(weight: Long): LongArray =
+        rustBackend.decomposeWeight(weight)
+
+    override suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean
+    ): Array<JniSharePayload> =
+        rustBackend.buildSharePayloads(
+            commitment,
+            voteDecision,
+            numOptions,
+            vcTreePosition,
+            singleShareMode
+        )
+
+    override suspend fun signCastVote(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
+    ): ByteArray =
+        rustBackend.signCastVote(hotkeySeed, networkId, accountIndex, commitment)
 
     override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
         rustBackend.extractOrchardFvkFromUfvk(ufvk, networkId)
@@ -267,6 +364,34 @@ internal interface VotingDbBackend {
         networkId: Int,
         notes: List<JniNoteInfo>
     ): Array<JniWitnessData>
+
+    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+
+    suspend fun resetTreeClient(roundId: String)
+
+    suspend fun resetAllTreeClients()
+
+    suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long)
+
+    suspend fun generateVanWitness(
+        roundId: String,
+        bundleIndex: Int,
+        anchorHeight: Long
+    ): JniVanWitness
+
+    suspend fun buildVoteCommitment(
+        roundId: String,
+        bundleIndex: Int,
+        hotkeySeed: ByteArray,
+        proposalId: Int,
+        choice: Int,
+        numOptions: Int,
+        witness: JniVanWitness,
+        networkId: Int,
+        accountIndex: Int,
+        singleShare: Boolean,
+        proofProgress: VotingProofProgressCallback?
+    ): JniVoteCommitmentResult
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -435,6 +560,52 @@ private class RustVotingDbBackend(
             walletDbPath,
             networkId,
             notes
+        )
+
+    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
+        votingDb.syncVoteTree(roundId, nodeUrl)
+
+    override suspend fun resetTreeClient(roundId: String) =
+        votingDb.resetTreeClient(roundId)
+
+    override suspend fun resetAllTreeClients() =
+        votingDb.resetTreeClient("")
+
+    override suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long) =
+        votingDb.storeVanPosition(roundId, bundleIndex, position)
+
+    override suspend fun generateVanWitness(
+        roundId: String,
+        bundleIndex: Int,
+        anchorHeight: Long
+    ): JniVanWitness =
+        votingDb.generateVanWitness(roundId, bundleIndex, anchorHeight)
+
+    override suspend fun buildVoteCommitment(
+        roundId: String,
+        bundleIndex: Int,
+        hotkeySeed: ByteArray,
+        proposalId: Int,
+        choice: Int,
+        numOptions: Int,
+        witness: JniVanWitness,
+        networkId: Int,
+        accountIndex: Int,
+        singleShare: Boolean,
+        proofProgress: VotingProofProgressCallback?
+    ): JniVoteCommitmentResult =
+        votingDb.buildVoteCommitment(
+            roundId,
+            bundleIndex,
+            hotkeySeed,
+            proposalId,
+            choice,
+            numOptions,
+            witness,
+            networkId,
+            accountIndex,
+            singleShare,
+            proofProgress
         )
 }
 
@@ -615,6 +786,57 @@ internal class TypesafeVotingDbImpl(
             )
         return witnesses.asList()
     }
+
+    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
+        votingDb.syncVoteTree(roundId, nodeUrl)
+
+    override suspend fun resetTreeClient(roundId: String) =
+        votingDb.resetTreeClient(roundId)
+
+    override suspend fun resetAllTreeClients() =
+        votingDb.resetAllTreeClients()
+
+    override suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long) =
+        votingDb.storeVanPosition(roundId, bundleIndex, position)
+
+    override suspend fun generateVanWitness(
+        roundId: String,
+        bundleIndex: Int,
+        anchorHeight: Long
+    ): JniVanWitness =
+        votingDb.generateVanWitness(roundId, bundleIndex, anchorHeight).also { witness ->
+            witness.requireValid()
+        }
+
+    override suspend fun buildVoteCommitment(
+        roundId: String,
+        bundleIndex: Int,
+        hotkeySeed: ByteArray,
+        proposalId: Int,
+        choice: Int,
+        numOptions: Int,
+        witness: JniVanWitness,
+        networkId: Int,
+        accountIndex: Int,
+        singleShare: Boolean,
+        proofProgress: ((Double) -> Unit)?
+    ): JniVoteCommitmentResult =
+        votingDb
+            .buildVoteCommitment(
+                roundId,
+                bundleIndex,
+                hotkeySeed,
+                proposalId,
+                choice,
+                numOptions,
+                witness,
+                networkId,
+                accountIndex,
+                singleShare,
+                proofProgress?.asVotingProgressCallback()
+            ).also { commitment ->
+                commitment.requireValid()
+            }
 }
 
 internal fun JniGovernancePczt.toGovernancePcztResult(): GovernancePcztResult {
@@ -690,6 +912,45 @@ internal fun JniDelegationSubmissionResult.toDelegationSubmissionResult(): Deleg
     )
 }
 
+private fun JniVanWitness.requireValid() {
+    authPath.requireByteArrayCount("authPath", JNI_VAN_WITNESS_PATH_DEPTH)
+    authPath.requireEachByteArraySize("authPath", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+}
+
+private fun JniWireEncryptedShare.requireValid(name: String) {
+    c1.requireByteArraySize("$name.c1", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    c2.requireByteArraySize("$name.c2", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    require(shareIndex in 0 until JNI_VOTE_SHARE_COUNT) {
+        "$name.shareIndex must be in 0..${JNI_VOTE_SHARE_COUNT - 1}, got $shareIndex"
+    }
+}
+
+private fun JniVoteCommitmentResult.requireValid() {
+    vanNullifier.requireByteArraySize("vanNullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    voteAuthorityNoteNew.requireByteArraySize("voteAuthorityNoteNew", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    voteCommitment.requireByteArraySize("voteCommitment", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    proof.requireByteArrayNotEmpty("proof")
+    encShares.requireCount("encShares", JNI_VOTE_SHARE_COUNT)
+    encShares.forEachIndexed { index, share -> share.requireValid("encShares[$index]") }
+    sharesHash.requireByteArraySize("sharesHash", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    shareBlinds.requireByteArrayCount("shareBlinds", JNI_VOTE_SHARE_COUNT)
+    shareBlinds.requireEachByteArraySize("shareBlinds", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    shareComms.requireByteArrayCount("shareComms", JNI_VOTE_SHARE_COUNT)
+    shareComms.requireEachByteArraySize("shareComms", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    rVpk.requireByteArraySize("rVpk", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    alphaV.requireByteArraySize("alphaV", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+}
+
+private fun JniSharePayload.requireValid() {
+    sharesHash.requireByteArraySize("sharesHash", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    encShare.requireValid("encShare")
+    allEncShares.requireCount("allEncShares", JNI_VOTE_SHARE_COUNT)
+    allEncShares.forEachIndexed { index, share -> share.requireValid("allEncShares[$index]") }
+    shareComms.requireByteArrayCount("shareComms", JNI_VOTE_SHARE_COUNT)
+    shareComms.requireEachByteArraySize("shareComms", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    primaryBlind.requireByteArraySize("primaryBlind", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+}
+
 private fun ((Double) -> Unit).asVotingProgressCallback() =
     VotingProofProgressCallback { progress -> invoke(progress) }
 
@@ -704,6 +965,11 @@ private fun ByteArray.requireByteArrayNotEmpty(name: String) =
     }
 
 private fun List<ByteArray>.requireByteArrayCount(name: String, expectedCount: Int) =
+    require(size == expectedCount) {
+        "$name must contain $expectedCount entries, got $size"
+    }
+
+private fun <T> List<T>.requireCount(name: String, expectedCount: Int) =
     require(size == expectedCount) {
         "$name must contain $expectedCount entries, got $size"
     }

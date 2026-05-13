@@ -11,6 +11,9 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
+import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
@@ -66,6 +69,47 @@ class VotingRustBackend private constructor() {
     suspend fun warmProvingCaches() =
         withContext(Dispatchers.IO) {
             warmProvingCachesNative()
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun decomposeWeight(weight: Long): LongArray =
+        withContext(Dispatchers.IO) {
+            decomposeWeightNative(weight)
+                ?: error("decomposeWeight returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean
+    ): Array<JniSharePayload> =
+        withContext(Dispatchers.IO) {
+            buildSharePayloadsNative(
+                commitment,
+                voteDecision,
+                numOptions,
+                vcTreePosition,
+                singleShareMode
+            ) ?: error("buildSharePayloads returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun signCastVote(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            signCastVoteNative(
+                hotkeySeed,
+                networkId,
+                accountIndex,
+                commitment
+            ) ?: error("signCastVote returned null")
         }
 
     @Throws(RuntimeException::class)
@@ -410,6 +454,77 @@ class VotingRustBackend private constructor() {
                 ) ?: error("generateNoteWitnesses returned null")
             }
 
+        @Throws(RuntimeException::class)
+        suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
+            withHandle { handle ->
+                syncVoteTreeNative(handle, roundId, nodeUrl).also { height ->
+                    check(height >= 0) {
+                        "syncVoteTree failed for roundId=$roundId"
+                    }
+                }
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun resetTreeClient(roundId: String) =
+            withHandle { handle ->
+                check(resetTreeClientNative(handle, roundId)) {
+                    "resetTreeClient failed for roundId=$roundId"
+                }
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun storeVanPosition(
+            roundId: String,
+            bundleIndex: Int,
+            position: Long
+        ) = withHandle { handle ->
+            check(storeVanPositionNative(handle, roundId, bundleIndex, position)) {
+                "storeVanPosition failed for roundId=$roundId bundleIndex=$bundleIndex"
+            }
+        }
+
+        @Throws(RuntimeException::class)
+        suspend fun generateVanWitness(
+            roundId: String,
+            bundleIndex: Int,
+            anchorHeight: Long
+        ): JniVanWitness =
+            withHandle { handle ->
+                generateVanWitnessNative(handle, roundId, bundleIndex, anchorHeight)
+                    ?: error("generateVanWitness returned null")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun buildVoteCommitment(
+            roundId: String,
+            bundleIndex: Int,
+            hotkeySeed: ByteArray,
+            proposalId: Int,
+            choice: Int,
+            numOptions: Int,
+            witness: JniVanWitness,
+            networkId: Int,
+            accountIndex: Int,
+            singleShare: Boolean,
+            proofProgress: VotingProofProgressCallback?
+        ): JniVoteCommitmentResult =
+            withHandle { handle ->
+                buildVoteCommitmentNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    hotkeySeed,
+                    proposalId,
+                    choice,
+                    numOptions,
+                    witness,
+                    networkId,
+                    accountIndex,
+                    singleShare,
+                    proofProgress?.withVotingDbReentryGuard()
+                ) ?: error("buildVoteCommitment returned null")
+            }
+
         @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
         internal suspend fun storeDelegationProofFixtureForTesting(
             roundId: String,
@@ -468,6 +583,29 @@ class VotingRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun warmProvingCachesNative()
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun decomposeWeightNative(weight: Long): LongArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildSharePayloadsNative(
+            commitment: JniVoteCommitmentResult,
+            voteDecision: Int,
+            numOptions: Int,
+            vcTreePosition: Long,
+            singleShareMode: Boolean
+        ): Array<JniSharePayload>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun signCastVoteNative(
+            hotkeySeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int,
+            commitment: JniVoteCommitmentResult
+        ): ByteArray?
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -683,6 +821,56 @@ class VotingRustBackend private constructor() {
             networkId: Int,
             notes: Array<JniNoteInfo>
         ): Array<JniWitnessData>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun syncVoteTreeNative(
+            dbHandle: Long,
+            roundId: String,
+            nodeUrl: String
+        ): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun resetTreeClientNative(
+            dbHandle: Long,
+            roundId: String
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeVanPositionNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            position: Long
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun generateVanWitnessNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            anchorHeight: Long
+        ): JniVanWitness?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildVoteCommitmentNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            hotkeySeed: ByteArray,
+            proposalId: Int,
+            choice: Int,
+            numOptions: Int,
+            witness: JniVanWitness,
+            networkId: Int,
+            accountIndex: Int,
+            singleShare: Boolean,
+            proofProgress: VotingProofProgressCallback?
+        ): JniVoteCommitmentResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)

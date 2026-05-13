@@ -3,6 +3,9 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
+import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
@@ -22,6 +25,23 @@ internal interface TypesafeVotingBackend {
     suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): JniBundleSetupResult
 
     suspend fun warmProvingCaches()
+
+    suspend fun decomposeWeight(weight: Long): List<Long>
+
+    suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean = false
+    ): List<JniSharePayload>
+
+    suspend fun signCastVote(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        commitment: JniVoteCommitmentResult
+    ): ByteArray
 
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
@@ -146,6 +166,34 @@ internal interface TypesafeVotingDb {
         networkId: Int,
         notes: List<VotingNoteInfo>
     ): List<JniWitnessData>
+
+    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+
+    suspend fun resetTreeClient(roundId: String)
+
+    suspend fun resetAllTreeClients()
+
+    suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long)
+
+    suspend fun generateVanWitness(
+        roundId: String,
+        bundleIndex: Int,
+        anchorHeight: Long
+    ): JniVanWitness
+
+    suspend fun buildVoteCommitment(
+        roundId: String,
+        bundleIndex: Int,
+        hotkeySeed: ByteArray,
+        proposalId: Int,
+        choice: Int,
+        numOptions: Int,
+        witness: JniVanWitness,
+        networkId: Int,
+        accountIndex: Int,
+        singleShare: Boolean = false,
+        proofProgress: ((Double) -> Unit)? = null
+    ): JniVoteCommitmentResult
 }
 
 internal data class VotingNoteInfo(
