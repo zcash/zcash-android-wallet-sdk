@@ -46,8 +46,12 @@ import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferencePro
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.StandardPreferenceKeys.SDK_VERSION_OF_LAST_FIX_WITNESSES_CALL
+import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManager
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManagerImpl
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
+import cash.z.ecc.android.sdk.internal.transaction.SdkBroadcaster
+import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoder
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoderImpl
 import cash.z.ecc.android.sdk.model.Account
@@ -105,14 +109,12 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -157,6 +159,8 @@ class SdkSynchronizer private constructor(
     private val torClient: TorClient?,
     private val walletClient: CombinedWalletClient,
     private val walletClientFactory: WalletClientFactory,
+    private val defaultSubmitEndpoint: LightWalletEndpoint,
+    private val pendingSubmitPlanStore: PendingSubmitPlanStore,
     private val sdkFlags: SdkFlags
 ) : CloseableSynchronizer {
     companion object {
@@ -197,6 +201,8 @@ class SdkSynchronizer private constructor(
             torClient: TorClient?,
             walletClient: CombinedWalletClient,
             walletClientFactory: WalletClientFactory,
+            defaultSubmitEndpoint: LightWalletEndpoint,
+            pendingSubmitPlanStore: PendingSubmitPlanStore,
             sdkFlags: SdkFlags
         ): CloseableSynchronizer {
             val synchronizerKey = SynchronizerKey(zcashNetwork, alias)
@@ -216,6 +222,8 @@ class SdkSynchronizer private constructor(
                     torClient = torClient,
                     walletClient = walletClient,
                     walletClientFactory = walletClientFactory,
+                    defaultSubmitEndpoint = defaultSubmitEndpoint,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore,
                     sdkFlags = sdkFlags
                 ).apply {
                     instances[synchronizerKey] = InstanceState.Active
@@ -288,6 +296,19 @@ class SdkSynchronizer private constructor(
     private val _status = MutableStateFlow(DISCONNECTED)
 
     val coroutineScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val sdkBroadcaster =
+        SdkBroadcaster(
+            txManager = txManager,
+            transactionSubmitter =
+                EndpointTransactionSubmitter(
+                    walletClientFactory = walletClientFactory,
+                    sdkFlags = sdkFlags
+                ),
+            pendingSubmitPlanStore = pendingSubmitPlanStore
+        )
+
+    override val broadcaster: Broadcaster = sdkBroadcaster
 
     override val walletBalances = processor.walletBalances.asStateFlow()
 
@@ -1063,30 +1084,13 @@ class SdkSynchronizer private constructor(
         proposal: Proposal,
         usk: UnifiedSpendingKey
     ): Flow<TransactionSubmitResult> {
-        // Internally, this logic submits and checks every incoming transaction, and once [Failure] or
-        // [NotAttempted] submission result occurs, it returns [NotAttempted] for the rest of them
-        var anySubmissionFailed = false
-        return txManager
-            .createProposedTransactions(proposal, usk)
-            .asFlow()
-            .map { transaction ->
-                if (anySubmissionFailed) {
-                    TransactionSubmitResult.NotAttempted(transaction.txId)
-                } else {
-                    val submission = txManager.submit(transaction)
-                    when (submission) {
-                        is TransactionSubmitResult.Success -> {
-                            // Expected state
-                        }
-
-                        is TransactionSubmitResult.Failure,
-                        is TransactionSubmitResult.NotAttempted -> {
-                            anySubmissionFailed = true
-                        }
-                    }
-                    submission
-                }
-            }
+        // This preserves the legacy API contract by creating locally, then submitting each
+        // created transaction to the builder-configured default endpoint.
+        return sdkBroadcaster.createAndSubmitProposedTransactions(
+            proposal = proposal,
+            usk = usk,
+            endpoint = defaultSubmitEndpoint
+        )
     }
 
     override suspend fun createPcztFromProposal(
@@ -1104,9 +1108,13 @@ class SdkSynchronizer private constructor(
         pcztWithProofs: Pczt,
         pcztWithSignatures: Pczt
     ): Flow<TransactionSubmitResult> {
-        // Internally, this logic submits and checks the newly stored and encoded transaction
-        return flowOf(txManager.extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures))
-            .map { transaction -> txManager.submit(transaction) }
+        // This preserves the legacy API contract by submitting the stored transaction to the
+        // builder-configured default endpoint.
+        return sdkBroadcaster.createAndSubmitTransactionFromPczt(
+            pcztWithProofs = pcztWithProofs,
+            pcztWithSignatures = pcztWithSignatures,
+            endpoint = defaultSubmitEndpoint
+        )
     }
 
     override suspend fun refreshUtxos(
@@ -1388,7 +1396,9 @@ internal object DefaultSynchronizerFactory {
         birthdayHeight: BlockHeight,
         txManager: OutboundTransactionManager,
         sdkFlags: SdkFlags,
-        saplingParamFetcher: SaplingParamFetcher
+        saplingParamFetcher: SaplingParamFetcher,
+        pendingSubmitPlanStore: PendingSubmitPlanStore,
+        submitPlanExecutor: SubmitPlanExecutor
     ): CompactBlockProcessor =
         CompactBlockProcessor(
             backend = backend,
@@ -1397,7 +1407,9 @@ internal object DefaultSynchronizerFactory {
             repository = repository,
             txManager = txManager,
             sdkFlags = sdkFlags,
-            saplingParamFetcher = saplingParamFetcher
+            saplingParamFetcher = saplingParamFetcher,
+            pendingSubmitPlanStore = pendingSubmitPlanStore,
+            submitPlanExecutor = submitPlanExecutor
         )
 }
 
