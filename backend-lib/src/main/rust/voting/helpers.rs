@@ -36,7 +36,7 @@ const JNI_NOTE_INFO_CTOR_SIG: &str = "([B[BJJ[B[B[BILjava/lang/String;)V";
 // in JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_WITNESS_DATA_CTOR_SIG: &str = "([BJ[B[[B)V";
 // Must match JniVanWitness(Array<ByteArray>, Long, Long) in
-// JniVotingModels.kt.
+// JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_VAN_WITNESS_CTOR_SIG: &str = "([[BJJ)V";
 // Must match JniWireEncryptedShare(ByteArray, ByteArray, Int) in
 // JniVotingModels.kt.
@@ -44,11 +44,11 @@ const JNI_WIRE_ENCRYPTED_SHARE_CTOR_SIG: &str = "([B[BI)V";
 // Must match JniVoteCommitmentResult(ByteArray, ByteArray, ByteArray, Int,
 // ByteArray, Array<JniWireEncryptedShare>, Long, String, ByteArray,
 // Array<ByteArray>, Array<ByteArray>, ByteArray, ByteArray) in
-// JniVotingModels.kt.
+// JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG: &str = "([B[B[BI[B[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V";
 // Must match JniSharePayload(ByteArray, Int, Int, JniWireEncryptedShare,
 // Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray) in
-// JniVotingModels.kt.
+// JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[[B[B)V";
 // Must match JniVotingHotkey(ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([BLjava/lang/String;)V";

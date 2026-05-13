@@ -70,18 +70,81 @@ class JniVotingModelsTest {
         )
     }
 
+    @Test
+    fun van_witness_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniVanWitness::class.java.getDeclaredConstructor(
+                Array<ByteArray>::class.java,
+                Long::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType
+            )
+
+        assertEquals(
+            "([[BJJ)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    @Test
+    fun vote_commitment_result_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniVoteCommitmentResult::class.java.getDeclaredConstructor(
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Array<JniWireEncryptedShare>::class.java,
+                Long::class.javaPrimitiveType,
+                String::class.java,
+                ByteArray::class.java,
+                Array<ByteArray>::class.java,
+                Array<ByteArray>::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java
+            )
+
+        assertEquals(
+            "([B[B[BI[B[Lcash/z/ecc/android/sdk/internal/model/voting/" +
+                "JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    @Test
+    fun share_payload_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniSharePayload::class.java.getDeclaredConstructor(
+                ByteArray::class.java,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                JniWireEncryptedShare::class.java,
+                Long::class.javaPrimitiveType,
+                Array<JniWireEncryptedShare>::class.java,
+                Array<ByteArray>::class.java,
+                ByteArray::class.java
+            )
+
+        assertEquals(
+            "([BIILcash/z/ecc/android/sdk/internal/model/voting/" +
+                "JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/" +
+                "JniWireEncryptedShare;[[B[B)V",
+            constructor.jniDescriptor()
+        )
+    }
+
     private fun java.lang.reflect.Constructor<*>.jniDescriptor() =
         parameterTypes.joinToString(prefix = "(", postfix = ")V", separator = "") { parameter ->
             parameter.jniDescriptor()
         }
 
     private fun Class<*>.jniDescriptor(): String =
-        when (this) {
-            java.lang.Long.TYPE -> "J"
-            java.lang.Integer.TYPE -> "I"
-            ByteArray::class.java -> "[B"
-            Array<ByteArray>::class.java -> "[[B"
-            String::class.java -> "Ljava/lang/String;"
-            else -> error("Unsupported JNI constructor parameter: $name")
+        when {
+            isArray -> "[${requireNotNull(componentType).jniDescriptor()}"
+            this == java.lang.Byte.TYPE -> "B"
+            this == java.lang.Integer.TYPE -> "I"
+            this == java.lang.Long.TYPE -> "J"
+            isPrimitive -> error("Unsupported JNI primitive parameter: $name")
+            else -> "L${name.replace('.', '/')};"
         }
 }
