@@ -7,19 +7,26 @@ import java.nio.charset.StandardCharsets
 
 internal object PendingSubmitPlanCodec {
     fun decode(storedPlans: String): Map<String, List<LightWalletEndpoint>> {
+        val lines =
+            storedPlans
+                .lineSequence()
+                .filter { it.isNotBlank() }
+                .toList()
+
+        if (!lines.hasSupportedVersion()) {
+            return emptyMap()
+        }
+
         val plans = mutableMapOf<String, List<LightWalletEndpoint>>()
-        storedPlans
-            .lineSequence()
-            .filter { it.isNotBlank() }
-            .forEach { line ->
-                val transactionId = line.substringBefore(KEY_VALUE_SEPARATOR)
-                if (transactionId != FIELD_VERSION &&
-                    transactionId.isNotBlank() &&
-                    line.contains(KEY_VALUE_SEPARATOR)
-                ) {
-                    plans[transactionId] = line.substringAfter(KEY_VALUE_SEPARATOR).toEndpoints()
-                }
+        lines.forEach { line ->
+            val transactionId = line.substringBefore(KEY_VALUE_SEPARATOR)
+            if (transactionId != FIELD_VERSION &&
+                transactionId.isNotBlank() &&
+                line.contains(KEY_VALUE_SEPARATOR)
+            ) {
+                plans[transactionId] = line.substringAfter(KEY_VALUE_SEPARATOR).toEndpoints()
             }
+        }
         return plans
     }
 
@@ -71,6 +78,12 @@ internal object PendingSubmitPlanCodec {
             }
         return endpoint
     }
+
+    private fun List<String>.hasSupportedVersion(): Boolean =
+        firstOrNull { line ->
+            line.contains(KEY_VALUE_SEPARATOR) &&
+                line.substringBefore(KEY_VALUE_SEPARATOR) == FIELD_VERSION
+        }?.substringAfter(KEY_VALUE_SEPARATOR)?.toIntOrNull() == VERSION
 
     private fun String.encode() = URLEncoder.encode(this, StandardCharsets.UTF_8.name())
 

@@ -1,6 +1,8 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
+import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
+import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
 import cash.z.ecc.android.sdk.internal.storage.preference.model.entry.PreferenceKey
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
@@ -40,6 +42,21 @@ class PendingSubmitPlanStoreTest {
                 PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
                 secondStore.getSubmitPlan(transaction.txId)
             )
+        }
+
+    @Test
+    fun ignores_submit_plans_with_unsupported_version() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val transaction = createdTransaction(1)
+            preferenceProvider.putString(
+                EncryptedPreferenceKeys.PENDING_SUBMIT_PLANS.key,
+                "version=2\n${transaction.txId.byteArray.toHexReversed()}=submit.z.cash,443,true"
+            )
+
+            val store = PendingSubmitPlanStore(preferenceProvider)
+
+            assertNull(store.getSubmitPlan(transaction.txId))
         }
 
     @Test
