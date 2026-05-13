@@ -17,12 +17,18 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
 
 @Suppress("TooManyFunctions", "LongParameterList")
-internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
+internal class TypesafeVotingBackendImpl(
+    private val rustBackendFactory: suspend () -> VotingBackendBridge = {
+        RustVotingBackendBridge(VotingRustBackend.new())
+    }
+) : TypesafeVotingBackend {
     private val rustBackendLazy =
-        SuspendingLazy<Unit, VotingRustBackend> {
-            VotingRustBackend.new()
+        SuspendingLazy<Unit, VotingBackendBridge> {
+            rustBackendFactory()
         }
 
     override suspend fun computeShareNullifier(
@@ -34,14 +40,37 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
 
     override suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb =
         TypesafeVotingDbImpl(
-            RustVotingDbBackend(rustBackend().openVotingDb(dbPath, walletId))
+            rustBackend().openVotingDb(dbPath, walletId)
         )
 
-    override suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
-        rustBackend().computeBundleSetup(notes)
+    override suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): JniBundleSetupResult =
+        rustBackend().computeBundleSetup(notes.toJniNoteInfos())
 
     override suspend fun warmProvingCaches() =
         rustBackend().warmProvingCaches()
+
+    override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
+        rustBackend().extractOrchardFvkFromUfvk(ufvk, networkId)
+
+    override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
+        rustBackend().extractNcRoot(treeStateBytes)
+
+    override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
+        rustBackend().verifyWitness(witness)
+
+    override suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: BlockHeight,
+        networkId: Int,
+        accountUuid: AccountUuid
+    ): List<VotingNoteInfo> =
+        rustBackend()
+            .getWalletNotes(
+                walletDbPath,
+                snapshotHeight.value,
+                networkId,
+                accountUuid.value
+            ).map { it.toVotingNoteInfo() }
 
     override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
         rustBackend().extractPcztSighash(pcztBytes)
@@ -53,6 +82,87 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         rustBackend().extractSpendAuthSig(signedPcztBytes, actionIndex)
 
     private suspend fun rustBackend() = rustBackendLazy.getInstance(Unit)
+}
+
+@Suppress("TooManyFunctions")
+internal interface VotingBackendBridge {
+    suspend fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray
+
+    suspend fun openVotingDb(dbPath: String, walletId: String): VotingDbBackend
+
+    suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult
+
+    suspend fun warmProvingCaches()
+
+    suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
+
+    suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
+
+    suspend fun verifyWitness(witness: JniWitnessData): Boolean
+
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<JniNoteInfo>
+
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
+
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray
+}
+
+private class RustVotingBackendBridge(
+    private val rustBackend: VotingRustBackend
+) : VotingBackendBridge {
+    override suspend fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray =
+        rustBackend.computeShareNullifier(voteCommitment, shareIndex, blind)
+
+    override suspend fun openVotingDb(dbPath: String, walletId: String): VotingDbBackend =
+        RustVotingDbBackend(rustBackend.openVotingDb(dbPath, walletId))
+
+    override suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
+        rustBackend.computeBundleSetup(notes)
+
+    override suspend fun warmProvingCaches() =
+        rustBackend.warmProvingCaches()
+
+    override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
+        rustBackend.extractOrchardFvkFromUfvk(ufvk, networkId)
+
+    override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
+        rustBackend.extractNcRoot(treeStateBytes)
+
+    override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
+        rustBackend.verifyWitness(witness)
+
+    override suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<JniNoteInfo> =
+        rustBackend.getWalletNotes(walletDbPath, snapshotHeight, networkId, accountUuidBytes)
+
+    override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+        rustBackend.extractPcztSighash(pcztBytes)
+
+    override suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        rustBackend.extractSpendAuthSig(signedPcztBytes, actionIndex)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -147,6 +257,16 @@ internal interface VotingDbBackend {
         keystoneSig: ByteArray,
         keystoneSighash: ByteArray
     ): JniDelegationSubmissionResult
+
+    suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray)
+
+    suspend fun generateNoteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        walletDbPath: String,
+        networkId: Int,
+        notes: List<JniNoteInfo>
+    ): Array<JniWitnessData>
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -298,6 +418,24 @@ private class RustVotingDbBackend(
             keystoneSig,
             keystoneSighash
         )
+
+    override suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray) =
+        votingDb.storeTreeState(roundId, treeStateBytes)
+
+    override suspend fun generateNoteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        walletDbPath: String,
+        networkId: Int,
+        notes: List<JniNoteInfo>
+    ): Array<JniWitnessData> =
+        votingDb.generateNoteWitnesses(
+            roundId,
+            bundleIndex,
+            walletDbPath,
+            networkId,
+            notes
+        )
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -344,9 +482,9 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun setupBundles(
         roundId: String,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): JniBundleSetupResult =
-        votingDb.setupBundles(roundId, notes)
+        votingDb.setupBundles(roundId, notes.toJniNoteInfos())
 
     override suspend fun generateHotkey(
         roundId: String,
@@ -360,7 +498,7 @@ internal class TypesafeVotingDbImpl(
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String,
@@ -373,7 +511,7 @@ internal class TypesafeVotingDbImpl(
                 ufvk,
                 networkId,
                 accountIndex,
-                notes,
+                notes.toJniNoteInfos(),
                 walletSeed,
                 seedFingerprint,
                 roundName,
@@ -383,16 +521,16 @@ internal class TypesafeVotingDbImpl(
     override suspend fun storeWitnesses(
         roundId: String,
         bundleIndex: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         witnesses: List<JniWitnessData>
-    ) = votingDb.storeWitnesses(roundId, bundleIndex, notes, witnesses)
+    ) = votingDb.storeWitnesses(roundId, bundleIndex, notes.toJniNoteInfos(), witnesses)
 
     override suspend fun precomputeDelegationPir(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notes: List<JniNoteInfo>
+        notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult =
         votingDb
             .precomputeDelegationPir(
@@ -400,7 +538,7 @@ internal class TypesafeVotingDbImpl(
                 bundleIndex,
                 pirServerUrl,
                 networkId,
-                notes
+                notes.toJniNoteInfos()
             ).toDelegationPirPrecomputeResult()
 
     override suspend fun buildAndProveDelegation(
@@ -408,7 +546,7 @@ internal class TypesafeVotingDbImpl(
         bundleIndex: Int,
         pirServerUrl: String,
         networkId: Int,
-        notes: List<JniNoteInfo>,
+        notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
         accountIndex: Int,
         addressIndex: Int,
@@ -420,7 +558,7 @@ internal class TypesafeVotingDbImpl(
                 bundleIndex,
                 pirServerUrl,
                 networkId,
-                notes,
+                notes.toJniNoteInfos(),
                 walletSeed,
                 accountIndex,
                 addressIndex,
@@ -456,6 +594,27 @@ internal class TypesafeVotingDbImpl(
                 keystoneSig,
                 keystoneSighash
             ).toDelegationSubmissionResult()
+
+    override suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray) =
+        votingDb.storeTreeState(roundId, treeStateBytes)
+
+    override suspend fun generateNoteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        walletDbPath: String,
+        networkId: Int,
+        notes: List<VotingNoteInfo>
+    ): List<JniWitnessData> {
+        val witnesses =
+            votingDb.generateNoteWitnesses(
+                roundId,
+                bundleIndex,
+                walletDbPath,
+                networkId,
+                notes.toJniNoteInfos()
+            )
+        return witnesses.asList()
+    }
 }
 
 internal fun JniGovernancePczt.toGovernancePcztResult(): GovernancePcztResult {
