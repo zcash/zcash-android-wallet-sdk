@@ -255,15 +255,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
                 )
             })?);
 
-        let wallet_db = open_wallet_db_read_only(&wallet_path, network)?;
-
         let positions = bundle_notes
             .iter()
             .map(|note| Position::from(note.position))
             .collect::<Vec<_>>();
 
+        let mut wallet_db = open_wallet_db_read_only(&wallet_path, network)?;
+        // Keep shard roots, shard rows, and cap reads on one read-transaction snapshot.
         let merkle_paths = wallet_db
-            .generate_orchard_witnesses_at_historical_height(&positions, nonempty_frontier, height)
+            .transactionally(|wallet_db| {
+                wallet_db
+                    .generate_orchard_witnesses_at_historical_height(
+                        &positions,
+                        nonempty_frontier,
+                        height,
+                    )
+                    .map_err(anyhow::Error::from)
+            })
             .map_err(|e| anyhow!("generate_orchard_witnesses_at_historical_height: {}", e))?;
 
         let root_bytes = frontier_root_bytes.to_vec();
