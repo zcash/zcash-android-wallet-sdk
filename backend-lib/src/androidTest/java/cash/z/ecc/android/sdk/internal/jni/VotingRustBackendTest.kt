@@ -464,6 +464,44 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun generate_note_witnesses_rejects_missing_wallet_db_path() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val db = backend.openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val notes = witnessNotes()
+                db.initRound(
+                    roundId = PCZT_ROUND_ID,
+                    snapshotHeight = 1,
+                    eaPK = EA_PK,
+                    ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+                db.setupBundles(PCZT_ROUND_ID, notes)
+                db.storeTreeState(PCZT_ROUND_ID, backend.treeStateFixtureForTesting())
+
+                val missingWalletDbPath =
+                    createTempDirectory("wallet-db-")
+                        .resolve("missing-wallet.db")
+                        .toFile()
+                        .absolutePath
+
+                assertFailsWith<RuntimeException> {
+                    db.generateNoteWitnesses(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 0,
+                        walletDbPath = missingWalletDbPath,
+                        networkId = TESTNET_NETWORK_ID,
+                        notes = notes
+                    )
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun generate_hotkey_is_deterministic_and_rejects_short_seed() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
