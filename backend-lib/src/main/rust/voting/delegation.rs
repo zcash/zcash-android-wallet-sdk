@@ -55,102 +55,27 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let round_id = java_string_to_rust(env, &round_id)?;
         require_round_phase_for_delegation_construction(&db, &round_id)?;
         let round_name = java_string_to_rust(env, &round_name)?;
-        let pczt = build_paired_governance_pczt(
-            &db,
-            &round_id,
-            bundle_index,
-            &bundle_notes,
-            &fvk_bytes,
-            &hotkey_raw_address,
-            network,
-            &seed_fingerprint,
-            account_index,
-            &round_name,
-            address_index,
-        )?;
+        let pczt = db
+            .build_governance_pczt(
+                &round_id,
+                bundle_index,
+                &bundle_notes,
+                &fvk_bytes,
+                &hotkey_raw_address,
+                nu6_branch_id(),
+                network.coin_type(),
+                &seed_fingerprint,
+                account_index,
+                &round_name,
+                address_index,
+            )
+            .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
         update_round_phase_forward(&db, &round_id, RoundPhase::DelegationConstructed)?;
 
         make_jni_governance_pczt(env, pczt)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
-
-fn governance_pczt_output_paired_with_signed_action(
-    governance_pczt: &GovernancePczt,
-) -> anyhow::Result<bool> {
-    let pczt = pczt::Pczt::parse(&governance_pczt.pczt_bytes)
-        .map_err(|e| anyhow!("failed to parse governance PCZT: {e:?}"))?;
-    let action = pczt
-        .orchard()
-        .actions()
-        .get(governance_pczt.action_index)
-        .ok_or_else(|| {
-            anyhow!(
-                "governance PCZT action_index {} is out of range for {} actions",
-                governance_pczt.action_index,
-                pczt.orchard().actions().len()
-            )
-        })?;
-
-    Ok(action.output().cmx().as_slice() == governance_pczt.cmx_new.as_slice())
-}
-
-fn build_paired_governance_pczt(
-    db: &VotingDb,
-    round_id: &str,
-    bundle_index: u32,
-    bundle_notes: &[NoteInfo],
-    fvk_bytes: &[u8],
-    hotkey_raw_address: &[u8],
-    network: Network,
-    seed_fingerprint: &[u8; PROTOCOL_FIELD_BYTES],
-    account_index: u32,
-    round_name: &str,
-    address_index: u32,
-) -> anyhow::Result<GovernancePczt> {
-    let mut last_unpaired = None;
-    for attempt in 1..=MAX_GOVERNANCE_PCZT_PAIRING_ATTEMPTS {
-        let candidate = db
-            .build_governance_pczt(
-                round_id,
-                bundle_index,
-                bundle_notes,
-                fvk_bytes,
-                hotkey_raw_address,
-                nu6_branch_id(),
-                network.coin_type(),
-                seed_fingerprint,
-                account_index,
-                round_name,
-                address_index,
-            )
-            .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
-        if governance_pczt_output_paired_with_signed_action(&candidate)? {
-            if attempt > 1 {
-                tracing::info!(
-                    "voting delegation: rebuilt governance PCZT after unpaired action layout \
-                     (bundle_index={}, attempts={})",
-                    bundle_index,
-                    attempt
-                );
-            }
-            return Ok(candidate);
-        }
-        last_unpaired = Some(candidate);
-    }
-
-    let action_index = last_unpaired
-        .as_ref()
-        .map(|pczt| pczt.action_index.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    Err(anyhow!(
-        "build_governance_pczt produced unpaired governance output after {} attempts \
-         (last action_index={action_index})",
-        MAX_GOVERNANCE_PCZT_PAIRING_ATTEMPTS
-    ))
-}
-
-const MAX_GOVERNANCE_PCZT_PAIRING_ATTEMPTS: u32 = 16;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_extractPcztSighashNative<
