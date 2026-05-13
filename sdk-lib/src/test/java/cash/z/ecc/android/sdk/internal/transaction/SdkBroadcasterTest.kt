@@ -13,11 +13,16 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SdkBroadcasterTest {
@@ -35,6 +40,49 @@ class SdkBroadcasterTest {
             assertEquals(listOf(encodedTransaction.toCreatedTransactionForTest()), result)
             assertEquals(1, txManager.proposedTransactionCreateCount)
             assertTrue(submitter.submissions.isEmpty())
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan,
+                pendingSubmitPlanStore.getSubmitPlan(encodedTransaction.txId)
+            )
+        }
+
+    @Test
+    fun create_proposed_transactions_registers_pending_plan_before_resubmission_reads_store() =
+        runBlocking {
+            val encodedTransaction = encodedTransaction(9)
+            val createStarted = CompletableDeferred<Unit>()
+            val allowCreateToFinish = CompletableDeferred<Unit>()
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val txManager =
+                FakeOutboundTransactionManager(
+                    proposedTransactions = listOf(encodedTransaction),
+                    beforeReturningProposedTransactions = {
+                        createStarted.complete(Unit)
+                        allowCreateToFinish.await()
+                    }
+                )
+            val broadcaster = SdkBroadcaster(txManager, FakeTransactionSubmitter(), pendingSubmitPlanStore)
+            val createJob =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    broadcaster.createProposedTransactions(fakeProposal(), fakeUsk())
+                }
+
+            createStarted.await()
+
+            val retainCompleted = CompletableDeferred<Unit>()
+            val retainJob =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    pendingSubmitPlanStore.retainPlansFor(listOf(encodedTransaction.txId))
+                    retainCompleted.complete(Unit)
+                }
+
+            assertFalse(retainCompleted.isCompleted)
+
+            allowCreateToFinish.complete(Unit)
+
+            assertEquals(listOf(encodedTransaction.toCreatedTransactionForTest()), createJob.await())
+            retainCompleted.await()
+            retainJob.join()
             assertEquals(
                 PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan,
                 pendingSubmitPlanStore.getSubmitPlan(encodedTransaction.txId)
@@ -160,7 +208,8 @@ class SdkBroadcasterTest {
 
     private class FakeOutboundTransactionManager(
         private val proposedTransactions: List<EncodedTransaction> = emptyList(),
-        private val pcztTransaction: EncodedTransaction = encodedTransaction(99)
+        private val pcztTransaction: EncodedTransaction = encodedTransaction(99),
+        private val beforeReturningProposedTransactions: suspend () -> Unit = {}
     ) : OutboundTransactionManager {
         var proposedTransactionCreateCount = 0
         var pcztCreateCount = 0
@@ -189,6 +238,7 @@ class SdkBroadcasterTest {
             usk: UnifiedSpendingKey
         ): List<EncodedTransaction> {
             proposedTransactionCreateCount += 1
+            beforeReturningProposedTransactions()
             return proposedTransactions
         }
 

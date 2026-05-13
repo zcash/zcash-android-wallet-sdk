@@ -18,22 +18,28 @@ internal class PendingSubmitPlanStore(
     private val plansByTransactionId = mutableMapOf<String, List<LightWalletEndpoint>>()
     private var loadedFromPreferences = false
 
-    suspend fun markAwaitingSubmitPlan(transactions: List<CreatedTransaction>) {
-        val transactionIds = transactions.map { it.txId.toStableKey() }
+    /**
+     * Runs transaction creation under this store lock so resubmission cannot read a
+     * stored tx before it is marked as waiting for a submit plan from the caller.
+     */
+    suspend fun createAndMarkAwaitingSubmitPlan(
+        createTransactions: suspend () -> List<CreatedTransaction>
+    ): List<CreatedTransaction> =
         mutex.withLock {
             loadFromPreferencesIfNeeded()
-            var changed = false
-            transactionIds.forEach { transactionId ->
-                if (!plansByTransactionId.containsKey(transactionId)) {
-                    plansByTransactionId[transactionId] = emptyList()
-                    changed = true
+            createTransactions().also { transactions ->
+                var changed = false
+                transactions.map { it.txId.toStableKey() }.forEach { transactionId ->
+                    if (!plansByTransactionId.containsKey(transactionId)) {
+                        plansByTransactionId[transactionId] = emptyList()
+                        changed = true
+                    }
+                }
+                if (changed) {
+                    saveToPreferences()
                 }
             }
-            if (changed) {
-                saveToPreferences()
-            }
         }
-    }
 
     suspend fun storeSubmitPlan(
         transaction: CreatedTransaction,

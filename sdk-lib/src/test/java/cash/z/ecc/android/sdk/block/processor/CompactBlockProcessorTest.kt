@@ -70,7 +70,7 @@ class CompactBlockProcessorTest {
                     pendingSubmitPlanStore = pendingSubmitPlanStore
                 )
 
-            pendingSubmitPlanStore.markAwaitingSubmitPlan(
+            pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
                 listOf(
                     CreatedTransaction(
                         txId = pendingPlanTransaction.rawId,
@@ -78,7 +78,7 @@ class CompactBlockProcessorTest {
                         expiryHeight = pendingPlanTransaction.expiryHeight
                     )
                 )
-            )
+            }
             `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(
                 listOf(pendingPlanTransaction, resubmittableTransaction)
             )

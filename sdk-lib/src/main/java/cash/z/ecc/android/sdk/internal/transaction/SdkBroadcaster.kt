@@ -23,28 +23,24 @@ internal class SdkBroadcaster(
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey
-    ): List<CreatedTransaction> {
-        val transactions =
+    ): List<CreatedTransaction> =
+        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
             txManager
                 .createProposedTransactions(proposal, usk)
                 .map { it.toCreatedTransaction() }
-        pendingSubmitPlanStore.markAwaitingSubmitPlan(transactions)
-        return transactions
-    }
+        }
 
     override suspend fun createTransactionFromPczt(
         pcztWithProofs: Pczt,
         pcztWithSignatures: Pczt
-    ): List<CreatedTransaction> {
-        val transactions =
+    ): List<CreatedTransaction> =
+        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
             listOf(
                 txManager
                     .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
                     .toCreatedTransaction()
             )
-        pendingSubmitPlanStore.markAwaitingSubmitPlan(transactions)
-        return transactions
-    }
+        }
 
     override suspend fun submit(
         transaction: CreatedTransaction,

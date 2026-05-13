@@ -21,7 +21,9 @@ class PendingSubmitPlanStoreTest {
             val transaction = createdTransaction(1)
             val store = PendingSubmitPlanStore()
 
-            store.markAwaitingSubmitPlan(listOf(transaction))
+            store.createAndMarkAwaitingSubmitPlan {
+                listOf(transaction)
+            }
 
             assertEquals(PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan, store.getSubmitPlan(transaction.txId))
             assertNull(store.getSubmitPlan(createdTransaction(2).txId))
@@ -67,7 +69,9 @@ class PendingSubmitPlanStoreTest {
             val secondEndpoint = endpoint("b.z.cash")
             val store = PendingSubmitPlanStore()
 
-            store.markAwaitingSubmitPlan(listOf(transaction))
+            store.createAndMarkAwaitingSubmitPlan {
+                listOf(transaction)
+            }
             store.addSubmitEndpoint(transaction, firstEndpoint)
             store.addSubmitEndpoint(transaction, secondEndpoint)
 
