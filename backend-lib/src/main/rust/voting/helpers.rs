@@ -1,4 +1,5 @@
 use super::*;
+use secrecy::Zeroize;
 use serde::{Deserialize, Serialize};
 
 // Must match JNI_ROUND_PHASE_* constants in JniVotingModels.kt.
@@ -197,6 +198,22 @@ pub(super) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyho
         Err(anyhow!(
             "{field} must be exactly {expected} bytes, got {}",
             bytes.len()
+        ))
+    }
+}
+
+fn require_len_and_zeroize(
+    bytes: &mut Vec<u8>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<()> {
+    let len = bytes.len();
+    bytes.zeroize();
+    if len == expected {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "{field} must be exactly {expected} bytes, got {len}"
         ))
     }
 }
@@ -1415,30 +1432,58 @@ fn make_jni_string_array<'local>(
 }
 
 /// Builds the Kotlin hotkey JNI model after enforcing the expected key widths.
-/// The secret key is intentionally not surfaced across JNI.
+/// The secret key is intentionally not surfaced across JNI and is zeroized
+/// before constructing the public-only Java object.
 pub(super) fn make_jni_voting_hotkey<'local>(
     env: &mut JNIEnv<'local>,
     hotkey: voting::types::VotingHotkey,
 ) -> anyhow::Result<jobject> {
-    let class = env.find_class(JNI_VOTING_HOTKEY)?;
-    require_len(
-        hotkey.secret_key,
+    let voting::types::VotingHotkey {
+        mut secret_key,
+        public_key,
+        address,
+    } = hotkey;
+    require_len_and_zeroize(
+        &mut secret_key,
         "hotkey_secret_key",
         HOTKEY_SECRET_KEY_BYTES,
     )?;
-    let public_key = require_len(
-        hotkey.public_key,
-        "hotkey_public_key",
-        HOTKEY_PUBLIC_KEY_BYTES,
-    )?;
+
+    let public_key = require_len(public_key, "hotkey_public_key", HOTKEY_PUBLIC_KEY_BYTES)?;
+    let class = env.find_class(JNI_VOTING_HOTKEY)?;
     let pk_obj: JObject<'local> = env.byte_array_from_slice(&public_key)?.into();
-    let addr_obj: JObject<'local> = env.new_string(&hotkey.address)?.into();
+    let addr_obj: JObject<'local> = env.new_string(&address)?.into();
     let obj = env.new_object(
         &class,
         JNI_VOTING_HOTKEY_CTOR_SIG,
         &[JValue::Object(&pk_obj), JValue::Object(&addr_obj)],
     )?;
     Ok(obj.into_raw())
+}
+
+#[cfg(test)]
+mod hotkey_secret_tests {
+    use super::*;
+
+    #[test]
+    fn require_len_and_zeroize_clears_secret_on_success() {
+        let mut secret = vec![0xAB; HOTKEY_SECRET_KEY_BYTES];
+
+        require_len_and_zeroize(&mut secret, "secret", HOTKEY_SECRET_KEY_BYTES).unwrap();
+
+        assert!(secret.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn require_len_and_zeroize_clears_secret_on_error() {
+        let mut secret = vec![0xAB; HOTKEY_SECRET_KEY_BYTES - 1];
+
+        let error = require_len_and_zeroize(&mut secret, "secret", HOTKEY_SECRET_KEY_BYTES)
+            .expect_err("wrong length should fail");
+
+        assert!(error.to_string().contains("secret must be exactly"));
+        assert!(secret.iter().all(|byte| *byte == 0));
+    }
 }
 
 /// Builds the Kotlin bundle setup JNI model with width-checked Java primitives.
