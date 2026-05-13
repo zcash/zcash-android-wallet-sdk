@@ -940,6 +940,22 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun sign_cast_vote_returns_signature_for_account_zero() =
+        runTest {
+            val backend = VotingRustBackend.new()
+
+            val signature =
+                backend.signCastVote(
+                    hotkeySeed = HOTKEY_SEED,
+                    networkId = TESTNET_NETWORK_ID,
+                    accountIndex = ACCOUNT_INDEX,
+                    commitment = jniVoteCommitmentResult(alphaV = ByteArray(FIELD_BYTES))
+                )
+
+            assertEquals(JNI_SPEND_AUTH_SIG_BYTES_SIZE, signature.size)
+        }
+
+    @Test
     fun sign_cast_vote_rejects_unsupported_account_index() =
         runTest {
             val backend = VotingRustBackend.new()
@@ -1316,7 +1332,8 @@ class VotingRustBackendTest {
     private fun jniVoteCommitmentResult(
         encShares: List<JniWireEncryptedShare> = wireShares(),
         shareBlinds: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 5),
-        shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 6)
+        shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 6),
+        alphaV: ByteArray = ByteArray(FIELD_BYTES) { 8 }
     ) = JniVoteCommitmentResult(
         vanNullifier = ByteArray(FIELD_BYTES) { 1 },
         voteAuthorityNoteNew = ByteArray(FIELD_BYTES) { 2 },
@@ -1330,7 +1347,7 @@ class VotingRustBackendTest {
         shareBlinds = shareBlinds,
         shareComms = shareComms,
         rVpk = ByteArray(FIELD_BYTES) { 7 },
-        alphaV = ByteArray(FIELD_BYTES) { 8 }
+        alphaV = alphaV
     )
 
     private fun wireShares(
