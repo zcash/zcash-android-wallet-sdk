@@ -21,10 +21,14 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 
 @Suppress("TooManyFunctions", "LongParameterList")
-internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
+internal class TypesafeVotingBackendImpl(
+    private val rustBackendFactory: suspend () -> VotingBackendBridge = {
+        RustVotingBackendBridge(VotingRustBackend.new())
+    }
+) : TypesafeVotingBackend {
     private val rustBackendLazy =
-        SuspendingLazy<Unit, VotingRustBackend> {
-            VotingRustBackend.new()
+        SuspendingLazy<Unit, VotingBackendBridge> {
+            rustBackendFactory()
         }
 
     override suspend fun computeShareNullifier(
@@ -36,7 +40,7 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
 
     override suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb =
         TypesafeVotingDbImpl(
-            RustVotingDbBackend(rustBackend().openVotingDb(dbPath, walletId))
+            rustBackend().openVotingDb(dbPath, walletId)
         )
 
     override suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): JniBundleSetupResult =
@@ -78,6 +82,87 @@ internal class TypesafeVotingBackendImpl : TypesafeVotingBackend {
         rustBackend().extractSpendAuthSig(signedPcztBytes, actionIndex)
 
     private suspend fun rustBackend() = rustBackendLazy.getInstance(Unit)
+}
+
+@Suppress("TooManyFunctions")
+internal interface VotingBackendBridge {
+    suspend fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray
+
+    suspend fun openVotingDb(dbPath: String, walletId: String): VotingDbBackend
+
+    suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult
+
+    suspend fun warmProvingCaches()
+
+    suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
+
+    suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
+
+    suspend fun verifyWitness(witness: JniWitnessData): Boolean
+
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<JniNoteInfo>
+
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
+
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray
+}
+
+private class RustVotingBackendBridge(
+    private val rustBackend: VotingRustBackend
+) : VotingBackendBridge {
+    override suspend fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray =
+        rustBackend.computeShareNullifier(voteCommitment, shareIndex, blind)
+
+    override suspend fun openVotingDb(dbPath: String, walletId: String): VotingDbBackend =
+        RustVotingDbBackend(rustBackend.openVotingDb(dbPath, walletId))
+
+    override suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
+        rustBackend.computeBundleSetup(notes)
+
+    override suspend fun warmProvingCaches() =
+        rustBackend.warmProvingCaches()
+
+    override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
+        rustBackend.extractOrchardFvkFromUfvk(ufvk, networkId)
+
+    override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
+        rustBackend.extractNcRoot(treeStateBytes)
+
+    override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
+        rustBackend.verifyWitness(witness)
+
+    override suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<JniNoteInfo> =
+        rustBackend.getWalletNotes(walletDbPath, snapshotHeight, networkId, accountUuidBytes)
+
+    override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+        rustBackend.extractPcztSighash(pcztBytes)
+
+    override suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        rustBackend.extractSpendAuthSig(signedPcztBytes, actionIndex)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")

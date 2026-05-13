@@ -16,6 +16,8 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -129,6 +131,29 @@ class TypesafeVotingBackendImplTest {
         assertEquals(VotingNoteScope.INTERNAL, note.scope)
         assertEquals(jniNote, note.toJniNoteInfo())
     }
+
+    @Test
+    fun get_wallet_notes_forwards_arguments_and_maps_results() =
+        runTest {
+            val accountUuid = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val jniNotes = arrayOf(jniNoteInfo().copy(scope = 1, ufvk = "ufvk"))
+            val bridge = RecordingVotingBackendBridge(walletNotes = jniNotes)
+            val backend = TypesafeVotingBackendImpl { bridge }
+
+            val notes =
+                backend.getWalletNotes(
+                    walletDbPath = "/tmp/wallet.db",
+                    snapshotHeight = BlockHeight.new(123_456L),
+                    networkId = 1,
+                    accountUuid = accountUuid
+                )
+
+            assertEquals("/tmp/wallet.db", bridge.walletDbPath)
+            assertEquals(123_456L, bridge.snapshotHeight)
+            assertEquals(1, bridge.networkId)
+            assertContentEquals(accountUuid.value, bridge.accountUuidBytes)
+            assertEquals(jniNotes.map { it.toVotingNoteInfo() }, notes)
+        }
 
     @Test
     fun delegation_methods_forward_arguments_and_map_results() =
@@ -359,6 +384,61 @@ class TypesafeVotingBackendImplTest {
             root = field(5),
             authPath = fieldElements(32)
         )
+
+    @Suppress("TooManyFunctions")
+    private class RecordingVotingBackendBridge(
+        private val walletNotes: Array<JniNoteInfo>
+    ) : VotingBackendBridge {
+        var walletDbPath: String? = null
+        var snapshotHeight: Long? = null
+        var networkId: Int? = null
+        var accountUuidBytes: ByteArray = ByteArray(0)
+
+        override suspend fun computeShareNullifier(
+            voteCommitment: ByteArray,
+            shareIndex: Int,
+            blind: ByteArray
+        ): ByteArray = unused()
+
+        override suspend fun openVotingDb(dbPath: String, walletId: String): VotingDbBackend =
+            unused()
+
+        override suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
+            unused()
+
+        override suspend fun warmProvingCaches() = unused()
+
+        override suspend fun extractOrchardFvkFromUfvk(
+            ufvk: String,
+            networkId: Int
+        ): ByteArray = unused()
+
+        override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray = unused()
+
+        override suspend fun verifyWitness(witness: JniWitnessData): Boolean = unused()
+
+        override suspend fun getWalletNotes(
+            walletDbPath: String,
+            snapshotHeight: Long,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Array<JniNoteInfo> {
+            this.walletDbPath = walletDbPath
+            this.snapshotHeight = snapshotHeight
+            this.networkId = networkId
+            this.accountUuidBytes = accountUuidBytes
+            return walletNotes
+        }
+
+        override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray = unused()
+
+        override suspend fun extractSpendAuthSig(
+            signedPcztBytes: ByteArray,
+            actionIndex: Int
+        ): ByteArray = unused()
+
+        private fun unused(): Nothing = error("unused")
+    }
 
     private class RecordingVotingDbBackend(
         private val proofResult: JniDelegationProofResult,
