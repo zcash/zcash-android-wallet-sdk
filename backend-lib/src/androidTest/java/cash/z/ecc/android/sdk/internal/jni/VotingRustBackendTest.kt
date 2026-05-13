@@ -971,6 +971,54 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun sync_vote_tree_reaches_native_boundary() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+
+                assertFailsWith<RuntimeException> {
+                    db.syncVoteTree(PCZT_ROUND_ID, "not-a-url")
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun store_van_position_reaches_native_boundary() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+
+                db.storeVanPosition(PCZT_ROUND_ID, bundleIndex = 1, position = 42)
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun generate_van_witness_reaches_native_boundary() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+                db.storeVanPosition(PCZT_ROUND_ID, bundleIndex = 1, position = 42)
+
+                assertFailsWith<RuntimeException> {
+                    db.generateVanWitness(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        anchorHeight = SNAPSHOT_HEIGHT
+                    )
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun build_vote_commitment_requires_delegation_ready() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
