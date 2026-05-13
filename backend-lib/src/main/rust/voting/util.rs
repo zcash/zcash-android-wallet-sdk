@@ -1,6 +1,42 @@
 use super::helpers::*;
 use super::*;
 
+#[cfg(feature = "android-test-fixtures")]
+const TEST_TREE_STATE_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+#[cfg(feature = "android-test-fixtures")]
+fn tree_state_fixture(orchard_tree: String) -> zcash_client_backend::proto::service::TreeState {
+    zcash_client_backend::proto::service::TreeState {
+        network: "test".to_string(),
+        height: 1,
+        hash: TEST_TREE_STATE_HASH.to_string(),
+        time: 0,
+        sapling_tree: String::new(),
+        orchard_tree,
+    }
+}
+
+#[cfg(feature = "android-test-fixtures")]
+fn non_empty_orchard_tree_hex() -> anyhow::Result<String> {
+    use incrementalmerkletree::frontier::CommitmentTree;
+    use orchard::tree::MerkleHashOrchard;
+    use zcash_primitives::merkle_tree::write_commitment_tree;
+
+    let mut tree =
+        CommitmentTree::<MerkleHashOrchard, { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 }>::empty();
+    let mut leaf_bytes = [0u8; PROTOCOL_FIELD_BYTES];
+    leaf_bytes[0] = 1;
+    let leaf = MerkleHashOrchard::from_bytes(&leaf_bytes).unwrap();
+    tree.append(leaf)
+        .map_err(|_| anyhow!("append orchard commitment tree leaf"))?;
+
+    let mut tree_bytes = vec![];
+    write_commitment_tree(&tree, &mut tree_bytes)
+        .map_err(|e| anyhow!("write orchard commitment tree: {}", e))?;
+    Ok(hex::encode(tree_bytes))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_warmProvingCachesNative<
     'local,
@@ -134,17 +170,27 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_tre
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
         use prost::Message;
-        use zcash_client_backend::proto::service::TreeState;
 
-        let tree_state = TreeState {
-            network: "test".to_string(),
-            height: 1,
-            hash: String::new(),
-            time: 0,
-            sapling_tree: String::new(),
-            orchard_tree: String::new(),
-        };
+        let tree_state = tree_state_fixture(String::new());
+        Ok(env
+            .byte_array_from_slice(&tree_state.encode_to_vec())?
+            .into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
 
+#[cfg(feature = "android-test-fixtures")]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_nonEmptyTreeStateFixtureNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        use prost::Message;
+
+        let tree_state = tree_state_fixture(non_empty_orchard_tree_hex()?);
         Ok(env
             .byte_array_from_slice(&tree_state.encode_to_vec())?
             .into_raw())

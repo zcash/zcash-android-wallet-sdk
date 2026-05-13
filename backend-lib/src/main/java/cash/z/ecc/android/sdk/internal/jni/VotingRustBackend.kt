@@ -152,6 +152,13 @@ class VotingRustBackend private constructor() {
                 ?: error("treeStateFixture returned null")
         }
 
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun nonEmptyTreeStateFixtureForTesting(): ByteArray =
+        withContext(Dispatchers.IO) {
+            nonEmptyTreeStateFixtureNative()
+                ?: error("nonEmptyTreeStateFixture returned null")
+        }
+
     suspend fun openVotingDb(dbPath: String, walletId: String): VotingDb =
         withContext(SdkDispatchers.DATABASE_IO) {
             openVotingDbNative(dbPath, walletId).let { dbHandle ->
@@ -596,6 +603,10 @@ class VotingRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun treeStateFixtureNative(): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun nonEmptyTreeStateFixtureNative(): ByteArray?
 
         @JvmStatic
         @Throws(RuntimeException::class)

@@ -1,10 +1,13 @@
 package cash.z.ecc.android.sdk.internal.jni
 
+import android.content.ContentValues
+import android.database.sqlite.SQLiteDatabase
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -24,6 +27,7 @@ class VotingRustBackendTest {
         private const val DIVERSIFIER_BYTES = 11
         private const val ORCHARD_FVK_BYTES = 96
         private const val ORCHARD_WITNESS_PATH_DEPTH = 32
+        private const val SCANNED_PRIORITY = 10
         private val VOTE_COMMITMENT = ByteArray(FIELD_BYTES) { 1 }
         private val BLIND = ByteArray(FIELD_BYTES) { 2 }
         private val SHORT_FIELD = ByteArray(FIELD_BYTES - 1)
@@ -464,7 +468,99 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun get_wallet_notes_rejects_unknown_account() =
+        runTest {
+            val wallet = newWalletDbWithAccount()
+            markWalletScannedThrough(wallet.path, walletBirthdayHeight(wallet.path))
+
+            assertRuntimeExceptionContains("account not found in wallet DB") {
+                VotingRustBackend.new().getWalletNotes(
+                    walletDbPath = wallet.path,
+                    snapshotHeight = walletBirthdayHeight(wallet.path),
+                    networkId = TESTNET_NETWORK_ID,
+                    accountUuidBytes = ByteArray(16) { 9 }
+                )
+            }
+        }
+
+    @Test
+    fun get_wallet_notes_rejects_account_without_ufvk() =
+        runTest {
+            val wallet = newWalletDbWithAccount()
+            markWalletScannedThrough(wallet.path, walletBirthdayHeight(wallet.path))
+            downgradeAccountToUivkOnly(wallet.path, wallet.accountUuid)
+
+            assertRuntimeExceptionContains("account has no UFVK") {
+                VotingRustBackend.new().getWalletNotes(
+                    walletDbPath = wallet.path,
+                    snapshotHeight = walletBirthdayHeight(wallet.path),
+                    networkId = TESTNET_NETWORK_ID,
+                    accountUuidBytes = wallet.accountUuid
+                )
+            }
+        }
+
+    @Test
+    fun get_wallet_notes_rejects_snapshot_above_fully_scanned_height() =
+        runTest {
+            val wallet = newWalletDbWithAccount()
+            val fullyScannedHeight = walletBirthdayHeight(wallet.path)
+            markWalletScannedThrough(wallet.path, fullyScannedHeight)
+
+            assertRuntimeExceptionContains(
+                "wallet DB fully scanned height $fullyScannedHeight is below snapshot_height " +
+                    "${fullyScannedHeight + 1}"
+            ) {
+                VotingRustBackend.new().getWalletNotes(
+                    walletDbPath = wallet.path,
+                    snapshotHeight = fullyScannedHeight + 1,
+                    networkId = TESTNET_NETWORK_ID,
+                    accountUuidBytes = wallet.accountUuid
+                )
+            }
+        }
+
+    @Test
     fun generate_note_witnesses_rejects_missing_wallet_db_path() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val db = backend.openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val notes = witnessNotes()
+                val treeState = backend.nonEmptyTreeStateFixtureForTesting()
+                db.initRound(
+                    roundId = PCZT_ROUND_ID,
+                    snapshotHeight = 1,
+                    eaPK = EA_PK,
+                    ncRoot = backend.extractNcRoot(treeState),
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    sessionJson = null
+                )
+                db.setupBundles(PCZT_ROUND_ID, notes)
+                db.storeTreeState(PCZT_ROUND_ID, treeState)
+
+                val missingWalletDbPath =
+                    createTempDirectory("wallet-db-")
+                        .resolve("missing-wallet.db")
+                        .toFile()
+                        .absolutePath
+
+                assertRuntimeExceptionContains("open wallet DB read-only") {
+                    db.generateNoteWitnesses(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 0,
+                        walletDbPath = missingWalletDbPath,
+                        networkId = TESTNET_NETWORK_ID,
+                        notes = notes
+                    )
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun generate_note_witnesses_rejects_empty_snapshot_frontier() =
         runTest {
             val backend = VotingRustBackend.new()
             val db = backend.openVotingDb(newDbPath(), WALLET_ID)
@@ -481,17 +577,13 @@ class VotingRustBackendTest {
                 db.setupBundles(PCZT_ROUND_ID, notes)
                 db.storeTreeState(PCZT_ROUND_ID, backend.treeStateFixtureForTesting())
 
-                val missingWalletDbPath =
-                    createTempDirectory("wallet-db-")
-                        .resolve("missing-wallet.db")
-                        .toFile()
-                        .absolutePath
-
-                assertFailsWith<RuntimeException> {
+                assertRuntimeExceptionContains(
+                    "empty orchard frontier - no Orchard activity at snapshot"
+                ) {
                     db.generateNoteWitnesses(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 0,
-                        walletDbPath = missingWalletDbPath,
+                        walletDbPath = newDbPath(),
                         networkId = TESTNET_NETWORK_ID,
                         notes = notes
                     )
@@ -891,6 +983,120 @@ class VotingRustBackendTest {
     private fun newDbPath() =
         createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
 
+    private suspend fun newWalletDbWithAccount(): WalletDbFixture {
+        val walletDbFile =
+            createTempDirectory("wallet-db-")
+                .resolve("data.db")
+                .toFile()
+        val rustBackend =
+            RustBackend.new(
+                fsBlockDbRoot = createTempDirectory("fs-block-db-").toFile(),
+                dataDbFile = walletDbFile,
+                saplingSpendFile =
+                    createTempDirectory("sapling-spend-")
+                        .resolve("sapling-spend.params")
+                        .toFile(),
+                saplingOutputFile =
+                    createTempDirectory("sapling-output-")
+                        .resolve("sapling-output.params")
+                        .toFile(),
+                zcashNetworkId = TESTNET_NETWORK_ID
+            )
+        assertEquals(0, rustBackend.initDataDb(HOTKEY_SEED))
+
+        val account =
+            rustBackend.createAccount(
+                accountName = "account",
+                keySource = null,
+                seed = HOTKEY_SEED,
+                treeState = VotingRustBackend.new().treeStateFixtureForTesting(),
+                recoverUntil = null
+            )
+
+        return WalletDbFixture(walletDbFile.absolutePath, account.accountUuid)
+    }
+
+    private fun walletBirthdayHeight(walletDbPath: String): Long =
+        SQLiteDatabase
+            .openDatabase(walletDbPath, null, SQLiteDatabase.OPEN_READONLY)
+            .use { db ->
+                db.rawQuery("SELECT MIN(birthday_height) FROM accounts", null).use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    cursor.getLong(0)
+                }
+            }
+
+    private fun markWalletScannedThrough(walletDbPath: String, fullyScannedHeight: Long) {
+        val birthdayHeight = walletBirthdayHeight(walletDbPath)
+        require(fullyScannedHeight >= birthdayHeight)
+
+        SQLiteDatabase
+            .openDatabase(walletDbPath, null, SQLiteDatabase.OPEN_READWRITE)
+            .use { db ->
+                val blockValues =
+                    ContentValues().apply {
+                        put("height", fullyScannedHeight)
+                        put("hash", ByteArray(FIELD_BYTES) { fullyScannedHeight.toByte() })
+                        put("time", 0L)
+                        put("sapling_tree", byteArrayOf(0))
+                        put("sapling_commitment_tree_size", 0)
+                        put("orchard_commitment_tree_size", 0)
+                        put("sapling_output_count", 0)
+                        put("orchard_action_count", 0)
+                    }
+                db.insertWithOnConflict(
+                    "blocks",
+                    null,
+                    blockValues,
+                    SQLiteDatabase.CONFLICT_REPLACE
+                )
+
+                db.delete("scan_queue", null, null)
+                val scanValues =
+                    ContentValues().apply {
+                        put("block_range_start", birthdayHeight)
+                        put("block_range_end", fullyScannedHeight + 1)
+                        put("priority", SCANNED_PRIORITY)
+                    }
+                db.insert("scan_queue", null, scanValues)
+            }
+    }
+
+    private fun downgradeAccountToUivkOnly(walletDbPath: String, accountUuid: ByteArray) {
+        SQLiteDatabase
+            .openDatabase(walletDbPath, null, SQLiteDatabase.OPEN_READWRITE)
+            .use { db ->
+                db.execSQL(
+                    """
+                    UPDATE accounts
+                    SET account_kind = 1,
+                        has_spend_key = 0,
+                        ufvk = NULL
+                    WHERE uuid = ?
+                    """.trimIndent(),
+                    arrayOf(accountUuid)
+                )
+            }
+    }
+
+    private suspend fun assertRuntimeExceptionContains(
+        expectedMessage: String,
+        block: suspend () -> Unit
+    ) {
+        val error =
+            try {
+                block()
+                null
+            } catch (e: RuntimeException) {
+                e
+            }
+        assertNotNull(error)
+        assertTrue(
+            error.message.orEmpty().contains(expectedMessage),
+            "Expected '${error.message}' to contain '$expectedMessage'"
+        )
+    }
+
     private suspend fun deriveTestUfvk(
         seed: ByteArray = HOTKEY_SEED,
         networkId: Int = TESTNET_NETWORK_ID
@@ -998,4 +1204,9 @@ class VotingRustBackendTest {
         byteValue: Int,
         size: Int = FIELD_BYTES
     ) = ByteArray(size) { byteValue.toByte() }.toHexString()
+
+    private data class WalletDbFixture(
+        val path: String,
+        val accountUuid: ByteArray
+    )
 }
