@@ -16,6 +16,10 @@ struct DbKey {
 
 pub(super) struct VotingDbHandle {
     db: VotingDb,
+    // VoteTreeSync owns only its synchronous tree-client cache and protects
+    // that cache internally. JNI vote-tree entrypoints still hold access_mutex
+    // before calling it so DB writes and tree-client state changes are
+    // serialized for shared managed handles.
     pub(super) tree_sync: VoteTreeSync,
     access_mutex: Mutex<()>,
 }
