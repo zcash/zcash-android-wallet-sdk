@@ -134,6 +134,14 @@ data class JniWireEncryptedShare(
     }
 }
 
+/**
+ * Typed JNI carrier for vote commitment outputs.
+ *
+ * `shareBlinds` and `alphaV` are transient reveal/signing inputs. They should
+ * not be persisted or logged; they are carried here only because follow-up JNI
+ * calls consume the typed commitment result. Encrypted-share plaintext and
+ * encryption randomness remain Rust-only and are not included in [encShares].
+ */
 @Keep
 data class JniVoteCommitmentResult(
     val vanNullifier: ByteArray,

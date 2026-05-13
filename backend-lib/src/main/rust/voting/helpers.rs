@@ -572,8 +572,9 @@ pub(super) fn java_vote_commitment_bundle(
                 "proposalId",
             )?,
             proof: java_byte_array_field(env, commitment, "proof")?,
-            // Java receives only WireEncryptedShare values; the secret share
-            // plaintext/randomness fields intentionally never cross JNI.
+            // Java carries WireEncryptedShare values plus transient reveal and
+            // signing inputs. The encrypted-share plaintext/randomness fields
+            // intentionally never cross JNI.
             enc_shares: Vec::new(),
             anchor_height: jlong_to_u32(
                 env.get_field(commitment, "anchorHeight", "J")?.j()?,
