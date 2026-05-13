@@ -7,6 +7,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Synchronizer.broadcaster` API for creating transactions without immediate
+  submission and submitting stored transactions to selected lightwalletd
+  endpoints. Automatic retry uses the endpoints submitted through the
+  broadcaster.
 - `Synchronizer.fullyScannedHeight` and `Synchronizer.getTreeState` accessors
   for snapshot-height consumers.
 

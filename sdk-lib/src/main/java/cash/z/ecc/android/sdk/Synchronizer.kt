@@ -19,13 +19,18 @@ import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
+import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
+import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
+import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FastestServersResult
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.Pczt
@@ -141,6 +146,16 @@ interface Synchronizer {
      * transaction has not yet occurred.
      */
     val latestBirthdayHeight: BlockHeight?
+
+    /**
+     * Creates transactions without submitting them and submits created transactions
+     * to caller-selected lightwalletd endpoints.
+     *
+     * The default implementation throws [UnsupportedOperationException]. SDK-backed
+     * synchronizers override this with a working broadcaster.
+     */
+    val broadcaster: Broadcaster
+        get() = UnavailableBroadcaster
 
     //
     // Operations
@@ -949,6 +964,20 @@ interface Synchronizer {
             val encoder = DefaultSynchronizerFactory.defaultEncoder(backend, saplingParamFetcher, repository)
 
             val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
+            val standardPreferenceProvider = StandardPreferenceProvider(context)
+            val preferenceProvider = standardPreferenceProvider()
+            val encryptedPreferenceProvider = EncryptedPreferenceProvider(applicationContext)
+            val pendingSubmitPlanStore =
+                PendingSubmitPlanStore(
+                    preferenceProvider = encryptedPreferenceProvider(),
+                    namespace = "${zcashNetwork.id}_$alias"
+                )
+            val transactionSubmitter =
+                EndpointTransactionSubmitter(
+                    walletClientFactory = walletClientFactory,
+                    sdkFlags = sdkFlags
+                )
+            val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
             val processor =
                 DefaultSynchronizerFactory.defaultProcessor(
                     backend = backend,
@@ -957,10 +986,10 @@ interface Synchronizer {
                     repository = repository,
                     txManager = txManager,
                     sdkFlags = sdkFlags,
-                    saplingParamFetcher = saplingParamFetcher
+                    saplingParamFetcher = saplingParamFetcher,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore,
+                    submitPlanExecutor = submitPlanExecutor
                 )
-
-            val standardPreferenceProvider = StandardPreferenceProvider(context)
 
             return SdkSynchronizer.new(
                 context = context.applicationContext,
@@ -979,10 +1008,12 @@ interface Synchronizer {
                     ),
                 fetchExchangeChangeUsd =
                     exchangeRateIsolatedTorClient?.let { UsdExchangeRateFetcher(isolatedTorClient = it) },
-                preferenceProvider = standardPreferenceProvider(),
+                preferenceProvider = preferenceProvider,
                 torClient = torClient,
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
+                defaultSubmitEndpoint = lightWalletEndpoint,
+                pendingSubmitPlanStore = pendingSubmitPlanStore,
                 sdkFlags = sdkFlags
             )
         }
@@ -1040,6 +1071,29 @@ interface Synchronizer {
             alias: String = ZcashSdk.DEFAULT_ALIAS
         ): Boolean = SdkSynchronizer.erase(appContext, network, alias)
     }
+}
+
+private object UnavailableBroadcaster : Broadcaster {
+    override suspend fun createProposedTransactions(
+        proposal: Proposal,
+        usk: UnifiedSpendingKey
+    ): List<CreatedTransaction> = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
+
+    override suspend fun createTransactionFromPczt(
+        pcztWithProofs: Pczt,
+        pcztWithSignatures: Pczt
+    ): List<CreatedTransaction> = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
+
+    override suspend fun submit(
+        transaction: CreatedTransaction,
+        endpoint: LightWalletEndpoint
+    ): TransactionSubmitResult = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
 }
 
 /**
