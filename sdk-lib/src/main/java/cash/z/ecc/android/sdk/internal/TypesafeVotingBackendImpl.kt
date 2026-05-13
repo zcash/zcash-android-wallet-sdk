@@ -326,6 +326,8 @@ internal interface VotingDbBackend {
 
     suspend fun resetTreeClient(roundId: String)
 
+    suspend fun resetAllTreeClients()
+
     suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long)
 
     suspend fun generateVanWitness(
@@ -522,6 +524,9 @@ private class RustVotingDbBackend(
 
     override suspend fun resetTreeClient(roundId: String) =
         votingDb.resetTreeClient(roundId)
+
+    override suspend fun resetAllTreeClients() =
+        votingDb.resetTreeClient("")
 
     override suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long) =
         votingDb.storeVanPosition(roundId, bundleIndex, position)
@@ -746,7 +751,7 @@ internal class TypesafeVotingDbImpl(
         votingDb.resetTreeClient(roundId)
 
     override suspend fun resetAllTreeClients() =
-        votingDb.resetTreeClient("")
+        votingDb.resetAllTreeClients()
 
     override suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long) =
         votingDb.storeVanPosition(roundId, bundleIndex, position)

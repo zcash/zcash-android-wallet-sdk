@@ -340,7 +340,7 @@ class TypesafeVotingBackendImplTest {
             db.resetTreeClient("round-vote")
             assertEquals("round-vote", backend.resetRoundId)
             db.resetAllTreeClients()
-            assertEquals("", backend.resetRoundId)
+            assertEquals(1, backend.resetAllCount)
 
             db.storeVanPosition("round-vote", 3, 77)
             assertEquals("round-vote", backend.storeVanRoundId)
@@ -675,6 +675,7 @@ class TypesafeVotingBackendImplTest {
         var syncRoundId: String? = null
         var syncNodeUrl: String? = null
         var resetRoundId: String? = null
+        var resetAllCount = 0
         var storeVanRoundId: String? = null
         var storeVanBundleIndex: Int? = null
         var storeVanPosition: Long? = null
@@ -848,6 +849,10 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun resetTreeClient(roundId: String) {
             resetRoundId = roundId
+        }
+
+        override suspend fun resetAllTreeClients() {
+            resetAllCount += 1
         }
 
         override suspend fun storeVanPosition(
