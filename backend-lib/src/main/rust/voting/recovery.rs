@@ -21,11 +21,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let tx_hash = java_string_to_rust(env, &tx_hash)?;
         db.store_delegation_tx_hash(&round_id, bundle_index, &tx_hash)
             .map_err(|e| anyhow!("store_delegation_tx_hash: {e}"))?;
-        let stored = optional_recovery_lookup(
-            db.get_delegation_tx_hash(&round_id, bundle_index),
-            "get_delegation_tx_hash",
-        )?;
-        require_stored_value(stored.as_deref(), &tx_hash, "delegation tx hash")?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -80,11 +75,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let tx_hash = java_string_to_rust(env, &tx_hash)?;
         db.store_vote_tx_hash(&round_id, bundle_index, proposal_id, &tx_hash)
             .map_err(|e| anyhow!("store_vote_tx_hash: {e}"))?;
-        let stored = optional_recovery_lookup(
-            db.get_vote_tx_hash(&round_id, bundle_index, proposal_id),
-            "get_vote_tx_hash",
-        )?;
-        require_stored_value(stored.as_deref(), &tx_hash, "vote tx hash")?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -166,16 +156,6 @@ fn is_query_returned_no_rows(error: &impl std::fmt::Display) -> bool {
         .contains("query returned no rows")
 }
 
-fn require_stored_value(stored: Option<&str>, expected: &str, label: &str) -> anyhow::Result<()> {
-    match stored {
-        Some(value) if value == expected => Ok(()),
-        Some(_) => Err(anyhow!(
-            "{label} store verification returned a different value"
-        )),
-        None => Err(anyhow!("{label} store did not update any recovery row")),
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeCommitmentBundleNative<
     'local,
@@ -207,11 +187,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
             vc_tree_position,
         )
         .map_err(|e| anyhow!("store_commitment_bundle: {e}"))?;
-        let stored = optional_recovery_lookup(
-            db.get_commitment_bundle(&round_id, bundle_index, proposal_id),
-            "get_commitment_bundle",
-        )?;
-        require_stored_commitment(stored, &commitment, vc_tree_position)?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -244,24 +219,6 @@ fn require_commitment_matches_key(
         ));
     }
     Ok(())
-}
-
-/// Requires a just-stored commitment lookup to return the exact JSON payload
-/// and VC tree position. Fails closed when the row is missing or was overwritten.
-fn require_stored_commitment(
-    stored: Option<(String, u64)>,
-    expected_json: &str,
-    expected_position: u64,
-) -> anyhow::Result<()> {
-    match stored {
-        Some((json, position)) if json == expected_json && position == expected_position => Ok(()),
-        Some(_) => Err(anyhow!(
-            "commitment bundle store verification returned a different value"
-        )),
-        None => Err(anyhow!(
-            "commitment bundle store did not update any recovery row"
-        )),
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -527,24 +484,6 @@ mod tests {
     }
 
     #[test]
-    fn stored_value_verification_rejects_missing_or_changed_rows() {
-        require_stored_value(Some("tx-1"), "tx-1", "vote tx hash").unwrap();
-
-        assert!(
-            require_stored_value(None, "tx-1", "vote tx hash")
-                .unwrap_err()
-                .to_string()
-                .contains("did not update")
-        );
-        assert!(
-            require_stored_value(Some("tx-2"), "tx-1", "vote tx hash")
-                .unwrap_err()
-                .to_string()
-                .contains("different value")
-        );
-    }
-
-    #[test]
     fn commitment_store_key_must_match_payload() {
         let commitment = commitment_bundle("round-1", 7);
 
@@ -566,30 +505,6 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("bundleIndex")
-        );
-    }
-
-    #[test]
-    fn stored_commitment_verification_rejects_missing_or_changed_rows() {
-        require_stored_commitment(Some(("json".to_string(), 12)), "json", 12).unwrap();
-
-        assert!(
-            require_stored_commitment(None, "json", 12)
-                .unwrap_err()
-                .to_string()
-                .contains("did not update")
-        );
-        assert!(
-            require_stored_commitment(Some(("other".to_string(), 12)), "json", 12)
-                .unwrap_err()
-                .to_string()
-                .contains("different value")
-        );
-        assert!(
-            require_stored_commitment(Some(("json".to_string(), 13)), "json", 12)
-                .unwrap_err()
-                .to_string()
-                .contains("different value")
         );
     }
 
