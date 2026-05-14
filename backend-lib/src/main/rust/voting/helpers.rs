@@ -1161,19 +1161,21 @@ fn make_jni_wire_encrypted_share<'local>(
     env: &mut JNIEnv<'local>,
     share: WireEncryptedShare,
 ) -> anyhow::Result<JObject<'local>> {
-    let class = env.find_class(JNI_WIRE_ENCRYPTED_SHARE)?;
-    let c1 = make_jni_fixed_bytes(env, share.c1, "c1", PROTOCOL_FIELD_BYTES)?;
-    let c2 = make_jni_fixed_bytes(env, share.c2, "c2", PROTOCOL_FIELD_BYTES)?;
+    env.with_local_frame_returning_local(8, |env| {
+        let class = env.find_class(JNI_WIRE_ENCRYPTED_SHARE)?;
+        let c1 = make_jni_fixed_bytes(env, share.c1, "c1", PROTOCOL_FIELD_BYTES)?;
+        let c2 = make_jni_fixed_bytes(env, share.c2, "c2", PROTOCOL_FIELD_BYTES)?;
 
-    Ok(env.new_object(
-        &class,
-        JNI_WIRE_ENCRYPTED_SHARE_CTOR_SIG,
-        &[
-            JValue::Object(&c1),
-            JValue::Object(&c2),
-            JValue::Int(u32_to_jint(share.share_index, "share_index")?),
-        ],
-    )?)
+        Ok(env.new_object(
+            &class,
+            JNI_WIRE_ENCRYPTED_SHARE_CTOR_SIG,
+            &[
+                JValue::Object(&c1),
+                JValue::Object(&c2),
+                JValue::Int(u32_to_jint(share.share_index, "share_index")?),
+            ],
+        )?)
+    })
 }
 
 fn make_jni_wire_encrypted_share_array<'local>(
@@ -1186,9 +1188,11 @@ fn make_jni_wire_encrypted_share_array<'local>(
     if let Some((_, first)) = shares.next() {
         let first = make_jni_wire_encrypted_share(env, first)?;
         let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
         for (index, share) in shares {
             let share = make_jni_wire_encrypted_share(env, share)?;
-            env.set_object_array_element(&array, usize_to_jint(index, "shares index")?, share)?;
+            env.set_object_array_element(&array, usize_to_jint(index, "shares index")?, &share)?;
+            env.delete_local_ref(share)?;
         }
         Ok(array)
     } else {
@@ -1320,9 +1324,15 @@ pub(super) fn make_jni_share_payload_array<'local>(
     if let Some((_, first)) = payloads.next() {
         let first = make_jni_share_payload(env, first)?;
         let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
         for (index, payload) in payloads {
             let payload = make_jni_share_payload(env, payload)?;
-            env.set_object_array_element(&array, usize_to_jint(index, "payloads index")?, payload)?;
+            env.set_object_array_element(
+                &array,
+                usize_to_jint(index, "payloads index")?,
+                &payload,
+            )?;
+            env.delete_local_ref(payload)?;
         }
         Ok(array.into_raw())
     } else {
@@ -1334,46 +1344,49 @@ fn make_jni_share_payload<'local>(
     env: &mut JNIEnv<'local>,
     payload: SharePayload,
 ) -> anyhow::Result<JObject<'local>> {
-    let class = env.find_class(JNI_SHARE_PAYLOAD)?;
-    let shares_hash = make_jni_fixed_bytes(
-        env,
-        payload.shares_hash,
-        "shares_hash",
-        PROTOCOL_FIELD_BYTES,
-    )?;
-    let enc_share = make_jni_wire_encrypted_share(env, payload.enc_share)?;
-    let all_enc_shares = require_count(payload.all_enc_shares, "all_enc_shares", VOTE_SHARE_COUNT)?;
-    let all_enc_shares = make_jni_wire_encrypted_share_array(env, all_enc_shares)?;
-    let share_comms = make_jni_fixed_byte_array_vec(
-        env,
-        payload.share_comms,
-        "share_comms",
-        VOTE_SHARE_COUNT,
-        PROTOCOL_FIELD_BYTES,
-    )?;
-    let primary_blind = make_jni_fixed_bytes(
-        env,
-        payload.primary_blind,
-        "primary_blind",
-        PROTOCOL_FIELD_BYTES,
-    )?;
-    let all_enc_shares = JObject::from(all_enc_shares);
-    let share_comms = JObject::from(share_comms);
+    env.with_local_frame_returning_local(48, |env| {
+        let class = env.find_class(JNI_SHARE_PAYLOAD)?;
+        let shares_hash = make_jni_fixed_bytes(
+            env,
+            payload.shares_hash,
+            "shares_hash",
+            PROTOCOL_FIELD_BYTES,
+        )?;
+        let enc_share = make_jni_wire_encrypted_share(env, payload.enc_share)?;
+        let all_enc_shares =
+            require_count(payload.all_enc_shares, "all_enc_shares", VOTE_SHARE_COUNT)?;
+        let all_enc_shares = make_jni_wire_encrypted_share_array(env, all_enc_shares)?;
+        let share_comms = make_jni_fixed_byte_array_vec(
+            env,
+            payload.share_comms,
+            "share_comms",
+            VOTE_SHARE_COUNT,
+            PROTOCOL_FIELD_BYTES,
+        )?;
+        let primary_blind = make_jni_fixed_bytes(
+            env,
+            payload.primary_blind,
+            "primary_blind",
+            PROTOCOL_FIELD_BYTES,
+        )?;
+        let all_enc_shares = JObject::from(all_enc_shares);
+        let share_comms = JObject::from(share_comms);
 
-    Ok(env.new_object(
-        &class,
-        JNI_SHARE_PAYLOAD_CTOR_SIG,
-        &[
-            JValue::Object(&shares_hash),
-            JValue::Int(u32_to_jint(payload.proposal_id, "proposal_id")?),
-            JValue::Int(u32_to_jint(payload.vote_decision, "vote_decision")?),
-            JValue::Object(&enc_share),
-            JValue::Long(u64_to_jlong(payload.tree_position, "tree_position")?),
-            JValue::Object(&all_enc_shares),
-            JValue::Object(&share_comms),
-            JValue::Object(&primary_blind),
-        ],
-    )?)
+        Ok(env.new_object(
+            &class,
+            JNI_SHARE_PAYLOAD_CTOR_SIG,
+            &[
+                JValue::Object(&shares_hash),
+                JValue::Int(u32_to_jint(payload.proposal_id, "proposal_id")?),
+                JValue::Int(u32_to_jint(payload.vote_decision, "vote_decision")?),
+                JValue::Object(&enc_share),
+                JValue::Long(u64_to_jlong(payload.tree_position, "tree_position")?),
+                JValue::Object(&all_enc_shares),
+                JValue::Object(&share_comms),
+                JValue::Object(&primary_blind),
+            ],
+        )?)
+    })
 }
 
 pub(super) fn make_jni_share_delegation_record_array<'local>(
@@ -1386,13 +1399,15 @@ pub(super) fn make_jni_share_delegation_record_array<'local>(
     if let Some((_, first)) = records.next() {
         let first = make_jni_share_delegation_record(env, first)?;
         let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
         for (index, record) in records {
             let record = make_jni_share_delegation_record(env, record)?;
             env.set_object_array_element(
                 &array,
                 usize_to_jint(index, "share delegation record index")?,
-                record,
+                &record,
             )?;
+            env.delete_local_ref(record)?;
         }
         Ok(array.into_raw())
     } else {
@@ -1404,32 +1419,34 @@ fn make_jni_share_delegation_record<'local>(
     env: &mut JNIEnv<'local>,
     record: voting::ShareDelegationRecord,
 ) -> anyhow::Result<JObject<'local>> {
-    let class = env.find_class(JNI_SHARE_DELEGATION_RECORD)?;
-    let round_id: JObject<'local> = env.new_string(record.round_id)?.into();
-    let sent_to_urls = make_jni_string_array(env, record.sent_to_urls)?;
-    let sent_to_urls = JObject::from(sent_to_urls);
-    let nullifier = make_jni_fixed_bytes(
-        env,
-        record.nullifier,
-        "share_delegation.nullifier",
-        SHARE_NULLIFIER_BYTES,
-    )?;
+    env.with_local_frame_returning_local(24, |env| {
+        let class = env.find_class(JNI_SHARE_DELEGATION_RECORD)?;
+        let round_id: JObject<'_> = env.new_string(record.round_id)?.into();
+        let sent_to_urls = make_jni_string_array(env, record.sent_to_urls)?;
+        let sent_to_urls = JObject::from(sent_to_urls);
+        let nullifier = make_jni_fixed_bytes(
+            env,
+            record.nullifier,
+            "share_delegation.nullifier",
+            SHARE_NULLIFIER_BYTES,
+        )?;
 
-    Ok(env.new_object(
-        &class,
-        JNI_SHARE_DELEGATION_RECORD_CTOR_SIG,
-        &[
-            JValue::Object(&round_id),
-            JValue::Int(u32_to_jint(record.bundle_index, "bundle_index")?),
-            JValue::Int(u32_to_jint(record.proposal_id, "proposal_id")?),
-            JValue::Int(u32_to_jint(record.share_index, "share_index")?),
-            JValue::Object(&sent_to_urls),
-            JValue::Object(&nullifier),
-            JValue::Bool(record.confirmed as jboolean),
-            JValue::Long(u64_to_jlong(record.submit_at, "submit_at")?),
-            JValue::Long(u64_to_jlong(record.created_at, "created_at")?),
-        ],
-    )?)
+        Ok(env.new_object(
+            &class,
+            JNI_SHARE_DELEGATION_RECORD_CTOR_SIG,
+            &[
+                JValue::Object(&round_id),
+                JValue::Int(u32_to_jint(record.bundle_index, "bundle_index")?),
+                JValue::Int(u32_to_jint(record.proposal_id, "proposal_id")?),
+                JValue::Int(u32_to_jint(record.share_index, "share_index")?),
+                JValue::Object(&sent_to_urls),
+                JValue::Object(&nullifier),
+                JValue::Bool(record.confirmed as jboolean),
+                JValue::Long(u64_to_jlong(record.submit_at, "submit_at")?),
+                JValue::Long(u64_to_jlong(record.created_at, "created_at")?),
+            ],
+        )?)
+    })
 }
 
 fn make_jni_string_array<'local>(
