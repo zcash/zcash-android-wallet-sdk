@@ -782,13 +782,13 @@ class VotingRustBackendTest {
                     explicitDb.buildTestGovernancePczt(
                         ufvk = ufvk,
                         notes = notes,
-                        accountIndex = accountIndex
+                        options = GovernancePcztOptions(accountIndex = accountIndex)
                     )
                 val seedPczt =
                     seedDb.buildTestGovernancePcztFromSeed(
                         ufvk = ufvk,
                         notes = notes,
-                        accountIndex = accountIndex
+                        options = GovernancePcztOptions(accountIndex = accountIndex)
                     )
 
                 assertContentEquals(explicitPczt.pcztBytes, seedPczt.pcztBytes)
@@ -815,7 +815,7 @@ class VotingRustBackendTest {
                         db.buildTestGovernancePcztFromSeed(
                             ufvk = ufvk,
                             notes = notes,
-                            walletSeed = OTHER_HOTKEY_SEED
+                            options = GovernancePcztOptions(walletSeed = OTHER_HOTKEY_SEED)
                         )
                     }
 
@@ -842,7 +842,7 @@ class VotingRustBackendTest {
                     db.buildTestGovernancePczt(
                         ufvk = ufvk,
                         notes = notes,
-                        networkId = MAINNET_NETWORK_ID
+                        options = GovernancePcztOptions(networkId = MAINNET_NETWORK_ID)
                     )
 
                 assertTrue(pczt.pcztBytes.isNotEmpty())
@@ -1539,19 +1539,16 @@ class VotingRustBackendTest {
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePczt(
         ufvk: String,
         notes: List<JniNoteInfo>,
-        hotkeySeed: ByteArray = HOTKEY_SEED,
-        networkId: Int = TESTNET_NETWORK_ID,
-        roundId: String = PCZT_ROUND_ID,
-        accountIndex: Int = ACCOUNT_INDEX
+        options: GovernancePcztOptions = GovernancePcztOptions()
     ): JniGovernancePczt {
         val backend = VotingRustBackend.new()
         return buildGovernancePczt(
-            roundId = roundId,
+            roundId = options.roundId,
             bundleIndex = 1,
-            fvkBytes = backend.extractOrchardFvkFromUfvk(ufvk, networkId),
-            hotkeyRawAddress = backend.deriveHotkeyRawAddress(hotkeySeed, networkId),
-            networkId = networkId,
-            accountIndex = accountIndex,
+            fvkBytes = backend.extractOrchardFvkFromUfvk(ufvk, options.networkId),
+            hotkeyRawAddress = backend.deriveHotkeyRawAddress(options.hotkeySeed, options.networkId),
+            networkId = options.networkId,
+            accountIndex = options.accountIndex,
             notes = notes,
             seedFingerprint = SEED_FINGERPRINT,
             roundName = ROUND_NAME
@@ -1561,21 +1558,26 @@ class VotingRustBackendTest {
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePcztFromSeed(
         ufvk: String,
         notes: List<JniNoteInfo>,
-        walletSeed: ByteArray = HOTKEY_SEED,
-        networkId: Int = TESTNET_NETWORK_ID,
-        roundId: String = PCZT_ROUND_ID,
-        accountIndex: Int = ACCOUNT_INDEX
+        options: GovernancePcztOptions = GovernancePcztOptions()
     ) = buildGovernancePcztFromSeed(
-        roundId = roundId,
+        roundId = options.roundId,
         bundleIndex = 1,
         ufvk = ufvk,
-        networkId = networkId,
-        accountIndex = accountIndex,
+        networkId = options.networkId,
+        accountIndex = options.accountIndex,
         notes = notes,
-        walletSeed = walletSeed,
-        hotkeySeed = HOTKEY_SEED,
+        walletSeed = options.walletSeed,
+        hotkeySeed = options.hotkeySeed,
         seedFingerprint = SEED_FINGERPRINT,
         roundName = ROUND_NAME
+    )
+
+    private class GovernancePcztOptions(
+        val hotkeySeed: ByteArray = HOTKEY_SEED,
+        val walletSeed: ByteArray = HOTKEY_SEED,
+        val networkId: Int = TESTNET_NETWORK_ID,
+        val roundId: String = PCZT_ROUND_ID,
+        val accountIndex: Int = ACCOUNT_INDEX
     )
 
     private fun notes(
