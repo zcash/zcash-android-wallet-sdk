@@ -124,6 +124,12 @@ class VotingRustBackend private constructor() {
                 ?: error("extractOrchardFvkFromUfvk returned null")
         }
 
+    /**
+     * Derives the raw Orchard address for the voting hotkey.
+     *
+     * The hotkey account index is intentionally fixed by the Rust voting backend to match the
+     * vote-signing path. Do not add an `accountIndex` parameter unless that path changes with it.
+     */
     @Throws(RuntimeException::class)
     suspend fun deriveHotkeyRawAddress(
         hotkeySeed: ByteArray,
@@ -312,6 +318,13 @@ class VotingRustBackend private constructor() {
                     ?: error("generateHotkey returned null for roundId=$roundId")
             }
 
+        /**
+         * Builds a governance PCZT for hardware-wallet flows.
+         *
+         * This explicit form trusts [fvkBytes] and [hotkeyRawAddress] as caller-derived Keystone
+         * input. It does not validate a wallet seed against [fvkBytes]. Software-wallet callers that
+         * have the wallet seed should use [buildGovernancePcztFromSeed] to retain that invariant.
+         */
         @Throws(RuntimeException::class)
         suspend fun buildGovernancePczt(
             roundId: String,
@@ -339,6 +352,13 @@ class VotingRustBackend private constructor() {
                 ) ?: error("buildGovernancePczt returned null")
             }
 
+        /**
+         * Builds a governance PCZT for software-wallet flows.
+         *
+         * This path derives the Orchard FVK from [walletSeed] and rejects calls where it does not
+         * match [ufvk]. It also derives the hotkey raw address from [hotkeySeed] using the fixed
+         * hotkey account index expected by the vote-signing path.
+         */
         @Throws(RuntimeException::class)
         suspend fun buildGovernancePcztFromSeed(
             roundId: String,

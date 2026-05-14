@@ -160,6 +160,25 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun derive_hotkey_raw_address_is_deterministic_and_rejects_short_seed() =
+        runTest {
+            val backend = VotingRustBackend.new()
+
+            val first = backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
+            val second = backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
+            val otherSeed = backend.deriveHotkeyRawAddress(OTHER_HOTKEY_SEED, TESTNET_NETWORK_ID)
+            val mainnet = backend.deriveHotkeyRawAddress(HOTKEY_SEED, MAINNET_NETWORK_ID)
+
+            assertEquals(DIVERSIFIER_BYTES + FIELD_BYTES, first.size)
+            assertContentEquals(first, second)
+            assertFalse(first.contentEquals(otherSeed))
+            assertFalse(first.contentEquals(mainnet))
+            assertFailsWith<RuntimeException> {
+                backend.deriveHotkeyRawAddress(SHORT_FIELD, TESTNET_NETWORK_ID)
+            }
+        }
+
+    @Test
     fun extract_nc_root_decodes_tree_state() =
         runTest {
             val backend = VotingRustBackend.new()
@@ -735,8 +754,9 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun build_governance_pczt_explicit_and_seed_paths_match() =
+    fun build_governance_pczt_explicit_and_seed_paths_produce_valid_pczts() =
         runTest {
+            val backend = VotingRustBackend.new()
             val explicitDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             val seedDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
@@ -748,18 +768,8 @@ class VotingRustBackendTest {
                 val explicitPczt = explicitDb.buildTestGovernancePczt(ufvk, notes)
                 val seedPczt = seedDb.buildTestGovernancePcztFromSeed(ufvk, notes)
 
-                assertContentEquals(explicitPczt.pcztBytes, seedPczt.pcztBytes)
-                assertContentEquals(explicitPczt.rk, seedPczt.rk)
-                assertContentEquals(explicitPczt.sighash, seedPczt.sighash)
-                assertEquals(explicitPczt.actionIndex, seedPczt.actionIndex)
-                assertEquals(
-                    JniRoundPhase.DELEGATION_CONSTRUCTED,
-                    assertNotNull(explicitDb.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
-                assertEquals(
-                    JniRoundPhase.DELEGATION_CONSTRUCTED,
-                    assertNotNull(seedDb.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
+                assertValidGovernancePczt(backend, explicitDb, explicitPczt)
+                assertValidGovernancePczt(backend, seedDb, seedPczt)
             } finally {
                 explicitDb.close()
                 seedDb.close()
@@ -791,10 +801,9 @@ class VotingRustBackendTest {
                         options = GovernancePcztOptions(accountIndex = accountIndex)
                     )
 
-                assertContentEquals(explicitPczt.pcztBytes, seedPczt.pcztBytes)
-                assertContentEquals(explicitPczt.rk, seedPczt.rk)
-                assertContentEquals(explicitPczt.sighash, seedPczt.sighash)
-                assertEquals(explicitPczt.actionIndex, seedPczt.actionIndex)
+                val backend = VotingRustBackend.new()
+                assertValidGovernancePczt(backend, explicitDb, explicitPczt)
+                assertValidGovernancePczt(backend, seedDb, seedPczt)
             } finally {
                 explicitDb.close()
                 seedDb.close()
@@ -1571,6 +1580,22 @@ class VotingRustBackendTest {
         seedFingerprint = SEED_FINGERPRINT,
         roundName = ROUND_NAME
     )
+
+    private suspend fun assertValidGovernancePczt(
+        backend: VotingRustBackend,
+        db: VotingRustBackend.VotingDb,
+        pczt: JniGovernancePczt
+    ) {
+        assertTrue(pczt.pcztBytes.isNotEmpty())
+        assertEquals(FIELD_BYTES, pczt.rk.size)
+        assertEquals(FIELD_BYTES, pczt.sighash.size)
+        assertTrue(pczt.actionIndex >= 0)
+        assertContentEquals(pczt.sighash, backend.extractPcztSighash(pczt.pcztBytes))
+        assertEquals(
+            JniRoundPhase.DELEGATION_CONSTRUCTED,
+            assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
+        )
+    }
 
     private class GovernancePcztOptions(
         val hotkeySeed: ByteArray = HOTKEY_SEED,

@@ -165,6 +165,87 @@ class TypesafeVotingBackendImplTest {
         }
 
     @Test
+    fun governance_pczt_methods_forward_arguments_and_map_results() =
+        runTest {
+            val jniResult =
+                jniGovernancePczt(
+                    pcztBytes = field(GOVERNANCE_PCZT_BYTES_FIXTURE),
+                    rk = field(GOVERNANCE_PCZT_RK_FIXTURE),
+                    sighash = field(GOVERNANCE_PCZT_SIGHASH_FIXTURE),
+                    actionIndex = GOVERNANCE_PCZT_ACTION_INDEX
+                )
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    governancePcztResult = jniResult
+                )
+            val db = TypesafeVotingDbImpl(backend)
+            val fvkBytes = field(1)
+            val hotkeyRawAddress = field(GOVERNANCE_PCZT_HOTKEY_ADDRESS_FIXTURE)
+            val seedFingerprint = field(GOVERNANCE_PCZT_SEED_FINGERPRINT_FIXTURE)
+            val walletSeed = field(GOVERNANCE_PCZT_WALLET_SEED_FIXTURE)
+            val hotkeySeed = field(GOVERNANCE_PCZT_HOTKEY_SEED_FIXTURE)
+            val notes = listOf(votingNoteInfo())
+            val jniNotes = notes.map { it.toJniNoteInfo() }
+
+            val explicit =
+                db.buildGovernancePczt(
+                    roundId = "round-explicit",
+                    bundleIndex = GOVERNANCE_PCZT_EXPLICIT_BUNDLE_INDEX,
+                    fvkBytes = fvkBytes,
+                    hotkeyRawAddress = hotkeyRawAddress,
+                    networkId = 1,
+                    accountIndex = GOVERNANCE_PCZT_EXPLICIT_ACCOUNT_INDEX,
+                    notes = notes,
+                    seedFingerprint = seedFingerprint,
+                    roundName = "Round Explicit"
+                )
+            assertEquals(jniResult.toGovernancePcztResult(), explicit)
+            assertEquals("round-explicit", backend.governancePcztRoundId)
+            assertEquals(GOVERNANCE_PCZT_EXPLICIT_BUNDLE_INDEX, backend.governancePcztBundleIndex)
+            assertContentEquals(fvkBytes, backend.governancePcztFvkBytes)
+            assertContentEquals(hotkeyRawAddress, backend.governancePcztHotkeyRawAddress)
+            assertEquals(1, backend.governancePcztNetworkId)
+            assertEquals(GOVERNANCE_PCZT_EXPLICIT_ACCOUNT_INDEX, backend.governancePcztAccountIndex)
+            assertEquals(jniNotes, backend.governancePcztNotes)
+            assertContentEquals(seedFingerprint, backend.governancePcztSeedFingerprint)
+            assertEquals("Round Explicit", backend.governancePcztRoundName)
+
+            val seed =
+                db.buildGovernancePcztFromSeed(
+                    roundId = "round-seed",
+                    bundleIndex = GOVERNANCE_PCZT_FROM_SEED_BUNDLE_INDEX,
+                    ufvk = "uview-test",
+                    networkId = 0,
+                    accountIndex = GOVERNANCE_PCZT_FROM_SEED_ACCOUNT_INDEX,
+                    notes = notes,
+                    walletSeed = walletSeed,
+                    hotkeySeed = hotkeySeed,
+                    seedFingerprint = seedFingerprint,
+                    roundName = "Round Seed"
+                )
+            assertEquals(jniResult.toGovernancePcztResult(), seed)
+            assertEquals("round-seed", backend.governancePcztFromSeedRoundId)
+            assertEquals(
+                GOVERNANCE_PCZT_FROM_SEED_BUNDLE_INDEX,
+                backend.governancePcztFromSeedBundleIndex
+            )
+            assertEquals("uview-test", backend.governancePcztFromSeedUfvk)
+            assertEquals(0, backend.governancePcztFromSeedNetworkId)
+            assertEquals(
+                GOVERNANCE_PCZT_FROM_SEED_ACCOUNT_INDEX,
+                backend.governancePcztFromSeedAccountIndex
+            )
+            assertEquals(jniNotes, backend.governancePcztFromSeedNotes)
+            assertContentEquals(walletSeed, backend.governancePcztFromSeedWalletSeed)
+            assertContentEquals(hotkeySeed, backend.governancePcztFromSeedHotkeySeed)
+            assertContentEquals(seedFingerprint, backend.governancePcztFromSeedSeedFingerprint)
+            assertEquals("Round Seed", backend.governancePcztFromSeedRoundName)
+        }
+
+    @Test
     fun delegation_methods_forward_arguments_and_map_results() =
         runTest {
             val proofJniResult =
@@ -639,6 +720,19 @@ class TypesafeVotingBackendImplTest {
         voteRoundId = voteRoundId
     )
 
+    private fun jniGovernancePczt(
+        pcztBytes: ByteArray =
+            ByteArray(PROOF_BYTES) { DEFAULT_GOVERNANCE_PCZT_BYTES_FIXTURE.toByte() },
+        rk: ByteArray = field(DEFAULT_GOVERNANCE_PCZT_RK_FIXTURE),
+        sighash: ByteArray = field(DEFAULT_GOVERNANCE_PCZT_SIGHASH_FIXTURE),
+        actionIndex: Int = 1
+    ) = JniGovernancePczt(
+        pcztBytes = pcztBytes,
+        rk = rk,
+        sighash = sighash,
+        actionIndex = actionIndex
+    )
+
     private fun jniVanWitness(
         authPath: List<ByteArray> = fieldElements(JNI_VAN_WITNESS_PATH_DEPTH),
         position: Long = 1,
@@ -874,6 +968,13 @@ class TypesafeVotingBackendImplTest {
         private val commitmentRecord: JniCommitmentBundleRecord? = null,
         private val shareRecords: Array<JniShareDelegationRecord> = emptyArray(),
         private val unconfirmedShareRecords: Array<JniShareDelegationRecord> = emptyArray(),
+        private val governancePcztResult: JniGovernancePczt =
+            JniGovernancePczt(
+                pcztBytes = ByteArray(PROOF_BYTES),
+                rk = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                sighash = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                actionIndex = 0
+            ),
         private val recoveryLookupException: RuntimeException? = null
     ) : VotingDbBackend {
         var storeWitnessesRoundId: String? = null
@@ -885,6 +986,25 @@ class TypesafeVotingBackendImplTest {
         var precomputePirServerUrl: String? = null
         var precomputeNetworkId: Int? = null
         var precomputeNotes: List<JniNoteInfo>? = null
+        var governancePcztRoundId: String? = null
+        var governancePcztBundleIndex: Int? = null
+        var governancePcztFvkBytes: ByteArray = ByteArray(0)
+        var governancePcztHotkeyRawAddress: ByteArray = ByteArray(0)
+        var governancePcztNetworkId: Int? = null
+        var governancePcztAccountIndex: Int? = null
+        var governancePcztNotes: List<JniNoteInfo>? = null
+        var governancePcztSeedFingerprint: ByteArray = ByteArray(0)
+        var governancePcztRoundName: String? = null
+        var governancePcztFromSeedRoundId: String? = null
+        var governancePcztFromSeedBundleIndex: Int? = null
+        var governancePcztFromSeedUfvk: String? = null
+        var governancePcztFromSeedNetworkId: Int? = null
+        var governancePcztFromSeedAccountIndex: Int? = null
+        var governancePcztFromSeedNotes: List<JniNoteInfo>? = null
+        var governancePcztFromSeedWalletSeed: ByteArray = ByteArray(0)
+        var governancePcztFromSeedHotkeySeed: ByteArray = ByteArray(0)
+        var governancePcztFromSeedSeedFingerprint: ByteArray = ByteArray(0)
+        var governancePcztFromSeedRoundName: String? = null
         var buildAndProveRoundId: String? = null
         var buildAndProveBundleIndex: Int? = null
         var buildAndProvePirServerUrl: String? = null
@@ -1018,7 +1138,18 @@ class TypesafeVotingBackendImplTest {
             notes: List<JniNoteInfo>,
             seedFingerprint: ByteArray,
             roundName: String
-        ): JniGovernancePczt = unused()
+        ): JniGovernancePczt {
+            governancePcztRoundId = roundId
+            governancePcztBundleIndex = bundleIndex
+            governancePcztFvkBytes = fvkBytes
+            governancePcztHotkeyRawAddress = hotkeyRawAddress
+            governancePcztNetworkId = networkId
+            governancePcztAccountIndex = accountIndex
+            governancePcztNotes = notes
+            governancePcztSeedFingerprint = seedFingerprint
+            governancePcztRoundName = roundName
+            return governancePcztResult
+        }
 
         override suspend fun buildGovernancePcztFromSeed(
             roundId: String,
@@ -1031,7 +1162,19 @@ class TypesafeVotingBackendImplTest {
             hotkeySeed: ByteArray,
             seedFingerprint: ByteArray,
             roundName: String
-        ): JniGovernancePczt = unused()
+        ): JniGovernancePczt {
+            governancePcztFromSeedRoundId = roundId
+            governancePcztFromSeedBundleIndex = bundleIndex
+            governancePcztFromSeedUfvk = ufvk
+            governancePcztFromSeedNetworkId = networkId
+            governancePcztFromSeedAccountIndex = accountIndex
+            governancePcztFromSeedNotes = notes
+            governancePcztFromSeedWalletSeed = walletSeed
+            governancePcztFromSeedHotkeySeed = hotkeySeed
+            governancePcztFromSeedSeedFingerprint = seedFingerprint
+            governancePcztFromSeedRoundName = roundName
+            return governancePcztResult
+        }
 
         override suspend fun storeWitnesses(
             roundId: String,
@@ -1327,5 +1470,20 @@ class TypesafeVotingBackendImplTest {
 
     private companion object {
         private const val PROOF_BYTES = 3
+        private const val GOVERNANCE_PCZT_BYTES_FIXTURE = 41
+        private const val GOVERNANCE_PCZT_RK_FIXTURE = 43
+        private const val GOVERNANCE_PCZT_SIGHASH_FIXTURE = 44
+        private const val GOVERNANCE_PCZT_ACTION_INDEX = 2
+        private const val GOVERNANCE_PCZT_HOTKEY_ADDRESS_FIXTURE = 4
+        private const val GOVERNANCE_PCZT_SEED_FINGERPRINT_FIXTURE = 7
+        private const val GOVERNANCE_PCZT_WALLET_SEED_FIXTURE = 10
+        private const val GOVERNANCE_PCZT_HOTKEY_SEED_FIXTURE = 13
+        private const val GOVERNANCE_PCZT_EXPLICIT_BUNDLE_INDEX = 2
+        private const val GOVERNANCE_PCZT_EXPLICIT_ACCOUNT_INDEX = 3
+        private const val GOVERNANCE_PCZT_FROM_SEED_BUNDLE_INDEX = 4
+        private const val GOVERNANCE_PCZT_FROM_SEED_ACCOUNT_INDEX = 5
+        private const val DEFAULT_GOVERNANCE_PCZT_BYTES_FIXTURE = 20
+        private const val DEFAULT_GOVERNANCE_PCZT_RK_FIXTURE = 21
+        private const val DEFAULT_GOVERNANCE_PCZT_SIGHASH_FIXTURE = 22
     }
 }

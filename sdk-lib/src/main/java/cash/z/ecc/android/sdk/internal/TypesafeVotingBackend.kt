@@ -45,6 +45,13 @@ internal interface TypesafeVotingBackend {
 
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
+    /**
+     * Derives the raw Orchard address for the voting hotkey.
+     *
+     * The hotkey account index is intentionally fixed by the Rust voting backend to match the
+     * vote-signing path. Do not add an `accountIndex` parameter unless that path changes with it;
+     * otherwise delegation can be built for a hotkey that later vote construction cannot sign for.
+     */
     suspend fun deriveHotkeyRawAddress(
         hotkeySeed: ByteArray,
         networkId: Int
@@ -102,11 +109,19 @@ internal interface TypesafeVotingDb {
         notes: List<VotingNoteInfo>
     ): JniBundleSetupResult
 
+    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
     suspend fun generateHotkey(
         roundId: String,
         seed: ByteArray
     ): JniVotingHotkey
 
+    /**
+     * Builds a governance PCZT for hardware-wallet flows.
+     *
+     * This explicit form trusts [fvkBytes] and [hotkeyRawAddress] as caller-derived Keystone input.
+     * It does not validate a wallet seed against [fvkBytes]. Software-wallet callers that have the
+     * wallet seed should use [buildGovernancePcztFromSeed] to retain that invariant.
+     */
     suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
@@ -119,6 +134,13 @@ internal interface TypesafeVotingDb {
         roundName: String
     ): GovernancePcztResult
 
+    /**
+     * Builds a governance PCZT for software-wallet flows.
+     *
+     * This path derives the Orchard FVK from [walletSeed] and rejects calls where it does not match
+     * [ufvk]. It also derives the hotkey raw address from [hotkeySeed] using the fixed hotkey
+     * account index expected by the vote-signing path.
+     */
     suspend fun buildGovernancePcztFromSeed(
         roundId: String,
         bundleIndex: Int,
