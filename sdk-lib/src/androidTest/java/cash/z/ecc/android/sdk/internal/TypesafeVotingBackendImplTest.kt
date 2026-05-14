@@ -32,7 +32,6 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @Suppress("LargeClass", "LongMethod", "LongParameterList", "MagicNumber", "TooManyFunctions")
@@ -514,27 +513,6 @@ class TypesafeVotingBackendImplTest {
 
             assertEquals(VotingTxHashLookup.Missing, db.getDelegationTxHash("round", 0))
             assertEquals(VotingTxHashLookup.Missing, db.getVoteTxHash("round", 0, 0))
-        }
-
-    @Test
-    fun missing_recovery_rows_from_native_exception_map_to_expected_state() =
-        runTest {
-            val backend =
-                RecordingVotingDbBackend(
-                    proofResult = jniDelegationProofResult(),
-                    submissionResult = jniDelegationSubmissionResult(),
-                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
-                    recoveryLookupException =
-                        RuntimeException(
-                            "native lookup failed",
-                            IllegalStateException("query returned no rows")
-                        )
-                )
-            val db = TypesafeVotingDbImpl(backend)
-
-            assertEquals(VotingTxHashLookup.Missing, db.getDelegationTxHash("round", 0))
-            assertEquals(VotingTxHashLookup.Missing, db.getVoteTxHash("round", 0, 0))
-            assertNull(db.getCommitmentBundle("round", 0, 0))
         }
 
     @Test

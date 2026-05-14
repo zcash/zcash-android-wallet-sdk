@@ -990,9 +990,7 @@ internal class TypesafeVotingDbImpl(
         roundId: String,
         bundleIndex: Int
     ): VotingTxHashLookup =
-        runExpectedMissingRowLookup {
-            votingDb.getDelegationTxHash(roundId, bundleIndex).toVotingTxHashLookup()
-        } ?: VotingTxHashLookup.Missing
+        votingDb.getDelegationTxHash(roundId, bundleIndex).toVotingTxHashLookup()
 
     override suspend fun storeVoteTxHash(
         roundId: String,
@@ -1009,9 +1007,7 @@ internal class TypesafeVotingDbImpl(
         bundleIndex: Int,
         proposalId: Int
     ): VotingTxHashLookup =
-        runExpectedMissingRowLookup {
-            votingDb.getVoteTxHash(roundId, bundleIndex, proposalId).toVotingTxHashLookup()
-        } ?: VotingTxHashLookup.Missing
+        votingDb.getVoteTxHash(roundId, bundleIndex, proposalId).toVotingTxHashLookup()
 
     override suspend fun storeCommitmentBundle(
         roundId: String,
@@ -1035,11 +1031,9 @@ internal class TypesafeVotingDbImpl(
         bundleIndex: Int,
         proposalId: Int
     ): CommitmentBundleRecord? =
-        runExpectedMissingRowLookup {
-            votingDb
-                .getCommitmentBundle(roundId, bundleIndex, proposalId)
-                ?.toCommitmentBundleRecord()
-        }
+        votingDb
+            .getCommitmentBundle(roundId, bundleIndex, proposalId)
+            ?.toCommitmentBundleRecord()
 
     override suspend fun clearRecoveryState(roundId: String) =
         votingDb.clearRecoveryState(roundId)
@@ -1235,25 +1229,6 @@ private fun JniSharePayload.requireValid() {
 
 private fun ((Double) -> Unit).asVotingProgressCallback() =
     VotingProofProgressCallback { progress -> invoke(progress) }
-
-@Suppress("TooGenericExceptionCaught")
-private suspend fun <T> runExpectedMissingRowLookup(block: suspend () -> T): T? =
-    try {
-        block()
-    } catch (exception: RuntimeException) {
-        if (exception.isQueryReturnedNoRows()) {
-            null
-        } else {
-            throw exception
-        }
-    }
-
-private fun Throwable.isQueryReturnedNoRows(): Boolean =
-    generateSequence(this) { throwable -> throwable.cause }
-        .any { throwable ->
-            throwable.message
-                ?.contains("Query returned no rows", ignoreCase = true) == true
-        }
 
 private fun ByteArray.requireByteArraySize(name: String, expectedSize: Int) =
     require(size == expectedSize) {
