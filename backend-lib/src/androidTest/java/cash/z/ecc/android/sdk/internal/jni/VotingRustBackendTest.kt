@@ -1104,6 +1104,60 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun add_sent_servers_appends_and_deduplicates_native_jni() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+                db.storeVoteFixtureForTesting(
+                    roundId = PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = 1,
+                    choice = 0
+                )
+                db.recordShareDelegation(
+                    roundId = PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = 1,
+                    shareIndex = SHARE_INDEX,
+                    sentToUrls = listOf("https://helper-1.example"),
+                    nullifier = ByteArray(FIELD_BYTES) { 0x55 },
+                    submitAt = 123
+                )
+
+                db.addSentServers(
+                    roundId = PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = 1,
+                    shareIndex = SHARE_INDEX,
+                    newUrls = listOf("https://helper-2.example")
+                )
+                assertEquals(
+                    listOf("https://helper-1.example", "https://helper-2.example"),
+                    db.getShareDelegations(PCZT_ROUND_ID).single().sentToUrls
+                )
+
+                db.addSentServers(
+                    roundId = PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = 1,
+                    shareIndex = SHARE_INDEX,
+                    newUrls = listOf("https://helper-2.example", "https://helper-3.example")
+                )
+                assertEquals(
+                    listOf(
+                        "https://helper-1.example",
+                        "https://helper-2.example",
+                        "https://helper-3.example"
+                    ),
+                    db.getShareDelegations(PCZT_ROUND_ID).single().sentToUrls
+                )
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun delegation_proof_result_fixture_crosses_rust_to_kotlin_object_construction() =
         runTest {
             val result =
