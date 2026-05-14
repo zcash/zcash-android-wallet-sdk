@@ -19,6 +19,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added internal shielded voting recovery and share-tracking persistence for replaying,
   retrying, and confirming delegation and vote submission workflows.
 - Pinned `orchard` to `=0.13.1` with `unstable-voting-circuits` to match `zcash_voting` / `voting-circuits` requirements.
+- Updated `zcash_voting` to 0.7.0.
 
 ## [2.5.0] - 2026-05-01
 
