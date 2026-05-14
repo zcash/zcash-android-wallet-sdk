@@ -108,6 +108,12 @@ internal class TypesafeVotingBackendImpl(
     override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
         rustBackend().extractOrchardFvkFromUfvk(ufvk, networkId)
 
+    override suspend fun deriveHotkeyRawAddress(
+        hotkeySeed: ByteArray,
+        networkId: Int
+    ): ByteArray =
+        rustBackend().deriveHotkeyRawAddress(hotkeySeed, networkId)
+
     override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         rustBackend().extractNcRoot(treeStateBytes)
 
@@ -172,6 +178,11 @@ internal interface VotingBackendBridge {
     ): ByteArray
 
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
+
+    suspend fun deriveHotkeyRawAddress(
+        hotkeySeed: ByteArray,
+        networkId: Int
+    ): ByteArray
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
 
@@ -240,6 +251,12 @@ private class RustVotingBackendBridge(
     override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
         rustBackend.extractOrchardFvkFromUfvk(ufvk, networkId)
 
+    override suspend fun deriveHotkeyRawAddress(
+        hotkeySeed: ByteArray,
+        networkId: Int
+    ): ByteArray =
+        rustBackend.deriveHotkeyRawAddress(hotkeySeed, networkId)
+
     override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         rustBackend.extractNcRoot(treeStateBytes)
 
@@ -305,6 +322,18 @@ internal interface VotingDbBackend {
     suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
+        fvkBytes: ByteArray,
+        hotkeyRawAddress: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        notes: List<JniNoteInfo>,
+        seedFingerprint: ByteArray,
+        roundName: String
+    ): JniGovernancePczt
+
+    suspend fun buildGovernancePcztFromSeed(
+        roundId: String,
+        bundleIndex: Int,
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
@@ -336,7 +365,7 @@ internal interface VotingDbBackend {
         pirServerUrl: String,
         networkId: Int,
         notes: List<JniNoteInfo>,
-        hotkeySeed: ByteArray,
+        hotkeyRawAddress: ByteArray,
         proofProgress: VotingProofProgressCallback?
     ): JniDelegationProofResult
 
@@ -516,6 +545,29 @@ private class RustVotingDbBackend(
     override suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
+        fvkBytes: ByteArray,
+        hotkeyRawAddress: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        notes: List<JniNoteInfo>,
+        seedFingerprint: ByteArray,
+        roundName: String
+    ): JniGovernancePczt =
+        votingDb.buildGovernancePczt(
+            roundId,
+            bundleIndex,
+            fvkBytes,
+            hotkeyRawAddress,
+            networkId,
+            accountIndex,
+            notes,
+            seedFingerprint,
+            roundName
+        )
+
+    override suspend fun buildGovernancePcztFromSeed(
+        roundId: String,
+        bundleIndex: Int,
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
@@ -525,7 +577,7 @@ private class RustVotingDbBackend(
         seedFingerprint: ByteArray,
         roundName: String
     ): JniGovernancePczt =
-        votingDb.buildGovernancePczt(
+        votingDb.buildGovernancePcztFromSeed(
             roundId,
             bundleIndex,
             ufvk,
@@ -566,7 +618,7 @@ private class RustVotingDbBackend(
         pirServerUrl: String,
         networkId: Int,
         notes: List<JniNoteInfo>,
-        hotkeySeed: ByteArray,
+        hotkeyRawAddress: ByteArray,
         proofProgress: VotingProofProgressCallback?
     ): JniDelegationProofResult =
         votingDb.buildAndProveDelegation(
@@ -575,7 +627,7 @@ private class RustVotingDbBackend(
             pirServerUrl,
             networkId,
             notes,
-            hotkeySeed,
+            hotkeyRawAddress,
             proofProgress
         )
 
@@ -815,6 +867,30 @@ internal class TypesafeVotingDbImpl(
     override suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
+        fvkBytes: ByteArray,
+        hotkeyRawAddress: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        notes: List<VotingNoteInfo>,
+        seedFingerprint: ByteArray,
+        roundName: String
+    ): GovernancePcztResult =
+        votingDb
+            .buildGovernancePczt(
+                roundId,
+                bundleIndex,
+                fvkBytes,
+                hotkeyRawAddress,
+                networkId,
+                accountIndex,
+                notes.toJniNoteInfos(),
+                seedFingerprint,
+                roundName
+            ).toGovernancePcztResult()
+
+    override suspend fun buildGovernancePcztFromSeed(
+        roundId: String,
+        bundleIndex: Int,
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
@@ -825,7 +901,7 @@ internal class TypesafeVotingDbImpl(
         roundName: String
     ): GovernancePcztResult =
         votingDb
-            .buildGovernancePczt(
+            .buildGovernancePcztFromSeed(
                 roundId,
                 bundleIndex,
                 ufvk,
@@ -867,7 +943,7 @@ internal class TypesafeVotingDbImpl(
         pirServerUrl: String,
         networkId: Int,
         notes: List<VotingNoteInfo>,
-        hotkeySeed: ByteArray,
+        hotkeyRawAddress: ByteArray,
         proofProgress: ((Double) -> Unit)?
     ): DelegationProofResult =
         votingDb
@@ -877,7 +953,7 @@ internal class TypesafeVotingDbImpl(
                 pirServerUrl,
                 networkId,
                 notes.toJniNoteInfos(),
-                hotkeySeed,
+                hotkeyRawAddress,
                 proofProgress?.asVotingProgressCallback()
             ).toDelegationProofResult()
 

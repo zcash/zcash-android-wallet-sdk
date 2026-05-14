@@ -22,6 +22,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added internal `VotingRustBackend` / `TypesafeVotingBackend` plumbing for future shielded voting backend work.
 - Added internal shielded voting recovery and share-tracking persistence for replaying,
   retrying, and confirming delegation and vote submission workflows.
+- Split the internal governance PCZT API into `buildGovernancePczt` (explicit Orchard
+  FVK + raw hotkey address, for hardware wallets such as Keystone) and
+  `buildGovernancePcztFromSeed` (UFVK + wallet seed + hotkey seed, preserving the
+  UFVK<>walletSeed validation invariant for software wallets). `buildAndProveDelegation`
+  now takes the raw hotkey address directly, and a new `deriveHotkeyRawAddress` helper
+  exposes raw-address derivation to callers that do not retain the hotkey seed.
 - Pinned `orchard` to `=0.13.1` with `unstable-voting-circuits` to match `zcash_voting` / `voting-circuits` requirements.
 - Updated `zcash_voting` to 0.8.1.
 

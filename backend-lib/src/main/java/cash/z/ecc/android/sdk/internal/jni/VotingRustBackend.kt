@@ -124,6 +124,43 @@ class VotingRustBackend private constructor() {
                 ?: error("extractOrchardFvkFromUfvk returned null")
         }
 
+    /**
+     * Derives the raw Orchard address for the voting hotkey.
+     *
+     * The hotkey account index is intentionally fixed by the Rust voting backend to match the
+     * vote-signing path. Do not add an `accountIndex` parameter unless that path changes with it.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun deriveHotkeyRawAddress(
+        hotkeySeed: ByteArray,
+        networkId: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            deriveHotkeyRawAddressNative(hotkeySeed, networkId)
+                ?: error("deriveHotkeyRawAddress returned null")
+        }
+
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun deriveHotkeyRawAddressForAccountFixture(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            deriveHotkeyRawAddressForAccountFixtureNative(hotkeySeed, networkId, accountIndex)
+                ?: error("deriveHotkeyRawAddressForAccountFixture returned null")
+        }
+
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun extractPcztOutputRecipientFixture(
+        pcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractPcztOutputRecipientFixtureNative(pcztBytes, actionIndex)
+                ?: error("extractPcztOutputRecipientFixture returned null")
+        }
+
     @Throws(RuntimeException::class)
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         withContext(Dispatchers.IO) {
@@ -302,8 +339,49 @@ class VotingRustBackend private constructor() {
                     ?: error("generateHotkey returned null for roundId=$roundId")
             }
 
+        /**
+         * Builds a governance PCZT for hardware-wallet flows.
+         *
+         * This explicit form trusts [fvkBytes] and [hotkeyRawAddress] as caller-derived Keystone
+         * input. It does not validate a wallet seed against [fvkBytes]. Software-wallet callers that
+         * have the wallet seed should use [buildGovernancePcztFromSeed] to retain that invariant.
+         */
         @Throws(RuntimeException::class)
         suspend fun buildGovernancePczt(
+            roundId: String,
+            bundleIndex: Int,
+            fvkBytes: ByteArray,
+            hotkeyRawAddress: ByteArray,
+            networkId: Int,
+            accountIndex: Int,
+            notes: List<JniNoteInfo>,
+            seedFingerprint: ByteArray,
+            roundName: String
+        ): JniGovernancePczt =
+            withHandle { handle ->
+                buildGovernancePcztNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    fvkBytes,
+                    hotkeyRawAddress,
+                    networkId,
+                    accountIndex,
+                    notes.toTypedArray(),
+                    seedFingerprint,
+                    roundName
+                ) ?: error("buildGovernancePczt returned null")
+            }
+
+        /**
+         * Builds a governance PCZT for software-wallet flows.
+         *
+         * This path derives the Orchard FVK from [walletSeed] and rejects calls where it does not
+         * match [ufvk]. It also derives the hotkey raw address from [hotkeySeed] using the fixed
+         * hotkey account index expected by the vote-signing path.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun buildGovernancePcztFromSeed(
             roundId: String,
             bundleIndex: Int,
             ufvk: String,
@@ -316,7 +394,7 @@ class VotingRustBackend private constructor() {
             roundName: String
         ): JniGovernancePczt =
             withHandle { handle ->
-                buildGovernancePcztNative(
+                buildGovernancePcztFromSeedNative(
                     handle,
                     roundId,
                     bundleIndex,
@@ -328,7 +406,7 @@ class VotingRustBackend private constructor() {
                     hotkeySeed,
                     seedFingerprint,
                     roundName
-                ) ?: error("buildGovernancePczt returned null")
+                ) ?: error("buildGovernancePcztFromSeed returned null")
             }
 
         @Throws(RuntimeException::class)
@@ -373,7 +451,7 @@ class VotingRustBackend private constructor() {
             pirServerUrl: String,
             networkId: Int,
             notes: List<JniNoteInfo>,
-            hotkeySeed: ByteArray,
+            hotkeyRawAddress: ByteArray,
             proofProgress: VotingProofProgressCallback?
         ): JniDelegationProofResult =
             withHandle { handle ->
@@ -384,7 +462,7 @@ class VotingRustBackend private constructor() {
                     pirServerUrl,
                     networkId,
                     notes.toTypedArray(),
-                    hotkeySeed,
+                    hotkeyRawAddress,
                     proofProgress?.withVotingDbReentryGuard()
                 ) ?: error("buildAndProveDelegation returned null")
             }
@@ -797,6 +875,28 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun deriveHotkeyRawAddressNative(
+            hotkeySeed: ByteArray,
+            networkId: Int
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun deriveHotkeyRawAddressForAccountFixtureNative(
+            hotkeySeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractPcztOutputRecipientFixtureNative(
+            pcztBytes: ByteArray,
+            actionIndex: Int
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun extractNcRootNative(treeStateBytes: ByteArray): ByteArray?
 
         @JvmStatic
@@ -886,6 +986,21 @@ class VotingRustBackend private constructor() {
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
+            fvkBytes: ByteArray,
+            hotkeyRawAddress: ByteArray,
+            networkId: Int,
+            accountIndex: Int,
+            notes: Array<JniNoteInfo>,
+            seedFingerprint: ByteArray,
+            roundName: String
+        ): JniGovernancePczt?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildGovernancePcztFromSeedNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
@@ -957,7 +1072,7 @@ class VotingRustBackend private constructor() {
             pirServerUrl: String,
             networkId: Int,
             notes: Array<JniNoteInfo>,
-            hotkeySeed: ByteArray,
+            hotkeyRawAddress: ByteArray,
             proofProgress: VotingProofProgressCallback?
         ): JniDelegationProofResult?
 
