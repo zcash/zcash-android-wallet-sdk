@@ -96,18 +96,18 @@ rust-analyzer = "0.0.1"
 # The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
 # Its share-nullifier entry point forwards to
 # `zcash_voting::share_tracking::compute_share_nullifier`:
-# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.5.12/zcash_voting/src/share_tracking.rs
+# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.7.0/zcash_voting/src/share_tracking.rs
 #
 # The transitive `voting-circuits` dependency contains the share-reveal circuit
 # and the Poseidon-based `share_nullifier_hash` implementation:
-# https://github.com/valargroup/voting-circuits/blob/v0.4.1/voting-circuits/src/share_reveal/circuit.rs
+# https://github.com/valargroup/voting-circuits/blob/v0.4.2/voting-circuits/src/share_reveal/circuit.rs
 # Default features stay disabled. The `client-pir` feature is needed for
 # delegation proof precompute and proof generation. The `client-tree-sync`
 # feature is needed for vote commitment tree sync and VAN witnesses.
 # Expected PIR/tree-sync networking transitives include `pir-client`, `pir-types`,
 # `valar-ypir`, `valar-spiral-rs`, `vote-commitment-tree-client`, and
 # `hyper-rustls`.
-zcash_voting = { version = "0.5.12", default-features = false, features = [
+zcash_voting = { version = "0.7.0", default-features = false, features = [
     "client-pir",
     "client-tree-sync",
 ] }

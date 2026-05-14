@@ -353,7 +353,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
         let seed = java_secret_bytes_at_least(env, &seed, "seed", PROTOCOL_FIELD_BYTES)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let hotkey = db
-            .generate_hotkey(&round_id, seed.expose_secret())
+            .generate_hotkey(seed.expose_secret())
             .map_err(|e| anyhow!("generate_hotkey: {}", e))?;
         update_round_phase_forward(&db, &round_id, RoundPhase::HotkeyGenerated)?;
         make_jni_voting_hotkey(env, hotkey)

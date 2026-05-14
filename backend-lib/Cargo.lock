@@ -6054,9 +6054,9 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 
 [[package]]
 name = "vote-commitment-tree"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0fb2456313f571003c0bed8d38fb166d78da85653caf828823c1a82f4e1aef1"
+checksum = "be25d43d8b918599f579168a7aa2c0a12b2557bdc641324510f0d5797b1d59ac"
 dependencies = [
  "anyhow",
  "ff",
@@ -6071,9 +6071,9 @@ dependencies = [
 
 [[package]]
 name = "vote-commitment-tree-client"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb05b7a0434a89c2d9017bbab9a5157f1992fb746dce58a1077669e9dd0a13c5"
+checksum = "4ad6904ca2fdff4e39cea4700e924227eda14fb123b4212f917d0aea2b0a39c8"
 dependencies = [
  "base64",
  "ff",
@@ -7137,9 +7137,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_voting"
-version = "0.5.12"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "066eefe9678138a8450c20ec222da402bb92bb3f46351958a9661a75733c0bc8"
+checksum = "eb4c54bb4850795760612921fa2ac0a1b5e90f5af756d3f433b3990b916d8cfe"
 dependencies = [
  "anyhow",
  "blake2b_simd",
