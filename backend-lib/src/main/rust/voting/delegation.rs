@@ -88,18 +88,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
             java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
         let hotkey_seed =
             java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
-        let derived_fvk_bytes =
-            orchard_fvk_bytes_from_wallet_seed(wallet_seed.expose_secret(), network, account_index)?;
+        let derived_fvk_bytes = orchard_fvk_bytes_from_wallet_seed(
+            wallet_seed.expose_secret(),
+            network,
+            account_index,
+        )?;
         if derived_fvk_bytes != fvk_bytes {
             return Err(anyhow!(
                 "ufvk does not match walletSeed for network_id={network_id} account_index={account_index}"
             ));
         }
-        let hotkey_raw_address = hotkey_orchard_raw_address(
-            hotkey_seed.expose_secret(),
-            network,
-            HOTKEY_ACCOUNT_INDEX,
-        )?;
+        let hotkey_raw_address =
+            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, HOTKEY_ACCOUNT_INDEX)?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
         let notes = java_note_info_array(env, &notes, "notes")?;
         let round_id = java_string_to_rust(env, &round_id)?;
@@ -191,6 +191,34 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
         let action_index = jint_to_usize(action_index, "action_index")?;
         let sig = extract_indexed_spend_auth_sig(&bytes, action_index)?;
         Ok(env.byte_array_from_slice(&sig)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[cfg(feature = "android-test-fixtures")]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_extractPcztOutputRecipientFixtureNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    pczt_bytes: JByteArray<'local>,
+    action_index: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let bytes = java_bytes(env, &pczt_bytes, "pcztBytes")?;
+        let action_index = jint_to_usize(action_index, "action_index")?;
+        let pczt = pczt::Pczt::parse(&bytes).map_err(|e| anyhow!("parse PCZT: {:?}", e))?;
+        let action = pczt.orchard().actions().get(action_index).ok_or_else(|| {
+            anyhow!(
+                "PCZT Orchard action index {action_index} out of range; action_count={}",
+                pczt.orchard().actions().len()
+            )
+        })?;
+        let recipient = action.output().recipient().as_ref().ok_or_else(|| {
+            anyhow!("PCZT Orchard action {action_index} output missing recipient")
+        })?;
+        Ok(env.byte_array_from_slice(recipient)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }

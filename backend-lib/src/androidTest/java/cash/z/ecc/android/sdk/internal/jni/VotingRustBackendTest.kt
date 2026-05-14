@@ -779,20 +779,43 @@ class VotingRustBackendTest {
     @Test
     fun build_governance_pczt_from_seed_uses_wallet_account_but_hotkey_account_zero() =
         runTest {
+            val backend = VotingRustBackend.new()
             val explicitDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             val seedDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
                 val accountIndex = 1
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk(accountIndex = accountIndex)
+                val hotkeyAccountZero =
+                    backend.deriveHotkeyRawAddressForAccountFixture(
+                        HOTKEY_SEED,
+                        TESTNET_NETWORK_ID,
+                        ACCOUNT_INDEX
+                    )
+                val hotkeyWalletAccount =
+                    backend.deriveHotkeyRawAddressForAccountFixture(
+                        HOTKEY_SEED,
+                        TESTNET_NETWORK_ID,
+                        accountIndex
+                    )
                 explicitDb.initPcztRoundWithBundles(notes)
                 seedDb.initPcztRoundWithBundles(notes)
+
+                assertContentEquals(
+                    hotkeyAccountZero,
+                    backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
+                )
+                assertFalse(hotkeyAccountZero.contentEquals(hotkeyWalletAccount))
 
                 val explicitPczt =
                     explicitDb.buildTestGovernancePczt(
                         ufvk = ufvk,
                         notes = notes,
-                        options = GovernancePcztOptions(accountIndex = accountIndex)
+                        options =
+                            GovernancePcztOptions(
+                                hotkeyRawAddress = hotkeyAccountZero,
+                                accountIndex = accountIndex
+                            )
                     )
                 val seedPczt =
                     seedDb.buildTestGovernancePcztFromSeed(
@@ -801,9 +824,15 @@ class VotingRustBackendTest {
                         options = GovernancePcztOptions(accountIndex = accountIndex)
                     )
 
-                val backend = VotingRustBackend.new()
                 assertValidGovernancePczt(backend, explicitDb, explicitPczt)
                 assertValidGovernancePczt(backend, seedDb, seedPczt)
+                val seedPcztRecipient =
+                    backend.extractPcztOutputRecipientFixture(
+                        seedPczt.pcztBytes,
+                        seedPczt.actionIndex
+                    )
+                assertContentEquals(hotkeyAccountZero, seedPcztRecipient)
+                assertFalse(seedPcztRecipient.contentEquals(hotkeyWalletAccount))
             } finally {
                 explicitDb.close()
                 seedDb.close()
@@ -1555,7 +1584,9 @@ class VotingRustBackendTest {
             roundId = options.roundId,
             bundleIndex = 1,
             fvkBytes = backend.extractOrchardFvkFromUfvk(ufvk, options.networkId),
-            hotkeyRawAddress = backend.deriveHotkeyRawAddress(options.hotkeySeed, options.networkId),
+            hotkeyRawAddress =
+                options.hotkeyRawAddress
+                    ?: backend.deriveHotkeyRawAddress(options.hotkeySeed, options.networkId),
             networkId = options.networkId,
             accountIndex = options.accountIndex,
             notes = notes,
@@ -1602,6 +1633,7 @@ class VotingRustBackendTest {
         val walletSeed: ByteArray = HOTKEY_SEED,
         val networkId: Int = TESTNET_NETWORK_ID,
         val roundId: String = PCZT_ROUND_ID,
+        val hotkeyRawAddress: ByteArray? = null,
         val accountIndex: Int = ACCOUNT_INDEX
     )
 

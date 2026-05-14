@@ -140,6 +140,27 @@ class VotingRustBackend private constructor() {
                 ?: error("deriveHotkeyRawAddress returned null")
         }
 
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun deriveHotkeyRawAddressForAccountFixture(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            deriveHotkeyRawAddressForAccountFixtureNative(hotkeySeed, networkId, accountIndex)
+                ?: error("deriveHotkeyRawAddressForAccountFixture returned null")
+        }
+
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    internal suspend fun extractPcztOutputRecipientFixture(
+        pcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractPcztOutputRecipientFixtureNative(pcztBytes, actionIndex)
+                ?: error("extractPcztOutputRecipientFixture returned null")
+        }
+
     @Throws(RuntimeException::class)
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         withContext(Dispatchers.IO) {
@@ -854,6 +875,21 @@ class VotingRustBackend private constructor() {
         private external fun deriveHotkeyRawAddressNative(
             hotkeySeed: ByteArray,
             networkId: Int
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun deriveHotkeyRawAddressForAccountFixtureNative(
+            hotkeySeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractPcztOutputRecipientFixtureNative(
+            pcztBytes: ByteArray,
+            actionIndex: Int
         ): ByteArray?
 
         @JvmStatic
