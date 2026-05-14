@@ -47,8 +47,7 @@ internal interface TypesafeVotingBackend {
 
     suspend fun deriveHotkeyRawAddress(
         hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        networkId: Int
     ): ByteArray
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray

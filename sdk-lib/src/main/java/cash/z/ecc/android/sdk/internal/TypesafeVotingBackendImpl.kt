@@ -110,10 +110,9 @@ internal class TypesafeVotingBackendImpl(
 
     override suspend fun deriveHotkeyRawAddress(
         hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        networkId: Int
     ): ByteArray =
-        rustBackend().deriveHotkeyRawAddress(hotkeySeed, networkId, accountIndex)
+        rustBackend().deriveHotkeyRawAddress(hotkeySeed, networkId)
 
     override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         rustBackend().extractNcRoot(treeStateBytes)
@@ -182,8 +181,7 @@ internal interface VotingBackendBridge {
 
     suspend fun deriveHotkeyRawAddress(
         hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        networkId: Int
     ): ByteArray
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
@@ -255,10 +253,9 @@ private class RustVotingBackendBridge(
 
     override suspend fun deriveHotkeyRawAddress(
         hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        networkId: Int
     ): ByteArray =
-        rustBackend.deriveHotkeyRawAddress(hotkeySeed, networkId, accountIndex)
+        rustBackend.deriveHotkeyRawAddress(hotkeySeed, networkId)
 
     override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         rustBackend.extractNcRoot(treeStateBytes)

@@ -127,11 +127,10 @@ class VotingRustBackend private constructor() {
     @Throws(RuntimeException::class)
     suspend fun deriveHotkeyRawAddress(
         hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        networkId: Int
     ): ByteArray =
         withContext(Dispatchers.IO) {
-            deriveHotkeyRawAddressNative(hotkeySeed, networkId, accountIndex)
+            deriveHotkeyRawAddressNative(hotkeySeed, networkId)
                 ?: error("deriveHotkeyRawAddress returned null")
         }
 
@@ -834,8 +833,7 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         private external fun deriveHotkeyRawAddressNative(
             hotkeySeed: ByteArray,
-            networkId: Int,
-            accountIndex: Int
+            networkId: Int
         ): ByteArray?
 
         @JvmStatic

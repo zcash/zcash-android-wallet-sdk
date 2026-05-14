@@ -68,6 +68,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Derives the canonical raw Orchard address for the hotkey identity associated with
+/// `hotkey_seed` on `network_id`.
+///
+/// The ZIP-32 account index is intentionally fixed at 0 and is not exposed as a parameter.
+/// `voting::vote_commitment::sign_cast_vote` / `voting::vote_commitment::build_vote_commitment`
+/// in `zcash_voting` derive the hotkey spending key via
+/// `crate::zkp2::derive_spending_key`, which hardcodes `derive_spending_key_for_account(.., 0)`.
+/// Letting callers pass an arbitrary account here would allow delegation to be built against
+/// a hotkey the vote-construction path cannot subsequently sign for, so the API surface
+/// hides the constraint instead of leaving it as a runtime trap.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_deriveHotkeyRawAddressNative<
     'local,
@@ -76,14 +86,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_der
     _: JClass<'local>,
     hotkey_seed: JByteArray<'local>,
     network_id: jint,
-    account_index: jint,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
         let network = network_from_id(network_id)?;
-        let account_index = jint_to_u32(account_index, "account_index")?;
         let hotkey_seed =
             java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
-        let bytes = hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, account_index)?;
+        let bytes = hotkey_orchard_raw_address(
+            hotkey_seed.expose_secret(),
+            network,
+            HOTKEY_ACCOUNT_INDEX,
+        )?;
         Ok(env.byte_array_from_slice(&bytes)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())

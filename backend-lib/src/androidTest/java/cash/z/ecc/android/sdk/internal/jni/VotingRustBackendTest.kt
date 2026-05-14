@@ -767,6 +767,41 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun build_governance_pczt_from_seed_uses_wallet_account_but_hotkey_account_zero() =
+        runTest {
+            val explicitDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            val seedDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                val accountIndex = 1
+                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
+                val ufvk = deriveTestUfvk(accountIndex = accountIndex)
+                explicitDb.initPcztRoundWithBundles(notes)
+                seedDb.initPcztRoundWithBundles(notes)
+
+                val explicitPczt =
+                    explicitDb.buildTestGovernancePczt(
+                        ufvk = ufvk,
+                        notes = notes,
+                        accountIndex = accountIndex
+                    )
+                val seedPczt =
+                    seedDb.buildTestGovernancePcztFromSeed(
+                        ufvk = ufvk,
+                        notes = notes,
+                        accountIndex = accountIndex
+                    )
+
+                assertContentEquals(explicitPczt.pcztBytes, seedPczt.pcztBytes)
+                assertContentEquals(explicitPczt.rk, seedPczt.rk)
+                assertContentEquals(explicitPczt.sighash, seedPczt.sighash)
+                assertEquals(explicitPczt.actionIndex, seedPczt.actionIndex)
+            } finally {
+                explicitDb.close()
+                seedDb.close()
+            }
+        }
+
+    @Test
     fun build_governance_pczt_from_seed_rejects_wallet_seed_that_does_not_match_ufvk() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
@@ -1476,12 +1511,13 @@ class VotingRustBackendTest {
 
     private suspend fun deriveTestUfvk(
         seed: ByteArray = HOTKEY_SEED,
-        networkId: Int = TESTNET_NETWORK_ID
+        networkId: Int = TESTNET_NETWORK_ID,
+        accountIndex: Int = ACCOUNT_INDEX
     ): String =
         RustDerivationTool
             .new()
-            .deriveUnifiedFullViewingKeys(seed, networkId, 1)
-            .first()
+            .deriveUnifiedFullViewingKeys(seed, networkId, accountIndex + 1)
+            .last()
 
     private suspend fun VotingRustBackend.VotingDb.initPcztRoundWithBundles(
         notes: List<JniNoteInfo>,
@@ -1505,16 +1541,17 @@ class VotingRustBackendTest {
         notes: List<JniNoteInfo>,
         hotkeySeed: ByteArray = HOTKEY_SEED,
         networkId: Int = TESTNET_NETWORK_ID,
-        roundId: String = PCZT_ROUND_ID
+        roundId: String = PCZT_ROUND_ID,
+        accountIndex: Int = ACCOUNT_INDEX
     ): JniGovernancePczt {
         val backend = VotingRustBackend.new()
         return buildGovernancePczt(
             roundId = roundId,
             bundleIndex = 1,
             fvkBytes = backend.extractOrchardFvkFromUfvk(ufvk, networkId),
-            hotkeyRawAddress = backend.deriveHotkeyRawAddress(hotkeySeed, networkId, ACCOUNT_INDEX),
+            hotkeyRawAddress = backend.deriveHotkeyRawAddress(hotkeySeed, networkId),
             networkId = networkId,
-            accountIndex = ACCOUNT_INDEX,
+            accountIndex = accountIndex,
             notes = notes,
             seedFingerprint = SEED_FINGERPRINT,
             roundName = ROUND_NAME
@@ -1526,13 +1563,14 @@ class VotingRustBackendTest {
         notes: List<JniNoteInfo>,
         walletSeed: ByteArray = HOTKEY_SEED,
         networkId: Int = TESTNET_NETWORK_ID,
-        roundId: String = PCZT_ROUND_ID
+        roundId: String = PCZT_ROUND_ID,
+        accountIndex: Int = ACCOUNT_INDEX
     ) = buildGovernancePcztFromSeed(
         roundId = roundId,
         bundleIndex = 1,
         ufvk = ufvk,
         networkId = networkId,
-        accountIndex = ACCOUNT_INDEX,
+        accountIndex = accountIndex,
         notes = notes,
         walletSeed = walletSeed,
         hotkeySeed = HOTKEY_SEED,

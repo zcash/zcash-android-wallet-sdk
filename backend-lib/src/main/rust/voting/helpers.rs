@@ -91,6 +91,11 @@ pub(super) const HOTKEY_SECRET_KEY_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const HOTKEY_PUBLIC_KEY_BYTES: usize = PROTOCOL_FIELD_BYTES;
 // Hotkeys use one stable Orchard address for voting identity and recovery.
 pub(super) const HOTKEY_ADDRESS_INDEX: u32 = 0;
+// ZIP-32 account for deriving hotkey material from the hotkey seed. This is intentionally
+// distinct from HOTKEY_ADDRESS_INDEX: account selects the Orchard account, address index
+// selects the stable address within that account. zcash_voting's vote path currently derives
+// hotkey signing material only for account 0.
+pub(super) const HOTKEY_ACCOUNT_INDEX: u32 = 0;
 pub(super) const SPEND_AUTH_SIG_BYTES: usize = 64;
 pub(super) const NOTE_SCOPE_EXTERNAL: u32 = 0;
 pub(super) const NOTE_SCOPE_INTERNAL: u32 = 1;

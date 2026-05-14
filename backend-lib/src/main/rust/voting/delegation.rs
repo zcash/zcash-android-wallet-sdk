@@ -95,8 +95,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 "ufvk does not match walletSeed for network_id={network_id} account_index={account_index}"
             ));
         }
-        let hotkey_raw_address =
-            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, account_index)?;
+        let hotkey_raw_address = hotkey_orchard_raw_address(
+            hotkey_seed.expose_secret(),
+            network,
+            HOTKEY_ACCOUNT_INDEX,
+        )?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
         let notes = java_note_info_array(env, &notes, "notes")?;
         let round_id = java_string_to_rust(env, &round_id)?;

@@ -804,8 +804,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun deriveHotkeyRawAddress(
             hotkeySeed: ByteArray,
-            networkId: Int,
-            accountIndex: Int
+            networkId: Int
         ): ByteArray = unused()
 
         override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray = unused()
