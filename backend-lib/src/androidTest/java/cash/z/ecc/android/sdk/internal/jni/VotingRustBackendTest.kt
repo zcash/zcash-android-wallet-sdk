@@ -869,9 +869,7 @@ class VotingRustBackendTest {
                         pirServerUrl = "http://127.0.0.1:1",
                         networkId = TESTNET_NETWORK_ID,
                         notes = notes,
-                        walletSeed = SHORT_FIELD,
-                        accountIndex = ACCOUNT_INDEX,
-                        addressIndex = ADDRESS_INDEX,
+                        hotkeySeed = SHORT_FIELD,
                         proofProgress = null
                     )
                 }
@@ -1323,7 +1321,7 @@ class VotingRustBackendTest {
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePczt(
         ufvk: String,
         notes: List<JniNoteInfo>,
-        walletSeed: ByteArray = HOTKEY_SEED,
+        hotkeySeed: ByteArray = HOTKEY_SEED,
         networkId: Int = TESTNET_NETWORK_ID,
         roundId: String = PCZT_ROUND_ID
     ) = buildGovernancePczt(
@@ -1333,8 +1331,8 @@ class VotingRustBackendTest {
         networkId = networkId,
         accountIndex = ACCOUNT_INDEX,
         notes = notes,
-        walletSeed = walletSeed,
-        hotkeySeed = HOTKEY_SEED,
+        walletSeed = HOTKEY_SEED,
+        hotkeySeed = hotkeySeed,
         seedFingerprint = SEED_FINGERPRINT,
         roundName = ROUND_NAME,
         addressIndex = ADDRESS_INDEX

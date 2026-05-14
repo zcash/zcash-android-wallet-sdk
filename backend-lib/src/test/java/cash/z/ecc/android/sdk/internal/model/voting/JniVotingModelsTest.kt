@@ -112,6 +112,20 @@ class JniVotingModelsTest {
     }
 
     @Test
+    fun commitment_bundle_record_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniCommitmentBundleRecord::class.java.getDeclaredConstructor(
+                JniVoteCommitmentResult::class.java,
+                Long::class.javaPrimitiveType
+            )
+
+        assertEquals(
+            "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitmentResult;J)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    @Test
     fun share_payload_constructor_matches_rust_jni_signature() {
         val constructor =
             JniSharePayload::class.java.getDeclaredConstructor(
@@ -133,6 +147,27 @@ class JniVotingModelsTest {
         )
     }
 
+    @Test
+    fun share_delegation_record_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniShareDelegationRecord::class.java.getDeclaredConstructor(
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Array<String>::class.java,
+                ByteArray::class.java,
+                Boolean::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType
+            )
+
+        assertEquals(
+            "(Ljava/lang/String;III[Ljava/lang/String;[BZJJ)V",
+            constructor.jniDescriptor()
+        )
+    }
+
     private fun java.lang.reflect.Constructor<*>.jniDescriptor() =
         parameterTypes.joinToString(prefix = "(", postfix = ")V", separator = "") { parameter ->
             parameter.jniDescriptor()
@@ -142,6 +177,7 @@ class JniVotingModelsTest {
         when {
             isArray -> "[${requireNotNull(componentType).jniDescriptor()}"
             this == java.lang.Byte.TYPE -> "B"
+            this == java.lang.Boolean.TYPE -> "Z"
             this == java.lang.Integer.TYPE -> "I"
             this == java.lang.Long.TYPE -> "J"
             isPrimitive -> error("Unsupported JNI primitive parameter: $name")
