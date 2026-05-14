@@ -137,9 +137,10 @@ data class JniWireEncryptedShare(
 /**
  * Typed JNI carrier for vote commitment outputs.
  *
- * `shareBlinds`, `rVpk`, and `alphaV` are transient reveal/signing inputs.
- * They should not be persisted or logged; they are carried here only because
- * follow-up JNI calls consume the typed commitment result. Encrypted-share
+ * `shareBlinds`, `rVpk`, and `alphaV` are sensitive reveal/signing inputs.
+ * They must not be logged or exposed outside the voting recovery path. They are
+ * carried here because follow-up JNI calls consume the typed commitment result,
+ * and recovery persistence needs them to resume after restart. Encrypted-share
  * plaintext and encryption randomness remain Rust-only and are not included in
  * [encShares].
  */
@@ -149,6 +150,7 @@ data class JniVoteCommitmentResult(
     val voteAuthorityNoteNew: ByteArray,
     val voteCommitment: ByteArray,
     val proposalId: Int,
+    val bundleIndex: Int,
     val proof: ByteArray,
     val encShares: List<JniWireEncryptedShare>,
     val anchorHeight: Long,
@@ -164,6 +166,7 @@ data class JniVoteCommitmentResult(
         voteAuthorityNoteNew: ByteArray,
         voteCommitment: ByteArray,
         proposalId: Int,
+        bundleIndex: Int,
         proof: ByteArray,
         encShares: Array<JniWireEncryptedShare>,
         anchorHeight: Long,
@@ -178,6 +181,7 @@ data class JniVoteCommitmentResult(
         voteAuthorityNoteNew = voteAuthorityNoteNew,
         voteCommitment = voteCommitment,
         proposalId = proposalId,
+        bundleIndex = bundleIndex,
         proof = proof,
         encShares = encShares.toList(),
         anchorHeight = anchorHeight,
@@ -189,21 +193,7 @@ data class JniVoteCommitmentResult(
         alphaV = alphaV
     )
 
-    override fun toString(): String =
-        "JniVoteCommitmentResult(" +
-            "vanNullifierBytes=${vanNullifier.size}, " +
-            "voteAuthorityNoteNewBytes=${voteAuthorityNoteNew.size}, " +
-            "voteCommitmentBytes=${voteCommitment.size}, " +
-            "proposalId=$proposalId, " +
-            "proofBytes=${proof.size}, " +
-            "encShares=${encShares.size}, " +
-            "anchorHeight=$anchorHeight, " +
-            "voteRoundId=$voteRoundId, " +
-            "sharesHashBytes=${sharesHash.size}, " +
-            "shareBlinds=***, " +
-            "shareComms=${shareComms.size}, " +
-            "rVpk=***, " +
-            "alphaV=***)"
+    override fun toString(): String = "JniVoteCommitmentResult(redacted)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -215,6 +205,7 @@ data class JniVoteCommitmentResult(
 
     private fun scalarFieldsEqual(other: JniVoteCommitmentResult) =
         proposalId == other.proposalId &&
+            bundleIndex == other.bundleIndex &&
             anchorHeight == other.anchorHeight &&
             voteRoundId == other.voteRoundId
 
@@ -237,6 +228,7 @@ data class JniVoteCommitmentResult(
         result = 31 * result + voteAuthorityNoteNew.contentHashCode()
         result = 31 * result + voteCommitment.contentHashCode()
         result = 31 * result + proposalId
+        result = 31 * result + bundleIndex
         result = 31 * result + proof.contentHashCode()
         result = 31 * result + encShares.hashCode()
         result = 31 * result + anchorHeight.hashCode()
@@ -249,6 +241,12 @@ data class JniVoteCommitmentResult(
         return result
     }
 }
+
+@Keep
+data class JniCommitmentBundleRecord(
+    val commitment: JniVoteCommitmentResult,
+    val vcTreePosition: Long
+)
 
 @Keep
 data class JniSharePayload(
@@ -303,6 +301,68 @@ data class JniSharePayload(
         result = 31 * result + allEncShares.hashCode()
         result = 31 * result + shareComms.contentDeepHashCode()
         result = 31 * result + primaryBlind.contentHashCode()
+        return result
+    }
+}
+
+@Keep
+data class JniShareDelegationRecord(
+    val roundId: String,
+    val bundleIndex: Int,
+    val proposalId: Int,
+    val shareIndex: Int,
+    val sentToUrls: List<String>,
+    val nullifier: ByteArray,
+    val confirmed: Boolean,
+    val submitAt: Long,
+    val createdAt: Long
+) {
+    internal constructor(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        sentToUrls: Array<String>,
+        nullifier: ByteArray,
+        confirmed: Boolean,
+        submitAt: Long,
+        createdAt: Long
+    ) : this(
+        roundId = roundId,
+        bundleIndex = bundleIndex,
+        proposalId = proposalId,
+        shareIndex = shareIndex,
+        sentToUrls = sentToUrls.toList(),
+        nullifier = nullifier,
+        confirmed = confirmed,
+        submitAt = submitAt,
+        createdAt = createdAt
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniShareDelegationRecord) return false
+        return roundId == other.roundId &&
+            bundleIndex == other.bundleIndex &&
+            proposalId == other.proposalId &&
+            shareIndex == other.shareIndex &&
+            sentToUrls == other.sentToUrls &&
+            nullifier.contentEquals(other.nullifier) &&
+            confirmed == other.confirmed &&
+            submitAt == other.submitAt &&
+            createdAt == other.createdAt
+    }
+
+    override fun hashCode(): Int {
+        var result = roundId.hashCode()
+        result = 31 * result + bundleIndex
+        result = 31 * result + proposalId
+        result = 31 * result + shareIndex
+        result = 31 * result + sentToUrls.hashCode()
+        result = 31 * result + nullifier.contentHashCode()
+        result = 31 * result + confirmed.hashCode()
+        result = 31 * result + submitAt.hashCode()
+        result = 31 * result + createdAt.hashCode()
         return result
     }
 }

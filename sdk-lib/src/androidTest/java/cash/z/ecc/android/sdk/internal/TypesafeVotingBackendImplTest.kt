@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_VAN_WITNESS_PATH_DEPTH
 import cash.z.ecc.android.sdk.internal.jni.JNI_VOTE_SHARE_COUNT
 import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
@@ -15,6 +16,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniShareDelegationRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
 import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
@@ -32,7 +34,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-@Suppress("LongMethod", "LongParameterList", "MagicNumber", "TooManyFunctions")
+@Suppress("LargeClass", "LongMethod", "LongParameterList", "MagicNumber", "TooManyFunctions")
 class TypesafeVotingBackendImplTest {
     @Test
     fun delegation_proof_result_checks_non_empty_proof() {
@@ -239,9 +241,7 @@ class TypesafeVotingBackendImplTest {
                     pirServerUrl = "https://pir.example",
                     networkId = 1,
                     notes = notes,
-                    walletSeed = walletSeed,
-                    accountIndex = 5,
-                    addressIndex = 6
+                    hotkeySeed = walletSeed
                 ) { progress ->
                     progressValue = progress
                 }
@@ -250,9 +250,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals("https://pir.example", backend.buildAndProvePirServerUrl)
             assertEquals(1, backend.buildAndProveNetworkId)
             assertEquals(jniNotes, backend.buildAndProveNotes)
-            assertContentEquals(walletSeed, backend.buildAndProveWalletSeed)
-            assertEquals(5, backend.buildAndProveAccountIndex)
-            assertEquals(6, backend.buildAndProveAddressIndex)
+            assertContentEquals(walletSeed, backend.buildAndProveHotkeySeed)
             assertNotNull(backend.buildAndProveProgress).onProgress(0.75)
             assertEquals(0.75, progressValue)
             assertContentEquals(field(13), proof.nfSigned)
@@ -384,6 +382,185 @@ class TypesafeVotingBackendImplTest {
         }
 
     @Test
+    fun recovery_methods_forward_arguments_and_map_results() =
+        runTest {
+            val commitment = jniVoteCommitmentResult(voteCommitment = field(31))
+            val commitmentRecord =
+                JniCommitmentBundleRecord(
+                    commitment = commitment,
+                    vcTreePosition = 99
+                )
+            val shareRecord =
+                jniShareDelegationRecord(
+                    nullifier = field(32),
+                    confirmed = false
+                )
+            val unconfirmedRecord =
+                jniShareDelegationRecord(
+                    shareIndex = 2,
+                    nullifier = field(33),
+                    confirmed = false
+                )
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    delegationTxHash = "delegation-tx",
+                    voteTxHash = "vote-tx",
+                    commitmentRecord = commitmentRecord,
+                    shareRecords = arrayOf(shareRecord),
+                    unconfirmedShareRecords = arrayOf(unconfirmedRecord)
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            db.storeDelegationTxHash("round-recovery", 1, "delegation-tx")
+            assertEquals("round-recovery", backend.storeDelegationTxRoundId)
+            assertEquals(1, backend.storeDelegationTxBundleIndex)
+            assertEquals("delegation-tx", backend.storeDelegationTxHash)
+
+            assertEquals(
+                VotingTxHashLookup.Found("delegation-tx"),
+                db.getDelegationTxHash("round-recovery", 1)
+            )
+            assertEquals("round-recovery", backend.getDelegationTxRoundId)
+            assertEquals(1, backend.getDelegationTxBundleIndex)
+
+            db.storeVoteTxHash("round-recovery", 1, 2, "vote-tx")
+            assertEquals("round-recovery", backend.storeVoteTxRoundId)
+            assertEquals(1, backend.storeVoteTxBundleIndex)
+            assertEquals(2, backend.storeVoteTxProposalId)
+            assertEquals("vote-tx", backend.storeVoteTxHash)
+
+            db.markVoteSubmitted("round-recovery", 1, 2)
+            assertEquals("round-recovery", backend.markVoteRoundId)
+            assertEquals(1, backend.markVoteBundleIndex)
+            assertEquals(2, backend.markVoteProposalId)
+
+            assertEquals(
+                VotingTxHashLookup.Found("vote-tx"),
+                db.getVoteTxHash("round-recovery", 1, 2)
+            )
+            assertEquals("round-recovery", backend.getVoteTxRoundId)
+            assertEquals(1, backend.getVoteTxBundleIndex)
+            assertEquals(2, backend.getVoteTxProposalId)
+
+            db.storeCommitmentBundle("round-recovery", 1, 2, commitment, 99)
+            assertEquals("round-recovery", backend.storeCommitmentRoundId)
+            assertEquals(1, backend.storeCommitmentBundleIndex)
+            assertEquals(2, backend.storeCommitmentProposalId)
+            assertEquals(commitment, backend.storeCommitment)
+            assertEquals(99, backend.storeCommitmentTreePosition)
+
+            val recoveredCommitment = db.getCommitmentBundle("round-recovery", 1, 2)
+            assertEquals(CommitmentBundleRecord(commitment, 99), recoveredCommitment)
+            assertEquals("round-recovery", backend.getCommitmentRoundId)
+            assertEquals(1, backend.getCommitmentBundleIndex)
+            assertEquals(2, backend.getCommitmentProposalId)
+
+            db.recordShareDelegation(
+                roundId = "round-recovery",
+                bundleIndex = 1,
+                proposalId = 2,
+                shareIndex = 3,
+                sentToUrls = listOf("https://helper.example"),
+                nullifier = field(34),
+                submitAt = 123
+            )
+            assertEquals("round-recovery", backend.recordShareRoundId)
+            assertEquals(1, backend.recordShareBundleIndex)
+            assertEquals(2, backend.recordShareProposalId)
+            assertEquals(3, backend.recordShareIndex)
+            assertEquals(listOf("https://helper.example"), backend.recordShareSentToUrls)
+            assertContentEquals(field(34), backend.recordShareNullifier)
+            assertEquals(123, backend.recordShareSubmitAt)
+
+            assertEquals(listOf(shareRecord.toShareDelegationRecordForTest()), db.getShareDelegations("round-recovery"))
+            assertEquals("round-recovery", backend.getSharesRoundId)
+            assertEquals(
+                listOf(unconfirmedRecord.toShareDelegationRecordForTest()),
+                db.getUnconfirmedDelegations("round-recovery")
+            )
+            assertEquals("round-recovery", backend.getUnconfirmedSharesRoundId)
+
+            db.markShareConfirmed("round-recovery", 1, 2, 3)
+            assertEquals("round-recovery", backend.markShareRoundId)
+            assertEquals(1, backend.markShareBundleIndex)
+            assertEquals(2, backend.markShareProposalId)
+            assertEquals(3, backend.markShareIndex)
+
+            db.addSentServers("round-recovery", 1, 2, 3, listOf("https://helper-2.example"))
+            assertEquals("round-recovery", backend.addSentRoundId)
+            assertEquals(1, backend.addSentBundleIndex)
+            assertEquals(2, backend.addSentProposalId)
+            assertEquals(3, backend.addSentShareIndex)
+            assertEquals(listOf("https://helper-2.example"), backend.addSentNewUrls)
+
+            db.clearRecoveryState("round-recovery")
+            assertEquals("round-recovery", backend.clearRecoveryRoundId)
+        }
+
+    @Test
+    fun store_commitment_bundle_rejects_mismatched_bundle_index() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.storeCommitmentBundle(
+                        roundId = "round-recovery",
+                        bundleIndex = 2,
+                        proposalId = 1,
+                        commitment = jniVoteCommitmentResult(bundleIndex = 1),
+                        vcTreePosition = 99
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("bundleIndex"))
+        }
+
+    @Test
+    fun missing_tx_hashes_map_to_typed_missing_state() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            assertEquals(VotingTxHashLookup.Missing, db.getDelegationTxHash("round", 0))
+            assertEquals(VotingTxHashLookup.Missing, db.getVoteTxHash("round", 0, 0))
+        }
+
+    @Test
+    fun unexpected_recovery_lookup_exceptions_still_fail() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    recoveryLookupException = RuntimeException("database is locked")
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<RuntimeException> {
+                    db.getDelegationTxHash("round", 0)
+                }
+
+            assertEquals("database is locked", error.message)
+        }
+
+    @Test
     fun vote_commitment_wrapper_rejects_invalid_commitment_result() =
         runTest {
             val backend =
@@ -482,6 +659,7 @@ class TypesafeVotingBackendImplTest {
         proposalId: Int = 1,
         proof: ByteArray = ByteArray(PROOF_BYTES) { 13 },
         encShares: List<JniWireEncryptedShare> = wireShares(),
+        bundleIndex: Int = 1,
         anchorHeight: Long = 2,
         voteRoundId: String = "round-vote",
         sharesHash: ByteArray = field(14),
@@ -494,6 +672,7 @@ class TypesafeVotingBackendImplTest {
         voteAuthorityNoteNew = voteAuthorityNoteNew,
         voteCommitment = voteCommitment,
         proposalId = proposalId,
+        bundleIndex = bundleIndex,
         proof = proof,
         encShares = encShares,
         anchorHeight = anchorHeight,
@@ -504,6 +683,41 @@ class TypesafeVotingBackendImplTest {
         rVpk = rVpk,
         alphaV = alphaV
     )
+
+    private fun jniShareDelegationRecord(
+        roundId: String = "round-recovery",
+        bundleIndex: Int = 1,
+        proposalId: Int = 2,
+        shareIndex: Int = 3,
+        sentToUrls: List<String> = listOf("https://helper.example"),
+        nullifier: ByteArray = field(19),
+        confirmed: Boolean = false,
+        submitAt: Long = 123,
+        createdAt: Long = 456
+    ) = JniShareDelegationRecord(
+        roundId = roundId,
+        bundleIndex = bundleIndex,
+        proposalId = proposalId,
+        shareIndex = shareIndex,
+        sentToUrls = sentToUrls,
+        nullifier = nullifier,
+        confirmed = confirmed,
+        submitAt = submitAt,
+        createdAt = createdAt
+    )
+
+    private fun JniShareDelegationRecord.toShareDelegationRecordForTest() =
+        ShareDelegationRecord(
+            roundId = roundId,
+            bundleIndex = bundleIndex,
+            proposalId = proposalId,
+            shareIndex = shareIndex,
+            sentToUrls = sentToUrls,
+            nullifier = nullifier,
+            confirmed = confirmed,
+            submitAt = submitAt,
+            createdAt = createdAt
+        )
 
     private fun wireShares(
         count: Int = JNI_VOTE_SHARE_COUNT,
@@ -637,6 +851,7 @@ class TypesafeVotingBackendImplTest {
                 voteAuthorityNoteNew = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
                 voteCommitment = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
                 proposalId = 1,
+                bundleIndex = 1,
                 proof = ByteArray(PROOF_BYTES),
                 encShares =
                     List(JNI_VOTE_SHARE_COUNT) { index ->
@@ -654,7 +869,13 @@ class TypesafeVotingBackendImplTest {
                 rVpk = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
                 alphaV = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE)
             ),
-        private val syncHeight: Long = 1
+        private val syncHeight: Long = 1,
+        private val delegationTxHash: String? = null,
+        private val voteTxHash: String? = null,
+        private val commitmentRecord: JniCommitmentBundleRecord? = null,
+        private val shareRecords: Array<JniShareDelegationRecord> = emptyArray(),
+        private val unconfirmedShareRecords: Array<JniShareDelegationRecord> = emptyArray(),
+        private val recoveryLookupException: RuntimeException? = null
     ) : VotingDbBackend {
         var storeWitnessesRoundId: String? = null
         var storeWitnessesBundleIndex: Int? = null
@@ -670,9 +891,7 @@ class TypesafeVotingBackendImplTest {
         var buildAndProvePirServerUrl: String? = null
         var buildAndProveNetworkId: Int? = null
         var buildAndProveNotes: List<JniNoteInfo>? = null
-        var buildAndProveWalletSeed: ByteArray = ByteArray(0)
-        var buildAndProveAccountIndex: Int? = null
-        var buildAndProveAddressIndex: Int? = null
+        var buildAndProveHotkeySeed: ByteArray = ByteArray(0)
         var buildAndProveProgress: VotingProofProgressCallback? = null
         var submissionRoundId: String? = null
         var submissionBundleIndex: Int? = null
@@ -711,6 +930,48 @@ class TypesafeVotingBackendImplTest {
         var buildVoteAccountIndex: Int? = null
         var buildVoteSingleShare: Boolean? = null
         var buildVoteProgress: VotingProofProgressCallback? = null
+        var storeDelegationTxRoundId: String? = null
+        var storeDelegationTxBundleIndex: Int? = null
+        var storeDelegationTxHash: String? = null
+        var getDelegationTxRoundId: String? = null
+        var getDelegationTxBundleIndex: Int? = null
+        var storeVoteTxRoundId: String? = null
+        var storeVoteTxBundleIndex: Int? = null
+        var storeVoteTxProposalId: Int? = null
+        var storeVoteTxHash: String? = null
+        var markVoteRoundId: String? = null
+        var markVoteBundleIndex: Int? = null
+        var markVoteProposalId: Int? = null
+        var getVoteTxRoundId: String? = null
+        var getVoteTxBundleIndex: Int? = null
+        var getVoteTxProposalId: Int? = null
+        var storeCommitmentRoundId: String? = null
+        var storeCommitmentBundleIndex: Int? = null
+        var storeCommitmentProposalId: Int? = null
+        var storeCommitment: JniVoteCommitmentResult? = null
+        var storeCommitmentTreePosition: Long? = null
+        var getCommitmentRoundId: String? = null
+        var getCommitmentBundleIndex: Int? = null
+        var getCommitmentProposalId: Int? = null
+        var clearRecoveryRoundId: String? = null
+        var recordShareRoundId: String? = null
+        var recordShareBundleIndex: Int? = null
+        var recordShareProposalId: Int? = null
+        var recordShareIndex: Int? = null
+        var recordShareSentToUrls: List<String>? = null
+        var recordShareNullifier: ByteArray = ByteArray(0)
+        var recordShareSubmitAt: Long? = null
+        var getSharesRoundId: String? = null
+        var getUnconfirmedSharesRoundId: String? = null
+        var markShareRoundId: String? = null
+        var markShareBundleIndex: Int? = null
+        var markShareProposalId: Int? = null
+        var markShareIndex: Int? = null
+        var addSentRoundId: String? = null
+        var addSentBundleIndex: Int? = null
+        var addSentProposalId: Int? = null
+        var addSentShareIndex: Int? = null
+        var addSentNewUrls: List<String>? = null
 
         override suspend fun close() = unused()
 
@@ -756,9 +1017,9 @@ class TypesafeVotingBackendImplTest {
             accountIndex: Int,
             notes: List<JniNoteInfo>,
             walletSeed: ByteArray,
+            hotkeySeed: ByteArray,
             seedFingerprint: ByteArray,
-            roundName: String,
-            addressIndex: Int
+            roundName: String
         ): JniGovernancePczt = unused()
 
         override suspend fun storeWitnesses(
@@ -794,9 +1055,7 @@ class TypesafeVotingBackendImplTest {
             pirServerUrl: String,
             networkId: Int,
             notes: List<JniNoteInfo>,
-            walletSeed: ByteArray,
-            accountIndex: Int,
-            addressIndex: Int,
+            hotkeySeed: ByteArray,
             proofProgress: VotingProofProgressCallback?
         ): JniDelegationProofResult {
             buildAndProveRoundId = roundId
@@ -804,9 +1063,7 @@ class TypesafeVotingBackendImplTest {
             buildAndProvePirServerUrl = pirServerUrl
             buildAndProveNetworkId = networkId
             buildAndProveNotes = notes
-            buildAndProveWalletSeed = walletSeed
-            buildAndProveAccountIndex = accountIndex
-            buildAndProveAddressIndex = addressIndex
+            buildAndProveHotkeySeed = hotkeySeed
             buildAndProveProgress = proofProgress
             return proofResult
         }
@@ -919,6 +1176,139 @@ class TypesafeVotingBackendImplTest {
             buildVoteSingleShare = singleShare
             buildVoteProgress = proofProgress
             return commitmentResult
+        }
+
+        override suspend fun storeDelegationTxHash(
+            roundId: String,
+            bundleIndex: Int,
+            txHash: String
+        ) {
+            storeDelegationTxRoundId = roundId
+            storeDelegationTxBundleIndex = bundleIndex
+            storeDelegationTxHash = txHash
+        }
+
+        override suspend fun getDelegationTxHash(roundId: String, bundleIndex: Int): String? {
+            getDelegationTxRoundId = roundId
+            getDelegationTxBundleIndex = bundleIndex
+            recoveryLookupException?.let { throw it }
+            return delegationTxHash
+        }
+
+        override suspend fun storeVoteTxHash(
+            roundId: String,
+            bundleIndex: Int,
+            proposalId: Int,
+            txHash: String
+        ) {
+            storeVoteTxRoundId = roundId
+            storeVoteTxBundleIndex = bundleIndex
+            storeVoteTxProposalId = proposalId
+            storeVoteTxHash = txHash
+        }
+
+        override suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int) {
+            markVoteRoundId = roundId
+            markVoteBundleIndex = bundleIndex
+            markVoteProposalId = proposalId
+        }
+
+        override suspend fun getVoteTxHash(
+            roundId: String,
+            bundleIndex: Int,
+            proposalId: Int
+        ): String? {
+            getVoteTxRoundId = roundId
+            getVoteTxBundleIndex = bundleIndex
+            getVoteTxProposalId = proposalId
+            recoveryLookupException?.let { throw it }
+            return voteTxHash
+        }
+
+        override suspend fun storeCommitmentBundle(
+            roundId: String,
+            bundleIndex: Int,
+            proposalId: Int,
+            commitment: JniVoteCommitmentResult,
+            vcTreePosition: Long
+        ) {
+            storeCommitmentRoundId = roundId
+            storeCommitmentBundleIndex = bundleIndex
+            storeCommitmentProposalId = proposalId
+            storeCommitment = commitment
+            storeCommitmentTreePosition = vcTreePosition
+        }
+
+        override suspend fun getCommitmentBundle(
+            roundId: String,
+            bundleIndex: Int,
+            proposalId: Int
+        ): JniCommitmentBundleRecord? {
+            getCommitmentRoundId = roundId
+            getCommitmentBundleIndex = bundleIndex
+            getCommitmentProposalId = proposalId
+            recoveryLookupException?.let { throw it }
+            return commitmentRecord
+        }
+
+        override suspend fun clearRecoveryState(roundId: String) {
+            clearRecoveryRoundId = roundId
+        }
+
+        override suspend fun recordShareDelegation(
+            roundId: String,
+            bundleIndex: Int,
+            proposalId: Int,
+            shareIndex: Int,
+            sentToUrls: List<String>,
+            nullifier: ByteArray,
+            submitAt: Long
+        ) {
+            recordShareRoundId = roundId
+            recordShareBundleIndex = bundleIndex
+            recordShareProposalId = proposalId
+            recordShareIndex = shareIndex
+            recordShareSentToUrls = sentToUrls
+            recordShareNullifier = nullifier
+            recordShareSubmitAt = submitAt
+        }
+
+        override suspend fun getShareDelegations(roundId: String): Array<JniShareDelegationRecord> {
+            getSharesRoundId = roundId
+            return shareRecords
+        }
+
+        override suspend fun getUnconfirmedDelegations(
+            roundId: String
+        ): Array<JniShareDelegationRecord> {
+            getUnconfirmedSharesRoundId = roundId
+            return unconfirmedShareRecords
+        }
+
+        override suspend fun markShareConfirmed(
+            roundId: String,
+            bundleIndex: Int,
+            proposalId: Int,
+            shareIndex: Int
+        ) {
+            markShareRoundId = roundId
+            markShareBundleIndex = bundleIndex
+            markShareProposalId = proposalId
+            markShareIndex = shareIndex
+        }
+
+        override suspend fun addSentServers(
+            roundId: String,
+            bundleIndex: Int,
+            proposalId: Int,
+            shareIndex: Int,
+            newUrls: List<String>
+        ) {
+            addSentRoundId = roundId
+            addSentBundleIndex = bundleIndex
+            addSentProposalId = proposalId
+            addSentShareIndex = shareIndex
+            addSentNewUrls = newUrls
         }
 
         private fun unused(): Nothing = error("unused")

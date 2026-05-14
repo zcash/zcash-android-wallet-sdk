@@ -19,9 +19,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     account_index: jint,
     notes: JObjectArray<'local>,
     wallet_seed: JByteArray<'local>,
+    hotkey_seed: JByteArray<'local>,
     seed_fingerprint: JByteArray<'local>,
     round_name: JString<'local>,
-    address_index: jint,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
@@ -29,12 +29,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let network = network_from_id(network_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let account_index = jint_to_u32(account_index, "account_index")?;
-        let address_index = jint_to_u32(address_index, "address_index")?;
         let ufvk_str = java_string_to_rust(env, &ufvk)?;
         let fvk_bytes = orchard_fvk_bytes(&ufvk_str, network)?;
 
         let seed_bytes =
             java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
+        let hotkey_seed =
+            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
         let derived_fvk_bytes =
             orchard_fvk_bytes_from_wallet_seed(seed_bytes.expose_secret(), network, account_index)?;
         if derived_fvk_bytes != fvk_bytes {
@@ -42,12 +43,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 "ufvk does not match walletSeed for network_id={network_id} account_index={account_index}"
             ));
         }
-        let hotkey_raw_address = hotkey_orchard_raw_address_from_wallet_seed(
-            seed_bytes.expose_secret(),
-            network,
-            account_index,
-            address_index,
-        )?;
+        let hotkey_raw_address =
+            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, 0)?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
 
         let notes = java_note_info_array(env, &notes, "notes")?;
@@ -68,7 +65,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 &seed_fingerprint,
                 account_index,
                 &round_name,
-                address_index,
+                HOTKEY_ADDRESS_INDEX,
             )
             .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
         update_round_phase_forward(&db, &round_id, RoundPhase::DelegationConstructed)?;
@@ -224,9 +221,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     pir_server_url: JString<'local>,
     network_id: jint,
     notes: JObjectArray<'local>,
-    wallet_seed: JByteArray<'local>,
-    account_index: jint,
-    address_index: jint,
+    hotkey_seed: JByteArray<'local>,
     progress_callback: JObject<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -235,23 +230,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let network = network_from_id(network_id)?;
         let network_id = jint_to_u32(network_id, "network_id")?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let account_index = jint_to_u32(account_index, "account_index")?;
-        let address_index = jint_to_u32(address_index, "address_index")?;
-        let seed_bytes =
-            java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
-        let hotkey_raw_address = hotkey_orchard_raw_address_from_wallet_seed(
-            seed_bytes.expose_secret(),
-            network,
-            account_index,
-            address_index,
-        )?;
-        drop(seed_bytes);
-
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
+        let hotkey_seed =
+            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
+        let hotkey_raw_address =
+            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, 0)?;
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_client = connect_pir_client(&pir_url)?;
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
