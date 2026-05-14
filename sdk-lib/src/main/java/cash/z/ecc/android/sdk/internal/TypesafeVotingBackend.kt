@@ -110,9 +110,9 @@ internal interface TypesafeVotingDb {
         accountIndex: Int,
         notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
+        hotkeySeed: ByteArray,
         seedFingerprint: ByteArray,
-        roundName: String,
-        addressIndex: Int
+        roundName: String
     ): GovernancePcztResult
 
     suspend fun storeWitnesses(
@@ -136,9 +136,7 @@ internal interface TypesafeVotingDb {
         pirServerUrl: String,
         networkId: Int,
         notes: List<VotingNoteInfo>,
-        walletSeed: ByteArray,
-        accountIndex: Int,
-        addressIndex: Int,
+        hotkeySeed: ByteArray,
         proofProgress: ((Double) -> Unit)? = null
     ): DelegationProofResult
 
@@ -194,6 +192,70 @@ internal interface TypesafeVotingDb {
         singleShare: Boolean = false,
         proofProgress: ((Double) -> Unit)? = null
     ): JniVoteCommitmentResult
+
+    suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String)
+
+    suspend fun getDelegationTxHash(roundId: String, bundleIndex: Int): VotingTxHashLookup
+
+    suspend fun storeVoteTxHash(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        txHash: String
+    )
+
+    suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int)
+
+    suspend fun getVoteTxHash(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): VotingTxHashLookup
+
+    suspend fun storeCommitmentBundle(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        commitment: JniVoteCommitmentResult,
+        vcTreePosition: Long
+    )
+
+    suspend fun getCommitmentBundle(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): CommitmentBundleRecord?
+
+    suspend fun clearRecoveryState(roundId: String)
+
+    suspend fun recordShareDelegation(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        sentToUrls: List<String>,
+        nullifier: ByteArray,
+        submitAt: Long
+    )
+
+    suspend fun getShareDelegations(roundId: String): List<ShareDelegationRecord>
+
+    suspend fun getUnconfirmedDelegations(roundId: String): List<ShareDelegationRecord>
+
+    suspend fun markShareConfirmed(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int
+    )
+
+    suspend fun addSentServers(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        newUrls: List<String>
+    )
 }
 
 internal data class VotingNoteInfo(
@@ -345,6 +407,58 @@ internal data class DelegationSubmissionResult(
         result = 31 * result + govComm.contentHashCode()
         result = 31 * result + govNullifiers.contentDeepHashCode()
         result = 31 * result + voteRoundId.hashCode()
+        return result
+    }
+}
+
+internal sealed interface VotingTxHashLookup {
+    data object Missing : VotingTxHashLookup
+
+    data class Found(
+        val txHash: String
+    ) : VotingTxHashLookup
+}
+
+internal data class CommitmentBundleRecord(
+    val commitment: JniVoteCommitmentResult,
+    val vcTreePosition: Long
+)
+
+internal data class ShareDelegationRecord(
+    val roundId: String,
+    val bundleIndex: Int,
+    val proposalId: Int,
+    val shareIndex: Int,
+    val sentToUrls: List<String>,
+    val nullifier: ByteArray,
+    val confirmed: Boolean,
+    val submitAt: Long,
+    val createdAt: Long
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ShareDelegationRecord) return false
+        return roundId == other.roundId &&
+            bundleIndex == other.bundleIndex &&
+            proposalId == other.proposalId &&
+            shareIndex == other.shareIndex &&
+            sentToUrls == other.sentToUrls &&
+            nullifier.contentEquals(other.nullifier) &&
+            confirmed == other.confirmed &&
+            submitAt == other.submitAt &&
+            createdAt == other.createdAt
+    }
+
+    override fun hashCode(): Int {
+        var result = roundId.hashCode()
+        result = 31 * result + bundleIndex
+        result = 31 * result + proposalId
+        result = 31 * result + shareIndex
+        result = 31 * result + sentToUrls.hashCode()
+        result = 31 * result + nullifier.contentHashCode()
+        result = 31 * result + confirmed.hashCode()
+        result = 31 * result + submitAt.hashCode()
+        result = 31 * result + createdAt.hashCode()
         return result
     }
 }

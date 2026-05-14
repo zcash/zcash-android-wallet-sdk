@@ -44,7 +44,6 @@ class VotingRustBackendTest {
         private const val SESSION_JSON = "{\"round\":\"one\"}"
         private const val TESTNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_TESTNET
         private const val ACCOUNT_INDEX = 0
-        private const val ADDRESS_INDEX = 1
         private const val MAINNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_MAINNET
         private const val SECOND_ROUND_ID = "round-2"
         private const val PCZT_ROUND_ID =
@@ -869,9 +868,7 @@ class VotingRustBackendTest {
                         pirServerUrl = "http://127.0.0.1:1",
                         networkId = TESTNET_NETWORK_ID,
                         notes = notes,
-                        walletSeed = SHORT_FIELD,
-                        accountIndex = ACCOUNT_INDEX,
-                        addressIndex = ADDRESS_INDEX,
+                        hotkeySeed = SHORT_FIELD,
                         proofProgress = null
                     )
                 }
@@ -1084,9 +1081,35 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun recovery_state_round_trips_through_native_jni() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+                db.storeVoteFixtureForTesting(
+                    roundId = PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = 1,
+                    choice = 0
+                )
+
+                db.assertStoredTxHashesRoundTrip()
+                db.assertStoredCommitmentBundleRoundTrips()
+                db.assertShareDelegationRecoveryStateRoundTrips()
+                db.clearRecoveryState(PCZT_ROUND_ID)
+                db.assertRecoveryStateCleared()
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun delegation_proof_result_fixture_crosses_rust_to_kotlin_object_construction() =
         runTest {
-            val result = VotingRustBackend.new().delegationProofResultFixtureForTesting()
+            val result =
+                VotingRustBackend
+                    .new()
+                    .delegationProofResultFixtureForTesting()
 
             assertEquals(96, result.proof.size)
             assertEquals(14, result.publicInputs.size)
@@ -1179,6 +1202,102 @@ class VotingRustBackendTest {
 
     private fun newDbPath() =
         createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
+
+    private suspend fun VotingRustBackend.VotingDb.assertStoredTxHashesRoundTrip() {
+        assertNull(getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
+        assertNull(getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+
+        storeDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1, txHash = "delegation-tx")
+        assertEquals("delegation-tx", getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
+
+        storeVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1, txHash = "vote-tx")
+        assertEquals("vote-tx", getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+
+        markVoteSubmitted(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1)
+        assertTrue(
+            getVotes(PCZT_ROUND_ID)
+                .single { vote ->
+                    vote.bundleIndex == 1 && vote.proposalId == 1
+                }.submitted
+        )
+    }
+
+    private suspend fun VotingRustBackend.VotingDb.assertStoredCommitmentBundleRoundTrips() {
+        assertNull(getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+
+        val commitment = jniVoteCommitmentResult()
+        storeCommitmentBundle(
+            roundId = PCZT_ROUND_ID,
+            bundleIndex = 1,
+            proposalId = 1,
+            commitment = commitment,
+            vcTreePosition = 42
+        )
+        val recoveredCommitment =
+            assertNotNull(
+                getCommitmentBundle(
+                    PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = 1
+                )
+            )
+        assertEquals(commitment, recoveredCommitment.commitment)
+        assertEquals(42, recoveredCommitment.vcTreePosition)
+    }
+
+    private suspend fun VotingRustBackend.VotingDb.assertShareDelegationRecoveryStateRoundTrips() {
+        val nullifier = ByteArray(FIELD_BYTES) { 0x55 }
+        recordShareDelegation(
+            roundId = PCZT_ROUND_ID,
+            bundleIndex = 1,
+            proposalId = 1,
+            shareIndex = SHARE_INDEX,
+            sentToUrls = listOf("https://helper-1.example"),
+            nullifier = nullifier,
+            submitAt = 123
+        )
+        assertRecordedShareDelegation(nullifier)
+
+        addSentServers(
+            roundId = PCZT_ROUND_ID,
+            bundleIndex = 1,
+            proposalId = 1,
+            shareIndex = SHARE_INDEX,
+            newUrls = listOf("https://helper-1.example", "https://helper-2.example")
+        )
+        assertEquals(
+            listOf("https://helper-1.example", "https://helper-2.example"),
+            getShareDelegations(PCZT_ROUND_ID).single().sentToUrls
+        )
+
+        markShareConfirmed(
+            PCZT_ROUND_ID,
+            bundleIndex = 1,
+            proposalId = 1,
+            shareIndex = SHARE_INDEX
+        )
+        assertTrue(getShareDelegations(PCZT_ROUND_ID).single().confirmed)
+        assertEquals(emptyList(), getUnconfirmedDelegations(PCZT_ROUND_ID).asList())
+    }
+
+    private suspend fun VotingRustBackend.VotingDb.assertRecordedShareDelegation(
+        nullifier: ByteArray
+    ) {
+        val recordedShare = getShareDelegations(PCZT_ROUND_ID).single()
+        assertEquals(SHARE_INDEX, recordedShare.shareIndex)
+        assertEquals(listOf("https://helper-1.example"), recordedShare.sentToUrls)
+        assertContentEquals(nullifier, recordedShare.nullifier)
+        assertFalse(recordedShare.confirmed)
+        assertEquals(123, recordedShare.submitAt)
+        assertEquals(1, getUnconfirmedDelegations(PCZT_ROUND_ID).size)
+    }
+
+    private suspend fun VotingRustBackend.VotingDb.assertRecoveryStateCleared() {
+        assertNull(getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
+        assertNull(getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+        assertNull(getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+        assertEquals(emptyList(), getShareDelegations(PCZT_ROUND_ID).asList())
+    }
 
     private suspend fun newWalletDbWithAccount(): WalletDbFixture {
         val walletDbFile =
@@ -1323,7 +1442,7 @@ class VotingRustBackendTest {
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePczt(
         ufvk: String,
         notes: List<JniNoteInfo>,
-        walletSeed: ByteArray = HOTKEY_SEED,
+        hotkeySeed: ByteArray = HOTKEY_SEED,
         networkId: Int = TESTNET_NETWORK_ID,
         roundId: String = PCZT_ROUND_ID
     ) = buildGovernancePczt(
@@ -1333,10 +1452,10 @@ class VotingRustBackendTest {
         networkId = networkId,
         accountIndex = ACCOUNT_INDEX,
         notes = notes,
-        walletSeed = walletSeed,
+        walletSeed = HOTKEY_SEED,
+        hotkeySeed = hotkeySeed,
         seedFingerprint = SEED_FINGERPRINT,
-        roundName = ROUND_NAME,
-        addressIndex = ADDRESS_INDEX
+        roundName = ROUND_NAME
     )
 
     private fun notes(
