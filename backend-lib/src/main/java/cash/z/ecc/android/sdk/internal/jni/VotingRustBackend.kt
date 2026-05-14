@@ -125,6 +125,17 @@ class VotingRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
+    suspend fun deriveHotkeyRawAddress(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            deriveHotkeyRawAddressNative(hotkeySeed, networkId, accountIndex)
+                ?: error("deriveHotkeyRawAddress returned null")
+        }
+
+    @Throws(RuntimeException::class)
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         withContext(Dispatchers.IO) {
             extractNcRootNative(treeStateBytes)
@@ -306,6 +317,33 @@ class VotingRustBackend private constructor() {
         suspend fun buildGovernancePczt(
             roundId: String,
             bundleIndex: Int,
+            fvkBytes: ByteArray,
+            hotkeyRawAddress: ByteArray,
+            networkId: Int,
+            accountIndex: Int,
+            notes: List<JniNoteInfo>,
+            seedFingerprint: ByteArray,
+            roundName: String
+        ): JniGovernancePczt =
+            withHandle { handle ->
+                buildGovernancePcztNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    fvkBytes,
+                    hotkeyRawAddress,
+                    networkId,
+                    accountIndex,
+                    notes.toTypedArray(),
+                    seedFingerprint,
+                    roundName
+                ) ?: error("buildGovernancePczt returned null")
+            }
+
+        @Throws(RuntimeException::class)
+        suspend fun buildGovernancePcztFromSeed(
+            roundId: String,
+            bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
@@ -316,7 +354,7 @@ class VotingRustBackend private constructor() {
             roundName: String
         ): JniGovernancePczt =
             withHandle { handle ->
-                buildGovernancePcztNative(
+                buildGovernancePcztFromSeedNative(
                     handle,
                     roundId,
                     bundleIndex,
@@ -328,7 +366,7 @@ class VotingRustBackend private constructor() {
                     hotkeySeed,
                     seedFingerprint,
                     roundName
-                ) ?: error("buildGovernancePczt returned null")
+                ) ?: error("buildGovernancePcztFromSeed returned null")
             }
 
         @Throws(RuntimeException::class)
@@ -373,7 +411,7 @@ class VotingRustBackend private constructor() {
             pirServerUrl: String,
             networkId: Int,
             notes: List<JniNoteInfo>,
-            hotkeySeed: ByteArray,
+            hotkeyRawAddress: ByteArray,
             proofProgress: VotingProofProgressCallback?
         ): JniDelegationProofResult =
             withHandle { handle ->
@@ -384,7 +422,7 @@ class VotingRustBackend private constructor() {
                     pirServerUrl,
                     networkId,
                     notes.toTypedArray(),
-                    hotkeySeed,
+                    hotkeyRawAddress,
                     proofProgress?.withVotingDbReentryGuard()
                 ) ?: error("buildAndProveDelegation returned null")
             }
@@ -794,6 +832,14 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun deriveHotkeyRawAddressNative(
+            hotkeySeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun extractNcRootNative(treeStateBytes: ByteArray): ByteArray?
 
         @JvmStatic
@@ -883,6 +929,21 @@ class VotingRustBackend private constructor() {
             dbHandle: Long,
             roundId: String,
             bundleIndex: Int,
+            fvkBytes: ByteArray,
+            hotkeyRawAddress: ByteArray,
+            networkId: Int,
+            accountIndex: Int,
+            notes: Array<JniNoteInfo>,
+            seedFingerprint: ByteArray,
+            roundName: String
+        ): JniGovernancePczt?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildGovernancePcztFromSeedNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
@@ -954,7 +1015,7 @@ class VotingRustBackend private constructor() {
             pirServerUrl: String,
             networkId: Int,
             notes: Array<JniNoteInfo>,
-            hotkeySeed: ByteArray,
+            hotkeyRawAddress: ByteArray,
             proofProgress: VotingProofProgressCallback?
         ): JniDelegationProofResult?
 

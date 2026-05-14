@@ -203,7 +203,7 @@ class TypesafeVotingBackendImplTest {
                     generatedWitnesses = generatedWitnesses
                 )
             val db = TypesafeVotingDbImpl(backend)
-            val walletSeed = byteArrayOf(1, 2, 3)
+            val hotkeyRawAddress = byteArrayOf(1, 2, 3)
             val senderSeed = byteArrayOf(4, 5, 6)
             val keystoneSig = byteArrayOf(7, 8)
             val keystoneSighash = byteArrayOf(9, 10)
@@ -242,7 +242,7 @@ class TypesafeVotingBackendImplTest {
                     pirServerUrl = "https://pir.example",
                     networkId = 1,
                     notes = notes,
-                    hotkeySeed = walletSeed
+                    hotkeyRawAddress = hotkeyRawAddress
                 ) { progress ->
                     progressValue = progress
                 }
@@ -251,7 +251,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals("https://pir.example", backend.buildAndProvePirServerUrl)
             assertEquals(1, backend.buildAndProveNetworkId)
             assertEquals(jniNotes, backend.buildAndProveNotes)
-            assertContentEquals(walletSeed, backend.buildAndProveHotkeySeed)
+            assertContentEquals(hotkeyRawAddress, backend.buildAndProveHotkeyRawAddress)
             assertNotNull(backend.buildAndProveProgress).onProgress(0.75)
             assertEquals(0.75, progressValue)
             assertContentEquals(field(13), proof.nfSigned)
@@ -802,6 +802,12 @@ class TypesafeVotingBackendImplTest {
             networkId: Int
         ): ByteArray = unused()
 
+        override suspend fun deriveHotkeyRawAddress(
+            hotkeySeed: ByteArray,
+            networkId: Int,
+            accountIndex: Int
+        ): ByteArray = unused()
+
         override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray = unused()
 
         override suspend fun verifyWitness(witness: JniWitnessData): Boolean = unused()
@@ -885,7 +891,7 @@ class TypesafeVotingBackendImplTest {
         var buildAndProvePirServerUrl: String? = null
         var buildAndProveNetworkId: Int? = null
         var buildAndProveNotes: List<JniNoteInfo>? = null
-        var buildAndProveHotkeySeed: ByteArray = ByteArray(0)
+        var buildAndProveHotkeyRawAddress: ByteArray = ByteArray(0)
         var buildAndProveProgress: VotingProofProgressCallback? = null
         var submissionRoundId: String? = null
         var submissionBundleIndex: Int? = null
@@ -1006,6 +1012,18 @@ class TypesafeVotingBackendImplTest {
         override suspend fun buildGovernancePczt(
             roundId: String,
             bundleIndex: Int,
+            fvkBytes: ByteArray,
+            hotkeyRawAddress: ByteArray,
+            networkId: Int,
+            accountIndex: Int,
+            notes: List<JniNoteInfo>,
+            seedFingerprint: ByteArray,
+            roundName: String
+        ): JniGovernancePczt = unused()
+
+        override suspend fun buildGovernancePcztFromSeed(
+            roundId: String,
+            bundleIndex: Int,
             ufvk: String,
             networkId: Int,
             accountIndex: Int,
@@ -1049,7 +1067,7 @@ class TypesafeVotingBackendImplTest {
             pirServerUrl: String,
             networkId: Int,
             notes: List<JniNoteInfo>,
-            hotkeySeed: ByteArray,
+            hotkeyRawAddress: ByteArray,
             proofProgress: VotingProofProgressCallback?
         ): JniDelegationProofResult {
             buildAndProveRoundId = roundId
@@ -1057,7 +1075,7 @@ class TypesafeVotingBackendImplTest {
             buildAndProvePirServerUrl = pirServerUrl
             buildAndProveNetworkId = networkId
             buildAndProveNotes = notes
-            buildAndProveHotkeySeed = hotkeySeed
+            buildAndProveHotkeyRawAddress = hotkeyRawAddress
             buildAndProveProgress = proofProgress
             return proofResult
         }

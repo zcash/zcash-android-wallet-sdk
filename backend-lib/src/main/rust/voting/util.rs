@@ -69,6 +69,27 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_deriveHotkeyRawAddressNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    hotkey_seed: JByteArray<'local>,
+    network_id: jint,
+    account_index: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let network = network_from_id(network_id)?;
+        let account_index = jint_to_u32(account_index, "account_index")?;
+        let hotkey_seed =
+            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
+        let bytes = hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, account_index)?;
+        Ok(env.byte_array_from_slice(&bytes)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_extractNcRootNative<
     'local,
 >(

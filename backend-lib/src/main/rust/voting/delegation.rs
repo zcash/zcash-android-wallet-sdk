@@ -14,6 +14,59 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     db_handle: jlong,
     round_id: JString<'local>,
     bundle_index: jint,
+    fvk_bytes: JByteArray<'local>,
+    hotkey_raw_address: JByteArray<'local>,
+    network_id: jint,
+    account_index: jint,
+    notes: JObjectArray<'local>,
+    seed_fingerprint: JByteArray<'local>,
+    round_name: JString<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let network = network_from_id(network_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let account_index = jint_to_u32(account_index, "account_index")?;
+        let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
+        let hotkey_raw_address = java_bytes_exact(
+            env,
+            &hotkey_raw_address,
+            "hotkeyRawAddress",
+            ORCHARD_RAW_ADDRESS_BYTES,
+        )?;
+        let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
+
+        let notes = java_note_info_array(env, &notes, "notes")?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let round_name = java_string_to_rust(env, &round_name)?;
+        let pczt = build_governance_pczt_for_bundle(
+            &db,
+            &round_id,
+            bundle_index,
+            &notes,
+            &fvk_bytes,
+            &hotkey_raw_address,
+            network.coin_type(),
+            account_index,
+            &seed_fingerprint,
+            &round_name,
+        )?;
+
+        make_jni_governance_pczt(env, pczt)
+    });
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_buildGovernancePcztFromSeedNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
     ufvk: JString<'local>,
     network_id: jint,
     account_index: jint,
@@ -31,48 +84,77 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let account_index = jint_to_u32(account_index, "account_index")?;
         let ufvk_str = java_string_to_rust(env, &ufvk)?;
         let fvk_bytes = orchard_fvk_bytes(&ufvk_str, network)?;
-
-        let seed_bytes =
+        let wallet_seed =
             java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
         let hotkey_seed =
             java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
         let derived_fvk_bytes =
-            orchard_fvk_bytes_from_wallet_seed(seed_bytes.expose_secret(), network, account_index)?;
+            orchard_fvk_bytes_from_wallet_seed(wallet_seed.expose_secret(), network, account_index)?;
         if derived_fvk_bytes != fvk_bytes {
             return Err(anyhow!(
                 "ufvk does not match walletSeed for network_id={network_id} account_index={account_index}"
             ));
         }
         let hotkey_raw_address =
-            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, 0)?;
+            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, account_index)?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
-
         let notes = java_note_info_array(env, &notes, "notes")?;
-        let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
-
         let round_id = java_string_to_rust(env, &round_id)?;
-        require_round_phase_for_delegation_construction(&db, &round_id)?;
         let round_name = java_string_to_rust(env, &round_name)?;
-        let pczt = db
-            .build_governance_pczt(
-                &round_id,
-                bundle_index,
-                &bundle_notes,
-                &fvk_bytes,
-                &hotkey_raw_address,
-                nu6_branch_id(),
-                network.coin_type(),
-                &seed_fingerprint,
-                account_index,
-                &round_name,
-                HOTKEY_ADDRESS_INDEX,
-            )
-            .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
-        update_round_phase_forward(&db, &round_id, RoundPhase::DelegationConstructed)?;
+        let pczt = build_governance_pczt_for_bundle(
+            &db,
+            &round_id,
+            bundle_index,
+            &notes,
+            &fvk_bytes,
+            &hotkey_raw_address,
+            network.coin_type(),
+            account_index,
+            &seed_fingerprint,
+            &round_name,
+        )?;
 
         make_jni_governance_pczt(env, pczt)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+/// Builds a governance PCZT for one deterministic bundle from the full snapshot note set.
+///
+/// Shared by the explicit-FVK Keystone path and the seed-validated software path. Callers must
+/// provide already validated signer material; this helper verifies the bundle index, enforces the
+/// round phase, persists the constructed delegation state, and advances the phase on success.
+fn build_governance_pczt_for_bundle(
+    db: &VotingDb,
+    round_id: &str,
+    bundle_index: u32,
+    notes: &[NoteInfo],
+    fvk_bytes: &[u8],
+    hotkey_raw_address: &[u8],
+    coin_type: u32,
+    account_index: u32,
+    seed_fingerprint: &[u8; PROTOCOL_FIELD_BYTES],
+    round_name: &str,
+) -> anyhow::Result<GovernancePczt> {
+    let bundle_notes = bundled_notes_for_index(notes, bundle_index)?;
+    require_round_phase_for_delegation_construction(db, round_id)?;
+    let pczt = db
+        .build_governance_pczt(
+            round_id,
+            bundle_index,
+            &bundle_notes,
+            fvk_bytes,
+            hotkey_raw_address,
+            nu6_branch_id(),
+            coin_type,
+            seed_fingerprint,
+            account_index,
+            round_name,
+            HOTKEY_ADDRESS_INDEX,
+        )
+        .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
+    update_round_phase_forward(db, round_id, RoundPhase::DelegationConstructed)?;
+    Ok(pczt)
 }
 
 #[unsafe(no_mangle)]
@@ -221,13 +303,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     pir_server_url: JString<'local>,
     network_id: jint,
     notes: JObjectArray<'local>,
-    hotkey_seed: JByteArray<'local>,
+    hotkey_raw_address: JByteArray<'local>,
     progress_callback: JObject<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let network = network_from_id(network_id)?;
+        network_from_id(network_id)?;
         let network_id = jint_to_u32(network_id, "network_id")?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let notes = java_note_info_array(env, &notes, "notes")?;
@@ -235,10 +317,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let round_id = java_string_to_rust(env, &round_id)?;
         require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
-        let hotkey_seed =
-            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
-        let hotkey_raw_address =
-            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, 0)?;
+        let hotkey_raw_address = java_bytes_exact(
+            env,
+            &hotkey_raw_address,
+            "hotkeyRawAddress",
+            ORCHARD_RAW_ADDRESS_BYTES,
+        )?;
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_client = connect_pir_client(&pir_url)?;
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;

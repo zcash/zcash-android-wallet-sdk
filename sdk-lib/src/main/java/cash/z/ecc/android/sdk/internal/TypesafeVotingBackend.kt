@@ -45,6 +45,12 @@ internal interface TypesafeVotingBackend {
 
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
+    suspend fun deriveHotkeyRawAddress(
+        hotkeySeed: ByteArray,
+        networkId: Int,
+        accountIndex: Int
+    ): ByteArray
+
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
 
     suspend fun verifyWitness(witness: JniWitnessData): Boolean
@@ -105,6 +111,18 @@ internal interface TypesafeVotingDb {
     suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
+        fvkBytes: ByteArray,
+        hotkeyRawAddress: ByteArray,
+        networkId: Int,
+        accountIndex: Int,
+        notes: List<VotingNoteInfo>,
+        seedFingerprint: ByteArray,
+        roundName: String
+    ): GovernancePcztResult
+
+    suspend fun buildGovernancePcztFromSeed(
+        roundId: String,
+        bundleIndex: Int,
         ufvk: String,
         networkId: Int,
         accountIndex: Int,
@@ -136,7 +154,7 @@ internal interface TypesafeVotingDb {
         pirServerUrl: String,
         networkId: Int,
         notes: List<VotingNoteInfo>,
-        hotkeySeed: ByteArray,
+        hotkeyRawAddress: ByteArray,
         proofProgress: ((Double) -> Unit)? = null
     ): DelegationProofResult
 
