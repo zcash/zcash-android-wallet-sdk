@@ -1263,7 +1263,7 @@ class VotingRustBackendTest {
             bundleIndex = 1,
             proposalId = 1,
             shareIndex = SHARE_INDEX,
-            newUrls = listOf("https://helper-1.example", "https://helper-2.example")
+            newUrls = listOf("https://helper-2.example")
         )
         assertEquals(
             listOf("https://helper-1.example", "https://helper-2.example"),

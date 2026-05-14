@@ -670,6 +670,9 @@ class VotingRustBackend private constructor() {
             }
         }
 
+        /**
+         * Appends [newUrls] to the stored sent-server list for this share, ignoring duplicates.
+         */
         @Throws(RuntimeException::class)
         suspend fun addSentServers(
             roundId: String,

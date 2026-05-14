@@ -449,6 +449,9 @@ internal interface VotingDbBackend {
         shareIndex: Int
     )
 
+    /**
+     * Appends [newUrls] to the sent-server list for this share, ignoring duplicates.
+     */
     suspend fun addSentServers(
         roundId: String,
         bundleIndex: Int,
