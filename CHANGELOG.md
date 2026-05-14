@@ -6,6 +6,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-05-14
+
+### Fixed
+- Fixed a bug that could cause transactions shielding more than 150 transparent
+  P2PKH inputs to fail due to incorrect fee computation.
+
 ## [2.5.0] - 2026-05-01
 
 ### Changed
