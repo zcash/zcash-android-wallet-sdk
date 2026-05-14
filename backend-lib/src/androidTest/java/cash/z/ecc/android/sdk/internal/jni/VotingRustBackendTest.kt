@@ -1583,12 +1583,14 @@ class VotingRustBackendTest {
         encShares: List<JniWireEncryptedShare> = wireShares(),
         shareBlinds: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 5),
         shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 6),
+        bundleIndex: Int = 1,
         alphaV: ByteArray = ByteArray(FIELD_BYTES) { 8 }
     ) = JniVoteCommitmentResult(
         vanNullifier = ByteArray(FIELD_BYTES) { 1 },
         voteAuthorityNoteNew = ByteArray(FIELD_BYTES) { 2 },
         voteCommitment = ByteArray(FIELD_BYTES) { 3 },
         proposalId = 1,
+        bundleIndex = bundleIndex,
         proof = byteArrayOf(4),
         encShares = encShares,
         anchorHeight = SNAPSHOT_HEIGHT,

@@ -150,6 +150,7 @@ data class JniVoteCommitmentResult(
     val voteAuthorityNoteNew: ByteArray,
     val voteCommitment: ByteArray,
     val proposalId: Int,
+    val bundleIndex: Int,
     val proof: ByteArray,
     val encShares: List<JniWireEncryptedShare>,
     val anchorHeight: Long,
@@ -165,6 +166,7 @@ data class JniVoteCommitmentResult(
         voteAuthorityNoteNew: ByteArray,
         voteCommitment: ByteArray,
         proposalId: Int,
+        bundleIndex: Int,
         proof: ByteArray,
         encShares: Array<JniWireEncryptedShare>,
         anchorHeight: Long,
@@ -179,6 +181,7 @@ data class JniVoteCommitmentResult(
         voteAuthorityNoteNew = voteAuthorityNoteNew,
         voteCommitment = voteCommitment,
         proposalId = proposalId,
+        bundleIndex = bundleIndex,
         proof = proof,
         encShares = encShares.toList(),
         anchorHeight = anchorHeight,
@@ -202,6 +205,7 @@ data class JniVoteCommitmentResult(
 
     private fun scalarFieldsEqual(other: JniVoteCommitmentResult) =
         proposalId == other.proposalId &&
+            bundleIndex == other.bundleIndex &&
             anchorHeight == other.anchorHeight &&
             voteRoundId == other.voteRoundId
 
@@ -224,6 +228,7 @@ data class JniVoteCommitmentResult(
         result = 31 * result + voteAuthorityNoteNew.contentHashCode()
         result = 31 * result + voteCommitment.contentHashCode()
         result = 31 * result + proposalId
+        result = 31 * result + bundleIndex
         result = 31 * result + proof.contentHashCode()
         result = 31 * result + encShares.hashCode()
         result = 31 * result + anchorHeight.hashCode()

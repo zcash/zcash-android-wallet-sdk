@@ -47,11 +47,11 @@ const JNI_VAN_WITNESS_CTOR_SIG: &str = "([[BJJ)V";
 // Must match JniWireEncryptedShare(ByteArray, ByteArray, Int) in
 // JniVotingModels.kt.
 const JNI_WIRE_ENCRYPTED_SHARE_CTOR_SIG: &str = "([B[BI)V";
-// Must match JniVoteCommitmentResult(ByteArray, ByteArray, ByteArray, Int,
+// Must match JniVoteCommitmentResult(ByteArray, ByteArray, ByteArray, Int, Int,
 // ByteArray, Array<JniWireEncryptedShare>, Long, String, ByteArray,
 // Array<ByteArray>, Array<ByteArray>, ByteArray, ByteArray) in
 // JniVotingModels.kt. Guarded by JniVotingModelsTest.
-const JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG: &str = "([B[B[BI[B[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V";
+const JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG: &str = "([B[B[BII[B[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V";
 // Must match JniCommitmentBundleRecord(JniVoteCommitmentResult, Long) in
 // JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_COMMITMENT_BUNDLE_RECORD_CTOR_SIG: &str =
@@ -126,6 +126,7 @@ struct JniVoteCommitmentResultPayload {
     vote_authority_note_new: Vec<u8>,
     vote_commitment: Vec<u8>,
     proposal_id: u32,
+    bundle_index: u32,
     proof: Vec<u8>,
     enc_shares: Vec<WireEncryptedShare>,
     anchor_height: u32,
@@ -621,6 +622,7 @@ fn java_wire_encrypted_share_list_field(
 }
 
 pub(super) struct JavaVoteCommitmentBundle {
+    pub(super) bundle_index: u32,
     pub(super) enc_shares: Vec<WireEncryptedShare>,
     pub(super) bundle: VoteCommitmentBundle,
 }
@@ -646,6 +648,10 @@ pub(super) fn java_vote_commitment_bundle(
     )?;
 
     Ok(JavaVoteCommitmentBundle {
+        bundle_index: jint_to_u32(
+            env.get_field(commitment, "bundleIndex", "I")?.i()?,
+            "bundleIndex",
+        )?,
         enc_shares,
         bundle: VoteCommitmentBundle {
             van_nullifier: require_len(
@@ -766,13 +772,14 @@ impl TryFrom<StoredWireEncryptedShare> for WireEncryptedShare {
     }
 }
 
-impl From<VoteCommitmentBundle> for JniVoteCommitmentResultPayload {
-    fn from(bundle: VoteCommitmentBundle) -> Self {
-        JniVoteCommitmentResultPayload {
+impl JniVoteCommitmentResultPayload {
+    fn from_bundle(bundle: VoteCommitmentBundle, bundle_index: u32) -> Self {
+        Self {
             van_nullifier: bundle.van_nullifier,
             vote_authority_note_new: bundle.vote_authority_note_new,
             vote_commitment: bundle.vote_commitment,
             proposal_id: bundle.proposal_id,
+            bundle_index,
             proof: bundle.proof,
             enc_shares: bundle
                 .enc_shares
@@ -788,12 +795,8 @@ impl From<VoteCommitmentBundle> for JniVoteCommitmentResultPayload {
             alpha_v: bundle.alpha_v,
         }
     }
-}
 
-impl TryFrom<StoredVoteCommitmentBundle> for JniVoteCommitmentResultPayload {
-    type Error = anyhow::Error;
-
-    fn try_from(bundle: StoredVoteCommitmentBundle) -> anyhow::Result<Self> {
+    fn from_stored(bundle: StoredVoteCommitmentBundle, bundle_index: u32) -> anyhow::Result<Self> {
         Ok(JniVoteCommitmentResultPayload {
             van_nullifier: hex_dec_exact(
                 &bundle.van_nullifier,
@@ -811,6 +814,7 @@ impl TryFrom<StoredVoteCommitmentBundle> for JniVoteCommitmentResultPayload {
                 PROTOCOL_FIELD_BYTES,
             )?,
             proposal_id: bundle.proposal_id,
+            bundle_index,
             proof: hex_dec(&bundle.proof, "proof")?,
             enc_shares: require_count(
                 bundle
@@ -1195,8 +1199,12 @@ fn make_jni_wire_encrypted_share_array<'local>(
 pub(super) fn make_jni_vote_commitment_result<'local>(
     env: &mut JNIEnv<'local>,
     bundle: VoteCommitmentBundle,
+    bundle_index: u32,
 ) -> anyhow::Result<jobject> {
-    make_jni_vote_commitment_result_payload(env, JniVoteCommitmentResultPayload::from(bundle))
+    make_jni_vote_commitment_result_payload(
+        env,
+        JniVoteCommitmentResultPayload::from_bundle(bundle, bundle_index),
+    )
 }
 
 fn make_jni_vote_commitment_result_payload<'local>(
@@ -1261,6 +1269,7 @@ fn make_jni_vote_commitment_result_payload<'local>(
                 JValue::Object(&vote_authority_note_new),
                 JValue::Object(&vote_commitment),
                 JValue::Int(u32_to_jint(payload.proposal_id, "proposal_id")?),
+                JValue::Int(u32_to_jint(payload.bundle_index, "bundle_index")?),
                 JValue::Object(&proof),
                 JValue::Object(&enc_shares),
                 JValue::Long(u64_to_jlong(
@@ -1281,10 +1290,14 @@ fn make_jni_vote_commitment_result_payload<'local>(
 pub(super) fn make_jni_commitment_bundle_record<'local>(
     env: &mut JNIEnv<'local>,
     bundle: StoredVoteCommitmentBundle,
+    bundle_index: u32,
     vc_tree_position: u64,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_COMMITMENT_BUNDLE_RECORD)?;
-    let commitment = make_jni_vote_commitment_result_payload(env, bundle.try_into()?)?;
+    let commitment = make_jni_vote_commitment_result_payload(
+        env,
+        JniVoteCommitmentResultPayload::from_stored(bundle, bundle_index)?,
+    )?;
     let commitment = unsafe { JObject::from_raw(commitment) };
     let record = env.new_object(
         &class,

@@ -501,6 +501,31 @@ class TypesafeVotingBackendImplTest {
         }
 
     @Test
+    fun store_commitment_bundle_rejects_mismatched_bundle_index() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.storeCommitmentBundle(
+                        roundId = "round-recovery",
+                        bundleIndex = 2,
+                        proposalId = 1,
+                        commitment = jniVoteCommitmentResult(bundleIndex = 1),
+                        vcTreePosition = 99
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("bundleIndex"))
+        }
+
+    @Test
     fun missing_tx_hashes_map_to_typed_missing_state() =
         runTest {
             val backend =
@@ -634,6 +659,7 @@ class TypesafeVotingBackendImplTest {
         proposalId: Int = 1,
         proof: ByteArray = ByteArray(PROOF_BYTES) { 13 },
         encShares: List<JniWireEncryptedShare> = wireShares(),
+        bundleIndex: Int = 1,
         anchorHeight: Long = 2,
         voteRoundId: String = "round-vote",
         sharesHash: ByteArray = field(14),
@@ -646,6 +672,7 @@ class TypesafeVotingBackendImplTest {
         voteAuthorityNoteNew = voteAuthorityNoteNew,
         voteCommitment = voteCommitment,
         proposalId = proposalId,
+        bundleIndex = bundleIndex,
         proof = proof,
         encShares = encShares,
         anchorHeight = anchorHeight,
@@ -824,6 +851,7 @@ class TypesafeVotingBackendImplTest {
                 voteAuthorityNoteNew = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
                 voteCommitment = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
                 proposalId = 1,
+                bundleIndex = 1,
                 proof = ByteArray(PROOF_BYTES),
                 encShares =
                     List(JNI_VOTE_SHARE_COUNT) { index ->

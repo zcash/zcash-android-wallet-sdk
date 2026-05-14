@@ -111,21 +111,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         require_supported_vote_account(account_index)?;
         let hotkey_seed =
             java_secret_bytes_at_least(env, &hotkey_seed, "hotkey_seed", PROTOCOL_FIELD_BYTES)?;
         let witness = java_van_witness(env, &witness)?;
-        require_delegation_ready_for_vote(
-            &db,
-            &round_id,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            &witness,
-        )?;
+        require_delegation_ready_for_vote(&db, &round_id, bundle_index, &witness)?;
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let bundle = db
             .build_vote_commitment(
                 &round_id,
-                jint_to_u32(bundle_index, "bundle_index")?,
+                bundle_index,
                 hotkey_seed.expose_secret(),
                 jint_to_u32(network_id, "network_id")?,
                 jint_to_u32(proposal_id, "proposal_id")?,
@@ -138,7 +134,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 reporter.as_ref(),
             )
             .map_err(|e| anyhow!("build_vote_commitment: {}", e))?;
-        make_jni_vote_commitment_result(env, bundle)
+        make_jni_vote_commitment_result(env, bundle, bundle_index)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }

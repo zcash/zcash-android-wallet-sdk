@@ -1017,6 +1017,9 @@ internal class TypesafeVotingDbImpl(
         vcTreePosition: Long
     ) {
         commitment.requireValid()
+        require(commitment.bundleIndex == bundleIndex) {
+            "commitment bundleIndex ${commitment.bundleIndex} does not match bundleIndex $bundleIndex"
+        }
         votingDb.storeCommitmentBundle(
             roundId,
             bundleIndex,
@@ -1205,6 +1208,7 @@ private fun JniVoteCommitmentResult.requireValid() {
     vanNullifier.requireByteArraySize("vanNullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     voteAuthorityNoteNew.requireByteArraySize("voteAuthorityNoteNew", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     voteCommitment.requireByteArraySize("voteCommitment", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    require(bundleIndex >= 0) { "bundleIndex must be non-negative, got $bundleIndex" }
     proof.requireByteArrayNotEmpty("proof")
     encShares.requireCount("encShares", JNI_VOTE_SHARE_COUNT)
     encShares.forEachIndexed { index, share -> share.requireValid("encShares[$index]") }

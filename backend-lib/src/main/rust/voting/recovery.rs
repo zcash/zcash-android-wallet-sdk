@@ -197,7 +197,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
         let vc_tree_position = jlong_to_u64(vc_tree_position, "vc_tree_position")?;
         let commitment = java_vote_commitment_bundle(env, &commitment)?;
-        require_commitment_matches_key(&commitment, &round_id, proposal_id)?;
+        require_commitment_matches_key(&commitment, &round_id, bundle_index, proposal_id)?;
         let commitment = StoredVoteCommitmentBundle::try_from(commitment)?.to_storage_json()?;
         db.store_commitment_bundle(
             &round_id,
@@ -222,6 +222,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
 fn require_commitment_matches_key(
     commitment: &JavaVoteCommitmentBundle,
     round_id: &str,
+    bundle_index: u32,
     proposal_id: u32,
 ) -> anyhow::Result<()> {
     if commitment.bundle.vote_round_id != round_id {
@@ -234,6 +235,12 @@ fn require_commitment_matches_key(
         return Err(anyhow!(
             "commitment proposalId {} does not match proposalId {proposal_id}",
             commitment.bundle.proposal_id
+        ));
+    }
+    if commitment.bundle_index != bundle_index {
+        return Err(anyhow!(
+            "commitment bundleIndex {} does not match bundleIndex {bundle_index}",
+            commitment.bundle_index
         ));
     }
     Ok(())
@@ -282,7 +289,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
         match record {
             Some((commitment, vc_tree_position)) => {
                 let commitment = StoredVoteCommitmentBundle::from_storage_json(&commitment)?;
-                make_jni_commitment_bundle_record(env, commitment, vc_tree_position)
+                make_jni_commitment_bundle_record(
+                    env,
+                    commitment,
+                    jint_to_u32(bundle_index, "bundle_index")?,
+                    vc_tree_position,
+                )
             }
             None => Ok(JObject::null().into_raw()),
         }
@@ -536,18 +548,24 @@ mod tests {
     fn commitment_store_key_must_match_payload() {
         let commitment = commitment_bundle("round-1", 7);
 
-        require_commitment_matches_key(&commitment, "round-1", 7).unwrap();
+        require_commitment_matches_key(&commitment, "round-1", 1, 7).unwrap();
         assert!(
-            require_commitment_matches_key(&commitment, "round-2", 7)
+            require_commitment_matches_key(&commitment, "round-2", 1, 7)
                 .unwrap_err()
                 .to_string()
                 .contains("voteRoundId")
         );
         assert!(
-            require_commitment_matches_key(&commitment, "round-1", 8)
+            require_commitment_matches_key(&commitment, "round-1", 1, 8)
                 .unwrap_err()
                 .to_string()
                 .contains("proposalId")
+        );
+        assert!(
+            require_commitment_matches_key(&commitment, "round-1", 2, 7)
+                .unwrap_err()
+                .to_string()
+                .contains("bundleIndex")
         );
     }
 
@@ -577,6 +595,7 @@ mod tests {
 
     fn commitment_bundle(round_id: &str, proposal_id: u32) -> JavaVoteCommitmentBundle {
         JavaVoteCommitmentBundle {
+            bundle_index: 1,
             enc_shares: vec![],
             bundle: VoteCommitmentBundle {
                 van_nullifier: vec![1; PROTOCOL_FIELD_BYTES],

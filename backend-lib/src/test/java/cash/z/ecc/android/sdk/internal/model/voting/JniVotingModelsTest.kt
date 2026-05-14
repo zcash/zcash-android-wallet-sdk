@@ -13,6 +13,7 @@ class JniVotingModelsTest {
                 voteAuthorityNoteNew = byteArrayOf(2),
                 voteCommitment = byteArrayOf(3),
                 proposalId = 4,
+                bundleIndex = 5,
                 proof = byteArrayOf(5),
                 encShares = listOf(JniWireEncryptedShare(byteArrayOf(6), byteArrayOf(7), 0)),
                 anchorHeight = 8,
@@ -95,6 +96,7 @@ class JniVotingModelsTest {
                 ByteArray::class.java,
                 ByteArray::class.java,
                 Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
                 ByteArray::class.java,
                 Array<JniWireEncryptedShare>::class.java,
                 Long::class.javaPrimitiveType,
@@ -107,7 +109,7 @@ class JniVotingModelsTest {
             )
 
         assertEquals(
-            "([B[B[BI[B[Lcash/z/ecc/android/sdk/internal/model/voting/" +
+            "([B[B[BII[B[Lcash/z/ecc/android/sdk/internal/model/voting/" +
                 "JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V",
             constructor.jniDescriptor()
         )
