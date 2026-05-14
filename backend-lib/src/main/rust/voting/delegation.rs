@@ -36,7 +36,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 
         let seed_bytes =
             java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
-        let hotkey_seed_bytes =
+        let hotkey_seed =
             java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
         let derived_fvk_bytes =
             orchard_fvk_bytes_from_wallet_seed(seed_bytes.expose_secret(), network, account_index)?;
@@ -46,7 +46,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
             ));
         }
         let hotkey_raw_address =
-            hotkey_orchard_raw_address(hotkey_seed_bytes.expose_secret(), network, 0)?;
+            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, 0)?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
 
         let notes = java_note_info_array(env, &notes, "notes")?;
