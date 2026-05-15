@@ -896,7 +896,7 @@ interface Synchronizer {
             val torClient =
                 if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
                     try {
-                        TorClient.new(torDir, backend.backend)
+                        TorClient.new(torDir, backend)
                     } catch (e: Exception) {
                         Twig.error(e) { "Error instantiating Tor Client" }
                         null
