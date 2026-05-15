@@ -99,7 +99,8 @@ runs:
         ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: "false"
       shell: bash
       run: |
-        ./gradlew assemble assembleAndroidTest
+        ./gradlew assemble
+        ./gradlew assembleAndroidTest
 
     - name: Gradle Binary Cache Save
       id: gradle-binary-cache-save
