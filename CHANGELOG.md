@@ -29,7 +29,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now takes the raw hotkey address directly, and a new `deriveHotkeyRawAddress` helper
   exposes raw-address derivation to callers that do not retain the hotkey seed.
 - Pinned `orchard` to `=0.13.1` with `unstable-voting-circuits` to match `zcash_voting` / `voting-circuits` requirements.
-- Updated `zcash_voting` to 0.8.1.
+- Pinned `zcash_voting` to `=0.10.1`.
 
 ## [2.5.0] - 2026-05-01
 
