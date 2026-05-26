@@ -1,7 +1,5 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
-import cash.z.ecc.android.sdk.internal.Twig
-import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -12,8 +10,6 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import co.electriccoin.lightwallet.client.CombinedWalletClient
-import co.electriccoin.lightwallet.client.ServiceMode
-import co.electriccoin.lightwallet.client.model.Response
 
 @Suppress("TooManyFunctions")
 internal class OutboundTransactionManagerImpl(
@@ -70,50 +66,7 @@ internal class OutboundTransactionManagerImpl(
     ): List<EncodedTransaction> = encoder.createProposedTransactions(proposal, usk)
 
     override suspend fun submit(encodedTransaction: EncodedTransaction): TransactionSubmitResult =
-        when (
-            val response =
-                walletClient.submitTransaction(
-                    tx = encodedTransaction.raw.byteArray,
-                    serviceMode =
-                        sdkFlags ifTor
-                            ServiceMode.Group("submit-${encodedTransaction.txId.byteArray.toHexReversed()}")
-                )
-        ) {
-            is Response.Success -> {
-                if (response.result.code == 0) {
-                    Twig.info {
-                        "SUCCESS: submit transaction completed for:" +
-                            " ${encodedTransaction.txId.byteArray.toHexReversed()}"
-                    }
-                    TransactionSubmitResult.Success(encodedTransaction.txId)
-                } else {
-                    Twig.error {
-                        "FAILURE! submit transaction ${encodedTransaction.txId.byteArray.toHexReversed()} " +
-                            "completed with response: ${response.result.code}: ${response.result.message}"
-                    }
-                    TransactionSubmitResult.Failure(
-                        txId = encodedTransaction.txId,
-                        grpcError = false,
-                        code = response.result.code,
-                        description = response.result.message
-                    )
-                }
-            }
-
-            is Response.Failure -> {
-                Twig.error {
-                    "FAILURE! submit transaction failed with gRPC response: ${response.code}: ${
-                        response.description
-                    }"
-                }
-                TransactionSubmitResult.Failure(
-                    txId = encodedTransaction.txId,
-                    grpcError = true,
-                    code = response.code,
-                    description = response.description
-                )
-            }
-        }
+        walletClient.submitTransaction(encodedTransaction.raw, encodedTransaction.txId, sdkFlags)
 
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,

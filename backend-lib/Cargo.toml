@@ -10,9 +10,14 @@ publish = false
 edition = "2024"
 rust-version = "1.92"
 
+[features]
+# Enables JNI helpers that are only used by Android instrumentation tests.
+# This feature must not be enabled for production native builds.
+android-test-fixtures = []
+
 [dependencies]
 # Zcash dependencies
-orchard = "0.13"
+orchard = { version = "=0.13.1", features = ["unstable-voting-circuits"] }
 pczt = { version = "0.6", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.7", default-features = false }
@@ -33,6 +38,8 @@ zcash_protocol = "0.8"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
+# Used by voting/notes.rs to construct historical Orchard witness positions.
+incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Infrastructure
 prost = "0.14"
@@ -54,6 +61,9 @@ anyhow = "1"
 jni = { version = "0.21", default-features = false }
 uuid = "1"
 bitflags = "2"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # lightwalletd
 tonic = "0.14"
@@ -74,8 +84,31 @@ tor-rtcompat = "0.35"
 rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
-component = "0.1.1"
-rust-analyzer = "0.0.1"
+
+# Shielded voting
+#
+# `zcash_voting` provides client-side primitives for shielded voting. It depends
+# on Orchard's unstable voting-circuits APIs, so the direct Orchard dependency is
+# pinned to the same version and enables the same feature. Revisit the exact pin
+# if the upstream voting crates relax their Orchard requirement.
+# The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
+# Its share-nullifier entry point forwards to
+# `zcash_voting::share_tracking::compute_share_nullifier`:
+# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.8.1/zcash_voting/src/share_tracking.rs
+#
+# The transitive `voting-circuits` dependency contains the share-reveal circuit
+# and the Poseidon-based `share_nullifier_hash` implementation:
+# https://github.com/valargroup/voting-circuits/blob/v0.4.2/voting-circuits/src/share_reveal/circuit.rs
+# Default features stay disabled. The `client-pir` feature is needed for
+# delegation proof precompute and proof generation. The `client-tree-sync`
+# feature is needed for vote commitment tree sync and VAN witnesses.
+# Expected PIR/tree-sync networking transitives include `pir-client`, `pir-types`,
+# `valar-ypir`, `valar-spiral-rs`, `vote-commitment-tree-client`, and
+# `hyper-rustls`.
+zcash_voting = { version = "0.8.1", default-features = false, features = [
+    "client-pir",
+    "client-tree-sync",
+] }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]
