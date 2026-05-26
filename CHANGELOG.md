@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-05-26
+
 ### Added
 - `Synchronizer.broadcaster` API for creating transactions without immediate
   submission and submitting stored transactions to selected lightwalletd
