@@ -55,20 +55,46 @@ They should not depend on:
 The SDK may use those implementation details internally. The public layer maps
 them into SDK-domain models before values cross the consumer boundary.
 
-## Module Ownership
+## SDK Surface Ownership
 
-Place public API in the module that matches its stability and audience.
+Place public API in the SDK surface that matches its stability, audience, and
+consumer opt-in model.
 
-- `sdk-lib` is the main public SDK surface for wallet applications.
+This document is written from the Android SDK, so it names Android modules where
+they exist today. The same consumer-facing expectations should apply to the iOS
+SDK using Swift-native packaging and opt-in mechanisms.
+
+In the Android SDK:
+
+- `sdk-lib` is the main stable public SDK surface for wallet applications.
 - `backend-lib` is native/JNI/backend implementation detail and should not be a
   direct dependency of wallet apps.
-- `sdk-incubator-lib` may expose experimental APIs that can later move into the
-  main SDK package, but consumers must expect higher churn.
 - `lightwallet-client-lib` exposes lower-level lightwalletd networking APIs.
   These APIs can be useful extension points, but wallet-feature APIs in
   `sdk-lib` should not leak raw network or unsafe representations when they can
   expose validated SDK-domain models instead.
+- `sdk-incubator-lib` is the existing Android incubator surface for public but
+  unstable APIs. It may be used as a compatibility mechanism, but should not be
+  treated as the only long-term pattern for experimental SDK features.
 - Demo, benchmark, and test modules are not public SDK feature surfaces.
+
+Incubation and feature selection are separate concerns.
+
+Incubation describes API lifecycle and stability: an API is public enough to try,
+but its shape may change. Feature selection describes explicit consumer opt-in:
+a wallet chooses whether a capability is included or enabled.
+
+Incubating APIs should require explicit consumer opt-in. Prefer platform-native
+feature or API opt-in mechanisms when they provide a clear consumer experience
+and preserve Android/iOS parity. Android may use Kotlin opt-in annotations,
+Gradle module/artifact boundaries, or Gradle feature mechanisms. The iOS SDK
+should provide an equivalent consumer-facing opt-in using Swift-native
+mechanisms, such as Swift Package products or targets today, and SwiftPM traits
+if the SDK later adopts a compatible Swift tools version.
+
+Feature selection can also apply to stable capabilities, such as optional
+dependencies, binary-size-sensitive functionality, platform-specific support,
+privacy-sensitive features, or functionality not every wallet needs.
 
 Incubation status is not a reason to expose internals. Experimental APIs still
 need clear ownership, typed models, documentation, and a migration path toward a
