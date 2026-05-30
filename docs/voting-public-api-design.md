@@ -881,17 +881,9 @@ sealed interface VotingEligibilityStatus {
 }
 ```
 
-Configuration switch models:
-
-```kotlin
-enum class VotingConfigurationSwitchKind {
-    Unchanged,
-    InitialLoad,
-    SameChainServiceUpdate,
-    NewChainOrRound,
-    ProtocolChanged
-}
-```
+`VotingConfigurationSwitchKind` is defined in the configuration section above.
+It is listed there rather than repeated here so the draft has a single canonical
+switch model.
 
 `VotingBundlePolicy` maps to `zcash_voting::BundlePolicy`. The default Android
 API should use the Rust default unless a caller explicitly opts into a different
