@@ -198,7 +198,7 @@ interface Voting {
 }
 
 @ExperimentalVotingApi
-interface AccountVoting : Closeable {
+interface AccountVoting {
     /**
      * Opens or creates local SDK voting state for an authenticated round.
      */
@@ -223,6 +223,12 @@ Important properties:
 - The app does not pass a raw wallet ID string.
 - The app does not pass a raw DB handle.
 - The app does not build `VotingNoteInfo`.
+- The app does not close account or round voting capabilities. The
+  synchronizer and SDK implementation own voting resource lifecycle.
+- Active `Flow` collections are cancelled by the collector or completed by the
+  operation. If the synchronizer stops while voting work is active, the SDK
+  publishes or throws a typed failure rather than requiring callers to repair
+  internal resources.
 
 ## Workflow Surface
 
