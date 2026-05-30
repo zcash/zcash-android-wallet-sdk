@@ -708,12 +708,7 @@ data class VotingConfigurationPlan(
     val previousFingerprint: VotingConfigurationFingerprint?,
     val newFingerprint: VotingConfigurationFingerprint,
     val configuration: VotingConfiguration,
-    val switchDecision: VotingConfigurationSwitchDecision
-)
-
-@ExperimentalVotingApi
-data class VotingConfigurationSwitchDecision(
-    val kind: VotingConfigurationSwitchKind
+    val switchKind: VotingConfigurationSwitchKind
 )
 
 @ExperimentalVotingApi
@@ -764,8 +759,8 @@ local invalidation.
 itself. It authenticates the config, compares it with SDK-managed local config
 state, and returns a semantic switch plan. `applyConfigurationPlan` persists the
 new current configuration and performs SDK-owned state reconciliation in one
-serialized operation. The app may render `plan.switchDecision.kind` for user
-context, but it must not classify changed config fields, delete SDK recovery
+serialized operation. The app may render `plan.switchKind` for user context,
+but it must not classify changed config fields, delete SDK recovery
 rows, reset private tree clients, clear pending signatures, or rewrite server
 state itself.
 
