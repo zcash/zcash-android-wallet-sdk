@@ -200,7 +200,8 @@ interface Voting {
 @ExperimentalVotingApi
 interface AccountVoting {
     /**
-     * Opens or creates local SDK voting state for an authenticated round.
+     * Returns a workflow handle for an authenticated round. State
+     * reconciliation happens in refresh, prepare, submitVotes, or resume.
      */
     fun round(round: AuthenticatedVotingRound): VotingRoundWorkflow
 
@@ -229,6 +230,17 @@ Important properties:
   operation. If the synchronizer stops while voting work is active, the SDK
   publishes or throws a typed failure rather than requiring callers to repair
   internal resources.
+
+Workflow identity:
+
+- A round workflow is identified by synchronizer instance, `AccountUuid`, and
+  `VotingRoundId`.
+- Multiple calls for the same identity may return the same object or separate
+  lightweight handles, but all returned handles must observe the same durable
+  SDK workflow state.
+- A `StateFlow` collector from an earlier handle must continue receiving state
+  changes caused by later calls for the same identity. The implementation must
+  not create disconnected state sources for the same account and round.
 
 ## Workflow Surface
 
