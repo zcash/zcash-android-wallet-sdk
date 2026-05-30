@@ -582,6 +582,8 @@ USB/Bluetooth device flow, or any other external signer. The SDK must persist
 the pending request before invoking the port, including enough identity to
 reject signatures for the wrong round, account, bundle, action, sighash,
 randomizer, or seed fingerprint.
+Once the SDK invokes `signDelegation`, the workflow must already be durably
+recoverable as `AwaitingExternalSignature`.
 
 `VotingSoftwareKeyProvider` is an optional convenience adapter, not the core API
 shape. If the Android SDK provides a software-wallet implementation, it should
@@ -590,9 +592,16 @@ pass only the signature to `zcash_voting`.
 
 Cancellation and process death rules:
 
-- If `signDelegation` is cancelled or the app process dies, the SDK keeps the
-  workflow in `AwaitingExternalSignature` with the pending request durably
-  recoverable.
+- Kotlin coroutine cancellation remains cancellation and must not be wrapped as
+  `VotingException.SigningDeclined`.
+- `VotingException.SigningDeclined` means the signing authority completed
+  without a signature because the user or wallet declined signing, for example
+  by dismissing hardware-device UI.
+- If `SigningDeclined` is thrown, the SDK has already persisted the pending
+  signing request and the workflow is safe to resume from
+  `AwaitingExternalSignature`.
+- If the app process dies while signing is in progress, `refresh` or `resume`
+  must recover the same pending signing request.
 - `refresh` or `resume` reissues the same logical signing request through the
   signing authority when the caller resumes the workflow.
 - Duplicate signatures and signatures for a different pending request are
@@ -955,7 +964,7 @@ sealed class VotingException(
     class Ineligible(...) : VotingException(...)
     class InvalidRoundState(...) : VotingException(...)
     class InvalidSignature(...) : VotingException(...)
-    class HardwareSigningCancelled(...) : VotingException(...)
+    class SigningDeclined(...) : VotingException(...)
     class Transport(...) : VotingException(...)
     class Storage(...) : VotingException(...)
     class Backend(...) : VotingException(...)
