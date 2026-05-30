@@ -127,9 +127,24 @@ unrelated internals. For example, `Synchronizer` may expose a capability for a
 wallet-scoped feature, while that capability may expose account-scoped objects
 for operations that depend on `AccountUuid`.
 
+Capabilities are also security boundaries. IO, storage, network transport,
+hardware signing, and secret access should be represented by explicit capability
+interfaces instead of hidden global dependencies or ad hoc callbacks. A reviewer
+should be able to inspect the public capability and the SDK-internal function or
+constructor signatures that implement it, and understand what authority the code
+has: what it can read, what it can write, what it can send over the network, and
+what secrets or signing authority it can request.
+
 Good capability APIs:
 
 - make the starting point obvious;
+- make authority visible in function and constructor signatures;
+- keep IO behind explicit interfaces owned by the public capability or passed to
+  the SDK-internal logic that needs them;
+- keep network transport, general storage, signing, and secret access as separate
+  authorities;
+- avoid giving transport or general storage capabilities access to spending keys
+  or signing authority;
 - avoid factory methods that imply a new independent backend when the feature is
   actually wallet-scoped;
 - bind wallet and account context once instead of passing raw IDs repeatedly;
@@ -138,7 +153,9 @@ Good capability APIs:
 
 Avoid APIs where callers manually assemble backend dependencies, open private
 databases, pass around handles, or call implementation steps in an undocumented
-order.
+order. These APIs obscure the authority being granted to the code and make it
+harder to audit which operations can perform IO, access secrets, or cross trust
+boundaries.
 
 ## State Machines And Workflows
 
