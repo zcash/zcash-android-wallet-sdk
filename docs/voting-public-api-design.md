@@ -2,8 +2,9 @@
 
 Status: draft
 
-Rust API reference for this pass: `valargroup/zcash_voting@7cef18b`.
-Consumer integration reference for this pass:
+Rust API reference for this pass: `valargroup/zcash_voting@6d238ff7`.
+Consumer integration reference for this pass, used as implementation context
+but not as a normative Android API shape:
 `valargroup/vizor-wallet@9f6e273f`.
 
 This document proposes the Android SDK public API shape for shielded voting.
@@ -51,9 +52,9 @@ should treat these as the source of truth where FFI coverage exists:
 
 - `round::VotingDb` owns voting sidecar policy, round initialization, round
   state loading, bundle validation, and policy-aware bundle planning.
-- `selection`, `witness`, `precompute`, and `pir` own snapshot note selection,
-  witness generation, vote-tree sync, VAN witness derivation, PIR endpoint
-  selection, and delegation PIR precompute helpers.
+- `selection`, `witness`, `precompute`, `pir`, and `tree_sync` own snapshot
+  note selection, witness generation, vote-tree sync, VAN witness derivation,
+  PIR endpoint selection, and delegation PIR precompute helpers.
 - `delegate::PreparedDelegationBundle` owns the prepared delegation lifecycle:
   precompute, PCZT setup, proof generation, signing request construction,
   Keystone request construction, and submission assembly.
@@ -78,9 +79,15 @@ should treat these as the source of truth where FFI coverage exists:
   recovery snapshot reporting.
 - `phases::{DelegationPhase, VotePhase, SharePhase, WorkflowPhase}` owns stable
   persisted-artifact phase vocabulary for FFI and SDK state derivation.
-- `wire::{DelegationSubmissionWire, VoteCommitmentWire, VoteShareWire,
-  RoundRecoveryStateView, RoundPlanView}` owns cross-language schema DTOs for
-  protocol field names and FFI-safe recovery views, while crate-owned codec
+- `wire` owns cross-language schema DTOs for protocol field names, FFI-safe
+  recovery views, and wallet-facing view models such as
+  `VotingRoundParams`, `VotingNoteSelectionResultView`,
+  `BundleSetupResultView`, `DelegationPirPrecomputeResultView`,
+  `SignedDelegationPayloadView`, `KeystoneDelegationRequestView`,
+  `KeystoneSignatureRecordView`, `DraftVoteView`, `VanWitnessView`,
+  `SignedVoteCommitmentsView`, `VoteRecordView`, `DelegationSubmissionWire`,
+  `VoteCommitmentWire`, `VoteShareWire`, `ShareSubmissionPlanView`,
+  `RoundRecoveryStateView`, and `RoundPlanView`, while crate-owned codec
   helpers own conversion, serialization, byte encoding, and JSON-safe integer
   bounds.
 
@@ -100,6 +107,15 @@ Rules:
   equivalent `zcash_voting` module. Until they do, Kotlin may own them behind
   this SDK API, with the same rule: apps must not parse, authenticate, diff, or
   invalidate voting config state themselves.
+- Configuration parsing includes proposal and option extraction, fallback field
+  handling for evolving config JSON, labels, option counts, and proposal ID
+  validation. Treat these as SDK-owned rules, not app UI helpers.
+- Share scheduling, last-moment behavior, single-share fallback, retry timing,
+  and share-tracking readiness should converge on Rust-owned
+  `share_policy` / `share_tracking` behavior. If Kotlin temporarily owns any
+  share timing policy during the first Android implementation, keep it behind
+  the SDK workflow boundary, document it as a migration step, and add parity
+  tests against the Rust target.
 - Direct Rust consumers, Android SDK consumers, and future SDKs should converge
   on the same high-level behavior. Divergence is acceptable only when it is
   documented as a temporary migration step.
@@ -354,15 +370,33 @@ one or more `NextStep`s, then refresh the public snapshot from
 `share_policy`, `share`, and `share_tracking` APIs for retry timing, target
 selection, and durable confirmation state.
 
+`session::resume_plan` should be the primary Rust planner input for deciding
+what work the SDK performs next. `recovery::round_snapshot` supplies durable
+artifact details needed to build `VotingWorkflowSnapshot` and diagnostics. If
+the Android SDK must combine both, that mapping stays internal and must not
+become app-visible planner logic.
+
 `refresh` is a `suspend` method because it performs one bounded reconciliation
 and returns one snapshot. `prepare`, `submitVotes`, `resume`, and `trackShares`
 return `Flow` because they can perform long-running proof, network, retry, or
 recovery work and need to stream progress and state changes.
 
+Long-running `Flow` methods are foreground workflow operations on Android.
+Cancelling collection cancels the in-flight coroutine work, but any durable
+state already written by the SDK remains recoverable. The SDK does not continue
+submission after the app leaves the voting screen; callers should use `refresh`
+or `resume` when the user returns.
+
 ## App Integration Model
 
 The app owns UI, consent, hardware interaction, and transport wiring. The SDK
 owns voting decisions.
+
+Pre-confirmation ballot drafts are app-owned UI state. Durable ballot intent
+starts when the user submits or resumes a submission: the SDK persists the
+intent before irreversible vote work and uses it as recovery input for
+`session::resume_plan`. Apps should not maintain a second durable recovery model
+that competes with SDK ballot intent.
 
 Example:
 
@@ -743,6 +777,7 @@ interface VotingConfigTransport {
 @ExperimentalVotingApi
 interface VotingTransport {
     suspend fun fetchDelegationPirPrecompute(
+        endpoint: VotingPirEndpoint,
         request: VotingDelegationPirRequest
     ): VotingDelegationPirResponse
 
@@ -784,8 +819,8 @@ privacy routing.
 
 Transport method names should describe the IO being performed, not the workflow
 step that needs the IO. For example, `fetchDelegationPirPrecompute` is a remote
-request for PIR precompute data; proof generation and local precompute state
-remain SDK/Rust workflow responsibilities.
+request to the selected PIR endpoint for PIR precompute data; proof generation
+and local precompute state remain SDK/Rust workflow responsibilities.
 
 The transport must not expose the app to internal workflow calls like
 `storeVanPosition` or `markShareConfirmed`. It returns typed protocol responses
@@ -795,6 +830,13 @@ Request payloads should be shaped through the Rust-owned wire schema and codec
 boundary where possible. The Android SDK should not duplicate delegation
 submission, vote commitment, helper-share, recovery snapshot, or share-planning
 field names, base64 shaping, or JSON-safe integer checks.
+
+Android JNI cannot scan `zcash_voting::wire` directly the way FRB consumers can.
+Prefer Rust-owned serialization or conversion across the JNI boundary for
+protocol wire payloads and recovery view DTOs, such as canonical JSON strings or
+byte payloads generated by `zcash_voting` wire/codec helpers. If the Android
+adapter uses hand-matched JNI carriers, add golden parity tests against Rust
+wire serialization so Kotlin does not become the owner of protocol field names.
 
 ## Configuration And Round Authentication
 
@@ -880,6 +922,11 @@ serialized operation. The app may render `plan.switchKind` for user context,
 but it must not classify changed config fields, delete SDK recovery
 rows, reset private tree clients, clear pending signatures, or rewrite server
 state itself.
+
+Applying a stale or replayed plan must be serialized against the current SDK
+configuration state. It should fail with `VotingException.ConfigurationPlanConflict`
+unless the plan is already current and can be treated as an idempotent no-op.
+The chosen idempotency rule must be documented and tested.
 
 The Android API should expose a semantic switch model instead of field-by-field
 invalidation reasons:
@@ -1226,6 +1273,9 @@ Initial design:
   or invalidates SDK-managed recovery state for the scoped round, but it should
   not be described as secure overwrite. Submitted on-chain transactions and
   helper-server state cannot be deleted by local cleanup.
+- After `clearRound`, a later `round(...)`, `refresh`, `prepare`, or
+  `submitVotes` call for the same account and round starts from clean local SDK
+  voting state, subject to externally observable on-chain or helper-server facts.
 - Process-local resets are separate from durable cleanup. Resetting proof
   builders, cached PCZTs, or vote-tree sync clients must not delete durable
   recovery rows unless the caller explicitly requested `clearRound`.
@@ -1282,18 +1332,22 @@ failures, not as caller instructions to repair internal tables.
 - Move prepare workflow below the SDK boundary.
 - Move submit/resume workflow below the SDK boundary.
 - Move share tracking below the SDK boundary.
+- Isolate any temporary Kotlin-owned share timing policy behind the SDK workflow
+  boundary until equivalent Rust `share_policy` / `share_tracking` behavior is
+  available.
 - Delegate sidecar opening, round setup, bundle planning, note selection,
   witness generation, PIR precompute, delegation lifecycle, vote batching,
   share recovery, canonical wire schema/codec behavior, phase recovery,
   recovery snapshots, and resume planning to `zcash_voting` modules such as
   `round`, `selection`, `precompute`, `delegate`, `vote`, `share`,
-  `share_policy`, `share_tracking`, `wire`, `phases`, `recovery`, and
-  `session`, using `TypesafeVotingBackendImpl` only as a compatibility adapter
-  where needed.
+  `share_policy`, `share_tracking`, `tree_sync`, `wire`, `phases`, `recovery`,
+  and `session`, using `TypesafeVotingBackendImpl` only as a compatibility
+  adapter where needed.
 - Keep JNI models internal.
 - Wrap backend failures in `VotingException`.
-- Add JNI descriptor, callback, native-link smoke, storage atomicity, and
-  recovery-state tests for adapter behavior the public workflow depends on.
+- Add JNI descriptor, callback, native-link smoke, wire DTO parity,
+  `WorkflowPhase` string parity, storage atomicity, and recovery-state tests for
+  adapter behavior the public workflow depends on.
 
 ### Layer 4: Convenience integrations
 
@@ -1318,6 +1372,7 @@ Before the API PR is review-ready, add:
 - A state-machine diagram in SDK docs.
 - A software-wallet integration guide.
 - A hardware-wallet integration guide.
+- A proving-cache warm-up guide covering `warmProvingCaches()`.
 - A transport implementation guide.
 - A configuration source, switch-plan, and invalidation guide.
 - A recovery/resume guide.
@@ -1338,6 +1393,7 @@ Before the API PR is review-ready, add:
 - Software and hardware signing work through typed SDK signing requests and
   validated signatures, including process death and duplicate/wrong-signature
   recovery.
+- Wallet integrations know when and why to call `warmProvingCaches()`.
 - Scoped hotkey material is generated or derived by the SDK, stored as secret
   per-account/per-round material, and never exposed as root wallet seed.
 - Recovery/resume is driven by SDK state and `zcash_voting` recovery/session
