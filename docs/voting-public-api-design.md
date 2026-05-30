@@ -744,12 +744,15 @@ data class AuthenticatedVotingRound(
     val encryptionAuthorityPublicKey: VotingEncryptionAuthorityPublicKey,
     val noteCommitmentRoot: VotingNoteCommitmentRoot,
     val nullifierImtRoot: VotingNullifierImtRoot,
-    val rawSession: VotingSessionMetadata
+    val session: VotingSessionMetadata
 )
 ```
 
 `VotingConfigurationSwitchKind.Unchanged` means the authenticated configuration
 can become current without clearing or rewriting local voting workflow state.
+`AuthenticatedVotingRound.session` is authenticated, parsed SDK-domain metadata
+for the round. Raw static or dynamic config bytes do not cross this model
+boundary.
 
 Apps may choose a config source. They should not reimplement hash pinning,
 signature verification, version checks, round authentication, config-diffing, or
