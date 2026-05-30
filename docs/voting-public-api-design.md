@@ -2,6 +2,8 @@
 
 Status: draft
 
+Rust API reference for this pass: `valargroup/zcash_voting@e5977004`.
+
 This document proposes the Android SDK public API shape for shielded voting.
 It applies the principles in `public-api-design-principles.md` to a
 concrete API surface, state machine, transport boundary, and migration plan.
@@ -11,7 +13,7 @@ not a public wrapper around `VotingRustBackend` or `TypesafeVotingBackend`.
 Zodl currently owns much of the workflow in app code. This design moves that
 business logic below the app boundary so a third-party wallet can integrate by
 rendering SDK state, asking for user authorization, and providing transport or
-hardware-signing ports.
+signing ports.
 
 ## Goals
 
@@ -22,11 +24,9 @@ hardware-signing ports.
 - Represent the voting state machine in public SDK types.
 - Keep network transport replaceable without moving workflow logic into apps.
 - Treat hardware signing as a first-class workflow path.
-- Keep the first API experimental while the protocol and Rust layer continue to
-  evolve.
-- Treat `zcash_voting` as the intended source of truth for reusable voting
-  workflow, recovery, retry, timing, and planning rules as those APIs become
-  available.
+- Keep the first API experimental.
+- Use `zcash_voting` as the source of truth for reusable voting workflow,
+  recovery, retry, timing, and planning rules.
 - Update Zodl to use only the public SDK API.
 
 ## Non-Goals
@@ -39,26 +39,63 @@ hardware-signing ports.
   protocol. Public names should say "voting" or "shielded voting", not generic
   "governance", except where mirroring an existing upstream term internally.
 
-## Rust Ownership During The Refactor
+## Rust Ownership
 
-The Android public API should be designed for the target architecture, not only
-for the current transitional implementation.
+The Android public API should be designed as a wallet-facing SDK facade over the
+`zcash_voting` API, not as a public wrapper around Android JNI methods.
 
-The Android SDK may temporarily orchestrate pieces that are still becoming common
-Rust APIs, but the public API should assume that protocol workflow rules
-continue to move into `zcash_voting`.
+The `zcash_voting` API owns a large part of the voting workflow. The Android SDK
+should treat these as the source of truth where FFI coverage exists:
+
+- `round::VotingDb` owns voting sidecar policy, round initialization, round
+  state loading, bundle validation, and policy-aware bundle planning.
+- `selection`, `witness`, `precompute`, and `pir` own snapshot note selection,
+  witness generation, vote-tree sync, VAN witness derivation, PIR endpoint
+  selection, and delegation PIR precompute helpers.
+- `delegate::PreparedDelegationBundle` owns the prepared delegation lifecycle:
+  precompute, PCZT setup, proof generation, signing request construction,
+  Keystone request construction, and submission assembly.
+- `delegate::DelegationSigningRequest` and `DelegationSigner::signature` define
+  the seedless delegation boundary. Wallet seed material stays in the wallet or
+  Android SDK signing capability; Rust receives only the externally produced
+  SpendAuth signature and sighash.
+- `hotkey::{voting_hotkey_from_seed, generate_random_voting_hotkey}` and
+  `VotingHotkey` own typed voting hotkey reconstruction. Wallets still decide
+  where scoped hotkey seed material is stored.
+- `vote::{CommittedVote, SignedVoteCommitment, SignedVoteCommitments,
+  commit_batch, recover_signed_commitments}` owns the cast-vote lifecycle,
+  signed vote aggregate shape, batch commit flow, and persisted recovery
+  reconstruction.
+- `share`, `share::policy`, and `share_tracking` own helper-share payload
+  recovery, nullifier derivation, submission scheduling, retry ordering, and
+  share tracking summaries.
+- `session::{resume_plan, Decision, NextStep, RoundPlan}` owns durable ballot
+  intent and the round-level resume planner.
+- `recovery::{round_snapshot, recoverable_commitment_bundle, clear}` owns typed
+  recovery snapshot reporting.
+- `phases::{DelegationPhase, VotePhase, SharePhase, WorkflowPhase}` owns stable
+  persisted-artifact phase vocabulary for FFI and SDK state derivation.
+- `wire::{DelegationSubmissionWire, VoteCommitmentWire, VoteShareWire}` owns the
+  cross-language schema DTOs for protocol field names, while crate-owned codec
+  helpers own conversion, serialization, byte encoding, and JSON-safe integer
+  bounds.
 
 Rules:
 
-- Prefer Rust-owned implementations for workflow transitions, recovery planning,
-  helper-share retry timing, PIR snapshot selection, note-bundle planning,
-  configuration switch planning, and protocol validation.
-- If Kotlin temporarily owns or mirrors one of those rules, document the
-  upstream Rust target, keep the logic behind the public SDK workflow boundary,
-  and add parity tests or fixture tests that catch drift.
-- Do not expose transitional Kotlin orchestration as public API. Apps should see
+- Prefer Rust-owned implementations for sidecar policy, round setup, bundle
+  planning, note selection, witness and PIR precompute, delegation lifecycle,
+  signing-request shaping, vote commit/recovery, share policy, wire schema and
+  codec behavior, recovery snapshots, and resume planning.
+- If Kotlin owns or mirrors one of those rules, document the Rust target, keep
+  the logic behind the public SDK workflow boundary, and add parity tests or
+  fixture tests that catch drift.
+- Do not expose Android-local Kotlin orchestration as public API. Apps should see
   stable workflow capabilities and typed state, regardless of whether the first
   implementation is Rust-owned, Kotlin-owned, or split across both.
+- Configuration parsing, authentication, and switch planning do not yet have an
+  equivalent `zcash_voting` module. Until they do, Kotlin may own them behind
+  this SDK API, with the same rule: apps must not parse, authenticate, diff, or
+  invalidate voting config state themselves.
 - Direct Rust consumers, Android SDK consumers, and future SDKs should converge
   on the same high-level behavior. Divergence is acceptable only when it is
   documented as a temporary migration step.
@@ -190,8 +227,8 @@ Important properties:
 ## Workflow Surface
 
 `VotingRoundWorkflow` is the primary product API. It owns preparation,
-submission, recovery, share tracking, and hardware-signing transitions for one
-account in one authenticated round.
+submission, recovery, share tracking, and signing transitions for one account in
+one authenticated round.
 
 ```kotlin
 @ExperimentalVotingApi
@@ -259,6 +296,15 @@ This API intentionally does not expose operations named like
 `recordShareDelegation`. Those are implementation and recovery details of the
 workflow.
 
+Implementation should be driven by Rust workflow primitives rather than
+Android-local phase reconstruction. `prepare` should use Rust-owned round,
+selection, bundle, witness, and prepared-delegation APIs. `submitVotes` and
+`resume` should record ballot intent, consult `session::resume_plan`, execute
+one or more `NextStep`s, then refresh the public snapshot from
+`recovery::round_snapshot` and phase APIs. `trackShares` should use
+`share::policy` and `share` APIs for retry timing, target selection, and durable
+confirmation state.
+
 ## App Integration Model
 
 The app owns UI, consent, hardware interaction, and transport wiring. The SDK
@@ -273,7 +319,7 @@ suspend fun submitFromWallet(
     accountUuid: AccountUuid,
     configTransport: VotingConfigTransport,
     votingTransport: VotingTransport,
-    signer: VotingSigner,
+    signingAuthority: VotingSigningAuthority,
     choices: VotingBallot
 ) {
     val configurationPlan =
@@ -289,7 +335,7 @@ suspend fun submitFromWallet(
     workflow.submitVotes(
         request = SubmitVotesRequest(
             ballot = choices,
-            signer = signer
+            signingAuthority = signingAuthority
         ),
         transport = votingTransport
     ).collect { event ->
@@ -311,8 +357,8 @@ directly. If the SDK needs those steps, it performs them as part of
 
 The public workflow state must be documented and testable. This target state
 machine describes one account's local workflow for one authenticated round. It
-is the SDK's public contract; it is not a direct export of the current Rust,
-JNI, app recovery, or share-tracking states.
+is the SDK's public contract; it is not a direct export of Rust, JNI, app
+recovery, or share-tracking states.
 
 Round lifecycle is separate from account workflow state. Round status remains
 available through `AuthenticatedVotingRound.status` so the app can distinguish
@@ -338,8 +384,8 @@ stateDiagram-v2
     Preparing --> ReadyForBallot: bundles, witnesses, and hotkey ready
     Preparing --> Ineligible: no eligible bundles
 
-    ReadyForBallot --> AwaitingExternalSignature: submitVotes with external signer
-    ReadyForBallot --> SubmittingDelegation: submitVotes with software signer
+    ReadyForBallot --> AwaitingExternalSignature: submitVotes needs signature
+    ReadyForBallot --> SubmittingDelegation: signature available
     AwaitingExternalSignature --> SubmittingDelegation: signature returned
     SubmittingDelegation --> DelegationSubmitted: tx accepted and confirmed
 
@@ -413,6 +459,13 @@ sealed interface VotingWorkflowPhase {
 machine vocabulary for local account progress, not a mirror of internal storage
 rows or round lifecycle status.
 
+`zcash_voting::phases::WorkflowPhase` is an input to this state machine, not the
+entire Android public state machine. Rust owns the stable per-artifact phase
+derivation for delegation, vote, and share rows. The Android SDK maps those
+artifact phases, wallet sync state, round status, remote confirmations, and
+pending signing requests into the richer app-readable `VotingWorkflowPhase`
+values above.
+
 ## Events And Progress
 
 Long-running methods return `Flow<VotingWorkflowEvent>` so UI can react without
@@ -459,63 +512,77 @@ sealed interface VotingUserAction {
 }
 ```
 
-`UserActionRequired` represents app-owned UI consent. Hardware-device work is
-modeled through `VotingHardwareSigner.sign(...)`, not as a second public action
-channel, so there is one path for PCZT signing and signature validation.
+`UserActionRequired` represents app-owned UI consent. Signing work is modeled
+through explicit signing capabilities, not as transport behavior or hidden app
+callbacks.
 
 ## Signing Model
 
-Voting submission needs a signing authority. The SDK asks this authority for
-software or hardware signatures at the correct workflow points.
+Voting submission needs signing and hotkey authorities. The SDK asks these
+authorities for the minimum material required at each workflow point.
+
+This mirrors the `zcash_voting` signing boundary: Rust no longer accepts wallet
+seed material for delegation signing. It constructs a
+`DelegationSigningRequest`, the wallet or SDK-local signer produces a SpendAuth
+signature over the requested sighash, and Rust receives only the signature plus
+the sighash. Voting hotkeys follow the same principle: the wallet boundary owns
+scoped hotkey seed storage, while Rust reconstructs a typed `VotingHotkey` from
+that scoped seed or generates a random app-owned hotkey for hardware flows.
 
 ```kotlin
 @ExperimentalVotingApi
-sealed interface VotingSigner {
+interface VotingSigningAuthority {
     /**
-     * Software wallet flow. The SDK owns PCZT construction and validates that
-     * the key material matches the account and round.
+     * Loads or creates scoped voting hotkey material for this account and
+     * round. Root wallet seed material must not cross this boundary.
      */
-    data class Software(
-        val spendingKey: UnifiedSpendingKey,
-        val hotkeyStore: VotingHotkeyStore
-    ) : VotingSigner
+    suspend fun votingHotkey(scope: VotingHotkeyScope): VotingHotkeySeed
 
     /**
-     * Hardware wallet flow. The SDK prepares typed signing requests, persists
-     * enough pending-signature state to resume, calls [signer], and validates
-     * returned signatures. The app owns device UI and transfer.
+     * Produces the SpendAuth signature requested by the SDK for delegation.
+     * Implementations may use local software keys, a hardware signer, or any
+     * wallet-owned signing service.
      */
-    data class Hardware(
-        val fullViewingKey: UnifiedFullViewingKey,
-        val hotkeyStore: VotingHotkeyStore,
-        val signer: VotingHardwareSigner
-    ) : VotingSigner
+    suspend fun signDelegation(
+        request: VotingDelegationSigningRequest
+    ): VotingDelegationSignature
 }
 
 @ExperimentalVotingApi
-interface VotingHardwareSigner {
-    suspend fun sign(request: VotingPcztSigningRequest): VotingHardwareSignature
+interface VotingSoftwareKeyProvider {
+    /**
+     * Optional SDK convenience boundary for wallets that want the Android SDK
+     * to implement [VotingSigningAuthority] locally.
+     */
+    suspend fun unifiedSpendingKey(accountUuid: AccountUuid): UnifiedSpendingKey
 }
 ```
 
-`VotingHardwareSigner.sign` is the single public hardware-signing port. A wallet
-can implement it with a QR/UR flow, USB/Bluetooth device flow, or any other
-external signer. The SDK must persist the pending request before invoking the
-port, including enough identity to reject signatures for the wrong round,
-account, bundle, action, sighash, or randomized key.
+`VotingSigningAuthority.signDelegation` is the single public delegation-signing
+port. A wallet can implement it with local software keys, a QR/UR Keystone flow,
+USB/Bluetooth device flow, or any other external signer. The SDK must persist
+the pending request before invoking the port, including enough identity to
+reject signatures for the wrong round, account, bundle, action, sighash,
+randomizer, or seed fingerprint.
+
+`VotingSoftwareKeyProvider` is an optional convenience adapter, not the core API
+shape. If the Android SDK provides a software-wallet implementation, it should
+derive the account SpendAuth key locally, produce the requested signature, and
+pass only the signature to `zcash_voting`.
 
 Cancellation and process death rules:
 
-- If `sign` is cancelled or the app process dies, the SDK keeps the workflow in
-  `AwaitingExternalSignature` with the pending request durably recoverable.
+- If `signDelegation` is cancelled or the app process dies, the SDK keeps the
+  workflow in `AwaitingExternalSignature` with the pending request durably
+  recoverable.
 - `refresh` or `resume` reissues the same logical signing request through the
-  signer when the caller resumes the workflow.
+  signing authority when the caller resumes the workflow.
 - Duplicate signatures and signatures for a different pending request are
   rejected as typed workflow failures, not silently accepted or left for the app
   to classify.
 - After a signature is accepted and persisted, re-running `submitVotes` or
   `resume` must reuse the stored validated signature rather than asking the
-  hardware signer again.
+  signing authority again.
 
 `VotingHotkeyStore` is a port because the SDK may not control the wallet app's
 secure storage policy. The SDK still owns the semantics of when a hotkey is
@@ -530,8 +597,9 @@ interface VotingHotkeyStore {
 }
 ```
 
-If Rust can fully own hotkey persistence in the future, this port can become a
-default implementation detail while the public workflow API stays stable.
+If the Android SDK can safely own scoped hotkey persistence in the future, this
+port can become a default implementation detail while the public workflow API
+stays stable.
 
 ## Transport Model
 
@@ -590,6 +658,11 @@ privacy routing.
 The transport must not expose the app to internal workflow calls like
 `storeVanPosition` or `markShareConfirmed`. It returns typed protocol responses
 that the SDK validates and persists.
+
+Request payloads should be shaped through the Rust-owned wire schema and codec
+boundary where possible. The Android SDK should not duplicate delegation
+submission, vote commitment, helper-share, recovery snapshot, or share-planning
+field names, base64 shaping, or JSON-safe integer checks.
 
 ## Configuration And Round Authentication
 
@@ -678,8 +751,8 @@ context, but it must not classify changed config fields, delete SDK recovery
 rows, reset private tree clients, clear pending signatures, or rewrite server
 state itself.
 
-The Android API should mirror the `zcash_voting::config::ConfigSwitchKind`
-model instead of exposing field-by-field invalidation reasons:
+The Android API should expose a semantic switch model instead of field-by-field
+invalidation reasons:
 
 - `InitialLoad` applies when no previous authenticated configuration exists.
 - `Unchanged` applies when the authenticated configuration does not require
@@ -695,9 +768,10 @@ model instead of exposing field-by-field invalidation reasons:
   until compatibility is re-established.
 
 Static hash pinning, dynamic signature verification, supported-version checks,
-round authentication, and switch classification should be delegated to
-`zcash_voting::config` as FFI coverage becomes available. Any temporary Kotlin
-planning must be isolated behind this SDK API and covered by tests.
+round authentication, and switch classification do not yet have a shared
+`zcash_voting` module. Kotlin can own this during the first Android API release,
+but the implementation must stay isolated behind this SDK API and covered by
+tests so it can later move into Rust without changing the app-facing shape.
 
 Raw config payload rules:
 
@@ -741,6 +815,45 @@ data class VotingEligibility(
     val reason: VotingIneligibilityReason?
 )
 
+data class VotingBundlePolicy(
+    val maxRealNotesPerBundle: Int
+)
+
+data class VotingResumePlan(
+    val pendingRecovery: Boolean,
+    val nextSteps: List<VotingResumeStep>,
+    val openProposals: List<VotingProposalId>,
+    val allDecided: Boolean
+)
+
+sealed interface VotingResumeStep {
+    data class Delegate(val bundleIndex: VotingBundleIndex) : VotingResumeStep
+    data class PollDelegation(val bundleIndex: VotingBundleIndex) : VotingResumeStep
+    data class CastVote(
+        val bundleIndex: VotingBundleIndex,
+        val proposalId: VotingProposalId,
+        val choice: VotingOptionIndex
+    ) : VotingResumeStep
+    data class SubmitVote(
+        val bundleIndex: VotingBundleIndex,
+        val proposalId: VotingProposalId
+    ) : VotingResumeStep
+    data class PollVote(
+        val bundleIndex: VotingBundleIndex,
+        val proposalId: VotingProposalId
+    ) : VotingResumeStep
+    data class SubmitShares(
+        val bundleIndex: VotingBundleIndex,
+        val proposalId: VotingProposalId,
+        val shareIndex: VotingShareIndex
+    ) : VotingResumeStep
+    data class ConfirmShare(
+        val bundleIndex: VotingBundleIndex,
+        val proposalId: VotingProposalId,
+        val shareIndex: VotingShareIndex
+    ) : VotingResumeStep
+}
+
 sealed interface VotingEligibilityStatus {
     data object Unknown : VotingEligibilityStatus
     data object Eligible : VotingEligibilityStatus
@@ -764,6 +877,13 @@ enum class VotingConfigurationSwitchKind {
 }
 ```
 
+`VotingBundlePolicy` maps to `zcash_voting::BundlePolicy`. The default Android
+API should use the Rust default unless a caller explicitly opts into a different
+bundle policy. `VotingResumePlan` and `VotingResumeStep` are Android-facing
+projections of `zcash_voting::session::RoundPlan` and `NextStep`; they are
+useful for debugging and state rendering, but apps should not manually execute
+them outside `VotingRoundWorkflow`.
+
 Byte-bearing models:
 
 ```kotlin
@@ -776,8 +896,9 @@ sealed class VotingConfigPayload private constructor(...) {
     class Static private constructor(...) : VotingConfigPayload(...)
     class Dynamic private constructor(...) : VotingConfigPayload(...)
 }
-data class VotingPcztSigningRequest(...)
-data class VotingHardwareSignature(...)
+data class VotingDelegationSigningRequest(...)
+data class VotingDelegationSignature(...)
+data class VotingKeystoneSigningRequest(...)
 data class VotingShareNullifier(...)
 data class VotingDelegationArtifact(...)
 data class VotingVoteArtifact(...)
@@ -852,10 +973,10 @@ Current Zodl code should move as follows:
 | `PrepareVotingRoundUseCase`        | Moved into `VotingRoundWorkflow.prepare` and the preparatory reconciliation inside `submitVotes`.                                                                                         |
 | `SubmitVotesUseCase`               | Moved into `VotingRoundWorkflow.submitVotes` and `resume`.                                                                                                                                |
 | `TrackVotingSharesUseCase`         | Moved into `VotingRoundWorkflow.trackShares`.                                                                                                                                             |
-| `VotingRecoveryRepository`         | Replaced by SDK voting DB/Rust recovery state plus `VotingHotkeyStore` if app-managed secret storage remains necessary.                                                                   |
+| `VotingRecoveryRepository`         | Replaced by SDK voting DB/Rust recovery state plus `VotingHotkeyStore` if app-managed scoped hotkey storage remains necessary.                                                            |
 | `VotingApiProvider`                | Becomes a `VotingTransport` implementation or is replaced by SDK convenience transport.                                                                                                   |
 | `VotingConfigRepository`           | Becomes config-source selection plus `VotingConfigTransport`; parsing, authentication, config switch planning, and invalidation move into SDK.                                            |
-| Keystone PCZT use cases            | Become a `VotingHardwareSigner` implementation and UI routing. SDK owns pending request persistence, request construction, duplicate/wrong-signature detection, and signature validation. |
+| Keystone PCZT use cases            | Become a `VotingSigningAuthority` implementation and UI routing. SDK owns pending request persistence, request construction, duplicate/wrong-signature detection, and signature validation. |
 | `VotingErrors` and progress models | Replaced by `VotingWorkflowSnapshot`, `VotingWorkflowEvent`, `VotingException`, and typed failure states.                                                                                 |
 
 The app should end up with no imports from:
@@ -873,26 +994,26 @@ contract.
 
 | Internal operation                                                                                                  | Public treatment                                                                                                                   |
 | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `openVotingDb`, `close`                                                                                             | Hidden behind `Voting.forAccount` and `VotingRoundWorkflow`.                                                                       |
-| `getWalletNotes`, `VotingNoteInfoMapper`                                                                            | Hidden. SDK sources notes from the wallet DB.                                                                                      |
-| `initRound`                                                                                                         | Internal step in `round(...)`, `refresh`, or `prepare`.                                                                            |
-| `computeBundleSetup`, `setupBundles`                                                                                | Internal steps in `prepare`. Public output appears as `VotingEligibility` / `VotingPreparedBundles`.                               |
-| `generateHotkey`, `deriveHotkeyRawAddress`                                                                          | Internal steps using `VotingHotkeyStore` if secure app storage is required.                                                        |
-| `buildGovernancePczt*`                                                                                              | Internal delegation PCZT construction. Public names use `VotingDelegation*`.                                                       |
-| `extractPcztSighash`, `extractSpendAuthSig`                                                                         | Internal hardware-signing validation helpers. Only typed `VotingPcztSigningRequest` and `VotingHardwareSignature` are public.      |
-| `precomputeDelegationPir`, `buildAndProveDelegation`                                                                | Internal steps in `submitVotes`; transport only performs network IO.                                                               |
-| `getDelegationSubmission*`                                                                                          | Internal step in delegation submission.                                                                                            |
-| `storeTreeState`, `generateNoteWitnesses`, `storeWitnesses`                                                         | Internal preparation/recovery details.                                                                                             |
-| `syncVoteTree`, `generateVanWitness`, `storeVanPosition`                                                            | Internal vote-submission/recovery details.                                                                                         |
-| `buildVoteCommitment`, `signCastVote`                                                                               | Internal vote-submission steps.                                                                                                    |
-| `storeDelegationTxHash`, `storeVoteTxHash`, `markVoteSubmitted`                                                     | Internal recovery details reflected in `VotingWorkflowSnapshot`.                                                                   |
-| `storeCommitmentBundle`, `getCommitmentBundle`, `clearRecoveryState`                                                | Internal recovery details.                                                                                                         |
-| `recordShareDelegation`, `getShareDelegations`, `getUnconfirmedDelegations`, `markShareConfirmed`, `addSentServers` | Internal share-tracking state reflected in `VotingPendingShare` / `VotingWorkflowSnapshot`.                                        |
+| `openVotingDb`, `close`                                                                                             | Hidden behind `Voting.forAccount` and `VotingRoundWorkflow`; internal implementation should use `VotingDb::open_wallet_sidecar` where possible. |
+| `getWalletNotes`, `VotingNoteInfoMapper`                                                                            | Hidden. SDK sources notes from the wallet DB and maps through `zcash_voting::selection` / `NoteInfo` helpers.                      |
+| `initRound`                                                                                                         | Internal step in `round(...)`, `refresh`, or `prepare`; should use `VotingDb::ensure_round_state`.                                 |
+| `computeBundleSetup`, `setupBundles`                                                                                | Internal steps in `prepare`; should use `VotingDb::ensure_bundles*` and `BundlePolicy`. Public output appears as `VotingEligibility` / `VotingPreparedBundles`. |
+| `generateHotkey`, `deriveHotkeyRawAddress`                                                                          | Internal steps using scoped `VotingHotkeySeed` storage and `zcash_voting::hotkey` helpers.                                        |
+| `buildGovernancePczt*`                                                                                              | Internal delegation setup through `PreparedDelegationBundle::setup` / `keystone_request`. Public names use `VotingDelegation*`.    |
+| `extractPcztSighash`, `extractSpendAuthSig`                                                                         | Internal signing validation helpers. Only typed `VotingDelegationSigningRequest`, `VotingKeystoneSigningRequest`, and `VotingDelegationSignature` are public. |
+| `precomputeDelegationPir`, `buildAndProveDelegation`                                                                | Internal steps in `submitVotes`; should use `PreparedDelegationBundle::precompute` / `prove`. Transport only performs network IO.  |
+| `getDelegationSubmission*`                                                                                          | Internal step in delegation submission through `PreparedDelegationBundle::submission`; wire JSON is shaped by the `zcash_voting` wire schema/codec boundary. |
+| `storeTreeState`, `generateNoteWitnesses`, `storeWitnesses`                                                         | Internal preparation/recovery details through `precompute::note_witnesses` and `VotingDb::has_witnesses`.                         |
+| `syncVoteTree`, `generateVanWitness`, `storeVanPosition`                                                            | Internal vote-submission/recovery details through `precompute::sync_vote_tree`, `precompute::van_witness`, and delegation recovery writers. |
+| `buildVoteCommitment`, `signCastVote`                                                                               | Internal vote-submission steps through `CommittedVote::commit`, `vote::commit_batch`, and `VoteSigner::hotkey*`.                  |
+| `storeDelegationTxHash`, `storeVoteTxHash`, `markVoteSubmitted`                                                     | Internal recovery details reflected in `VotingWorkflowSnapshot`; use `delegate::record_submission`, `vote::record_submission`, and idempotent Rust recovery writers. |
+| `storeCommitmentBundle`, `getCommitmentBundle`, `clearRecoveryState`                                                | Internal recovery details through `vote::recover_commit`, `recovery::round_snapshot`, and `recovery::clear`.                     |
+| `recordShareDelegation`, `getShareDelegations`, `getUnconfirmedDelegations`, `markShareConfirmed`, `addSentServers` | Internal share-tracking state through `share::{record,list,unconfirmed,confirm,add_sent_servers}` reflected in `VotingPendingShare` / `VotingWorkflowSnapshot`. |
 | `resetTreeClient`, `resetAllTreeClients`                                                                            | Internal maintenance unless a reviewable public recovery use case emerges.                                                         |
-| pending Keystone request/signature rows                                                                             | Internal external-signing recovery state reflected in `AwaitingExternalSignature`, `VotingPcztSigningRequest`, and typed failures. |
+| pending Keystone request/signature rows                                                                             | Internal external-signing recovery state reflected in `AwaitingExternalSignature`, `VotingKeystoneSigningRequest`, and typed failures. |
 
 If an operation must be temporarily public for migration, it should be isolated
-under an explicitly named transitional interface, reviewed separately, and not
+under an explicitly named migration-only interface, reviewed separately, and not
 presented as the product API.
 
 ## Internal Adapter And Storage Requirements
@@ -926,7 +1047,7 @@ Requirements:
   operations without an explicit adapter-level method or documented contract.
 
 These are internal requirements, not public API surface. They prevent backend
-refactors from creating runtime-only failures beneath a stable public API.
+changes from creating runtime-only failures beneath a stable public API.
 
 ### Storage and confidentiality contract
 
@@ -992,17 +1113,21 @@ failures, not as caller instructions to repair internal tables.
 
 ### Layer 3: Internal SDK workflow implementation
 
-- Implement config resolution/authentication through `zcash_voting::config`
-  where available, with any temporary Kotlin adapter hidden behind the SDK API.
+- Implement config resolution/authentication in Kotlin for the first Android API
+  release, isolated behind `Voting.resolveConfiguration` and
+  `Voting.applyConfigurationPlan` until an equivalent shared Rust module exists.
 - Implement configuration switch planning as SDK-owned reconciliation driven by
-  the Rust semantic switch kind.
+  the semantic switch kind in this document.
 - Move prepare workflow below the SDK boundary.
 - Move submit/resume workflow below the SDK boundary.
 - Move share tracking below the SDK boundary.
-- Delegate cryptographic, witness, PIR precompute, phase recovery, and
-  delegation steps to stable `zcash_voting` modules such as `round`,
-  `precompute`, `delegate`, `phases`, `witness`, and `config`, using
-  `TypesafeVotingBackendImpl` only as a transitional adapter where needed.
+- Delegate sidecar opening, round setup, bundle planning, note selection,
+  witness generation, PIR precompute, delegation lifecycle, vote batching,
+  share recovery, canonical wire schema/codec behavior, phase recovery,
+  recovery snapshots, and resume planning to `zcash_voting` modules such as
+  `round`, `selection`, `precompute`, `delegate`, `vote`, `share`, `wire`,
+  `phases`, `recovery`, and `session`, using `TypesafeVotingBackendImpl` only
+  as a compatibility adapter where needed.
 - Keep JNI models internal.
 - Wrap backend failures in `VotingException`.
 - Add JNI descriptor, callback, native-link smoke, storage atomicity, and
@@ -1048,24 +1173,28 @@ Before the API PR is review-ready, add:
   state.
 - Apps can provide config transport without parsing or authenticating config
   bytes, and config changes are applied through SDK-owned plans.
-- Hardware signing works through typed SDK signing requests and validated
-  signatures, including process death and duplicate/wrong-signature recovery.
-- Recovery/resume is driven by SDK state, not app preference snapshots.
+- Software and hardware signing work through typed SDK signing requests and
+  validated signatures, including process death and duplicate/wrong-signature
+  recovery.
+- Recovery/resume is driven by SDK state and `zcash_voting` recovery/session
+  APIs, not app preference snapshots.
 - Public docs are understandable without reading Zodl, JNI, or Rust source.
 
 ## Open Design Questions
 
 These should be answered before coding the corresponding layer:
 
-- Can `zcash_voting` own hotkey persistence soon enough to avoid a public
-  `VotingHotkeyStore` port?
-- Can delegation PCZT construction be changed to use `UnifiedSpendingKey`
-  instead of raw wallet seed input at the Android boundary?
+- Should the first Android API expose `VotingHotkeyStore`, or should the SDK
+  provide the only public hotkey persistence implementation and keep scoped
+  hotkey storage entirely internal?
+- Should the first Android API expose only `VotingSigningAuthority`, or also
+  ship a convenience software signer backed by a wallet-owned
+  `UnifiedSpendingKey` provider?
 - Which transport requests should be separate methods versus a single
   `execute(VotingTransportRequest)` method?
 - Which config source should be bundled by default, and how should its pin be
   updated across SDK releases?
-- Which parts of configuration switch planning can be Rust-owned in the first
-  Android API release?
-- Which remaining workflow states should be persisted by Rust now versus Android
-  SDK storage during the transition?
+- Which parts of configuration switch planning should move into `zcash_voting`
+  after the first Android API release?
+- Which Android JNI methods can be replaced immediately by `zcash_voting` APIs,
+  and which need a compatibility adapter?
