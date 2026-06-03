@@ -17,12 +17,12 @@ android-test-fixtures = []
 
 [dependencies]
 # Zcash dependencies
-orchard = { version = "=0.13.1", features = ["unstable-voting-circuits"] }
-pczt = { version = "0.6", features = ["prover", "orchard", "sapling"] }
+orchard = { version = "=0.14.0", features = ["unstable-voting-circuits"] }
+pczt = { version = "0.7", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
-transparent = { package = "zcash_transparent", version = "0.7", default-features = false }
-zcash_address = "0.11"
-zcash_client_backend = { version = "0.22", features = [
+transparent = { package = "zcash_transparent", version = "0.8", default-features = false }
+zcash_address = "0.12"
+zcash_client_backend = { version = "0.23", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -30,11 +30,11 @@ zcash_client_backend = { version = "0.22", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.20.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.21", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
-zcash_primitives = "0.27"
-zcash_proofs = "0.27"
-zcash_protocol = "0.8"
+zcash_primitives = "0.28"
+zcash_proofs = "0.28"
+zcash_protocol = "0.9"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
@@ -94,18 +94,18 @@ xz2 = { version = "0.1", features = ["static"] }
 # The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
 # Its share-nullifier entry point forwards to
 # `zcash_voting::share_tracking::compute_share_nullifier`:
-# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.10.1/zcash_voting/src/share_tracking.rs
+# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.11.0/zcash_voting/src/share_tracking.rs
 #
 # The transitive `voting-circuits` dependency contains the share-reveal circuit
 # and the Poseidon-based `share_nullifier_hash` implementation:
-# https://github.com/valargroup/voting-circuits/blob/v0.6.0/voting-circuits/src/share_reveal/circuit.rs
+# https://github.com/valargroup/voting-circuits/blob/v0.8.0/voting-circuits/src/share_reveal/circuit.rs
 # Default features stay disabled. The `client-pir` feature is needed for
 # delegation proof precompute and proof generation. The `client-tree-sync`
 # feature is needed for vote commitment tree sync and VAN witnesses.
 # Expected PIR/tree-sync networking transitives include `pir-client`, `pir-types`,
 # `valar-ypir`, `valar-spiral-rs`, `vote-commitment-tree-client`, and
 # `hyper-rustls`.
-zcash_voting = { version = "=0.10.1", default-features = false, features = [
+zcash_voting = { version = "=0.11.0", default-features = false, features = [
     "client-pir",
     "client-tree-sync",
 ] }
