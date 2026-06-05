@@ -12,10 +12,9 @@ import kotlin.time.Instant
  */
 data class FiatCurrencyConversion(
     val timestamp: Instant,
-    val priceOfZec: Double
-) {
+    val priceOfZec: Double,
     val fiatCurrency: FiatCurrency = FiatCurrency.USD
-
+) {
     init {
         require(priceOfZec > 0) { "priceOfZec must be greater than 0" }
         require(priceOfZec.isFinite()) { "priceOfZec must be finite" }
