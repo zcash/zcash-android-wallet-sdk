@@ -1149,7 +1149,11 @@ internal suspend fun resolveWalletInitializationState(
 
     is WalletInitMode.NewWallet -> {
         WalletInitializationState(
-            treeState = downloader.fetchNewWalletTreeState(sdkFlags, newWalletTreeStateTimeout) ?: fallbackTreeState,
+            treeState =
+                downloader.fetchNewWalletTreeState(
+                    sdkFlags,
+                    newWalletTreeStateTimeout
+                ) ?: fallbackTreeState,
             recoverUntil = null
         )
     }
@@ -1189,16 +1193,18 @@ private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
     }.also {
         if (!completed) {
             Twig.warn {
-                "Chain tip tree state fetch for new wallet timed out after $timeout, falling back to bundled checkpoint"
+                "Recent tree state fetch for new wallet timed out after $timeout, falling back to bundled checkpoint"
             }
         }
     }
 }
 
-private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(sdkFlags: SdkFlags): TreeState? =
+private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
+    sdkFlags: SdkFlags
+): TreeState? =
     when (val heightResponse = getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)) {
         is Response.Success -> {
-            fetchTreeStateAtTip(heightResponse.result, sdkFlags)
+            fetchTreeStateNearTip(heightResponse.result, sdkFlags)
         }
 
         is Response.Failure -> {
@@ -1210,19 +1216,26 @@ private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(sdkFlags: Sdk
         }
     }
 
-private suspend fun CompactBlockDownloader.fetchTreeStateAtTip(
+private suspend fun CompactBlockDownloader.fetchTreeStateNearTip(
     tipHeight: BlockHeightUnsafe,
     sdkFlags: SdkFlags
-): TreeState? =
-    when (
+): TreeState? {
+    val treeStateHeight =
+        BlockHeightUnsafe(
+            tipHeight.value - CompactBlockProcessor.MAX_REORG_SIZE
+        )
+
+    return when (
         val treeStateResponse =
             getTreeState(
-                height = tipHeight,
+                height = treeStateHeight,
                 serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
             )
     ) {
         is Response.Success -> {
-            Twig.info { "New wallet: using chain tip tree state at height ${tipHeight.value}" }
+            Twig.info {
+                "New wallet: using reorg-safe tree state at height ${treeStateHeight.value}, tip ${tipHeight.value}"
+            }
             TreeState.new(treeStateResponse.result)
         }
 
@@ -1234,3 +1247,4 @@ private suspend fun CompactBlockDownloader.fetchTreeStateAtTip(
             null
         }
     }
+}

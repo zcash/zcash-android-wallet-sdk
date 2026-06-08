@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk
 
+import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor
 import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.TreeState
@@ -29,34 +30,35 @@ import kotlin.time.Duration.Companion.milliseconds
 
 class SynchronizerWalletInitializationTest {
     @Test
-    fun new_wallet_uses_chain_tip_tree_state_when_fetches_succeed() =
+    fun new_wallet_uses_reorg_safe_tree_state_when_fetches_succeed() =
         runBlocking {
             val tipHeight = BlockHeightUnsafe(2_000_000)
-            val chainTipTreeState = treeStateUnsafe(height = tipHeight.value)
+            val treeStateHeight = BlockHeightUnsafe(tipHeight.value - CompactBlockProcessor.MAX_REORG_SIZE)
+            val recentTreeState = treeStateUnsafe(height = treeStateHeight.value)
             val walletClient =
                 FakeCombinedWalletClient(
                     latestBlockHeightResponse = Response.Success(tipHeight),
-                    treeStateResponse = Response.Success(chainTipTreeState)
+                    treeStateResponse = Response.Success(recentTreeState)
                 )
 
             val result =
                 resolveWalletInitializationState(
                     downloader = downloader(walletClient),
-                    fallbackTreeState = treeState(height = 1_000_000),
+                    fallbackTreeState = treeState(height = fallbackTreeStateHeight.value),
                     sdkFlags = sdkFlags,
                     walletInitMode = WalletInitMode.NewWallet
                 )
 
-            assertTrue(chainTipTreeState.encoded.contentEquals(result.treeState.encoded))
+            assertTrue(recentTreeState.encoded.contentEquals(result.treeState.encoded))
             assertEquals(null, result.recoverUntil)
             assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
-            assertEquals(listOf(TreeStateRequest(tipHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
+            assertEquals(listOf(TreeStateRequest(treeStateHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
         }
 
     @Test
     fun new_wallet_falls_back_to_checkpoint_when_height_fetch_fails() =
         runBlocking {
-            val fallbackTreeState = treeState(height = 1_000_000)
+            val fallbackTreeState = treeState(height = fallbackTreeStateHeight.value)
             val walletClient =
                 FakeCombinedWalletClient(
                     latestBlockHeightResponse = failure(),
@@ -80,7 +82,7 @@ class SynchronizerWalletInitializationTest {
     @Test
     fun new_wallet_falls_back_to_checkpoint_when_height_fetch_times_out() =
         runBlocking {
-            val fallbackTreeState = treeState(height = 1_000_000)
+            val fallbackTreeState = treeState(height = fallbackTreeStateHeight.value)
             val neverCompletes = CompletableDeferred<Unit>()
             val walletClient =
                 FakeCombinedWalletClient(
@@ -108,7 +110,8 @@ class SynchronizerWalletInitializationTest {
     fun new_wallet_falls_back_to_checkpoint_when_tree_state_fetch_fails() =
         runBlocking {
             val tipHeight = BlockHeightUnsafe(2_000_000)
-            val fallbackTreeState = treeState(height = 1_000_000)
+            val treeStateHeight = BlockHeightUnsafe(tipHeight.value - CompactBlockProcessor.MAX_REORG_SIZE)
+            val fallbackTreeState = treeState(height = fallbackTreeStateHeight.value)
             val walletClient =
                 FakeCombinedWalletClient(
                     latestBlockHeightResponse = Response.Success(tipHeight),
@@ -126,14 +129,15 @@ class SynchronizerWalletInitializationTest {
             assertSame(fallbackTreeState, result.treeState)
             assertEquals(null, result.recoverUntil)
             assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
-            assertEquals(listOf(TreeStateRequest(tipHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
+            assertEquals(listOf(TreeStateRequest(treeStateHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
         }
 
     @Test
     fun new_wallet_falls_back_to_checkpoint_when_tree_state_fetch_times_out() =
         runBlocking {
             val tipHeight = BlockHeightUnsafe(2_000_000)
-            val fallbackTreeState = treeState(height = 1_000_000)
+            val treeStateHeight = BlockHeightUnsafe(tipHeight.value - CompactBlockProcessor.MAX_REORG_SIZE)
+            val fallbackTreeState = treeState(height = fallbackTreeStateHeight.value)
             val neverCompletes = CompletableDeferred<Unit>()
             val walletClient =
                 FakeCombinedWalletClient(
@@ -154,7 +158,7 @@ class SynchronizerWalletInitializationTest {
             assertSame(fallbackTreeState, result.treeState)
             assertEquals(null, result.recoverUntil)
             assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
-            assertEquals(listOf(TreeStateRequest(tipHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
+            assertEquals(listOf(TreeStateRequest(treeStateHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
         }
 
     private class FakeCombinedWalletClient(
@@ -244,6 +248,7 @@ class SynchronizerWalletInitializationTest {
 
     private companion object {
         val sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false)
+        val fallbackTreeStateHeight = BlockHeight(1_000_000)
 
         fun downloader(walletClient: CombinedWalletClient) =
             CompactBlockDownloader(walletClient, FakeCompactBlockRepository())
