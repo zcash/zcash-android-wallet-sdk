@@ -157,7 +157,7 @@ private fun SendMainContent(
     ) {
         Text(text = stringResource(id = R.string.send_available_balance))
         Row(Modifier.fillMaxWidth()) {
-            Text(text = accountBalance.sapling.available.toZecString())
+            Text(text = accountBalance.sapling.available.toZecString(Locale.getDefault()))
         }
 
         TextField(
@@ -256,7 +256,7 @@ private fun SendMainContent(
             onClick = {
                 val zecSendValidation =
                     ZecSendExt.new(
-                        context,
+                        Locale.getDefault(),
                         recipientAddressString,
                         amountZecString,
                         memoString,
@@ -283,7 +283,7 @@ private fun SendMainContent(
             onClick = {
                 val zecSendValidation =
                     ZecSendExt.new(
-                        context,
+                        Locale.getDefault(),
                         recipientAddressString,
                         amountZecString,
                         memoString,

@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /**
  * Demonstrates sending funds to an address. This is the most complex example that puts all of the
@@ -70,7 +71,7 @@ class SendFragment : BaseDemoFragment<FragmentSendBinding>() {
     private fun initSendUi() {
         amountInput =
             binding.inputAmount.apply {
-                setText(DemoConstants.SEND_AMOUNT.toZecString())
+                setText(DemoConstants.SEND_AMOUNT.toZecString(Locale.getDefault()))
             }
         addressInput =
             binding.inputAddress.apply {
@@ -142,8 +143,8 @@ class SendFragment : BaseDemoFragment<FragmentSendBinding>() {
         if (!isSyncing) {
             binding.textBalance.text =
                 """
-                Available balance: ${balance?.available.convertZatoshiToZecString(12)}
-                Total balance: ${balance?.total.convertZatoshiToZecString(12)}
+                Available balance: ${balance?.available.convertZatoshiToZecString(Locale.getDefault(), 12)}
+                Total balance: ${balance?.total.convertZatoshiToZecString(Locale.getDefault(), 12)}
                 """.trimIndent()
         }
     }

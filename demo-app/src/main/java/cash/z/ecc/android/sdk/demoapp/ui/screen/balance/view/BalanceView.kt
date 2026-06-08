@@ -30,6 +30,7 @@ import cash.z.ecc.android.sdk.fixture.AccountBalanceFixture
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.toZecString
 import java.math.BigDecimal
+import java.util.Locale
 
 @Preview(name = "Balance")
 @Suppress("ktlint:standard:function-naming", "MagicNumber")
@@ -122,19 +123,19 @@ private fun BalanceMainContent(
         Text(
             stringResource(
                 id = R.string.balance_available_amount_format,
-                accountBalance.orchard.available.toZecString(),
+                accountBalance.orchard.available.toZecString(Locale.getDefault()),
                 exchangeRateUsd
                     ?.multiply(accountBalance.orchard.available.convertZatoshiToZec())
-                    .toUsdString()
+                    .toUsdString(Locale.getDefault())
             )
         )
         Text(
             stringResource(
                 id = R.string.balance_pending_amount_format,
-                accountBalance.orchard.pending.toZecString(),
+                accountBalance.orchard.pending.toZecString(Locale.getDefault()),
                 exchangeRateUsd
                     ?.multiply(accountBalance.orchard.pending.convertZatoshiToZec())
-                    .toUsdString()
+                    .toUsdString(Locale.getDefault())
             )
         )
 
@@ -144,19 +145,19 @@ private fun BalanceMainContent(
         Text(
             stringResource(
                 id = R.string.balance_available_amount_format,
-                accountBalance.sapling.available.toZecString(),
+                accountBalance.sapling.available.toZecString(Locale.getDefault()),
                 exchangeRateUsd
                     ?.multiply(accountBalance.sapling.available.convertZatoshiToZec())
-                    .toUsdString()
+                    .toUsdString(Locale.getDefault())
             )
         )
         Text(
             stringResource(
                 id = R.string.balance_pending_amount_format,
-                accountBalance.sapling.pending.toZecString(),
+                accountBalance.sapling.pending.toZecString(Locale.getDefault()),
                 exchangeRateUsd
                     ?.multiply(accountBalance.sapling.pending.convertZatoshiToZec())
-                    .toUsdString()
+                    .toUsdString(Locale.getDefault())
             )
         )
 
@@ -166,10 +167,10 @@ private fun BalanceMainContent(
         Text(
             stringResource(
                 id = R.string.balance_available_amount_format,
-                accountBalance.unshielded.toZecString(),
+                accountBalance.unshielded.toZecString(Locale.getDefault()),
                 exchangeRateUsd
                     ?.multiply(accountBalance.unshielded.convertZatoshiToZec())
-                    .toUsdString()
+                    .toUsdString(Locale.getDefault())
             )
         )
 

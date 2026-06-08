@@ -213,8 +213,8 @@ internal class TypesafeBackendImpl(
     override suspend fun rewindToHeight(height: BlockHeight): RewindResult =
         RewindResult.new(backend.rewindToHeight(height.value))
 
-    override suspend fun rewindToChainState(chainState: TreeState) =
-        backend.rewindToChainState(chainState.encoded)
+    override suspend fun truncateToChainState(chainState: TreeState) =
+        backend.truncateToChainState(chainState.encoded)
 
     override suspend fun getLatestCacheHeight(): BlockHeight? =
         backend.getLatestCacheHeight()?.let {
@@ -347,7 +347,7 @@ internal class TypesafeBackendImpl(
         }
 
     override suspend fun suggestScanRanges(): List<ScanRange> =
-        backend.suggestScanRanges().map { jniScanRange ->
+        backend.suggestScanRanges().mapNotNull { jniScanRange ->
             ScanRange.new(jniScanRange)
         }
 

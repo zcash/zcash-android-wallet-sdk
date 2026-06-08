@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_UUID_BYTES_SIZE
  * @throws IllegalArgumentException if the values are inconsistent.
  */
 @Keep
+@Suppress("LongParameterList")
 class JniAccount(
     val accountName: String?,
     val accountUuid: ByteArray,

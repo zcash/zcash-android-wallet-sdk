@@ -30,7 +30,7 @@ class FakeRustBackend(
         return JniRewindResult.Success(height)
     }
 
-    override suspend fun rewindToChainState(chainState: ByteArray) =
+    override suspend fun truncateToChainState(chainState: ByteArray) =
         error("Intentionally not implemented in mocked FakeRustBackend implementation.")
 
     override suspend fun putSubtreeRoots(

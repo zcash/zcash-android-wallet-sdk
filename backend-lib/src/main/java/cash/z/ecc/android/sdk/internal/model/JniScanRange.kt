@@ -25,8 +25,9 @@ class JniScanRange(
         require(endHeight.isInUIntRange()) {
             "Height $endHeight is outside of allowed UInt range"
         }
-        require(endHeight >= startHeight) {
-            "End height $endHeight must be greater than start height $startHeight."
-        }
+        // Note: endHeight < startHeight is intentionally allowed here. The Rust layer can return
+        // empty or inverted ranges (e.g. after a resync reset), and ScanRange.new() handles this
+        // case by returning null. Rejecting such ranges at this layer would cause the crashes that
+        // MOB-1100 was intended to fix.
     }
 }

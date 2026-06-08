@@ -11,10 +11,13 @@ package cash.z.ecc.android.sdk.model
  * @param purpose Metadata describing whether or not data required for spending should be tracked by the wallet
  * @param ufvk The UFVK used to detect transactions involving the account
  * account's UFVK.
+ * @param birthday The wallet birthday height to use as the scan starting point. If null, the
+ *        current chain tip is used (appropriate for newly created accounts with no history).
  */
 data class AccountImportSetup(
     val accountName: String,
     val keySource: String?,
     val purpose: AccountPurpose,
     val ufvk: UnifiedFullViewingKey,
+    val birthday: BlockHeight? = null,
 )

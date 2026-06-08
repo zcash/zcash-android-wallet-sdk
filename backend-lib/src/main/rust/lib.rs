@@ -44,8 +44,8 @@ use zcash_client_backend::{
     data_api::{
         Account, AccountBalance, AccountBirthday, AccountPurpose, BirthdayError, InputSource,
         OutputStatusFilter, SeedRelevance, TransactionDataRequest, TransactionStatus,
-        TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
-        WalletSummary, WalletWrite, Zip32Derivation,
+        TransactionStatusFilter, TransparentKeyOrigin, TransparentOutputFilter,
+        WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite, Zip32Derivation,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
@@ -57,8 +57,8 @@ use zcash_client_backend::{
     encoding::AddressCodec,
     fees::{DustOutputPolicy, SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{
-        DecodingError, Era, ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey,
-        UnifiedSpendingKey,
+        DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
+        UnifiedFullViewingKey, UnifiedSpendingKey,
     },
     proto::{proposal::Proposal, service::TreeState},
     tor::{
@@ -100,8 +100,10 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
+mod eip681;
 mod tor;
 mod utils;
+mod voting;
 
 #[cfg(debug_assertions)]
 fn print_debug_state() {
@@ -767,7 +769,7 @@ bitflags! {
 }
 
 impl ReceiverFlags {
-    fn address_request(&self) -> Result<UnifiedAddressRequest, ()> {
+    fn address_request(&self) -> Result<UnifiedAddressRequest, ReceiverRequirementError> {
         UnifiedAddressRequest::custom(
             if self.contains(ReceiverFlags::ORCHARD) {
                 ReceiverRequirement::Require
@@ -1113,7 +1115,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
             .context("Target height not available; scan required.")?;
 
         let amount = db_data
-            .get_spendable_transparent_outputs(&taddr, target, wallet::ConfirmationsPolicy::MIN)
+            .get_spendable_transparent_outputs(
+                &taddr,
+                target,
+                wallet::ConfirmationsPolicy::MIN,
+                TransparentOutputFilter::All,
+            )
             .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))?
             .iter()
             .map(|utxo| utxo.txout().value())
@@ -1352,7 +1359,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
         let mut db_data = wallet_db(env, network, db_data)?;
 
         let height = BlockHeight::try_from(height)?;
-        let rewind_result = db_data.truncate_to_height(height);
+        let rewind_result = db_data.rewind_to_height(height);
 
         Ok(encode_rewind_result(env, height, rewind_result)?.into_raw())
     });
@@ -1369,7 +1376,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
 /// The `chain_state` parameter is a protobuf-encoded `TreeState` value representing the chain
 /// state at the height to which the database should be truncated.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToChainState<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_truncateToChainState<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -1379,7 +1386,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToC
     network_id: jint,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let _span = tracing::info_span!("RustBackend.rewindToChainState").entered();
+        let _span = tracing::info_span!("RustBackend.truncateToChainState").entered();
         let network = parse_network(network_id as u32)?;
         let mut db_data = wallet_db(env, network, db_data)?;
         let chain_state = parse_treestate(env, chain_state)?.to_chain_state()?;
@@ -2284,6 +2291,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             &from_addrs,
             account_uuid,
             confirmations_policy,
+            TransparentOutputFilter::All,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 

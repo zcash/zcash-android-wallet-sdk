@@ -32,7 +32,7 @@ class UtxoViewHolder(
         minedHeight: BlockHeight?,
         time: Long?
     ) {
-        amountText.text = amount.convertZatoshiToZecString()
+        amountText.text = amount.convertZatoshiToZecString(Locale.getDefault())
         timeText.text = minedHeight?.let {
             time?.let {
                 formatter.format(it * 1000L)
