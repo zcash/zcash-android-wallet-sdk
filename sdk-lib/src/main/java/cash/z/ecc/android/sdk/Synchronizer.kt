@@ -15,9 +15,11 @@ import cash.z.ecc.android.sdk.internal.Files
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.SaplingParamTool
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
@@ -53,6 +55,7 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
 import io.ktor.client.HttpClient
@@ -61,7 +64,10 @@ import io.ktor.client.engine.HttpClientEngineConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 @Suppress("TooManyFunctions")
 interface Synchronizer {
@@ -926,38 +932,21 @@ interface Synchronizer {
             val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
             val downloader = DefaultSynchronizerFactory.defaultDownloader(walletClient, blockStore)
 
-            val chainTip =
-                when (walletInitMode) {
-                    is RestoreWallet -> {
-                        when (
-                            val response = downloader.getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)
-                        ) {
-                            is Response.Success -> {
-                                Twig.info { "Chain tip for recovery until param fetched: ${response.result.value}" }
-                                runCatching { response.result.toBlockHeight() }.getOrNull()
-                            }
-
-                            is Response.Failure -> {
-                                Twig.error {
-                                    "Chain tip fetch for recovery until failed with: ${response.toThrowable()}"
-                                }
-                                null
-                            }
-                        }
-                    }
-
-                    else -> {
-                        null
-                    }
-                }
+            val initializationState =
+                resolveWalletInitializationState(
+                    downloader = downloader,
+                    fallbackTreeState = loadedCheckpoint.treeState(),
+                    sdkFlags = sdkFlags,
+                    walletInitMode = walletInitMode
+                )
 
             val repository =
                 DefaultSynchronizerFactory.defaultDerivedDataRepository(
                     context = applicationContext,
                     rustBackend = backend,
                     databaseFile = coordinator.dataDbFile(zcashNetwork, alias),
-                    checkpoint = loadedCheckpoint,
-                    recoverUntil = chainTip,
+                    treeState = initializationState.treeState,
+                    recoverUntil = initializationState.recoverUntil,
                     setup = setup,
                 )
 
@@ -1138,3 +1127,110 @@ private fun validateAlias(alias: String) {
             "characters and only contain letters, digits, hyphens, and underscores."
     }
 }
+
+internal data class WalletInitializationState(
+    val treeState: TreeState,
+    val recoverUntil: BlockHeight?
+)
+
+internal suspend fun resolveWalletInitializationState(
+    downloader: CompactBlockDownloader,
+    fallbackTreeState: TreeState,
+    sdkFlags: SdkFlags,
+    walletInitMode: WalletInitMode,
+    newWalletTreeStateTimeout: Duration = NEW_WALLET_TREE_STATE_FETCH_TIMEOUT
+) = when (walletInitMode) {
+    is RestoreWallet -> {
+        WalletInitializationState(
+            treeState = fallbackTreeState,
+            recoverUntil = downloader.fetchRecoverUntil(sdkFlags)
+        )
+    }
+
+    is WalletInitMode.NewWallet -> {
+        WalletInitializationState(
+            treeState = downloader.fetchNewWalletTreeState(sdkFlags, newWalletTreeStateTimeout) ?: fallbackTreeState,
+            recoverUntil = null
+        )
+    }
+
+    is WalletInitMode.ExistingWallet -> {
+        WalletInitializationState(
+            treeState = fallbackTreeState,
+            recoverUntil = null
+        )
+    }
+}
+
+private val NEW_WALLET_TREE_STATE_FETCH_TIMEOUT = 5.seconds
+
+private suspend fun CompactBlockDownloader.fetchRecoverUntil(sdkFlags: SdkFlags): BlockHeight? =
+    when (val response = getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)) {
+        is Response.Success -> {
+            Twig.info { "Chain tip for recovery until param fetched: ${response.result.value}" }
+            runCatching { response.result.toBlockHeight() }.getOrNull()
+        }
+
+        is Response.Failure -> {
+            Twig.error {
+                "Chain tip fetch for recovery until failed with: ${response.toThrowable()}"
+            }
+            null
+        }
+    }
+
+private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
+    sdkFlags: SdkFlags,
+    timeout: Duration
+): TreeState? {
+    var completed = false
+    return withTimeoutOrNull(timeout) {
+        fetchNewWalletTreeState(sdkFlags).also { completed = true }
+    }.also {
+        if (!completed) {
+            Twig.warn {
+                "Chain tip tree state fetch for new wallet timed out after $timeout, falling back to bundled checkpoint"
+            }
+        }
+    }
+}
+
+private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(sdkFlags: SdkFlags): TreeState? =
+    when (val heightResponse = getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)) {
+        is Response.Success -> {
+            fetchTreeStateAtTip(heightResponse.result, sdkFlags)
+        }
+
+        is Response.Failure -> {
+            Twig.warn {
+                "Chain tip fetch for new wallet failed with: " +
+                    "${heightResponse.toThrowable()}, falling back to bundled checkpoint"
+            }
+            null
+        }
+    }
+
+private suspend fun CompactBlockDownloader.fetchTreeStateAtTip(
+    tipHeight: BlockHeightUnsafe,
+    sdkFlags: SdkFlags
+): TreeState? =
+    when (
+        val treeStateResponse =
+            getTreeState(
+                height = tipHeight,
+                serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
+            )
+    ) {
+        is Response.Success -> {
+            Twig.info { "New wallet: using chain tip tree state at height ${tipHeight.value}" }
+            TreeState.new(treeStateResponse.result)
+        }
+
+        is Response.Failure -> {
+            Twig.warn {
+                "Tree state fetch for new wallet failed with: " +
+                    "${treeStateResponse.toThrowable()}, falling back to bundled checkpoint"
+            }
+            null
+        }
+    }

@@ -7,6 +7,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- New wallets now fetch the chain-tip tree state from the lightwalletd server, eliminating unnecessary block
+  scanning for wallets with no transaction history. Initialization falls back to the bundled checkpoint if this
+  optimization does not complete within 5 seconds.
 - `Synchronizer.broadcaster` API for creating transactions without immediate
   submission and submitting stored transactions to selected lightwalletd
   endpoints. Automatic retry uses the endpoints submitted through the

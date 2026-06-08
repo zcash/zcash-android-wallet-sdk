@@ -32,7 +32,6 @@ import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
-import cash.z.ecc.android.sdk.internal.model.Checkpoint
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
@@ -1349,7 +1348,7 @@ internal object DefaultSynchronizerFactory {
     internal suspend fun defaultDerivedDataRepository(
         context: Context,
         databaseFile: File,
-        checkpoint: Checkpoint,
+        treeState: TreeState,
         recoverUntil: BlockHeight?,
         rustBackend: TypesafeBackend,
         setup: AccountCreateSetup?,
@@ -1359,7 +1358,7 @@ internal object DefaultSynchronizerFactory {
                 context = context,
                 backend = rustBackend,
                 databaseFile = databaseFile,
-                checkpoint = checkpoint,
+                treeState = treeState,
                 recoverUntil = recoverUntil,
                 setup = setup,
             )
