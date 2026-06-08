@@ -1125,12 +1125,12 @@ private fun validateAlias(alias: String) {
     }
 }
 
-private data class WalletInitializationState(
+internal data class WalletInitializationState(
     val treeState: TreeState,
     val recoverUntil: BlockHeight?
 )
 
-private suspend fun resolveWalletInitializationState(
+internal suspend fun resolveWalletInitializationState(
     downloader: CompactBlockDownloader,
     fallbackTreeState: TreeState,
     sdkFlags: SdkFlags,
