@@ -18,12 +18,14 @@ import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 class SynchronizerWalletInitializationTest {
     @Test
@@ -76,6 +78,33 @@ class SynchronizerWalletInitializationTest {
         }
 
     @Test
+    fun new_wallet_falls_back_to_checkpoint_when_height_fetch_times_out() =
+        runBlocking {
+            val fallbackTreeState = treeState(height = 1_000_000)
+            val neverCompletes = CompletableDeferred<Unit>()
+            val walletClient =
+                FakeCombinedWalletClient(
+                    latestBlockHeightResponse = Response.Success(BlockHeightUnsafe(2_000_000)),
+                    treeStateResponse = Response.Success(treeStateUnsafe(height = 2_000_000)),
+                    beforeLatestBlockHeightResponse = { neverCompletes.await() }
+                )
+
+            val result =
+                resolveWalletInitializationState(
+                    downloader = downloader(walletClient),
+                    fallbackTreeState = fallbackTreeState,
+                    sdkFlags = sdkFlags,
+                    walletInitMode = WalletInitMode.NewWallet,
+                    newWalletTreeStateTimeout = 1.milliseconds
+                )
+
+            assertSame(fallbackTreeState, result.treeState)
+            assertEquals(null, result.recoverUntil)
+            assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
+            assertTrue(walletClient.treeStateRequests.isEmpty())
+        }
+
+    @Test
     fun new_wallet_falls_back_to_checkpoint_when_tree_state_fetch_fails() =
         runBlocking {
             val tipHeight = BlockHeightUnsafe(2_000_000)
@@ -100,15 +129,46 @@ class SynchronizerWalletInitializationTest {
             assertEquals(listOf(TreeStateRequest(tipHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
         }
 
+    @Test
+    fun new_wallet_falls_back_to_checkpoint_when_tree_state_fetch_times_out() =
+        runBlocking {
+            val tipHeight = BlockHeightUnsafe(2_000_000)
+            val fallbackTreeState = treeState(height = 1_000_000)
+            val neverCompletes = CompletableDeferred<Unit>()
+            val walletClient =
+                FakeCombinedWalletClient(
+                    latestBlockHeightResponse = Response.Success(tipHeight),
+                    treeStateResponse = Response.Success(treeStateUnsafe(height = tipHeight.value)),
+                    beforeTreeStateResponse = { neverCompletes.await() }
+                )
+
+            val result =
+                resolveWalletInitializationState(
+                    downloader = downloader(walletClient),
+                    fallbackTreeState = fallbackTreeState,
+                    sdkFlags = sdkFlags,
+                    walletInitMode = WalletInitMode.NewWallet,
+                    newWalletTreeStateTimeout = 1.milliseconds
+                )
+
+            assertSame(fallbackTreeState, result.treeState)
+            assertEquals(null, result.recoverUntil)
+            assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
+            assertEquals(listOf(TreeStateRequest(tipHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
+        }
+
     private class FakeCombinedWalletClient(
         private val latestBlockHeightResponse: Response<BlockHeightUnsafe>,
-        private val treeStateResponse: Response<TreeStateUnsafe>
+        private val treeStateResponse: Response<TreeStateUnsafe>,
+        private val beforeLatestBlockHeightResponse: suspend () -> Unit = {},
+        private val beforeTreeStateResponse: suspend () -> Unit = {}
     ) : CombinedWalletClient {
         val latestBlockHeightRequests = mutableListOf<ServiceMode>()
         val treeStateRequests = mutableListOf<TreeStateRequest>()
 
         override suspend fun getLatestBlockHeight(serviceMode: ServiceMode): Response<BlockHeightUnsafe> {
             latestBlockHeightRequests += serviceMode
+            beforeLatestBlockHeightResponse()
             return latestBlockHeightResponse
         }
 
@@ -117,6 +177,7 @@ class SynchronizerWalletInitializationTest {
             serviceMode: ServiceMode
         ): Response<TreeStateUnsafe> {
             treeStateRequests += TreeStateRequest(height, serviceMode)
+            beforeTreeStateResponse()
             return treeStateResponse
         }
 

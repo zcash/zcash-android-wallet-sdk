@@ -64,7 +64,10 @@ import io.ktor.client.engine.HttpClientEngineConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 @Suppress("TooManyFunctions")
 interface Synchronizer {
@@ -1134,7 +1137,8 @@ internal suspend fun resolveWalletInitializationState(
     downloader: CompactBlockDownloader,
     fallbackTreeState: TreeState,
     sdkFlags: SdkFlags,
-    walletInitMode: WalletInitMode
+    walletInitMode: WalletInitMode,
+    newWalletTreeStateTimeout: Duration = NEW_WALLET_TREE_STATE_FETCH_TIMEOUT
 ) = when (walletInitMode) {
     is RestoreWallet -> {
         WalletInitializationState(
@@ -1145,7 +1149,7 @@ internal suspend fun resolveWalletInitializationState(
 
     is WalletInitMode.NewWallet -> {
         WalletInitializationState(
-            treeState = downloader.fetchNewWalletTreeState(sdkFlags) ?: fallbackTreeState,
+            treeState = downloader.fetchNewWalletTreeState(sdkFlags, newWalletTreeStateTimeout) ?: fallbackTreeState,
             recoverUntil = null
         )
     }
@@ -1157,6 +1161,8 @@ internal suspend fun resolveWalletInitializationState(
         )
     }
 }
+
+private val NEW_WALLET_TREE_STATE_FETCH_TIMEOUT = 5.seconds
 
 private suspend fun CompactBlockDownloader.fetchRecoverUntil(sdkFlags: SdkFlags): BlockHeight? =
     when (val response = getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)) {
@@ -1172,6 +1178,22 @@ private suspend fun CompactBlockDownloader.fetchRecoverUntil(sdkFlags: SdkFlags)
             null
         }
     }
+
+private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
+    sdkFlags: SdkFlags,
+    timeout: Duration
+): TreeState? {
+    var completed = false
+    return withTimeoutOrNull(timeout) {
+        fetchNewWalletTreeState(sdkFlags).also { completed = true }
+    }.also {
+        if (!completed) {
+            Twig.warn {
+                "Chain tip tree state fetch for new wallet timed out after $timeout, falling back to bundled checkpoint"
+            }
+        }
+    }
+}
 
 private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(sdkFlags: SdkFlags): TreeState? =
     when (val heightResponse = getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)) {
