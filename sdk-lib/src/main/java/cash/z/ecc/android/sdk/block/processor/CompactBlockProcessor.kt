@@ -44,6 +44,7 @@ import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.metrics.TraceScope
 import cash.z.ecc.android.sdk.internal.metrics.withTraceScope
 import cash.z.ecc.android.sdk.internal.model.BlockBatch
+import cash.z.ecc.android.sdk.internal.model.DbTransactionOverview
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.OutputStatusFilter
 import cash.z.ecc.android.sdk.internal.model.RecoveryProgress
@@ -62,6 +63,9 @@ import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.model.ext.toTransactionStatus
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManager
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
+import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
+import cash.z.ecc.android.sdk.internal.transaction.toCreatedTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -138,7 +142,9 @@ class CompactBlockProcessor internal constructor(
     private val repository: DerivedDataRepository,
     private val txManager: OutboundTransactionManager,
     private val sdkFlags: SdkFlags,
-    private val saplingParamFetcher: SaplingParamFetcher
+    private val saplingParamFetcher: SaplingParamFetcher,
+    private val pendingSubmitPlanStore: PendingSubmitPlanStore,
+    private val submitPlanExecutor: SubmitPlanExecutor
 ) {
     /**
      * Callback for any non-trivial errors that occur while processing compact blocks.
@@ -2684,20 +2690,46 @@ class CompactBlockProcessor internal constructor(
         if (blockHeight == null) {
             return
         }
-        val list = repository.findUnminedTransactionsWithinExpiry(blockHeight)
+        val list = findTransactionsEligibleForResubmission(blockHeight)
 
         Twig.debug { "Trx resubmission: ${list.size}, ${list.joinToString(separator = ", ") { it.txIdString() }}" }
 
         if (list.isNotEmpty()) {
-            list.forEach {
+            list.forEach { transaction ->
+                val submitPlan = pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
+                if (submitPlan == PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan) {
+                    Twig.debug {
+                        "Trx resubmission: Skipping ${transaction.txIdString()} until a submit plan is registered"
+                    }
+                    return@forEach
+                }
+
                 val trxForResubmission =
-                    repository.findEncodedTransactionByTxId(it.rawId)
-                        ?: throw TransactionEncoderException.TransactionNotFoundException(it.rawId)
+                    repository.findEncodedTransactionByTxId(transaction.rawId)
+                        ?: throw TransactionEncoderException.TransactionNotFoundException(transaction.rawId)
 
                 Twig.debug { "Trx resubmission: Found: ${trxForResubmission.txIdString()}" }
 
                 retryUpToAndContinue(TRANSACTION_RESUBMIT_RETRIES) {
-                    when (val response = txManager.submit(trxForResubmission)) {
+                    val response =
+                        when (submitPlan) {
+                            null -> {
+                                txManager.submit(trxForResubmission)
+                            }
+
+                            is PendingSubmitPlanStore.StoredSubmitPlan.Ready -> {
+                                submitPlanExecutor.submit(
+                                    trxForResubmission.toCreatedTransaction(),
+                                    submitPlan.submitPlan
+                                )
+                            }
+
+                            PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan -> {
+                                TransactionSubmitResult.NotAttempted(transaction.rawId)
+                            }
+                        }
+
+                    when (response) {
                         is TransactionSubmitResult.Success -> {
                             Twig.info { "Trx resubmission success: ${response.txIdString()}" }
                         }
@@ -2720,6 +2752,16 @@ class CompactBlockProcessor internal constructor(
             Twig.debug { "Trx resubmission: No trx for resubmission found" }
         }
     }
+
+    private suspend fun findTransactionsEligibleForResubmission(
+        blockHeight: BlockHeight
+    ): List<DbTransactionOverview> =
+        pendingSubmitPlanStore.loadTransactionsAndRetainSubmitPlans(
+            loadTransactions = {
+                repository.findUnminedTransactionsWithinExpiry(blockHeight)
+            },
+            transactionId = { it.rawId }
+        )
 
     suspend fun getUtxoCacheBalance(address: String): Zatoshi = backend.getDownloadedUtxoBalance(address)
 

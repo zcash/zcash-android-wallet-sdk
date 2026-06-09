@@ -6,17 +6,49 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.5.0] - 2026-05-01
+### Added
+- New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
+  scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
+  to the bundled checkpoint if this optimization does not complete within 5 seconds.
+- `Synchronizer.broadcaster` API for creating transactions without immediate
+  submission and submitting stored transactions to selected lightwalletd
+  endpoints. Automatic retry uses the endpoints submitted through the
+  broadcaster.
+- `Synchronizer.fullyScannedHeight` and `Synchronizer.getTreeState` accessors
+  for snapshot-height consumers.
 
 ### Changed
-- `Synchronizer.importAccountByUfvk` now calls `TypesafeBackend.rewindToChainState` after importing
-  an account. This enables imported accounts to discover their history and funds, at the cost of
-  other accounts being temporarily blocked by a short resync (specifically rescanning the incomplete
-  shard at the tip).
+- `String.fromHex` now rejects odd-length and non-hex input instead of silently coercing malformed
+  strings.
+
+### Internal
+- Added internal `VotingRustBackend` / `TypesafeVotingBackend` plumbing for future shielded voting backend work.
+- Added internal shielded voting recovery and share-tracking persistence for replaying,
+  retrying, and confirming delegation and vote submission workflows.
+- Split the internal governance PCZT API into `buildGovernancePczt` (explicit Orchard
+  FVK + raw hotkey address, for hardware wallets such as Keystone) and
+  `buildGovernancePcztFromSeed` (UFVK + wallet seed + hotkey seed, preserving the
+  UFVK<>walletSeed validation invariant for software wallets). `buildAndProveDelegation`
+  now takes the raw hotkey address directly, and a new `deriveHotkeyRawAddress` helper
+  exposes raw-address derivation to callers that do not retain the hotkey seed.
+- Pinned `orchard` to `=0.13.1` with `unstable-voting-circuits` to match `zcash_voting` / `voting-circuits` requirements.
+- Pinned `zcash_voting` to `=0.10.1`.
+
+## [2.5.1] - 2026-05-14
+
+### Fixed
+- Fixed a bug that could cause transactions shielding more than 150 transparent
+  P2PKH inputs to fail due to incorrect fee computation.
+
+## [2.5.0] - 2026-05-01
 
 ### Fixed
 - Fixed `rewindToHeight` semantics
-- Updated `zcash_client_sqlite` to 0.20.2
+- Updated `zcash_client_sqlite` to 0.20.2. With this release, account import
+  will trigger a re-scan from the birthday of the imported account, allowing
+  imported accounts to discover their history and funds, at the cost of other
+  accounts being temporarily blocked by a short resync (specifically rescanning
+  the incomplete shard at the tip).
 
 ## [2.4.8] - 2025-04-02
 

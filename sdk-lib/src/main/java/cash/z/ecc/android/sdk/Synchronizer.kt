@@ -15,17 +15,24 @@ import cash.z.ecc.android.sdk.internal.Files
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.SaplingParamTool
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
+import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
+import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
+import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FastestServersResult
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.Pczt
@@ -48,6 +55,7 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
 import io.ktor.client.HttpClient
@@ -56,7 +64,10 @@ import io.ktor.client.engine.HttpClientEngineConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 @Suppress("TooManyFunctions")
 interface Synchronizer {
@@ -102,6 +113,15 @@ interface Synchronizer {
     val networkHeight: StateFlow<BlockHeight?>
 
     /**
+     * The height to which the wallet has been fully scanned.
+     *
+     * This is the height for which the wallet has fully trial-decrypted this and all preceding
+     * blocks above the wallet's birthday height. This value is useful for determining whether the
+     * wallet has scanned up to a specific snapshot height.
+     */
+    val fullyScannedHeight: StateFlow<BlockHeight?>
+
+    /**
      * A stream of wallet balances
      */
     val walletBalances: StateFlow<Map<AccountUuid, AccountBalance>?>
@@ -132,6 +152,16 @@ interface Synchronizer {
      * transaction has not yet occurred.
      */
     val latestBirthdayHeight: BlockHeight?
+
+    /**
+     * Creates transactions without submitting them and submits created transactions
+     * to caller-selected lightwalletd endpoints.
+     *
+     * The default implementation throws [UnsupportedOperationException]. SDK-backed
+     * synchronizers override this with a working broadcaster.
+     */
+    val broadcaster: Broadcaster
+        get() = UnavailableBroadcaster
 
     //
     // Operations
@@ -666,6 +696,18 @@ interface Synchronizer {
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
 
+    /**
+     * Returns the commitment tree state at the given block height, encoded as a protobuf [ByteArray].
+     *
+     * This lets app-layer consumers generate witnesses or verify inclusion proofs against a
+     * specific Orchard note commitment tree snapshot without exposing the lightwalletd transport.
+     *
+     * This performs a live lightwalletd request and does not wait for the local wallet scan state.
+     * Callers that use the returned tree state together with local wallet data at the same height
+     * should first verify that [fullyScannedHeight] has reached at least [height].
+     */
+    suspend fun getTreeState(height: BlockHeight): ByteArray
+
     //
     // Error Handling
     //
@@ -890,44 +932,41 @@ interface Synchronizer {
             val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
             val downloader = DefaultSynchronizerFactory.defaultDownloader(walletClient, blockStore)
 
-            val chainTip =
-                when (walletInitMode) {
-                    is RestoreWallet -> {
-                        when (
-                            val response = downloader.getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)
-                        ) {
-                            is Response.Success -> {
-                                Twig.info { "Chain tip for recovery until param fetched: ${response.result.value}" }
-                                runCatching { response.result.toBlockHeight() }.getOrNull()
-                            }
-
-                            is Response.Failure -> {
-                                Twig.error {
-                                    "Chain tip fetch for recovery until failed with: ${response.toThrowable()}"
-                                }
-                                null
-                            }
-                        }
-                    }
-
-                    else -> {
-                        null
-                    }
-                }
+            val initializationState =
+                resolveWalletInitializationState(
+                    downloader = downloader,
+                    fallbackTreeState = loadedCheckpoint.treeState(),
+                    sdkFlags = sdkFlags,
+                    walletInitMode = walletInitMode
+                )
 
             val repository =
                 DefaultSynchronizerFactory.defaultDerivedDataRepository(
                     context = applicationContext,
                     rustBackend = backend,
                     databaseFile = coordinator.dataDbFile(zcashNetwork, alias),
-                    checkpoint = loadedCheckpoint,
-                    recoverUntil = chainTip,
+                    treeState = initializationState.treeState,
+                    recoverUntil = initializationState.recoverUntil,
                     setup = setup,
                 )
 
             val encoder = DefaultSynchronizerFactory.defaultEncoder(backend, saplingParamFetcher, repository)
 
             val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
+            val standardPreferenceProvider = StandardPreferenceProvider(context)
+            val preferenceProvider = standardPreferenceProvider()
+            val encryptedPreferenceProvider = EncryptedPreferenceProvider(applicationContext)
+            val pendingSubmitPlanStore =
+                PendingSubmitPlanStore(
+                    preferenceProvider = encryptedPreferenceProvider(),
+                    namespace = "${zcashNetwork.id}_$alias"
+                )
+            val transactionSubmitter =
+                EndpointTransactionSubmitter(
+                    walletClientFactory = walletClientFactory,
+                    sdkFlags = sdkFlags
+                )
+            val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
             val processor =
                 DefaultSynchronizerFactory.defaultProcessor(
                     backend = backend,
@@ -936,10 +975,10 @@ interface Synchronizer {
                     repository = repository,
                     txManager = txManager,
                     sdkFlags = sdkFlags,
-                    saplingParamFetcher = saplingParamFetcher
+                    saplingParamFetcher = saplingParamFetcher,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore,
+                    submitPlanExecutor = submitPlanExecutor
                 )
-
-            val standardPreferenceProvider = StandardPreferenceProvider(context)
 
             return SdkSynchronizer.new(
                 context = context.applicationContext,
@@ -958,10 +997,12 @@ interface Synchronizer {
                     ),
                 fetchExchangeChangeUsd =
                     exchangeRateIsolatedTorClient?.let { UsdExchangeRateFetcher(isolatedTorClient = it) },
-                preferenceProvider = standardPreferenceProvider(),
+                preferenceProvider = preferenceProvider,
                 torClient = torClient,
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
+                defaultSubmitEndpoint = lightWalletEndpoint,
+                pendingSubmitPlanStore = pendingSubmitPlanStore,
                 sdkFlags = sdkFlags
             )
         }
@@ -1021,6 +1062,29 @@ interface Synchronizer {
     }
 }
 
+private object UnavailableBroadcaster : Broadcaster {
+    override suspend fun createProposedTransactions(
+        proposal: Proposal,
+        usk: UnifiedSpendingKey
+    ): List<CreatedTransaction> = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
+
+    override suspend fun createTransactionFromPczt(
+        pcztWithProofs: Pczt,
+        pcztWithSignatures: Pczt
+    ): List<CreatedTransaction> = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
+
+    override suspend fun submit(
+        transaction: CreatedTransaction,
+        endpoint: LightWalletEndpoint
+    ): TransactionSubmitResult = throw UnsupportedOperationException(
+        "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
+    )
+}
+
 /**
  * Sealed class describing wallet initialization mode.
  *
@@ -1061,5 +1125,126 @@ private fun validateAlias(alias: String) {
     ) {
         "ERROR: Invalid alias ($alias). For security, the alias must be shorter than 100 " +
             "characters and only contain letters, digits, hyphens, and underscores."
+    }
+}
+
+internal data class WalletInitializationState(
+    val treeState: TreeState,
+    val recoverUntil: BlockHeight?
+)
+
+internal suspend fun resolveWalletInitializationState(
+    downloader: CompactBlockDownloader,
+    fallbackTreeState: TreeState,
+    sdkFlags: SdkFlags,
+    walletInitMode: WalletInitMode,
+    newWalletTreeStateTimeout: Duration = NEW_WALLET_TREE_STATE_FETCH_TIMEOUT
+) = when (walletInitMode) {
+    is RestoreWallet -> {
+        WalletInitializationState(
+            treeState = fallbackTreeState,
+            recoverUntil = downloader.fetchRecoverUntil(sdkFlags)
+        )
+    }
+
+    is WalletInitMode.NewWallet -> {
+        WalletInitializationState(
+            treeState =
+                downloader.fetchNewWalletTreeState(
+                    sdkFlags,
+                    newWalletTreeStateTimeout
+                ) ?: fallbackTreeState,
+            recoverUntil = null
+        )
+    }
+
+    is WalletInitMode.ExistingWallet -> {
+        WalletInitializationState(
+            treeState = fallbackTreeState,
+            recoverUntil = null
+        )
+    }
+}
+
+private val NEW_WALLET_TREE_STATE_FETCH_TIMEOUT = 5.seconds
+
+private suspend fun CompactBlockDownloader.fetchRecoverUntil(sdkFlags: SdkFlags): BlockHeight? =
+    when (val response = getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)) {
+        is Response.Success -> {
+            Twig.info { "Chain tip for recovery until param fetched: ${response.result.value}" }
+            runCatching { response.result.toBlockHeight() }.getOrNull()
+        }
+
+        is Response.Failure -> {
+            Twig.error {
+                "Chain tip fetch for recovery until failed with: ${response.toThrowable()}"
+            }
+            null
+        }
+    }
+
+private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
+    sdkFlags: SdkFlags,
+    timeout: Duration
+): TreeState? {
+    var completed = false
+    return withTimeoutOrNull(timeout) {
+        fetchNewWalletTreeState(sdkFlags).also { completed = true }
+    }.also {
+        if (!completed) {
+            Twig.warn {
+                "Recent tree state fetch for new wallet timed out after $timeout, falling back to bundled checkpoint"
+            }
+        }
+    }
+}
+
+private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
+    sdkFlags: SdkFlags
+): TreeState? =
+    when (val heightResponse = getLatestBlockHeight(sdkFlags ifTor ServiceMode.UniqueTor)) {
+        is Response.Success -> {
+            fetchTreeStateNearTip(heightResponse.result, sdkFlags)
+        }
+
+        is Response.Failure -> {
+            Twig.warn {
+                "Chain tip fetch for new wallet failed with: " +
+                    "${heightResponse.toThrowable()}, falling back to bundled checkpoint"
+            }
+            null
+        }
+    }
+
+private suspend fun CompactBlockDownloader.fetchTreeStateNearTip(
+    tipHeight: BlockHeightUnsafe,
+    sdkFlags: SdkFlags
+): TreeState? {
+    val treeStateHeight =
+        BlockHeightUnsafe(
+            tipHeight.value - CompactBlockProcessor.MAX_REORG_SIZE
+        )
+
+    return when (
+        val treeStateResponse =
+            getTreeState(
+                height = treeStateHeight,
+                serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
+            )
+    ) {
+        is Response.Success -> {
+            Twig.info {
+                "New wallet: using reorg-safe tree state at height ${treeStateHeight.value}, tip ${tipHeight.value}"
+            }
+            TreeState.new(treeStateResponse.result)
+        }
+
+        is Response.Failure -> {
+            Twig.warn {
+                "Tree state fetch for new wallet failed with: " +
+                    "${treeStateResponse.toThrowable()}, falling back to bundled checkpoint"
+            }
+            null
+        }
     }
 }
