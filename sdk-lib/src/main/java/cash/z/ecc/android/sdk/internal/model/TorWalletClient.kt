@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.internal.model
 
-import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.wallet.sdk.internal.rpc.Service
 import co.electriccoin.lightwallet.client.PartialTorWalletClient
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
@@ -18,7 +18,7 @@ import kotlinx.coroutines.withContext
 
 class TorWalletClient private constructor(
     private var nativeHandle: Long?,
-    private val backend: Backend
+    private val backend: TypesafeBackend
 ) : PartialTorWalletClient {
     private val semaphore = Mutex()
 
@@ -68,54 +68,48 @@ class TorWalletClient private constructor(
         }
 
     override suspend fun checkSingleUseTransparentAddress(accountUuid: ByteArray): Response<String?> =
-        backend.withWallet { dataDbFile, networkId ->
-            execute {
-                checkSingleUseTaddr(
-                    it,
-                    dataDbFile.absolutePath,
-                    networkId,
-                    accountUuid,
-                )
-            }
+        execute {
+            checkSingleUseTaddr(
+                it,
+                backend.dataDbFile.absolutePath,
+                backend.network.id,
+                accountUuid,
+            )
         }
 
     override suspend fun fetchUtxosByAddress(accountUuid: ByteArray, address: String): Response<String?> =
-        backend.withWallet { dataDbFile, networkId ->
-            execute {
-                when (
-                    val result =
-                        fetchUtxosByAddress(
-                            nativeHandle = it,
-                            dbDataPath = dataDbFile.absolutePath,
-                            networkId = networkId,
-                            accountUuid = accountUuid,
-                            address = address
-                        )
-                ) {
-                    is JniAddressCheckResult.Found -> result.address
-                    JniAddressCheckResult.NotFound -> null
-                }
+        execute {
+            when (
+                val result =
+                    fetchUtxosByAddress(
+                        nativeHandle = it,
+                        dbDataPath = backend.dataDbFile.absolutePath,
+                        networkId = backend.network.id,
+                        accountUuid = accountUuid,
+                        address = address
+                    )
+            ) {
+                is JniAddressCheckResult.Found -> result.address
+                JniAddressCheckResult.NotFound -> null
             }
         }
 
-    suspend fun updateTransparentAddressTransactions(
-        backend: Backend,
-        address: String,
-        startHeight: BlockHeightUnsafe,
-        endHeight: BlockHeightUnsafe?,
-    ): Response<JniAddressCheckResult> =
-        backend.withWallet { dataDbFile, networkId ->
-            execute {
-                updateTransparentAddressTransactions(
-                    it,
-                    dataDbFile.absolutePath,
-                    address,
-                    startHeight.value,
-                    endHeight?.value ?: -1,
-                    networkId = networkId
-                )
-            }
-        }
+    // internal suspend fun updateTransparentAddressTransactions(
+    //     backend: TypesafeBackend,
+    //     address: String,
+    //     startHeight: BlockHeightUnsafe,
+    //     endHeight: BlockHeightUnsafe?,
+    // ): Response<JniAddressCheckResult> =
+    //     execute {
+    //         updateTransparentAddressTransactions(
+    //             it,
+    //             backend.dataDbFile.absolutePath,
+    //             address,
+    //             startHeight.value,
+    //             endHeight?.value ?: -1,
+    //             networkId = backend.network.id
+    //         )
+    //     }
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun <T> execute(
@@ -133,7 +127,7 @@ class TorWalletClient private constructor(
     }
 
     companion object {
-        internal suspend fun new(nativeHandle: Long, backend: Backend): TorWalletClient =
+        internal suspend fun new(nativeHandle: Long, backend: TypesafeBackend): TorWalletClient =
             withContext(Dispatchers.IO) {
                 TorWalletClient(nativeHandle, backend)
             }
@@ -189,20 +183,20 @@ class TorWalletClient private constructor(
             accountUuid: ByteArray,
         ): String?
 
-        /**
-         * @throws RuntimeException as a common indicator of the operation failure
-         */
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        @Suppress("LongParameterList")
-        private external fun updateTransparentAddressTransactions(
-            nativeHandle: Long,
-            dbDataPath: String,
-            address: String,
-            startHeight: Long,
-            endHeight: Long,
-            networkId: Int,
-        ): JniAddressCheckResult
+        // /**
+        //  * @throws RuntimeException as a common indicator of the operation failure
+        //  */
+        // @JvmStatic
+        // @Throws(RuntimeException::class)
+        // @Suppress("LongParameterList")
+        // private external fun updateTransparentAddressTransactions(
+        //     nativeHandle: Long,
+        //     dbDataPath: String,
+        //     address: String,
+        //     startHeight: Long,
+        //     endHeight: Long,
+        //     networkId: Int,
+        // ): JniAddressCheckResult
 
         /**
          * @throws RuntimeException as a common indicator of the operation failure

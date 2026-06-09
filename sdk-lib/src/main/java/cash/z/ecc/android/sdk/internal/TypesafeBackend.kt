@@ -27,12 +27,14 @@ import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import java.io.File
 
 @Suppress("TooManyFunctions")
 internal interface TypesafeBackend {
-    val backend: Backend
 
     val network: ZcashNetwork
+
+    val dataDbFile: File
 
     suspend fun getAccounts(): List<Account>
 
@@ -152,7 +154,7 @@ internal interface TypesafeBackend {
 
     suspend fun listTransparentReceivers(account: Account): List<String>
 
-    fun getBranchIdForHeight(height: BlockHeight): Long
+    suspend fun getBranchIdForHeight(height: BlockHeight): Long
 
     suspend fun rewindToHeight(height: BlockHeight): RewindResult
 
@@ -287,9 +289,9 @@ internal interface TypesafeBackend {
         status: TransactionStatus,
     )
 
-    fun getSaplingReceiver(ua: String): String?
+    suspend fun getSaplingReceiver(ua: String): String?
 
-    fun getTransparentReceiver(ua: String): String?
+    suspend fun getTransparentReceiver(ua: String): String?
 
     suspend fun initBlockMetaDb(): Int
 
@@ -299,17 +301,19 @@ internal interface TypesafeBackend {
     @Throws(RuntimeException::class)
     suspend fun writeBlockMetadata(blockMetadata: List<JniBlockMeta>)
 
-    fun isValidSaplingAddr(addr: String): Boolean
+    suspend fun isValidSaplingAddr(addr: String): Boolean
 
-    fun isValidTransparentAddr(addr: String): Boolean
+    suspend fun isValidTransparentAddr(addr: String): Boolean
 
-    fun isValidUnifiedAddr(addr: String): Boolean
+    suspend fun isValidUnifiedAddr(addr: String): Boolean
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
-    fun isValidTexAddr(addr: String): Boolean
+    suspend fun isValidTexAddr(addr: String): Boolean
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
+
+    suspend fun <T> withLock(block: suspend TypesafeBackend.() -> T): T
 }

@@ -28,14 +28,197 @@ import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 
 @Suppress("TooManyFunctions")
 internal class TypesafeBackendImpl(
-    override val backend: Backend
+    backend: Backend
+) : TypesafeBackend {
+    private val mutex = Mutex()
+    private val delegate: TypesafeBackend = TypesafeBackendWithoutMutex(backend)
+
+    override val network: ZcashNetwork
+        get() = delegate.network
+
+    override val dataDbFile: File
+        get() = delegate.dataDbFile
+
+    override suspend fun getAccounts(): List<Account> = withLock { getAccounts() }
+
+    override suspend fun createAccountAndGetSpendingKey(
+        accountName: String,
+        keySource: String?,
+        seed: FirstClassByteArray,
+        treeState: TreeState,
+        recoverUntil: BlockHeight?
+    ) = withLock { createAccountAndGetSpendingKey(accountName, keySource, seed, treeState, recoverUntil) }
+
+    override suspend fun importAccountUfvk(
+        recoverUntil: BlockHeight?,
+        setup: AccountImportSetup,
+        treeState: TreeState,
+    ) = withLock { importAccountUfvk(recoverUntil, setup, treeState) }
+
+    override suspend fun getAccountForUfvk(ufvk: UnifiedFullViewingKey): Account? = withLock { getAccountForUfvk(ufvk) }
+
+    override suspend fun proposeTransferFromUri(
+        account: Account,
+        uri: String
+    ) = withLock { proposeTransferFromUri(account, uri) }
+
+    @Suppress("LongParameterList")
+    override suspend fun proposeTransfer(
+        account: Account,
+        to: String,
+        value: Long,
+        memo: ByteArray?
+    ) = withLock { proposeTransfer(account, to, value, memo) }
+
+    override suspend fun proposeShielding(
+        account: Account,
+        shieldingThreshold: Long,
+        memo: ByteArray?,
+        transparentReceiver: String?
+    ) = withLock { proposeShielding(account, shieldingThreshold, memo, transparentReceiver) }
+
+    override suspend fun createProposedTransactions(
+        proposal: Proposal,
+        usk: UnifiedSpendingKey
+    ) = withLock { createProposedTransactions(proposal, usk) }
+
+    override suspend fun createPcztFromProposal(
+        account: Account,
+        proposal: Proposal
+    ) = withLock { createPcztFromProposal(account, proposal) }
+
+    override suspend fun redactPcztForSigner(pczt: Pczt) = withLock { redactPcztForSigner(pczt) }
+
+    override suspend fun pcztRequiresSaplingProofs(pczt: Pczt) = withLock { pcztRequiresSaplingProofs(pczt) }
+
+    override suspend fun addProofsToPczt(pczt: Pczt) = withLock { addProofsToPczt(pczt) }
+
+    override suspend fun extractAndStoreTxFromPczt(
+        pcztWithProofs: Pczt,
+        pcztWithSignatures: Pczt
+    ) = withLock { extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures) }
+
+    override suspend fun getCurrentAddress(account: Account) = withLock { getCurrentAddress(account) }
+
+    override suspend fun getSingleUseTransparentAddress(accountUuid: AccountUuid) = withLock { getSingleUseTransparentAddress(accountUuid) }
+
+    override suspend fun getNextAvailableAddress(
+        account: Account,
+        request: UnifiedAddressRequest
+    ) = withLock { getNextAvailableAddress(account, request) }
+
+    override suspend fun listTransparentReceivers(account: Account) = withLock { listTransparentReceivers(account) }
+
+    override suspend fun getBranchIdForHeight(height: BlockHeight) = withLock { getBranchIdForHeight(height) }
+
+    override suspend fun rewindToHeight(height: BlockHeight) = withLock { rewindToHeight(height) }
+
+    override suspend fun truncateToChainState(chainState: TreeState) = withLock { truncateToChainState(chainState) }
+
+    override suspend fun getLatestCacheHeight() = withLock { getLatestCacheHeight() }
+
+    override suspend fun findBlockMetadata(height: BlockHeight) = withLock { findBlockMetadata(height) }
+
+    override suspend fun rewindBlockMetadataToHeight(height: BlockHeight) = withLock { rewindBlockMetadataToHeight(height) }
+
+    override suspend fun getDownloadedUtxoBalance(address: String): Zatoshi = withLock { getDownloadedUtxoBalance(address) }
+
+    @Suppress("LongParameterList")
+    override suspend fun putUtxo(
+        txId: ByteArray,
+        index: Int,
+        script: ByteArray,
+        value: Long,
+        height: BlockHeight
+    ) = withLock { putUtxo(txId, index, script, value, height) }
+
+    override suspend fun getMemoAsUtf8(
+        txId: ByteArray,
+        protocol: ZcashProtocol,
+        outputIndex: Int
+    ): String? = withLock { getMemoAsUtf8(txId, protocol, outputIndex) }
+
+    override suspend fun initDataDb(seed: FirstClassByteArray?) = withLock { initDataDb(seed) }
+
+    override suspend fun putSubtreeRoots(
+        saplingStartIndex: UInt,
+        saplingRoots: List<SubtreeRoot>,
+        orchardStartIndex: UInt,
+        orchardRoots: List<SubtreeRoot>
+    ) = withLock {
+        putSubtreeRoots(saplingStartIndex, saplingRoots, orchardStartIndex, orchardRoots)
+    }
+
+    override suspend fun updateChainTip(height: BlockHeight) = withLock { updateChainTip(height) }
+
+    override suspend fun getFullyScannedHeight() = withLock { getFullyScannedHeight() }
+
+    override suspend fun getMaxScannedHeight() = withLock { getMaxScannedHeight() }
+
+    override suspend fun scanBlocks(
+        fromHeight: BlockHeight,
+        fromState: TreeState,
+        limit: Long
+    ) = withLock { scanBlocks(fromHeight, fromState, limit) }
+
+    override suspend fun transactionDataRequests() = withLock { transactionDataRequests() }
+
+    override suspend fun fixWitnesses() = withLock { fixWitnesses() }
+
+    override suspend fun getWalletSummary() = withLock { getWalletSummary() }
+
+    override suspend fun suggestScanRanges() = withLock { suggestScanRanges() }
+
+    override suspend fun decryptAndStoreTransaction(
+        tx: ByteArray,
+        minedHeight: BlockHeight?
+    ) = withLock { decryptAndStoreTransaction(tx, minedHeight) }
+
+    override suspend fun setTransactionStatus(
+        txId: ByteArray,
+        status: TransactionStatus
+    ) = withLock { setTransactionStatus(txId, status) }
+
+    override suspend fun getSaplingReceiver(ua: String) = withLock { getSaplingReceiver(ua) }
+
+    override suspend fun getTransparentReceiver(ua: String) = withLock { getTransparentReceiver(ua) }
+
+    override suspend fun initBlockMetaDb() = withLock { initBlockMetaDb() }
+
+    override suspend fun writeBlockMetadata(blockMetadata: List<JniBlockMeta>) =
+        withLock { writeBlockMetadata(blockMetadata) }
+
+    override suspend fun isValidSaplingAddr(addr: String) = withLock { isValidSaplingAddr(addr) }
+
+    override suspend fun isValidTransparentAddr(addr: String) = withLock { isValidTransparentAddr(addr) }
+
+    override suspend fun isValidUnifiedAddr(addr: String) = withLock { isValidUnifiedAddr(addr) }
+
+    override suspend fun isValidTexAddr(addr: String) = withLock { isValidTexAddr(addr) }
+
+    override suspend fun deleteAccount(accountUuid: AccountUuid) = withLock { deleteAccount(accountUuid) }
+
+    override suspend fun <T> withLock(block: suspend TypesafeBackend.() -> T): T {
+        return mutex.withLock { block(delegate) }
+    }
+}
+
+@Suppress("TooManyFunctions")
+private class TypesafeBackendWithoutMutex(
+    private val backend: Backend
 ) : TypesafeBackend {
     override val network: ZcashNetwork
         get() = ZcashNetwork.from(backend.networkId)
+
+    override val dataDbFile: File
+        get() = backend.dataDbFile
 
     override suspend fun getAccounts(): List<Account> = backend.getAccounts().map { Account.new(it) }
 
@@ -208,7 +391,7 @@ internal class TypesafeBackendImpl(
     override suspend fun listTransparentReceivers(account: Account): List<String> =
         backend.listTransparentReceivers(account.accountUuid.value)
 
-    override fun getBranchIdForHeight(height: BlockHeight): Long = backend.getBranchIdForHeight(height.value)
+    override suspend fun getBranchIdForHeight(height: BlockHeight): Long = backend.getBranchIdForHeight(height.value)
 
     override suspend fun rewindToHeight(height: BlockHeight): RewindResult =
         RewindResult.new(backend.rewindToHeight(height.value))
@@ -367,9 +550,9 @@ internal class TypesafeBackendImpl(
         status = status.toPrimitiveValue()
     )
 
-    override fun getSaplingReceiver(ua: String): String? = backend.getSaplingReceiver(ua)
+    override suspend fun getSaplingReceiver(ua: String): String? = backend.getSaplingReceiver(ua)
 
-    override fun getTransparentReceiver(ua: String): String? = backend.getTransparentReceiver(ua)
+    override suspend fun getTransparentReceiver(ua: String): String? = backend.getTransparentReceiver(ua)
 
     override suspend fun initBlockMetaDb(): Int = backend.initBlockMetaDb()
 
@@ -378,13 +561,17 @@ internal class TypesafeBackendImpl(
             blockMetadata
         )
 
-    override fun isValidSaplingAddr(addr: String): Boolean = backend.isValidSaplingAddr(addr)
+    override suspend fun isValidSaplingAddr(addr: String): Boolean = backend.isValidSaplingAddr(addr)
 
-    override fun isValidTransparentAddr(addr: String): Boolean = backend.isValidTransparentAddr(addr)
+    override suspend fun isValidTransparentAddr(addr: String): Boolean = backend.isValidTransparentAddr(addr)
 
-    override fun isValidUnifiedAddr(addr: String): Boolean = backend.isValidUnifiedAddr(addr)
+    override suspend fun isValidUnifiedAddr(addr: String): Boolean = backend.isValidUnifiedAddr(addr)
 
-    override fun isValidTexAddr(addr: String): Boolean = backend.isValidTexAddr(addr)
+    override suspend fun isValidTexAddr(addr: String): Boolean = backend.isValidTexAddr(addr)
 
     override suspend fun deleteAccount(accountUuid: AccountUuid) = backend.deleteAccount(accountUuid.value)
+
+    override suspend fun <T> withLock(block: suspend (TypesafeBackend) -> T): T {
+        throw UnsupportedOperationException()
+    }
 }
