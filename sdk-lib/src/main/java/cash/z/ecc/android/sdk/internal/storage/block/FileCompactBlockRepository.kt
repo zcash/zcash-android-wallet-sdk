@@ -17,6 +17,9 @@ import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.repository.CompactBlockRepository
 import cash.z.ecc.android.sdk.model.BlockHeight
 import co.electriccoin.lightwallet.client.model.CompactBlockUnsafe
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
@@ -95,16 +98,16 @@ internal class FileCompactBlockRepository(
         Twig.verbose { "Deleting ${blocks.size} blocks from directory ${blocksDirectory.path}" }
 
         if (blocksDirectory.existsSuspend()) {
-            blocks.forEach { block ->
-                val blockFile = block.getFile(blocksDirectory)
-                if (!blockFile.existsSuspend()) {
-                    return@forEach // aka continue
-                }
-                val deleted = blockFile.deleteSuspend()
-                if (!deleted) {
-                    return false
-                }
+            val allDeleted = coroutineScope {
+                blocks.map { block ->
+                    async {
+                        val blockFile = block.getFile(blocksDirectory)
+                        if (!blockFile.existsSuspend()) return@async true
+                        blockFile.deleteSuspend()
+                    }
+                }.awaitAll().all { it }
             }
+            if (!allDeleted) return false
         }
         return true
     }

@@ -87,7 +87,10 @@ import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -117,6 +120,7 @@ import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.DurationUnit
+import kotlin.time.measureTime
 import kotlin.time.toDuration
 
 /**
@@ -1182,6 +1186,13 @@ class CompactBlockProcessor internal constructor(
         private const val SYNC_BATCH_SMALL_SIZE = 100
 
         /**
+         * Number of parallel gRPC connections used when downloading a batch of compact blocks.
+         * Based on benchmarking, 4 parallel connections provide the best throughput without
+         * overloading the server.
+         */
+        private const val DOWNLOAD_PARALLELISM = 4
+
+        /**
          * Known Zcash sandblasting period
          */
         private val SANDBLASTING_RANGE = 1_710_000L..2_050_000L
@@ -1343,108 +1354,116 @@ class CompactBlockProcessor internal constructor(
         var saplingSubtreeRootList: List<SubtreeRoot> = emptyList()
         var orchardSubtreeRootList: List<SubtreeRoot> = emptyList()
 
-        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
-            downloader
-                .getSubtreeRoots(
-                    saplingStartIndex,
-                    shieldedProtocol = ShieldedProtocolEnum.SAPLING,
-                    maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
-                ).onEach { response ->
-                    when (response) {
-                        is Response.Success -> {
-                            Twig.verbose {
-                                "Sapling SubtreeRoot fetched successfully: its completingHeight is: ${
-                                    response.result
-                                        .completingBlockHeight
-                                }"
-                            }
-                        }
+        coroutineScope {
+            val saplingDeferred = async {
+                retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
+                    downloader
+                        .getSubtreeRoots(
+                            saplingStartIndex,
+                            shieldedProtocol = ShieldedProtocolEnum.SAPLING,
+                            maxEntries = UInt.MIN_VALUE,
+                            serviceMode = ServiceMode.Direct
+                        ).onEach { response ->
+                            when (response) {
+                                is Response.Success -> {
+                                    Twig.verbose {
+                                        "Sapling SubtreeRoot fetched successfully: its completingHeight is: ${
+                                            response.result
+                                                .completingBlockHeight
+                                        }"
+                                    }
+                                }
 
-                        is Response.Failure -> {
-                            val error =
-                                LightWalletException.GetSubtreeRootsException(
-                                    response.code,
-                                    response.description,
-                                    response.toThrowable()
-                                )
-                            if (response is Response.Failure.Server.Unavailable) {
-                                Twig.error {
-                                    "Fetching Sapling SubtreeRoot failed due to server communication problem with" +
-                                        " failure: ${response.toThrowable()}"
+                                is Response.Failure -> {
+                                    val error =
+                                        LightWalletException.GetSubtreeRootsException(
+                                            response.code,
+                                            response.description,
+                                            response.toThrowable()
+                                        )
+                                    if (response is Response.Failure.Server.Unavailable) {
+                                        Twig.error {
+                                            "Fetching Sapling SubtreeRoot failed due to server communication problem with" +
+                                                " failure: ${response.toThrowable()}"
+                                        }
+                                        result = GetSubtreeRootsResult.FailureConnection
+                                    } else {
+                                        Twig.error {
+                                            "Fetching Sapling SubtreeRoot failed with failure: ${response.toThrowable()}"
+                                        }
+                                        result = GetSubtreeRootsResult.OtherFailure(error)
+                                    }
+                                    traceScope.end()
+                                    throw error
                                 }
-                                result = GetSubtreeRootsResult.FailureConnection
-                            } else {
-                                Twig.error {
-                                    "Fetching Sapling SubtreeRoot failed with failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.OtherFailure(error)
                             }
-                            traceScope.end()
-                            throw error
+                        }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
+                        .map { response ->
+                            response.result
+                        }.toList()
+                        .map {
+                            SubtreeRoot.new(it)
+                        }.let {
+                            saplingSubtreeRootList = it
                         }
-                    }
-                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
-                .map { response ->
-                    response.result
-                }.toList()
-                .map {
-                    SubtreeRoot.new(it)
-                }.let {
-                    saplingSubtreeRootList = it
                 }
-        }
+            }
 
-        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
-            downloader
-                .getSubtreeRoots(
-                    startIndex = orchardStartIndex,
-                    shieldedProtocol = ShieldedProtocolEnum.ORCHARD,
-                    maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
-                ).onEach { response ->
-                    when (response) {
-                        is Response.Success -> {
-                            Twig.verbose {
-                                "Orchard SubtreeRoot fetched successfully: its completingHeight is: ${
-                                    response.result
-                                        .completingBlockHeight
-                                }"
-                            }
-                        }
+            val orchardDeferred = async {
+                retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
+                    downloader
+                        .getSubtreeRoots(
+                            startIndex = orchardStartIndex,
+                            shieldedProtocol = ShieldedProtocolEnum.ORCHARD,
+                            maxEntries = UInt.MIN_VALUE,
+                            serviceMode = ServiceMode.Direct
+                        ).onEach { response ->
+                            when (response) {
+                                is Response.Success -> {
+                                    Twig.verbose {
+                                        "Orchard SubtreeRoot fetched successfully: its completingHeight is: ${
+                                            response.result
+                                                .completingBlockHeight
+                                        }"
+                                    }
+                                }
 
-                        is Response.Failure -> {
-                            val error =
-                                LightWalletException.GetSubtreeRootsException(
-                                    response.code,
-                                    response.description,
-                                    response.toThrowable()
-                                )
-                            if (response is Response.Failure.Server.Unavailable) {
-                                Twig.error {
-                                    "Fetching Orchard SubtreeRoot failed due to server communication problem with" +
-                                        " failure: ${response.toThrowable()}"
+                                is Response.Failure -> {
+                                    val error =
+                                        LightWalletException.GetSubtreeRootsException(
+                                            response.code,
+                                            response.description,
+                                            response.toThrowable()
+                                        )
+                                    if (response is Response.Failure.Server.Unavailable) {
+                                        Twig.error {
+                                            "Fetching Orchard SubtreeRoot failed due to server communication problem with" +
+                                                " failure: ${response.toThrowable()}"
+                                        }
+                                        result = GetSubtreeRootsResult.FailureConnection
+                                    } else {
+                                        Twig.error {
+                                            "Fetching Orchard SubtreeRoot failed with failure: ${response.toThrowable()}"
+                                        }
+                                        result = GetSubtreeRootsResult.OtherFailure(error)
+                                    }
+                                    traceScope.end()
+                                    throw error
                                 }
-                                result = GetSubtreeRootsResult.FailureConnection
-                            } else {
-                                Twig.error {
-                                    "Fetching Orchard SubtreeRoot failed with failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.OtherFailure(error)
                             }
-                            traceScope.end()
-                            throw error
+                        }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
+                        .map { response ->
+                            response.result
+                        }.toList()
+                        .map {
+                            SubtreeRoot.new(it)
+                        }.let {
+                            orchardSubtreeRootList = it
                         }
-                    }
-                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
-                .map { response ->
-                    response.result
-                }.toList()
-                .map {
-                    SubtreeRoot.new(it)
-                }.let {
-                    orchardSubtreeRootList = it
                 }
+            }
+
+            awaitAll(saplingDeferred, orchardDeferred)
         }
 
         // Intentionally omitting [orchardSubtreeRootList], e.g., for Mainnet usage, we could check it, but on
@@ -1723,13 +1742,15 @@ class CompactBlockProcessor internal constructor(
                                 assert(scannedRange.endInclusive <= scanResult.batch.range.endInclusive)
 
                                 // Run deletion stage
-                                SyncStageResult(
-                                    scanResult.batch,
-                                    deleteFilesOfBatchOfBlocks(
+                                var deleteResult: SyncingResult
+                                val deleteTime = measureTime {
+                                    deleteResult = deleteFilesOfBatchOfBlocks(
                                         downloader = downloader,
                                         batch = scanResult.batch
                                     )
-                                )
+                                }
+                                Twig.info { "PERF delete: ${deleteTime.inWholeMilliseconds}ms batch ${scanResult.batch.range.start}" }
+                                SyncStageResult(scanResult.batch, deleteResult)
                             }
 
                             else -> {
@@ -1767,41 +1788,44 @@ class CompactBlockProcessor internal constructor(
                             val currentEnhancingRange = enhancingRange
                             enhancingRange = enhancingRange.endInclusive..enhancingRange.endInclusive
 
-                            enhanceTransactionDetails(
-                                range = currentEnhancingRange,
-                                repository = repository,
-                                backend = backend,
-                                downloader = downloader,
-                                sdkFlags = sdkFlags
-                            ).collect { enhancingResult ->
-                                Twig.info { "Enhancing result: $enhancingResult" }
-                                resultState =
-                                    when (enhancingResult) {
-                                        is SyncingResult.UpdateBirthday -> {
-                                            Twig.info { "Birthday height update reporting" }
-                                            enhancingResult
-                                        }
-
-                                        is SyncingResult.EnhanceFailed -> {
-                                            Twig.error {
-                                                "Enhancing failed for: $enhancingRange with $enhancingResult"
+                            val enhanceTime = measureTime {
+                                enhanceTransactionDetails(
+                                    range = currentEnhancingRange,
+                                    repository = repository,
+                                    backend = backend,
+                                    downloader = downloader,
+                                    sdkFlags = sdkFlags
+                                ).collect { enhancingResult ->
+                                    Twig.info { "Enhancing result: $enhancingResult" }
+                                    resultState =
+                                        when (enhancingResult) {
+                                            is SyncingResult.UpdateBirthday -> {
+                                                Twig.info { "Birthday height update reporting" }
+                                                enhancingResult
                                             }
-                                            enhancingResult
-                                        }
 
-                                        else -> {
-                                            // Transactions enhanced correctly. Let's continue with block processing
-                                            enhancingResult
+                                            is SyncingResult.EnhanceFailed -> {
+                                                Twig.error {
+                                                    "Enhancing failed for: $enhancingRange with $enhancingResult"
+                                                }
+                                                enhancingResult
+                                            }
+
+                                            else -> {
+                                                // Transactions enhanced correctly. Let's continue with block processing
+                                                enhancingResult
+                                            }
                                         }
-                                    }
-                                emit(
-                                    BatchSyncProgress(
-                                        order = continuousResult.batch.order,
-                                        range = continuousResult.batch.range,
-                                        resultState = resultState
+                                    emit(
+                                        BatchSyncProgress(
+                                            order = continuousResult.batch.order,
+                                            range = continuousResult.batch.range,
+                                            resultState = resultState
+                                        )
                                     )
-                                )
+                                }
                             }
+                            Twig.info { "PERF enhance: ${enhanceTime.inWholeMilliseconds}ms range $currentEnhancingRange" }
                         }
                         Twig.info {
                             "All sync stages done for the batch ${continuousResult.batch.order}/${batches.size}:" +
@@ -1833,6 +1857,20 @@ class CompactBlockProcessor internal constructor(
      *
      * @return List of [ClosedRange<BlockBatch>] to prepare for synchronization
      */
+    private fun ClosedRange<BlockHeight>.splitInto(count: Int): List<ClosedRange<BlockHeight>> {
+        val total = (endInclusive.value - start.value + 1).coerceAtLeast(1)
+        val chunkSize = maxOf(1L, total / count)
+        return buildList {
+            var from = start.value
+            repeat(count) { i ->
+                if (from > endInclusive.value) return@repeat
+                val to = if (i == count - 1) endInclusive.value else minOf(from + chunkSize - 1, endInclusive.value)
+                add(BlockHeight(from)..BlockHeight(to))
+                from = to + 1
+            }
+        }
+    }
+
     private fun getBatchedBlockList(syncRange: ClosedRange<BlockHeight>): List<BlockBatch> {
         var order = 1L
         var start = syncRange.start.value
@@ -1892,14 +1930,17 @@ class CompactBlockProcessor internal constructor(
     ): SyncingResult {
         val traceScope = TraceScope("CompactBlockProcessor.downloadBatchOfBlocks")
 
-        val fromState =
-            fetchTreeStateForHeight(
-                height = batch.range.start - 1,
-                downloader = downloader
-            ) ?: return SyncingResult.DownloadFailed(
-                batch.range.start,
-                CompactBlockProcessorException.FailedDownloadException()
-            )
+        var treeStateElapsedMs = 0L
+        val fromState = run {
+            var result: TreeState? = null
+            val t = measureTime { result = fetchTreeStateForHeight(batch.range.start - 1, downloader) }
+            treeStateElapsedMs = t.inWholeMilliseconds
+            result
+        } ?: return SyncingResult.DownloadFailed(
+            batch.range.start,
+            CompactBlockProcessorException.FailedDownloadException()
+        )
+        Twig.info { "PERF treeState: ${treeStateElapsedMs}ms height ${batch.range.start - 1}" }
 
         var downloadedBlocks = listOf<JniBlockMeta>()
         var downloadException: CompactBlockProcessorException.FailedDownloadException? = null
@@ -1917,11 +1958,31 @@ class CompactBlockProcessor internal constructor(
             } else {
                 Twig.warn { "Retrying to download batch $batch after $failedAttempts failure(s)..." }
             }
-            downloadedBlocks =
-                downloader.downloadBlockRange(
-                    heightRange = batch.range,
-                    serviceMode = ServiceMode.Direct
-                )
+            val downloadTime = measureTime {
+                downloadedBlocks = coroutineScope {
+                    batch.range
+                        .splitInto(DOWNLOAD_PARALLELISM)
+                        .map { subRange ->
+                            async {
+                                downloader.downloadBlockRange(
+                                    heightRange = subRange,
+                                    serviceMode = ServiceMode.Direct
+                                )
+                            }
+                        }.awaitAll()
+                        .flatten()
+                }
+            }
+            val blockCount = batch.range.length()
+            val blkPerSec = if (downloadTime.inWholeMilliseconds > 0) {
+                blockCount * 1000L / downloadTime.inWholeMilliseconds
+            } else {
+                blockCount
+            }
+            Twig.info {
+                "PERF download: $blockCount blocks in ${downloadTime.inWholeMilliseconds}ms" +
+                    " ($blkPerSec blk/s) range ${batch.range.start}..${batch.range.endInclusive}"
+            }
         }
         traceScope.end()
         Twig.verbose { "Successfully downloaded batch: $batch of $downloadedBlocks blocks" }
@@ -1978,10 +2039,22 @@ class CompactBlockProcessor internal constructor(
         backend: TypesafeBackend
     ): SyncingResult {
         val traceScope = TraceScope("CompactBlockProcessor.scanBatchOfBlocks")
+        val blockCount = batch.range.length()
+        var scanElapsedMs = 0L
         val result =
             runCatching {
-                backend.scanBlocks(batch.range.start, fromState, batch.range.length())
+                var scanResult: cash.z.ecc.android.sdk.internal.model.ScanSummary
+                val scanTime = measureTime {
+                    scanResult = backend.scanBlocks(batch.range.start, fromState, blockCount)
+                }
+                scanElapsedMs = scanTime.inWholeMilliseconds
+                scanResult
             }.onSuccess {
+                val blkPerSec = if (scanElapsedMs > 0) blockCount * 1000L / scanElapsedMs else blockCount
+                Twig.info {
+                    "PERF scan: $blockCount blocks in ${scanElapsedMs}ms ($blkPerSec blk/s)" +
+                        " range ${batch.range.start}..${batch.range.endInclusive}"
+                }
                 Twig.verbose { "Successfully scanned batch $batch" }
             }.onFailure {
                 Twig.error { "Failed while scanning batch $batch with $it" }
