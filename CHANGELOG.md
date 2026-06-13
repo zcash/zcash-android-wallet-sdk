@@ -6,6 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `Synchronizer.submitTransaction` (and the broadcaster equivalent) now treats a rejected submit
+  whose error message is `"transaction already exists in mempool"` or `"transaction dropped because
+  it is already queued for download"` as `TransactionSubmitResult.Success`. These messages indicate
+  that an identical tx was already broadcast successfully, so previously surfacing them as `Failure`
+  made callers render a misleading failure UI for a tx that was already on the network.
+
 ### Added
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back

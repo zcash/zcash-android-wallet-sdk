@@ -25,22 +25,33 @@ internal suspend fun CombinedWalletClient.submitTransaction(
 private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =
     when (this) {
         is Response.Success -> {
-            if (result.code == 0) {
-                Twig.info {
-                    "SUCCESS: submit transaction completed for: ${txId.byteArray.toHexReversed()}"
+            when {
+                result.code == 0 -> {
+                    Twig.info {
+                        "SUCCESS: submit transaction completed for: ${txId.byteArray.toHexReversed()}"
+                    }
+                    TransactionSubmitResult.Success(txId)
                 }
-                TransactionSubmitResult.Success(txId)
-            } else {
-                Twig.error {
-                    "FAILURE! submit transaction ${txId.byteArray.toHexReversed()} " +
-                        "completed with response: ${result.code}: ${result.message}"
+                isAlreadyKnownToNetwork(result.message) -> {
+                    Twig.info {
+                        "SUCCESS (already known to network): submit transaction completed for: " +
+                            "${txId.byteArray.toHexReversed()} " +
+                            "with response: ${result.code}: ${result.message}"
+                    }
+                    TransactionSubmitResult.Success(txId)
                 }
-                TransactionSubmitResult.Failure(
-                    txId = txId,
-                    grpcError = false,
-                    code = result.code,
-                    description = result.message
-                )
+                else -> {
+                    Twig.error {
+                        "FAILURE! submit transaction ${txId.byteArray.toHexReversed()} " +
+                            "completed with response: ${result.code}: ${result.message}"
+                    }
+                    TransactionSubmitResult.Failure(
+                        txId = txId,
+                        grpcError = false,
+                        code = result.code,
+                        description = result.message
+                    )
+                }
             }
         }
 
@@ -56,3 +67,9 @@ private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArra
             )
         }
     }
+
+internal fun isAlreadyKnownToNetwork(message: String?): Boolean {
+    val lower = message?.lowercase() ?: return false
+    return lower.contains("already exists in mempool") ||
+        lower.contains("already queued for download")
+}
