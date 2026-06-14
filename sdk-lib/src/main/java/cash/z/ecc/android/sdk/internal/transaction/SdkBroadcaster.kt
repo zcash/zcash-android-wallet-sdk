@@ -50,31 +50,38 @@ internal class SdkBroadcaster(
         return transactionSubmitter.submit(transaction, endpoint)
     }
 
-    // Legacy Synchronizer APIs stay eligible for automatic resubmission, so these helpers
-    // bypass public Broadcaster methods that record submitted endpoints.
+    // Legacy Synchronizer APIs route through the same plan-store machinery as the public
+    // Broadcaster so the sync-loop's resubmit step skips in-flight submits.
     internal suspend fun createAndSubmitProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
         endpoint: LightWalletEndpoint
     ): Flow<TransactionSubmitResult> =
-        txManager
-            .createProposedTransactions(proposal, usk)
-            .map { it.toCreatedTransaction() }
-            .createSubmitResultFlow { transaction ->
-                transactionSubmitter.submit(transaction, endpoint)
-            }
+        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
+            txManager
+                .createProposedTransactions(proposal, usk)
+                .map { it.toCreatedTransaction() }
+        }.createSubmitResultFlow { transaction ->
+            pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
+            transactionSubmitter.submit(transaction, endpoint)
+        }
 
     internal suspend fun createAndSubmitTransactionFromPczt(
         pcztWithProofs: Pczt,
         pcztWithSignatures: Pczt,
         endpoint: LightWalletEndpoint
     ): Flow<TransactionSubmitResult> =
-        listOf(
-            txManager
-                .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
-                .toCreatedTransaction()
-        ).asFlow()
-            .map { transaction -> transactionSubmitter.submit(transaction, endpoint) }
+        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
+            listOf(
+                txManager
+                    .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
+                    .toCreatedTransaction()
+            )
+        }.asFlow()
+            .map { transaction ->
+                pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
+                transactionSubmitter.submit(transaction, endpoint)
+            }
 }
 
 internal interface TransactionSubmitter {

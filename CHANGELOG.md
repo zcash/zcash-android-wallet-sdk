@@ -6,6 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
+  helpers now register transactions in `PendingSubmitPlanStore` so the sync loop's
+  `resubmitUnminedTransactions` step correctly skips in-flight submits instead of racing them
+  with a second `txManager.submit()` and producing `transaction already exists in mempool`
+  rejections.
+
 ### Added
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
