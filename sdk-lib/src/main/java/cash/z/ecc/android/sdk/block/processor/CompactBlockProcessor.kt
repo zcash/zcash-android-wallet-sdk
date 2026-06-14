@@ -144,7 +144,8 @@ class CompactBlockProcessor internal constructor(
     private val sdkFlags: SdkFlags,
     private val saplingParamFetcher: SaplingParamFetcher,
     private val pendingSubmitPlanStore: PendingSubmitPlanStore,
-    private val submitPlanExecutor: SubmitPlanExecutor
+    private val submitPlanExecutor: SubmitPlanExecutor,
+    private val enhanceFailureTracker: EnhanceFailureTracker = EnhanceFailureTracker()
 ) {
     /**
      * Callback for any non-trivial errors that occur while processing compact blocks.
@@ -1141,7 +1142,7 @@ class CompactBlockProcessor internal constructor(
         /**
          * Transaction fetching default attempts at retrying.
          */
-        internal const val TRANSACTION_FETCH_RETRIES = 1
+        internal const val TRANSACTION_FETCH_RETRIES = 5
 
         /**
          * Transaction resubmit retry attempts
@@ -2243,6 +2244,13 @@ class CompactBlockProcessor internal constructor(
     ): SyncingResult {
         Twig.debug { "Starting enhancing transaction: txid: ${transactionRequest.txIdString()}" }
 
+        if (enhanceFailureTracker.shouldSkipDueToBackoff(transactionRequest.txid)) {
+            Twig.info {
+                "Skipping enhance for ${transactionRequest.txIdString()} — in cross-cycle backoff after prior failures."
+            }
+            return SyncingResult.EnhanceSuccess
+        }
+
         val traceScope = TraceScope("CompactBlockProcessor.enhanceTransaction")
         val result =
             try {
@@ -2300,8 +2308,13 @@ class CompactBlockProcessor internal constructor(
                 }
 
                 Twig.debug { "Done enhancing transaction: txid: ${transactionRequest.txIdString()}" }
+                enhanceFailureTracker.recordSuccess(transactionRequest.txid)
                 SyncingResult.EnhanceSuccess
             } catch (exception: CompactBlockProcessorException.EnhanceTransactionError) {
+                Twig.error(exception) {
+                    "Giving up on enhance for ${transactionRequest.txIdString()} after $TRANSACTION_FETCH_RETRIES retries. Backing off until the next cycle."
+                }
+                enhanceFailureTracker.recordFailure(transactionRequest.txid)
                 SyncingResult.EnhanceFailed(null, exception)
             }
         traceScope.end()
