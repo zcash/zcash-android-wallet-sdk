@@ -14,44 +14,69 @@ internal suspend fun CombinedWalletClient.submitTransaction(
     rawTransaction: FirstClassByteArray,
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags
-): TransactionSubmitResult =
-    submitTransaction(
-        tx = rawTransaction.byteArray,
-        serviceMode =
-            sdkFlags ifTor
-                ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
-    ).toSubmitResult(txId)
+): TransactionSubmitResult {
+    val initialResult =
+        submitTransaction(
+            tx = rawTransaction.byteArray,
+            serviceMode =
+                sdkFlags ifTor
+                    ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+        ).toSubmitResult(txId)
+
+    // Trust the network over the submit-side error: if the server confirms it has this tx,
+    // the broadcast already landed (Zebra's MempoolError::InMempool / AlreadyQueued, zcashd's
+    // already-in-chain, or any future variant). Skip the misleading failure UI.
+    if (initialResult is TransactionSubmitResult.Failure && !initialResult.grpcError) {
+        if (isTransactionKnownToServer(txId, sdkFlags)) {
+            Twig.info {
+                "SUCCESS (verified known to server): submit transaction for: ${txId.byteArray.toHexReversed()}"
+            }
+            return TransactionSubmitResult.Success(txId)
+        }
+    }
+
+    return initialResult
+}
+
+private suspend fun CombinedWalletClient.isTransactionKnownToServer(
+    txId: FirstClassByteArray,
+    sdkFlags: SdkFlags
+): Boolean =
+    try {
+        val response =
+            fetchTransaction(
+                txId = txId.byteArray,
+                serviceMode =
+                    sdkFlags ifTor
+                        ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+            )
+        when (response) {
+            is Response.Success -> true
+            else -> false
+        }
+    } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+        false
+    }
 
 private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =
     when (this) {
         is Response.Success -> {
-            when {
-                result.code == 0 -> {
-                    Twig.info {
-                        "SUCCESS: submit transaction completed for: ${txId.byteArray.toHexReversed()}"
-                    }
-                    TransactionSubmitResult.Success(txId)
+            if (result.code == 0) {
+                Twig.info {
+                    "SUCCESS: submit transaction completed for: ${txId.byteArray.toHexReversed()}"
                 }
-                isAlreadyKnownToNetwork(result.message) -> {
-                    Twig.info {
-                        "SUCCESS (already known to network): submit transaction completed for: " +
-                            "${txId.byteArray.toHexReversed()} " +
-                            "with response: ${result.code}: ${result.message}"
-                    }
-                    TransactionSubmitResult.Success(txId)
+                TransactionSubmitResult.Success(txId)
+            } else {
+                Twig.error {
+                    "FAILURE! submit transaction ${txId.byteArray.toHexReversed()} " +
+                        "completed with response: ${result.code}: ${result.message}"
                 }
-                else -> {
-                    Twig.error {
-                        "FAILURE! submit transaction ${txId.byteArray.toHexReversed()} " +
-                            "completed with response: ${result.code}: ${result.message}"
-                    }
-                    TransactionSubmitResult.Failure(
-                        txId = txId,
-                        grpcError = false,
-                        code = result.code,
-                        description = result.message
-                    )
-                }
+                TransactionSubmitResult.Failure(
+                    txId = txId,
+                    grpcError = false,
+                    code = result.code,
+                    description = result.message
+                )
             }
         }
 
@@ -67,9 +92,3 @@ private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArra
             )
         }
     }
-
-internal fun isAlreadyKnownToNetwork(message: String?): Boolean {
-    val lower = message?.lowercase() ?: return false
-    return lower.contains("already exists in mempool") ||
-        lower.contains("already queued for download")
-}
