@@ -38,6 +38,7 @@ internal suspend fun CombinedWalletClient.submitTransaction(
     return initialResult
 }
 
+@Suppress("TooGenericExceptionCaught")
 private suspend fun CombinedWalletClient.isTransactionKnownToServer(
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags
@@ -54,7 +55,10 @@ private suspend fun CombinedWalletClient.isTransactionKnownToServer(
             is Response.Success -> true
             else -> false
         }
-    } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+    } catch (t: Throwable) {
+        Twig.warn(t) {
+            "Failed to verify whether server knows tx ${txId.byteArray.toHexReversed()}; treating as unknown"
+        }
         false
     }
 
