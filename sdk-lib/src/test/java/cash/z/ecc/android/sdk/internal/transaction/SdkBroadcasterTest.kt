@@ -189,7 +189,7 @@ class SdkBroadcasterTest {
         }
 
     @Test
-    fun sdk_legacy_proposed_transactions_mark_awaiting_plan_before_submit_completes() =
+    fun sdk_legacy_proposed_transactions_block_retain_while_create_in_progress() =
         runBlocking {
             val endpoint = LightWalletEndpoint("current.z.cash", 443, true)
             val encodedTransaction = encodedTransaction(11)
@@ -232,6 +232,92 @@ class SdkBroadcasterTest {
             createJob.await()
             retainCompleted.await()
             retainJob.join()
+        }
+
+    @Test
+    fun sdk_legacy_proposed_transactions_stay_awaiting_plan_while_submit_in_progress() =
+        runBlocking {
+            val endpoint = LightWalletEndpoint("current.z.cash", 443, true)
+            val encodedTransaction = encodedTransaction(12)
+            val submitStarted = CompletableDeferred<Unit>()
+            val allowSubmitToFinish = CompletableDeferred<Unit>()
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val txManager = FakeOutboundTransactionManager(proposedTransactions = listOf(encodedTransaction))
+            val submitter =
+                FakeTransactionSubmitter(
+                    beforeReturning = {
+                        submitStarted.complete(Unit)
+                        allowSubmitToFinish.await()
+                    }
+                )
+            val broadcaster = SdkBroadcaster(txManager, submitter, pendingSubmitPlanStore)
+
+            val submitJob =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    broadcaster
+                        .createAndSubmitProposedTransactions(fakeProposal(), fakeUsk(), endpoint)
+                        .toList()
+                }
+
+            submitStarted.await()
+
+            // While submit is in flight, plan must still be AwaitingPlan so the sync loop's
+            // resubmitUnminedTransactions step skips it instead of racing the in-flight broadcast.
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan,
+                pendingSubmitPlanStore.getSubmitPlan(encodedTransaction.txId)
+            )
+
+            allowSubmitToFinish.complete(Unit)
+            submitJob.await()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
+                pendingSubmitPlanStore.getSubmitPlan(encodedTransaction.txId)
+            )
+        }
+
+    @Test
+    fun broadcaster_submit_stays_awaiting_plan_while_submit_in_progress() =
+        runBlocking {
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val encodedTransaction = encodedTransaction(13)
+            val submitStarted = CompletableDeferred<Unit>()
+            val allowSubmitToFinish = CompletableDeferred<Unit>()
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val submitter =
+                FakeTransactionSubmitter(
+                    beforeReturning = {
+                        submitStarted.complete(Unit)
+                        allowSubmitToFinish.await()
+                    }
+                )
+            val broadcaster = SdkBroadcaster(FakeOutboundTransactionManager(), submitter, pendingSubmitPlanStore)
+            val transaction = encodedTransaction.toCreatedTransactionForTest()
+
+            // The public Broadcaster.submit expects createProposedTransactions has already
+            // registered the txid as AwaitingPlan. Simulate that here.
+            pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan { listOf(transaction) }
+
+            val submitJob =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    broadcaster.submit(transaction, endpoint)
+                }
+
+            submitStarted.await()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan,
+                pendingSubmitPlanStore.getSubmitPlan(transaction.txId)
+            )
+
+            allowSubmitToFinish.complete(Unit)
+            submitJob.await()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
+                pendingSubmitPlanStore.getSubmitPlan(transaction.txId)
+            )
         }
 
     @Test
@@ -351,7 +437,8 @@ class SdkBroadcasterTest {
     private class FakeTransactionSubmitter(
         private val resultFactory: (CreatedTransaction) -> TransactionSubmitResult = {
             TransactionSubmitResult.Success(it.txId)
-        }
+        },
+        private val beforeReturning: suspend () -> Unit = {}
     ) : TransactionSubmitter {
         val submissions = mutableListOf<Submission>()
 
@@ -360,6 +447,7 @@ class SdkBroadcasterTest {
             endpoint: LightWalletEndpoint
         ): TransactionSubmitResult {
             submissions += Submission(transaction, endpoint)
+            beforeReturning()
             return resultFactory(transaction)
         }
     }

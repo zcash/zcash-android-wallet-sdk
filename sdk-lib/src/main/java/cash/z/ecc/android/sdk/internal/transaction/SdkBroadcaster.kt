@@ -46,8 +46,14 @@ internal class SdkBroadcaster(
         transaction: CreatedTransaction,
         endpoint: LightWalletEndpoint
     ): TransactionSubmitResult {
+        // Record the endpoint AFTER the submit returns so the in-flight window stays at
+        // AwaitingPlan (or the prior Ready state) — the sync loop's resubmit step skips
+        // AwaitingPlan and otherwise dedupes against the endpoints recorded here, so
+        // recording before the submit returns would let a concurrent resubmit race the
+        // in-flight broadcast against an endpoint we've claimed but not actually hit yet.
+        val result = transactionSubmitter.submit(transaction, endpoint)
         pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
-        return transactionSubmitter.submit(transaction, endpoint)
+        return result
     }
 
     // Legacy Synchronizer APIs route through the same plan-store machinery as the public
@@ -57,30 +63,34 @@ internal class SdkBroadcaster(
         usk: UnifiedSpendingKey,
         endpoint: LightWalletEndpoint
     ): Flow<TransactionSubmitResult> =
-        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
-            txManager
-                .createProposedTransactions(proposal, usk)
-                .map { it.toCreatedTransaction() }
-        }.createSubmitResultFlow { transaction ->
-            pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
-            transactionSubmitter.submit(transaction, endpoint)
-        }
+        pendingSubmitPlanStore
+            .createAndMarkAwaitingSubmitPlan {
+                txManager
+                    .createProposedTransactions(proposal, usk)
+                    .map { it.toCreatedTransaction() }
+            }.createSubmitResultFlow { transaction ->
+                val result = transactionSubmitter.submit(transaction, endpoint)
+                pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
+                result
+            }
 
     internal suspend fun createAndSubmitTransactionFromPczt(
         pcztWithProofs: Pczt,
         pcztWithSignatures: Pczt,
         endpoint: LightWalletEndpoint
     ): Flow<TransactionSubmitResult> =
-        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
-            listOf(
-                txManager
-                    .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
-                    .toCreatedTransaction()
-            )
-        }.asFlow()
+        pendingSubmitPlanStore
+            .createAndMarkAwaitingSubmitPlan {
+                listOf(
+                    txManager
+                        .extractAndStoreTxFromPczt(pcztWithProofs, pcztWithSignatures)
+                        .toCreatedTransaction()
+                )
+            }.asFlow()
             .map { transaction ->
+                val result = transactionSubmitter.submit(transaction, endpoint)
                 pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
-                transactionSubmitter.submit(transaction, endpoint)
+                result
             }
 }
 
