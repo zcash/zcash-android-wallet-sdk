@@ -6,17 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- The sync pipeline's per-transaction enhance step now retries 5 times (was 1) with exponential
-  backoff between attempts, surfaces an error-level log when the budget is exhausted, and applies
-  a per-txid cross-cycle backoff (via a new internal `EnhanceFailureTracker`) so a transaction
-  that has repeatedly failed to enhance against the current lightwalletd endpoint is no longer
-  re-fetched on every sync cycle. Previously, two attempts with a single 500ms delay was the
-  whole budget, and an exhausted budget produced an `EnhanceFailed` result that was logged but
-  left no state — so received transactions could remain stuck in a pending UI state indefinitely
-  while the SDK hammered the same endpoint with the same failing request on every cycle.
-
 ### Added
+- `CompactBlockProcessor.enhanceTransactionDetails` and the per-transaction `enhanceTransaction`
+  step now emit structured diagnostic logs at each step of an enhance cycle — cycle start with
+  request count, per-request type, fetch response shape (whether a tx was returned, whether it
+  has a mined height), the decision taken (`setTransactionStatus` or `decryptAndStoreTransaction`),
+  per-request errors with error type, and cycle completion. Logs use opaque per-request
+  correlation ids (no transaction ids, addresses, or other PII) so production logs are debuggable
+  for future stuck-transaction reports without exposing user-identifying data.
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
   to the bundled checkpoint if this optimization does not complete within 5 seconds.

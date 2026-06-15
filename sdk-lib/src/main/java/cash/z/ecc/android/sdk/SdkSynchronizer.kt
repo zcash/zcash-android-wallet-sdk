@@ -8,7 +8,6 @@ import cash.z.ecc.android.sdk.Synchronizer.Status.SYNCED
 import cash.z.ecc.android.sdk.Synchronizer.Status.SYNCING
 import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor
 import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor.State.Disconnected
-import cash.z.ecc.android.sdk.block.processor.EnhanceFailureTracker
 import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor.State.Initializing
 import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor.State.Stopped
 import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor.State.Synced
@@ -1401,8 +1400,7 @@ internal object DefaultSynchronizerFactory {
         sdkFlags: SdkFlags,
         saplingParamFetcher: SaplingParamFetcher,
         pendingSubmitPlanStore: PendingSubmitPlanStore,
-        submitPlanExecutor: SubmitPlanExecutor,
-        enhanceFailureTracker: EnhanceFailureTracker = EnhanceFailureTracker()
+        submitPlanExecutor: SubmitPlanExecutor
     ): CompactBlockProcessor =
         CompactBlockProcessor(
             backend = backend,
@@ -1413,8 +1411,7 @@ internal object DefaultSynchronizerFactory {
             sdkFlags = sdkFlags,
             saplingParamFetcher = saplingParamFetcher,
             pendingSubmitPlanStore = pendingSubmitPlanStore,
-            submitPlanExecutor = submitPlanExecutor,
-            enhanceFailureTracker = enhanceFailureTracker
+            submitPlanExecutor = submitPlanExecutor
         )
 }
 
