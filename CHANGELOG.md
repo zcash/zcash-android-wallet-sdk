@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.4] - 2026-06-16
+
+### Fixed
+- Fixed ignore of `CancellationException` which is important for coroutines.
+
+### Changed
+- Updated checkpoints for mainnet and testnet.
+
 ## [2.6.3] - 2026-06-15
 
 ### Changed
