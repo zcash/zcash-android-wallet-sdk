@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `Synchronizer.submitTransaction` (and the broadcaster equivalent) now verifies submit failures
+  against the server before surfacing them: when the submit RPC returns a non-zero error code
+  (and not a gRPC-layer failure), the SDK immediately asks the same lightwalletd whether the tx
+  is known via `fetchTransaction`, and reclassifies the result as `TransactionSubmitResult.Success`
+  if the server reports the tx is in mempool or chain. This covers the cases that previously
+  produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's
+  `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
+  backend-specific error codes or message text.
+
 ### Added
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
