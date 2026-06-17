@@ -76,6 +76,21 @@ jobs:
         run: |
           ./gradlew checkProperties
 
+  static_analysis_shellcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Shellcheck
+        timeout-minutes: 1
+        run: |
+          find . -name "*.sh" -not -path "./.git/*" \
+            -not -path "./build/*" -not -path "./.gradle/*" \
+            -print -exec shellcheck {} +
+
   static_analysis_detekt:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
