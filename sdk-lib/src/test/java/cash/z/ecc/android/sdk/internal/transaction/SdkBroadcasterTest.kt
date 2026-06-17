@@ -16,6 +16,7 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -313,6 +314,39 @@ class SdkBroadcasterTest {
 
             allowSubmitToFinish.complete(Unit)
             submitJob.await()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
+                pendingSubmitPlanStore.getSubmitPlan(transaction.txId)
+            )
+        }
+
+    @Test
+    fun broadcaster_submit_records_endpoint_even_if_cancelled_mid_submit() =
+        runBlocking {
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val encodedTransaction = encodedTransaction(14)
+            val submitStarted = CompletableDeferred<Unit>()
+            val neverFinish = CompletableDeferred<Unit>()
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val submitter =
+                FakeTransactionSubmitter(
+                    beforeReturning = {
+                        submitStarted.complete(Unit)
+                        neverFinish.await()
+                    }
+                )
+            val broadcaster = SdkBroadcaster(FakeOutboundTransactionManager(), submitter, pendingSubmitPlanStore)
+            val transaction = encodedTransaction.toCreatedTransactionForTest()
+            pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan { listOf(transaction) }
+
+            val submitJob =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    broadcaster.submit(transaction, endpoint)
+                }
+
+            submitStarted.await()
+            submitJob.cancelAndJoin()
 
             assertEquals(
                 PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),

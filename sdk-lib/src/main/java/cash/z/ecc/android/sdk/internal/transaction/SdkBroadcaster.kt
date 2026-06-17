@@ -45,16 +45,7 @@ internal class SdkBroadcaster(
     override suspend fun submit(
         transaction: CreatedTransaction,
         endpoint: LightWalletEndpoint
-    ): TransactionSubmitResult {
-        // Record the endpoint AFTER the submit returns so the in-flight window stays at
-        // AwaitingPlan (or the prior Ready state) — the sync loop's resubmit step skips
-        // AwaitingPlan and otherwise dedupes against the endpoints recorded here, so
-        // recording before the submit returns would let a concurrent resubmit race the
-        // in-flight broadcast against an endpoint we've claimed but not actually hit yet.
-        val result = transactionSubmitter.submit(transaction, endpoint)
-        pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
-        return result
-    }
+    ): TransactionSubmitResult = recordingEndpointAfterSubmit(transaction, endpoint)
 
     // Legacy Synchronizer APIs route through the same plan-store machinery as the public
     // Broadcaster so the sync-loop's resubmit step skips in-flight submits.
@@ -69,9 +60,7 @@ internal class SdkBroadcaster(
                     .createProposedTransactions(proposal, usk)
                     .map { it.toCreatedTransaction() }
             }.createSubmitResultFlow { transaction ->
-                val result = transactionSubmitter.submit(transaction, endpoint)
-                pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
-                result
+                recordingEndpointAfterSubmit(transaction, endpoint)
             }
 
     internal suspend fun createAndSubmitTransactionFromPczt(
@@ -88,10 +77,24 @@ internal class SdkBroadcaster(
                 )
             }.asFlow()
             .map { transaction ->
-                val result = transactionSubmitter.submit(transaction, endpoint)
-                pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
-                result
+                recordingEndpointAfterSubmit(transaction, endpoint)
             }
+
+    // Record the endpoint after submit returns so the in-flight window stays at AwaitingPlan
+    // and the sync loop's resubmit step doesn't race it. NonCancellable so a cancelled submit
+    // doesn't strand the plan at AwaitingPlan forever — the resubmit loop skips that state.
+    private suspend fun recordingEndpointAfterSubmit(
+        transaction: CreatedTransaction,
+        endpoint: LightWalletEndpoint
+    ): TransactionSubmitResult {
+        try {
+            return transactionSubmitter.submit(transaction, endpoint)
+        } finally {
+            withContext(NonCancellable) {
+                pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
+            }
+        }
+    }
 }
 
 internal interface TransactionSubmitter {
@@ -127,6 +130,8 @@ private fun List<CreatedTransaction>.createSubmitResultFlow(
     return asFlow()
         .map { transaction ->
             if (anySubmissionFailed) {
+                // Skip both submit and addSubmitEndpoint — later legs of dependent proposals
+                // (shield → spend) stay AwaitingPlan and are skipped by the resubmit loop.
                 TransactionSubmitResult.NotAttempted(transaction.txId)
             } else {
                 val submission = submit(transaction)

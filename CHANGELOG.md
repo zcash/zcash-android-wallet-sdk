@@ -11,7 +11,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helpers now register transactions in `PendingSubmitPlanStore` so the sync loop's
   `resubmitUnminedTransactions` step correctly skips in-flight submits instead of racing them
   with a second `txManager.submit()` and producing `transaction already exists in mempool`
-  rejections.
+  rejections. The public `Broadcaster.submit` and both legacy helpers also record their endpoint
+  after the submit RPC returns (rather than before), so the in-flight window stays at
+  `AwaitingPlan`; the endpoint write is wrapped in `NonCancellable` so a coroutine cancellation
+  mid-submit cannot leave the plan stranded at `AwaitingPlan` forever.
 - `Synchronizer.submitTransaction` (and the broadcaster equivalent) now verifies submit failures
   against the server before surfacing them: when the submit RPC returns a non-zero error code
   (and not a gRPC-layer failure), the SDK immediately asks the same lightwalletd whether the tx
