@@ -13,6 +13,7 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -348,6 +349,30 @@ class SdkBroadcasterTest {
             submitStarted.await()
             submitJob.cancelAndJoin()
 
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
+                pendingSubmitPlanStore.getSubmitPlan(transaction.txId)
+            )
+        }
+
+    @Test
+    fun broadcaster_submit_records_endpoint_even_if_submit_throws_non_cancellation() =
+        runBlocking {
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val transaction = encodedTransaction(15).toCreatedTransactionForTest()
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val boom = IOException("simulated network failure")
+            val submitter = FakeTransactionSubmitter(beforeReturning = { throw boom })
+            val broadcaster = SdkBroadcaster(FakeOutboundTransactionManager(), submitter, pendingSubmitPlanStore)
+            pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan { listOf(transaction) }
+
+            val thrown =
+                runCatching { broadcaster.submit(transaction, endpoint) }.exceptionOrNull()
+
+            assertEquals(boom, thrown)
+            // The endpoint must be recorded so the resubmit loop retries through SubmitPlanExecutor.
+            // Leaving the plan at AwaitingPlan would strand the tx — the resubmit loop skips
+            // AwaitingPlan entries on the assumption they were never submitted from this session.
             assertEquals(
                 PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
                 pendingSubmitPlanStore.getSubmitPlan(transaction.txId)

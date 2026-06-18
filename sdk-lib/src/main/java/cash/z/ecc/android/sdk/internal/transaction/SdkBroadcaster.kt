@@ -81,8 +81,9 @@ internal class SdkBroadcaster(
             }
 
     // Record the endpoint after submit returns so the in-flight window stays at AwaitingPlan
-    // and the sync loop's resubmit step doesn't race it. NonCancellable so a cancelled submit
-    // doesn't strand the plan at AwaitingPlan forever — the resubmit loop skips that state.
+    // and the sync loop's resubmit step doesn't race it. finally + NonCancellable fires on
+    // every exit (Success/Failure/throw) — AwaitingPlan strands the tx (resubmit skips that
+    // state), Ready is the state the resubmit loop retries through SubmitPlanExecutor.
     private suspend fun recordingEndpointAfterSubmit(
         transaction: CreatedTransaction,
         endpoint: LightWalletEndpoint
