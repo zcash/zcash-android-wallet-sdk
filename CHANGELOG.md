@@ -8,13 +8,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
-  helpers now register transactions in `PendingSubmitPlanStore` so the sync loop's
-  `resubmitUnminedTransactions` step correctly skips in-flight submits instead of racing them
-  with a second `txManager.submit()` and producing `transaction already exists in mempool`
-  rejections. The public `Broadcaster.submit` and both legacy helpers also record their endpoint
-  after the submit RPC returns (rather than before), so the in-flight window stays at
-  `AwaitingPlan`; the endpoint write is wrapped in `NonCancellable` so a coroutine cancellation
-  mid-submit cannot leave the plan stranded at `AwaitingPlan` forever.
+  helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
+  paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that
+  fired during the active `submit()` RPC could race the foreground submit with a second
+  `txManager.submit()`. With the plan-store dance, the in-flight window is `AwaitingPlan` and the
+  resubmit step skips it. Note that `resubmitUnminedTransactions` is DB-driven (loads
+  unmined-and-not-expired txs from the wallet DB) and does not query the mempool, so a tx that
+  has been accepted into a server's mempool but not yet mined will still be re-broadcast on the
+  next sync tick — that mempool-duplication path is handled by the "verify against the server"
+  reclassification (separate `## Fixed` entry below). This entry narrows the *in-flight* race
+  window specifically. The public `Broadcaster.submit` and both legacy helpers record their
+  endpoint after the submit RPC returns (rather than before), and the write is wrapped in
+  `NonCancellable` so a coroutine cancellation mid-submit cannot leave the plan stranded at
+  `AwaitingPlan`.
 - `Synchronizer.submitTransaction` (and the broadcaster equivalent) now verifies submit failures
   against the server before surfacing them: when the submit RPC returns a non-zero error code
   (and not a gRPC-layer failure), the SDK immediately asks the same lightwalletd whether the tx
