@@ -200,6 +200,27 @@ jobs:
           name: Android Lint static analysis results
           path: ~/artifacts
 
+  static_analysis_clippy:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+      - name: Clippy
+        timeout-minutes: 15
+        working-directory: backend-lib
+        run: |
+          cargo clippy --tests --all-features -- -W clippy::all -D warnings
+
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
     runs-on: ubuntu-latest

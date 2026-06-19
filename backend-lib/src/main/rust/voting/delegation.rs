@@ -127,6 +127,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 /// Shared by the explicit-FVK Keystone path and the seed-validated software path. Callers must
 /// provide already validated signer material; this helper verifies the bundle index, enforces the
 /// round phase, persists the constructed delegation state, and advances the phase on success.
+#[allow(clippy::too_many_arguments)]
 fn build_governance_pczt_for_bundle(
     db: &VotingDb,
     round_id: &str,
@@ -636,7 +637,7 @@ mod tests {
         let result = voting::action::build_governance_pczt(
             &[note_info()],
             &round_params(),
-            &fvk.to_bytes().to_vec(),
+            fvk.to_bytes().as_ref(),
             &hotkey_address,
             nu6_branch_id(),
             Network::TestNetwork.coin_type(),
@@ -702,7 +703,7 @@ mod tests {
         voting::action::build_governance_pczt(
             &[note_info()],
             &round_params(),
-            &fvk.to_bytes().to_vec(),
+            fvk.to_bytes().as_ref(),
             &hotkey_address,
             nu6_branch_id(),
             Network::TestNetwork.coin_type(),
