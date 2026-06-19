@@ -165,11 +165,18 @@ fun com.android.build.gradle.BaseExtension.configureBaseExtension() {
                     device = "Pixel 2"
                     apiLevel = testDeviceMinSdkVersion
                     systemImageSource = "aosp"
+                    // The aosp image at the min API level only ships an x86
+                    // (32-bit) ABI. AGP 8.13 cannot auto-resolve the ABI for
+                    // such an image and the managed-device setup task fails with
+                    // "Cannot query the value of this property"; pin it instead.
+                    testedAbi = "x86"
                 }
                 create<ManagedVirtualDevice>("pixel2Target") {
                     device = "Pixel 2"
                     apiLevel = testDeviceMaxSdkVersion
                     systemImageSource = "aosp"
+                    // The aosp image at the target API level is x86_64-only.
+                    testedAbi = "x86_64"
                 }
             }
         }
