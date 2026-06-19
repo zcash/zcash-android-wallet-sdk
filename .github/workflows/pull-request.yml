@@ -11,10 +11,10 @@ name: Pull Request
 on:
   pull_request:
     paths-ignore:
-      - '.github/ISSUE_TEMPLATE/*'
-      - '.github/PULL_REQUEST_TEMPLATE.md'
-      - 'README.md'
-      - 'docs/**'
+      - ".github/ISSUE_TEMPLATE/*"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - "README.md"
+      - "docs/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -221,7 +221,7 @@ jobs:
           cargo clippy --tests --all-features -- -W clippy::all -D warnings
 
   test_android_modules_unit:
-    needs: [ validate_gradle_wrapper ]
+    needs: [validate_gradle_wrapper]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -260,7 +260,12 @@ jobs:
   # Emulator.wtf is preferred if it has an API key.
   test_android_modules_ftl:
     if: needs.check_firebase_secrets.outputs.has-secrets == 'true' && needs.check_emulator_wtf_secrets.outputs.has-secrets == 'false'
-    needs: [validate_gradle_wrapper, check_firebase_secrets, check_emulator_wtf_secrets]
+    needs:
+      [
+        validate_gradle_wrapper,
+        check_firebase_secrets,
+        check_emulator_wtf_secrets,
+      ]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -287,7 +292,7 @@ jobs:
           project_id: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
           service_account: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
           workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
-          access_token_lifetime: '1200s'
+          access_token_lifetime: "1200s"
       - name: Test
         timeout-minutes: 30
         env:
@@ -316,9 +321,11 @@ jobs:
           name: Test Android modules with FTL results
           path: ~/artifacts
 
-  test_android_modules_wtf:
-    if: needs.check_emulator_wtf_secrets.outputs.has-secrets == 'true'
-    needs: [ validate_gradle_wrapper, check_emulator_wtf_secrets ]
+  # Runs the Android instrumentation suites on a Gradle Managed Device: a
+  # hardware-accelerated emulator booted inside the runner. This replaces the
+  # former emulator.wtf cloud job and depends on no external test service.
+  test_android_modules_emulator:
+    needs: [validate_gradle_wrapper]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -326,18 +333,35 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      # ubuntu-latest exposes /dev/kvm, but the default udev rules do not grant
+      # the runner user access to it. This rule opens it so the managed-device
+      # emulator can use KVM acceleration instead of falling back to software.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+      # pixel2Min is the Gradle Managed Device defined in
+      # zcash-sdk.android-conventions.gradle.kts (Pixel 2, API ANDROID_MIN_SDK_VERSION).
+      # Scoped to the same four modules the former emulator.wtf job covered;
+      # the unqualified task would also pull in darkside-test-lib (needs a live
+      # darkside server) and the demo-app modules. In-runner emulators run
+      # serially, so the timeout is higher than the former cloud job.
       - name: Build and test
-        timeout-minutes: 30
-        env:
-          ORG_GRADLE_PROJECT_ZCASH_EMULATOR_WTF_API_KEY: ${{ secrets.EMULATOR_WTF_API_KEY }}
+        timeout-minutes: 45
         run: |
-          ./gradlew testDebugWithEmulatorWtf
+          ./gradlew \
+            :sdk-lib:pixel2MinDebugAndroidTest \
+            :lightwallet-client-lib:pixel2MinDebugAndroidTest \
+            :sdk-incubator-lib:pixel2MinDebugAndroidTest \
+            :backend-lib:pixel2MinDebugAndroidTest
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -353,7 +377,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         timeout-minutes: 1
         with:
-          name: Test Android modules with WTF results
+          name: Test Android modules with emulator results
           path: ~/artifacts
 
   demo_app_release_build:
@@ -386,7 +410,7 @@ jobs:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS: androiddebugkey
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS_PASSWORD: android
         run: |
-           ./gradlew assembleRelease
+          ./gradlew assembleRelease
       - name: Collect Artifacts
         timeout-minutes: 1
         env:
@@ -432,7 +456,7 @@ jobs:
           project_id: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
           service_account: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
           workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
-          access_token_lifetime: '900s'
+          access_token_lifetime: "900s"
       - name: Download a single artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
