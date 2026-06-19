@@ -366,7 +366,7 @@ jobs:
       - name: Build and test
         timeout-minutes: 45
         run: |
-          ./gradlew :sdk-lib:pixel2MinSetup
+          ./gradlew :sdk-lib:pixel2MinSetup --stacktrace --info
           ./gradlew \
             :sdk-lib:pixel2MinDebugAndroidTest \
             :lightwallet-client-lib:pixel2MinDebugAndroidTest \
