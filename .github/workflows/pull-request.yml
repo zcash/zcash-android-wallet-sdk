@@ -366,6 +366,10 @@ jobs:
       # single emulator booted at a time so the runner is not overwhelmed by four
       # parallel emulators; in-runner emulators run serially, hence the higher
       # timeout than the former cloud job.
+      # emulator.gpu=swiftshader_indirect forces software rendering. The hosted
+      # runner is headless, and AGP's default '-gpu auto-no-window' intermittently
+      # falls back to 'auto', which needs a real GPU and fails to boot the
+      # emulator (EmulatorStartFailedException during snapshot creation).
       - name: Build and test
         timeout-minutes: 45
         run: |
@@ -374,7 +378,8 @@ jobs:
             :lightwallet-client-lib:pixel2MinDebugAndroidTest \
             :sdk-incubator-lib:pixel2MinDebugAndroidTest \
             :backend-lib:pixel2MinDebugAndroidTest \
-            -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1
+            -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
