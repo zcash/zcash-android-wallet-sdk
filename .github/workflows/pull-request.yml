@@ -384,7 +384,13 @@ jobs:
         run: |
           mkdir ${ARTIFACTS_DIR_PATH}
 
-          zip -r ${TEST_RESULTS_ZIP_PATH} . -i \*/build/test-results/\*
+          # Managed-device runs write results/reports under build/outputs and
+          # build/reports/androidTests, not build/test-results, so include those
+          # too to make failures inspectable from the artifact.
+          zip -r ${TEST_RESULTS_ZIP_PATH} . \
+            -i \*/build/test-results/\* \
+            \*/build/outputs/androidTest-results/\* \
+            \*/build/reports/androidTests/\*
       - name: Upload Artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
