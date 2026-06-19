@@ -30,6 +30,21 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
   backend-specific error codes or message text.
 
+## [2.6.4] - 2026-06-16
+
+### Fixed
+- Fixed ignore of `CancellationException` which is important for coroutines.
+
+### Changed
+- Updated checkpoints for mainnet and testnet.
+
+## [2.6.3] - 2026-06-15
+
+### Changed
+- Updated checkpoints for mainnet and testnet.
+
+## [2.6.0] - 2026-05-26
+
 ### Added
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back

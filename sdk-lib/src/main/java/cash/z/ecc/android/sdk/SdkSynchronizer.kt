@@ -95,6 +95,7 @@ import co.electriccoin.lightwallet.client.util.use
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngineConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -718,7 +719,10 @@ class SdkSynchronizer private constructor(
             }
         }
 
-    internal suspend fun getWalletDbPathForVoting(): String =
+    /**
+     * Made public only for snapshot release. Will be fixed properly in real one.
+     */
+    override suspend fun getWalletDbPathForVoting(): String =
         withContext(Dispatchers.IO) {
             val dataDbFile =
                 DatabaseCoordinator.getInstance(context).dataDbFile(
@@ -923,8 +927,9 @@ class SdkSynchronizer private constructor(
                 }
         }.onFailure {
             Twig.error(it) { "Create account failed." }
-        }.getOrElse {
-            throw InitializeException.CreateAccountException(it)
+        }.getOrElse { cause ->
+            if (cause is CancellationException) throw cause
+            throw InitializeException.CreateAccountException(cause)
         }
 
     override suspend fun importAccountByUfvk(setup: AccountImportSetup): Account {
@@ -976,8 +981,9 @@ class SdkSynchronizer private constructor(
             backend.getAccounts()
         }.onFailure {
             Twig.error(it) { "Get wallet accounts failed." }
-        }.getOrElse {
-            throw InitializeException.GetAccountsException(it)
+        }.getOrElse { cause ->
+            if (cause is CancellationException) throw cause
+            throw InitializeException.GetAccountsException(cause)
         }
 
     override val accountsFlow: Flow<List<Account>?> =
