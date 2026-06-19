@@ -348,25 +348,27 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+      # The hosted runner's Android SDK does not include the emulator package,
+      # which a Gradle Managed Device requires. AGP auto-installs the system
+      # image but not the emulator, so without this the pixel2MinSetup task
+      # fails at VersionedSdkLoader.getEmulatorDirectoryProvider().get() with
+      # "Cannot query the value of this property because it has no value
+      # available". Install it explicitly.
+      - name: Install Android emulator
+        timeout-minutes: 5
+        run: |
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "emulator"
       # pixel2Min is the Gradle Managed Device defined in
       # zcash-sdk.android-conventions.gradle.kts (Pixel 2, API ANDROID_MIN_SDK_VERSION).
       # Scoped to the same four modules the former emulator.wtf job covered;
       # the unqualified task would also pull in darkside-test-lib (needs a live
-      # darkside server) and the demo-app modules. In-runner emulators run
-      # serially, so the timeout is higher than the former cloud job.
-      #
-      # All four modules share one managed device, so they share one AVD
-      # (dev27_default_x86_Pixel_2). With org.gradle.parallel=true their
-      # pixel2MinSetup tasks otherwise run concurrently and race on creating
-      # that AVD/snapshot (and on the sdkmanager system-image install), failing
-      # with "Cannot query the value of this property because it has no value
-      # available". Pre-create the snapshot once in an isolated invocation, then
-      # run the suites with a single emulator at a time so the snapshot is
-      # reused and the runner is not overwhelmed by four parallel emulators.
+      # darkside server) and the demo-app modules. maxConcurrentDevices=1 keeps a
+      # single emulator booted at a time so the runner is not overwhelmed by four
+      # parallel emulators; in-runner emulators run serially, hence the higher
+      # timeout than the former cloud job.
       - name: Build and test
         timeout-minutes: 45
         run: |
-          ./gradlew :sdk-lib:pixel2MinSetup --stacktrace --info
           ./gradlew \
             :sdk-lib:pixel2MinDebugAndroidTest \
             :lightwallet-client-lib:pixel2MinDebugAndroidTest \
