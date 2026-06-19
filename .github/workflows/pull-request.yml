@@ -29,7 +29,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
         uses: gradle/actions/wrapper-validation@v6
@@ -66,7 +66,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 10
@@ -76,6 +76,21 @@ jobs:
         run: |
           ./gradlew checkProperties
 
+  static_analysis_shellcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Shellcheck
+        timeout-minutes: 1
+        run: |
+          find . -name "*.sh" -not -path "./.git/*" \
+            -not -path "./build/*" -not -path "./.gradle/*" \
+            -print -exec shellcheck {} +
+
   static_analysis_detekt:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
@@ -84,7 +99,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -119,7 +134,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -154,7 +169,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -185,6 +200,27 @@ jobs:
           name: Android Lint static analysis results
           path: ~/artifacts
 
+  static_analysis_clippy:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+      - name: Clippy
+        timeout-minutes: 15
+        working-directory: backend-lib
+        run: |
+          cargo clippy --tests --all-features -- -W clippy::all -D warnings
+
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
     runs-on: ubuntu-latest
@@ -193,7 +229,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -233,7 +269,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -290,7 +326,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -329,7 +365,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -384,7 +420,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Setup
         id: setup
         timeout-minutes: 30

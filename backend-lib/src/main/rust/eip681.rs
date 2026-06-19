@@ -119,7 +119,7 @@ fn encode_eip681_transaction_request<'a>(
             let gas_price_hex = u256_option_to_jstring(env, native.gas_price())?;
 
             Ok(env.new_object(
-                &format!("{}$Native", JNI_CLASS_PREFIX),
+                format!("{}$Native", JNI_CLASS_PREFIX),
                 "(Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
                 &[
                     JValue::Object(&schema_prefix),
@@ -141,7 +141,7 @@ fn encode_eip681_transaction_request<'a>(
             let value_hex = env.new_string(format!("{:#x}", erc20.value_atomic()))?;
 
             Ok(env.new_object(
-                &format!("{}$Erc20", JNI_CLASS_PREFIX),
+                format!("{}$Erc20", JNI_CLASS_PREFIX),
                 "(Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
                 &[
                     JValue::Object(&schema_prefix),
@@ -154,7 +154,7 @@ fn encode_eip681_transaction_request<'a>(
             )?)
         }
         TransactionRequest::Unrecognised(_) => {
-            Ok(env.new_object(&format!("{}$Unrecognised", JNI_CLASS_PREFIX), "()V", &[])?)
+            Ok(env.new_object(format!("{}$Unrecognised", JNI_CLASS_PREFIX), "()V", &[])?)
         }
     }
 }

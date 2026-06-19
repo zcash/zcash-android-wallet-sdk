@@ -1,6 +1,11 @@
 name: 'Setup Java, Rust, and Dependency Cache'
 description: "Configures the build environment and caches Gradle, dependencies, and build outputs."
 inputs:
+  # rust-toolchain.toml must be in sync with this default.
+  rust-version:
+    description: "Rust toolchain version to install."
+    required: false
+    default: "1.92.0"
   rust-cache:
     description: "Whether to restore and save the Rust build cache for jobs that compile Rust."
     required: false
@@ -27,9 +32,10 @@ runs:
     - name: Setup Rust
       shell: bash
       run: |
-        rustup install 1.84.1
-        rustup default 1.84.1
+        rustup install ${{ inputs.rust-version }}
+        rustup default ${{ inputs.rust-version }}
         rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        rustup component add clippy
     - name: Configure Gradle
       shell: bash
       run: |

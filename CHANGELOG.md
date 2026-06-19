@@ -6,6 +6,30 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
+  helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
+  paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that
+  fired during the active `submit()` RPC could race the foreground submit with a second
+  `txManager.submit()`. With the plan-store dance, the in-flight window is `AwaitingPlan` and the
+  resubmit step skips it. Note that `resubmitUnminedTransactions` is DB-driven (loads
+  unmined-and-not-expired txs from the wallet DB) and does not query the mempool, so a tx that
+  has been accepted into a server's mempool but not yet mined will still be re-broadcast on the
+  next sync tick — that mempool-duplication path is handled by the "verify against the server"
+  reclassification (separate `## Fixed` entry below). This entry narrows the *in-flight* race
+  window specifically. The public `Broadcaster.submit` and both legacy helpers record their
+  endpoint after the submit RPC returns (rather than before), and the write is wrapped in
+  `NonCancellable` so a coroutine cancellation mid-submit cannot leave the plan stranded at
+  `AwaitingPlan`.
+- `Synchronizer.submitTransaction` (and the broadcaster equivalent) now verifies submit failures
+  against the server before surfacing them: when the submit RPC returns a non-zero error code
+  (and not a gRPC-layer failure), the SDK immediately asks the same lightwalletd whether the tx
+  is known via `fetchTransaction`, and reclassifies the result as `TransactionSubmitResult.Success`
+  if the server reports the tx is in mempool or chain. This covers the cases that previously
+  produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's
+  `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
+  backend-specific error codes or message text.
+
 ## [2.6.4] - 2026-06-16
 
 ### Fixed
