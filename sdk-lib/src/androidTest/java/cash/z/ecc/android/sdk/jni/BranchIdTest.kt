@@ -27,25 +27,27 @@ class BranchIdTest internal constructor(
     private val backend: TypesafeBackend
 ) {
     @Test
-    fun testBranchId_Hex() {
-        val branchId = backend.getBranchIdForHeight(height)
-        val clientBranch = "%x".format(branchId)
-        assertEquals(
-            "Invalid branch Id Hex value for $networkName at height $height on ${backend.network.networkName}",
-            branchHex,
-            clientBranch
-        )
-    }
+    fun testBranchId_Hex() =
+        runBlocking {
+            val branchId = backend.getBranchIdForHeight(height)
+            val clientBranch = "%x".format(branchId)
+            assertEquals(
+                "Invalid branch Id Hex value for $networkName at height $height on ${backend.network.networkName}",
+                branchHex,
+                clientBranch
+            )
+        }
 
     @Test
-    fun testBranchId_Numeric() {
-        val actual = backend.getBranchIdForHeight(height)
-        assertEquals(
-            "Invalid branch ID for $networkName at height $height on ${backend.network.networkName}",
-            branchId,
-            actual
-        )
-    }
+    fun testBranchId_Numeric() =
+        runBlocking {
+            val actual = backend.getBranchIdForHeight(height)
+            assertEquals(
+                "Invalid branch ID for $networkName at height $height on ${backend.network.networkName}",
+                branchId,
+                actual
+            )
+        }
 
     companion object {
         @JvmStatic

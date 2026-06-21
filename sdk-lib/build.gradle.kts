@@ -109,6 +109,7 @@ dependencies {
     api(projects.lightwalletClientLib)
     implementation(projects.backendLib)
 
+    implementation(libs.bundles.protobuf)
     implementation(libs.androidx.annotation)
     implementation(libs.androidx.core)
     implementation(libs.androidx.security.crypto)

@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.internal.model
 
-import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.mkdirsSuspend
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
@@ -15,7 +15,7 @@ import java.math.BigDecimal
 
 class TorClient private constructor(
     private var nativeHandle: Long?,
-    private val backend: Backend,
+    private val backend: TypesafeBackend,
 ) : Disposable {
     private val accessMutex = Mutex()
 
@@ -146,7 +146,7 @@ class TorClient private constructor(
         }
 
     companion object {
-        suspend fun new(torDir: File, backend: Backend): TorClient =
+        internal suspend fun new(torDir: File, backend: TypesafeBackend): TorClient =
             withContext(Dispatchers.IO) {
                 RustBackend.loadLibrary()
 

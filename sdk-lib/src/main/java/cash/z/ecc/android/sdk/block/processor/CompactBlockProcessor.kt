@@ -29,6 +29,7 @@ import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.ext.ZcashSdk.MAX_BACKOFF_INTERVAL
 import cash.z.ecc.android.sdk.ext.ZcashSdk.POLL_INTERVAL
 import cash.z.ecc.android.sdk.ext.ZcashSdk.POLL_INTERVAL_SHORT
+import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
@@ -201,8 +202,6 @@ class CompactBlockProcessor internal constructor(
     internal val walletBalances = MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null)
 
     private val processingMutex = Mutex()
-
-    private val decryptSemaphore = Mutex()
 
     /**
      * Flow of birthday heights. The birthday is essentially the first block that the wallet cares
@@ -437,9 +436,11 @@ class CompactBlockProcessor internal constructor(
                     .filterIsInstance<Response.Success<RawTransactionUnsafe>>()
                     .map { RawTransaction.new(it.result) }
                     .collect { mempoolTransaction ->
-                        decryptSemaphore.withLock {
+                        backend.withLock {
                             try {
-                                val decryptedTxId = decryptTransaction(mempoolTransaction)
+                                val decryptedTxId = it.decryptTransaction(
+                                    rawTransaction = mempoolTransaction,
+                                )
                                 val newTransactions = repository.allTransactions.first().map { it.rawId }
                                 if (newTransactions.any { it == decryptedTxId }) {
                                     checkTransactions()
@@ -2180,11 +2181,9 @@ class CompactBlockProcessor internal constructor(
                     // Decrypting and storing transaction is run just once, since we consider it more stable
                     Twig.verbose { "Decrypting and storing rawTransactionUnsafe" }
 
-                    decryptSemaphore.withLock {
-                        decryptTransaction(
-                            rawTransaction = RawTransaction.new(rawTransactionUnsafe = rawTransactionUnsafe),
-                        )
-                    }
+                    backend.decryptTransaction(
+                        rawTransaction = RawTransaction.new(rawTransactionUnsafe = rawTransactionUnsafe),
+                    )
                 }.onCompletion {
                     Twig.verbose { "Done Decrypting and storing of all transaction" }
                 }.collect()
@@ -2290,11 +2289,9 @@ class CompactBlockProcessor internal constructor(
                                     "transaction: txid: ${transactionRequest.txIdString()}"
                             }
 
-                            decryptSemaphore.withLock {
-                                decryptTransaction(
-                                    rawTransaction = RawTransaction.new(rawTransactionUnsafe = rawTransactionUnsafe),
-                                )
-                            }
+                            backend.decryptTransaction(
+                                rawTransaction = RawTransaction.new(rawTransactionUnsafe = rawTransactionUnsafe),
+                            )
                         }
                     }
                 }
@@ -2369,10 +2366,12 @@ class CompactBlockProcessor internal constructor(
     }
 
     @Throws(EnhanceTxDecryptError::class)
-    private suspend fun decryptTransaction(rawTransaction: RawTransaction): FirstClassByteArray =
+    private suspend fun TypesafeBackend.decryptTransaction(
+        rawTransaction: RawTransaction,
+    ): FirstClassByteArray =
         withTraceScope("CompactBlockProcessor.decryptTransaction") {
             runCatching {
-                backend.decryptAndStoreTransaction(rawTransaction.data, rawTransaction.height)
+                this.decryptAndStoreTransaction(rawTransaction.data, rawTransaction.height)
             }.getOrElse {
                 throw EnhanceTxDecryptError(rawTransaction.height, it)
             }

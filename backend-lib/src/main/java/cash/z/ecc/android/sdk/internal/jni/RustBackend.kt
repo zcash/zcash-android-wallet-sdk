@@ -142,14 +142,14 @@ class RustBackend private constructor(
             )
         }
 
-    override suspend fun isSeedRelevantToAnyDerivedAccounts(seed: ByteArray): Boolean =
-        withContext(SdkDispatchers.DATABASE_IO) {
-            isSeedRelevantToAnyDerivedAccounts(
-                dataDbFile.absolutePath,
-                seed,
-                networkId = networkId
-            )
-        }
+    // override suspend fun isSeedRelevantToAnyDerivedAccounts(seed: ByteArray): Boolean =
+    //     withContext(SdkDispatchers.DATABASE_IO) {
+    //         isSeedRelevantToAnyDerivedAccounts(
+    //             dataDbFile.absolutePath,
+    //             seed,
+    //             networkId = networkId
+    //         )
+    //     }
 
     override suspend fun deleteAccount(accountUuid: ByteArray): Boolean =
         withContext(SdkDispatchers.DATABASE_IO) {
