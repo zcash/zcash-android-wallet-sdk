@@ -110,6 +110,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.min
@@ -467,7 +468,10 @@ class CompactBlockProcessor internal constructor(
 
     suspend fun enhanceTransaction(txId: TransactionId) {
         processingMutex.withLockLogged("processNewBlocks") {
+            val reqId = UUID.randomUUID().toString().take(LOG_CORRELATION_ID_LENGTH)
             enhanceTransaction(
+                reqId = reqId,
+                typeName = "enhancement",
                 transactionRequest = TransactionDataRequest.Enhancement(txId.value.byteArray),
                 backend = backend,
                 downloader = downloader,
@@ -2054,6 +2058,7 @@ class CompactBlockProcessor internal constructor(
     }
 
     @VisibleForTesting
+    @Suppress("LongMethod")
     internal fun enhanceTransactionDetails(
         range: ClosedRange<BlockHeight>,
         repository: DerivedDataRepository,
@@ -2082,7 +2087,8 @@ class CompactBlockProcessor internal constructor(
             if (newTxDataRequests.isEmpty()) {
                 Twig.debug { "No new transactions found in $range" }
             } else {
-                Twig.debug { "Enhancing ${newTxDataRequests.size} transaction(s)!" }
+                val cycleId = UUID.randomUUID().toString().take(LOG_CORRELATION_ID_LENGTH)
+                Twig.info { "BlockEnhancer cycle started [$cycleId] requests=${newTxDataRequests.size}" }
 
                 // If the first transaction has been added
                 // Ideally, we could remove this last reference to the transaction view from the enhancing logic
@@ -2091,14 +2097,19 @@ class CompactBlockProcessor internal constructor(
                     emit(SyncingResult.UpdateBirthday)
                 }
 
-                newTxDataRequests.forEach {
-                    Twig.debug { "Transaction data request: $it" }
+                newTxDataRequests.forEachIndexed { index, request ->
+                    val reqId = "$cycleId.$index"
+                    val typeName = request.typeName
 
-                    when (it) {
+                    when (request) {
                         is TransactionDataRequest.EnhancementRequired -> {
-                            val trxEnhanceResult = enhanceTransaction(it, backend, downloader, sdkFlags)
+                            val trxEnhanceResult =
+                                enhanceTransaction(reqId, typeName, request, backend, downloader, sdkFlags)
                             if (trxEnhanceResult is SyncingResult.EnhanceFailed) {
-                                Twig.error(trxEnhanceResult.exception) { "Encountered transaction enhancing error" }
+                                val errorType = trxEnhanceResult.exception::class.simpleName
+                                Twig.error {
+                                    "BlockEnhancer [$reqId] type=$typeName failed error_type=$errorType"
+                                }
                                 emit(trxEnhanceResult)
                                 // We intentionally do not terminate the batch enhancing here, just reporting it
                             }
@@ -2107,12 +2118,13 @@ class CompactBlockProcessor internal constructor(
                         is TransactionDataRequest.TransactionsInvolvingAddress -> {
                             val processTaddrTxidsResult =
                                 processTransparentAddressTxids(
-                                    transactionRequest = it,
+                                    transactionRequest = request,
                                     downloader = downloader
                                 )
                             if (processTaddrTxidsResult is SyncingResult.EnhanceFailed) {
-                                Twig.error(processTaddrTxidsResult.exception) {
-                                    "Encountered SpendsFromAddress transactions error"
+                                val errorType = processTaddrTxidsResult.exception::class.simpleName
+                                Twig.error {
+                                    "BlockEnhancer [$reqId] type=$typeName failed error_type=$errorType"
                                 }
                                 emit(processTaddrTxidsResult)
                                 // We intentionally do not terminate the batch enhancing here, just reporting it
@@ -2120,9 +2132,10 @@ class CompactBlockProcessor internal constructor(
                         }
                     }
                 }
+
+                Twig.info { "BlockEnhancer cycle complete [$cycleId]" }
             }
 
-            Twig.debug { "Done enhancing transaction details" }
             emit(SyncingResult.EnhanceSuccess)
         }
 
@@ -2236,12 +2249,14 @@ class CompactBlockProcessor internal constructor(
 
     @Suppress("LongMethod")
     private suspend fun enhanceTransaction(
+        reqId: String,
+        typeName: String,
         transactionRequest: TransactionDataRequest.EnhancementRequired,
         backend: TypesafeBackend,
         downloader: CompactBlockDownloader,
         sdkFlags: SdkFlags
     ): SyncingResult {
-        Twig.debug { "Starting enhancing transaction: txid: ${transactionRequest.txIdString()}" }
+        Twig.info { "BlockEnhancer [$reqId] type=$typeName start" }
 
         val traceScope = TraceScope("CompactBlockProcessor.enhanceTransaction")
         val result =
@@ -2254,15 +2269,15 @@ class CompactBlockProcessor internal constructor(
                         sdkFlags = sdkFlags
                     )
 
-                Twig.debug { "Transaction fetched: $rawTransactionUnsafe" }
+                val hasTx = rawTransactionUnsafe != null
+                val hasMined = rawTransactionUnsafe is RawTransactionUnsafe.MainChain
+                Twig.info {
+                    "BlockEnhancer [$reqId] fetch returned has_tx=$hasTx has_mined_height=$hasMined"
+                }
 
                 // We need to distinct between the two possible states of [transactionRequest]
                 when (transactionRequest) {
                     is TransactionDataRequest.GetStatus -> {
-                        Twig.debug {
-                            "Resolving TransactionDataRequest.GetStatus by setting status of " +
-                                "transaction: txid: ${transactionRequest.txIdString()}"
-                        }
                         val status =
                             rawTransactionUnsafe?.toTransactionStatus()
                                 ?: TransactionStatus.TxidNotRecognized
@@ -2271,35 +2286,35 @@ class CompactBlockProcessor internal constructor(
                             status = status,
                             backend = backend
                         )
+                        val statusName = status::class.simpleName
+                        Twig.info {
+                            "BlockEnhancer [$reqId] setTransactionStatus called (status=$statusName)"
+                        }
                     }
 
                     is TransactionDataRequest.Enhancement -> {
                         if (rawTransactionUnsafe == null) {
-                            Twig.debug {
-                                "Resolving TransactionDataRequest.Enhancement by setting status of " +
-                                    "transaction. Txid not recognized: ${transactionRequest.txIdString()}"
-                            }
                             setTransactionStatus(
                                 transactionRawId = transactionRequest.txid,
                                 status = TransactionStatus.TxidNotRecognized,
                                 backend = backend
                             )
-                        } else {
-                            Twig.debug {
-                                "Resolving TransactionDataRequest.Enhancement by decrypting and storing " +
-                                    "transaction: txid: ${transactionRequest.txIdString()}"
+                            Twig.info {
+                                "BlockEnhancer [$reqId] setTransactionStatus called (txidNotRecognized)"
                             }
-
+                        } else {
                             decryptSemaphore.withLock {
                                 decryptTransaction(
                                     rawTransaction = RawTransaction.new(rawTransactionUnsafe = rawTransactionUnsafe),
                                 )
                             }
+                            Twig.info {
+                                "BlockEnhancer [$reqId] decryptAndStoreTransaction called has_mined_height=$hasMined"
+                            }
                         }
                     }
                 }
 
-                Twig.debug { "Done enhancing transaction: txid: ${transactionRequest.txIdString()}" }
                 SyncingResult.EnhanceSuccess
             } catch (exception: CompactBlockProcessorException.EnhanceTransactionError) {
                 SyncingResult.EnhanceFailed(null, exception)
@@ -2875,3 +2890,15 @@ private const val NOT_FOUND_MESSAGE_WORKAROUND_2 =
     "No such mempool or blockchain transaction. Use gettransaction for wallet transactions."
 
 private const val NOT_FOUND_MESSAGE_WORKAROUND_3 = "No such mempool or main chain transaction"
+
+/** Length of the opaque correlation id prefix used in BlockEnhancer diagnostic logs. */
+private const val LOG_CORRELATION_ID_LENGTH = 6
+
+/** Short, non-PII label for diagnostic logging. */
+private val TransactionDataRequest.typeName: String
+    get() =
+        when (this) {
+            is TransactionDataRequest.GetStatus -> "getStatus"
+            is TransactionDataRequest.Enhancement -> "enhancement"
+            is TransactionDataRequest.TransactionsInvolvingAddress -> "transactionsInvolvingAddress"
+        }

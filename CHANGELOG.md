@@ -46,6 +46,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.0] - 2026-05-26
 
 ### Added
+- `CompactBlockProcessor.enhanceTransactionDetails` and the per-transaction `enhanceTransaction`
+  step now emit structured diagnostic logs at each step of an enhance cycle — cycle start with
+  request count, per-request type, fetch response shape (whether a tx was returned, whether it
+  has a mined height), the decision taken (`setTransactionStatus` or `decryptAndStoreTransaction`),
+  per-request errors with error type, and cycle completion. Logs use opaque per-request
+  correlation ids (no transaction ids, addresses, or other PII) so production logs are debuggable
+  for future stuck-transaction reports without exposing user-identifying data.
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
   to the bundled checkpoint if this optimization does not complete within 5 seconds.
