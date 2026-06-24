@@ -30,7 +30,7 @@ runs:
         SDKMANAGER=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager
         echo "y" | $SDKMANAGER "ndk;27.0.12077973"
     - name: Setup Rust
-      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+      uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
       with:
         toolchain: ${{ inputs.rust-version }}
         targets: armv7-linux-androideabi,aarch64-linux-android,i686-linux-android,x86_64-linux-android
