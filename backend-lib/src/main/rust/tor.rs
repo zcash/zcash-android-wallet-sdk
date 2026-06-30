@@ -17,6 +17,7 @@ use zcash_client_backend::{
     tor::{Client, DormantMode},
     wallet::WalletTransparentOutput,
 };
+use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::{
     TxId,
     consensus::{self, BlockHeight},
@@ -174,7 +175,7 @@ impl LwdConn {
         address: TransparentAddress,
         start: Option<BlockHeight>,
         limit: Option<u32>,
-        mut f: impl FnMut(WalletTransparentOutput) -> anyhow::Result<()>,
+        mut f: impl FnMut(WalletTransparentOutput<AccountUuid>) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         let request = service::GetAddressUtxosArg {
             addresses: vec![address.encode(params)],
@@ -197,6 +198,11 @@ impl LwdConn {
                         Script(script::Code(result.script)),
                     ),
                     Some(BlockHeight::from(u32::try_from(result.height)?)),
+                    // This UTXO discovery call doesn't carry account context (same as
+                    // before this API gained these fields) — left unset.
+                    None,
+                    None,
+                    None,
                 )
                 .ok_or(anyhow!(
                     "Received UTXO that doesn't correspond to a valid P2PKH or P2SH address"
