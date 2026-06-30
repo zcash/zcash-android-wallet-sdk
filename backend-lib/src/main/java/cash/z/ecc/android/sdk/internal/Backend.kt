@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.model.DenominationPlan
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
@@ -34,6 +35,18 @@ interface Backend {
         value: Long,
         memo: ByteArray? = null
     ): ProposalUnsafe
+
+    /**
+     * Plans how to split a spendable Orchard balance into round-ZEC-denominated outputs ahead of
+     * an Orchard -> Ironwood migration transfer. Pure arithmetic - does not touch the wallet DB or
+     * build any transaction.
+     */
+    suspend fun planOrchardDenominationSplit(
+        totalInputZatoshi: Long,
+        prepFeeZatoshi: Long,
+        migrationFeeZatoshi: Long,
+        minimumOutputZatoshi: Long
+    ): DenominationPlan
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure

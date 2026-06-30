@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
 import cash.z.ecc.android.sdk.internal.ext.deleteRecursivelySuspend
 import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
+import cash.z.ecc.android.sdk.internal.model.DenominationPlan
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
@@ -428,6 +429,23 @@ class RustBackend private constructor(
                     value,
                     memo,
                     networkId = networkId,
+                )
+            )
+        }
+
+    override suspend fun planOrchardDenominationSplit(
+        totalInputZatoshi: Long,
+        prepFeeZatoshi: Long,
+        migrationFeeZatoshi: Long,
+        minimumOutputZatoshi: Long
+    ): DenominationPlan =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            DenominationPlan.parse(
+                Companion.planOrchardDenominationSplit(
+                    totalInputZatoshi,
+                    prepFeeZatoshi,
+                    migrationFeeZatoshi,
+                    minimumOutputZatoshi
                 )
             )
         }
@@ -884,6 +902,14 @@ class RustBackend private constructor(
             memo: ByteArray?,
             networkId: Int,
         ): ByteArray
+
+        @JvmStatic
+        private external fun planOrchardDenominationSplit(
+            totalInputZatoshi: Long,
+            prepFeeZatoshi: Long,
+            migrationFeeZatoshi: Long,
+            minimumOutputZatoshi: Long
+        ): LongArray
 
         @JvmStatic
         @Suppress("LongParameterList")

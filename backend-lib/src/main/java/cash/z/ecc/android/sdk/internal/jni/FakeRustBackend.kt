@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal.jni
 
 import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.model.DenominationPlan
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
@@ -117,6 +118,15 @@ class FakeRustBackend(
         memo: ByteArray?,
         transparentReceiver: String?
     ): ProposalUnsafe? {
+        error("Intentionally not implemented yet.")
+    }
+
+    override suspend fun planOrchardDenominationSplit(
+        totalInputZatoshi: Long,
+        prepFeeZatoshi: Long,
+        migrationFeeZatoshi: Long,
+        minimumOutputZatoshi: Long
+    ): DenominationPlan {
         error("Intentionally not implemented yet.")
     }
 

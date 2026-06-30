@@ -11,6 +11,13 @@
 //! see `.claude/context/ironwood-migration-port-plan.md` at the zodl repo
 //! root for the full design rationale.
 
+use anyhow::anyhow;
+use jni::JNIEnv;
+use jni::objects::JClass;
+use jni::sys::{jlong, jlongArray};
+
+use crate::utils::{catch_unwind, exception::unwrap_exc_or};
+
 pub(crate) const ZATOSHIS_PER_ZEC: u64 = 100_000_000;
 
 /// Upper bound on how many denomination outputs a single split plan may
@@ -120,6 +127,64 @@ pub(crate) fn plan_denominations(
         total_input_zatoshi,
         total_migratable_zatoshi,
     })
+}
+
+/// JNI entry point for [`plan_denominations`].
+///
+/// Pure arithmetic, no wallet DB access required, so unlike `proposeTransfer`/
+/// `proposeShielding` this takes the balance/fee inputs directly rather than
+/// an `account_uuid` + `db_data` pair.
+///
+/// Returns a `long[]` laid out as:
+/// `[prep_fee_zatoshi, migration_fee_zatoshi, total_input_zatoshi,
+///   total_migratable_zatoshi, orchard_change (-1 if none), output_count,
+///   output_0, output_1, ...]`
+///
+/// No protobuf message exists for this shape (`Proposal` doesn't fit), and
+/// adding new proto codegen to backend-lib for one small fixed-shape result
+/// isn't warranted yet - a packed primitive array is the established
+/// lightweight alternative for non-DB JNI calls in this codebase.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_planOrchardDenominationSplit<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    total_input_zatoshi: jlong,
+    prep_fee_zatoshi: jlong,
+    migration_fee_zatoshi: jlong,
+    minimum_output_zatoshi: jlong,
+) -> jlongArray {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.planOrchardDenominationSplit").entered();
+
+        let to_u64 = |label: &str, value: jlong| -> anyhow::Result<u64> {
+            u64::try_from(value).map_err(|_| anyhow!("{label} must be non-negative"))
+        };
+
+        let plan = plan_denominations(
+            to_u64("total_input_zatoshi", total_input_zatoshi)?,
+            to_u64("prep_fee_zatoshi", prep_fee_zatoshi)?,
+            to_u64("migration_fee_zatoshi", migration_fee_zatoshi)?,
+            to_u64("minimum_output_zatoshi", minimum_output_zatoshi)?,
+        )
+        .map_err(|e| anyhow!("Error planning denomination split: {e}"))?;
+
+        let mut encoded: Vec<jlong> = vec![
+            plan.prep_fee_zatoshi as jlong,
+            plan.migration_fee_zatoshi as jlong,
+            plan.total_input_zatoshi as jlong,
+            plan.total_migratable_zatoshi as jlong,
+            plan.orchard_change.map(|v| v as jlong).unwrap_or(-1),
+            plan.migration_outputs.len() as jlong,
+        ];
+        encoded.extend(plan.migration_outputs.iter().map(|v| *v as jlong));
+
+        let array = env.new_long_array(encoded.len() as i32)?;
+        env.set_long_array_region(&array, 0, &encoded)?;
+        Ok(array.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
 #[cfg(test)]
