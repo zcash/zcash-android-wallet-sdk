@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
+import cash.z.ecc.android.sdk.internal.model.DenominationPlan
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
@@ -707,6 +708,22 @@ interface Synchronizer {
      * should first verify that [fullyScannedHeight] has reached at least [height].
      */
     suspend fun getTreeState(height: BlockHeight): ByteArray
+
+    /**
+     * Computes a plan for splitting a spendable Orchard balance into round-ZEC-denominated
+     * outputs ahead of an Orchard -> Ironwood migration transfer.
+     *
+     * @param totalInputZatoshi the spendable Orchard balance to split.
+     * @param prepFeeZatoshi the fee required to produce the denominated outputs.
+     * @param migrationFeeZatoshi the fee required for each individual migration transfer.
+     * @param minimumOutputZatoshi the smallest output value worth migrating on its own.
+     */
+    suspend fun planOrchardDenominationSplit(
+        totalInputZatoshi: Long,
+        prepFeeZatoshi: Long,
+        migrationFeeZatoshi: Long,
+        minimumOutputZatoshi: Long
+    ): DenominationPlan
 
     //
     // Error Handling

@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.RustLayerException
+import cash.z.ecc.android.sdk.internal.model.DenominationPlan
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.RewindResult
 import cash.z.ecc.android.sdk.internal.model.ScanRange
@@ -64,6 +65,13 @@ internal interface TypesafeBackend {
         value: Long,
         memo: ByteArray? = null
     ): Proposal
+
+    suspend fun planOrchardDenominationSplit(
+        totalInputZatoshi: Long,
+        prepFeeZatoshi: Long,
+        migrationFeeZatoshi: Long,
+        minimumOutputZatoshi: Long
+    ): DenominationPlan
 
     suspend fun proposeShielding(
         account: Account,

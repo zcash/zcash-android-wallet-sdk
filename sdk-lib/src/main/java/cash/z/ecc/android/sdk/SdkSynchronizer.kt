@@ -32,6 +32,7 @@ import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
+import cash.z.ecc.android.sdk.internal.model.DenominationPlan
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
@@ -717,6 +718,19 @@ class SdkSynchronizer private constructor(
                 throw throwable
             }
         }
+
+    override suspend fun planOrchardDenominationSplit(
+        totalInputZatoshi: Long,
+        prepFeeZatoshi: Long,
+        migrationFeeZatoshi: Long,
+        minimumOutputZatoshi: Long
+    ): DenominationPlan =
+        backend.planOrchardDenominationSplit(
+            totalInputZatoshi = totalInputZatoshi,
+            prepFeeZatoshi = prepFeeZatoshi,
+            migrationFeeZatoshi = migrationFeeZatoshi,
+            minimumOutputZatoshi = minimumOutputZatoshi
+        )
 
     internal suspend fun getWalletDbPathForVoting(): String =
         withContext(Dispatchers.IO) {

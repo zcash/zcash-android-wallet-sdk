@@ -1,5 +1,4 @@
-package cash.z.ecc.android.sdk
-/**
+/*
  * Kotlin interface for the Orchard → Ironwood migration SDK bridge.
  *
  * Boundary: SDK owns all business logic (split algorithm, anchor height selection,
@@ -9,6 +8,7 @@ package cash.z.ecc.android.sdk
  * Based on: Orchard Migration Flow — Implementation Proposal (Path A)
  * Sync: 2026-06-17
  */
+package cash.z.ecc.android.sdk
 
 // ─── Supporting types ─────────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ data class NetworkPrivacyOptions(
  * Splitting into ~10 notes is the current target heuristic (20k ZEC cap per note).
  */
 data class NoteSplitProposal(
-    val outputNotes: List<Long>,  // amounts in zatoshi
+    val outputNotes: List<Long>, // amounts in zatoshi
     val fee: Long
 )
 
@@ -102,13 +102,17 @@ sealed class MigrationState {
     object ReadyToPropose : MigrationState()
 
     /** Migration schedule is committed and transfers are executing. */
-    data class InProgress(val progress: MigrationProgress) : MigrationState()
+    data class InProgress(
+        val progress: MigrationProgress
+    ) : MigrationState()
 
     /**
      * A transfer cannot proceed automatically. App must surface a non-error prompt
      * and call restartCurrentMigrationStep() after user acknowledges.
      */
-    data class RequiresAttention(val reason: AttentionReason) : MigrationState()
+    data class RequiresAttention(
+        val reason: AttentionReason
+    ) : MigrationState()
 
     /** All transfers confirmed on-chain. Orchard balance is zero. */
     object Complete : MigrationState()
@@ -116,7 +120,9 @@ sealed class MigrationState {
 
 sealed class AttentionReason {
     /** Input note was spent externally before the migration transfer was broadcast. */
-    data class InvalidTransfer(val transferId: String) : AttentionReason()
+    data class InvalidTransfer(
+        val transferId: String
+    ) : AttentionReason()
 
     /** Transaction anchor expired before broadcast (e.g. extended offline period). */
     object TransferExpired : AttentionReason()
@@ -133,10 +139,14 @@ sealed class AttentionReason {
  * do not collapse these into a generic error.
  */
 sealed class TransferResult {
-    data class Success(val txId: String) : TransferResult()
+    data class Success(
+        val txId: String
+    ) : TransferResult()
 
     /** Transient network failure. Retry in the next WorkManager window. */
-    data class NetworkError(val retryable: Boolean) : TransferResult()
+    data class NetworkError(
+        val retryable: Boolean
+    ) : TransferResult()
 
     /**
      * Input note is already spent. Sets MigrationState to RequiresAttention.
@@ -154,7 +164,6 @@ sealed class TransferResult {
 // ─── Main interface ───────────────────────────────────────────────────────────
 
 interface OrchardMigrationSdk {
-
     // ── State ────────────────────────────────────────────────────────────────
 
     /**

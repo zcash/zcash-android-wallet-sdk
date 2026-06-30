@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.RustLayerException
+import cash.z.ecc.android.sdk.internal.model.DenominationPlan
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniSubtreeRoot
 import cash.z.ecc.android.sdk.internal.model.RewindResult
@@ -122,6 +123,19 @@ internal class TypesafeBackendImpl(
                 value,
                 memo
             )
+        )
+
+    override suspend fun planOrchardDenominationSplit(
+        totalInputZatoshi: Long,
+        prepFeeZatoshi: Long,
+        migrationFeeZatoshi: Long,
+        minimumOutputZatoshi: Long
+    ): DenominationPlan =
+        backend.planOrchardDenominationSplit(
+            totalInputZatoshi = totalInputZatoshi,
+            prepFeeZatoshi = prepFeeZatoshi,
+            migrationFeeZatoshi = migrationFeeZatoshi,
+            minimumOutputZatoshi = minimumOutputZatoshi
         )
 
     override suspend fun proposeShielding(
