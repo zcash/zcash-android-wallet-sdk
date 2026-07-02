@@ -1,4 +1,8 @@
 package cash.z.ecc.android.sdk
+
+import kotlinx.coroutines.flow.Flow
+import kotlin.time.Duration
+
 /**
  * Kotlin interface for the Orchard → Ironwood migration SDK bridge.
  *
@@ -256,6 +260,30 @@ interface OrchardMigrationSdk {
      */
     suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions): TransferResult?
 
+    // ── Sync coordination ────────────────────────────────────────────────────
+
+    /**
+     * True whenever wallet sync must not run: a transfer is overdue (its
+     * nextExecutableAfterHeight has passed but it hasn't broadcast), or a transfer was just
+     * broadcast via the immediate ("send now") path and is still inside its post-broadcast
+     * privacy buffer (see [privacySyncBufferDuration]).
+     *
+     * The SDK owns this decision entirely and re-derives it from its own persisted migration
+     * state — the app does not toggle this, it only observes it (typically by feeding it
+     * straight into the synchronizer's own construction/gating, the same way isTorEnabled
+     * already works). This guarantees blocking can never get "stuck" from a forgotten resume
+     * call, since there is no imperative resume call to forget.
+     */
+    fun isSyncBlocked(): Flow<Boolean>
+
+    /**
+     * How long sync must stay blocked after a transfer is broadcast via the immediate
+     * ("send now") path, to decouple broadcast timing from sync-resume timing for privacy.
+     * SDK-owned so this stays consistent with whatever cadence the SDK actually schedules
+     * transfers at — the app only displays this value, it does not compute it.
+     */
+    fun privacySyncBufferDuration(): Duration
+
     // ── On-launch reconciliation ─────────────────────────────────────────────
 
     /**
@@ -265,6 +293,16 @@ interface OrchardMigrationSdk {
      * This is the primary catch-up mechanism — do not rely on notification delivery.
      */
     fun hasOverdueTransfers(): Boolean
+
+    /**
+     * Reschedules the current overdue transfer to the next available execution window.
+     * Unlike [restartCurrentMigrationStep], the transfer itself is still valid (its note
+     * hasn't been spent, its anchor hasn't expired) — only its window was missed — so this
+     * does not invalidate anything or require the full re-confirmation flow. The app persists
+     * the returned proposal's new nextExecutableAfterHeight directly; no
+     * signAndStoreMigrationSchedule() call is needed.
+     */
+    suspend fun rescheduleOverdueTransfer(): TransferProposal
 
     /**
      * True if any stored transfer is in an invalid state (spent note or expired anchor).
