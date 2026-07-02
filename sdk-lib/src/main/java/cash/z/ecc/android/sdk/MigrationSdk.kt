@@ -206,6 +206,19 @@ interface OrchardMigrationSdk {
     suspend fun proposeMigrationTransfers(): MigrationSchedule
 
     /**
+     * Proposes a single, unsplit, full-balance migration transfer for immediate broadcast —
+     * no privacy-preserving multi-transfer split. The returned [MigrationSchedule] always
+     * contains exactly one [TransferProposal] whose [TransferProposal.nextExecutableAfterHeight]
+     * is immediately executable, so the caller broadcasts it right away via
+     * [executeNextPendingTransfer] after [signAndStoreMigrationSchedule] — no WorkManager /
+     * BGTaskScheduler background scheduling is needed for this path.
+     *
+     * Call only when state is ReadyToPropose, as an alternative to [proposeMigrationTransfers]
+     * for users who explicitly opt out of the privacy-preserving schedule.
+     */
+    suspend fun proposeImmediateMigration(): MigrationSchedule
+
+    /**
      * User has confirmed the schedule. SDK signs all transactions and stores them
      * in the database via the existing transaction-resubmission infrastructure.
      * State transitions to InProgress. Individual transfers no longer need per-send
