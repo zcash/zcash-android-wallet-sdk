@@ -34,6 +34,9 @@ import java.util.UUID
 /**
  * @param persistableWallet flow of the user's stored wallet.  Null indicates that no wallet has been stored.
  * @param isTorEnabled flow indicating whether tor has been enabled for Synchronizer features supporting tor connection
+ * @param isSyncBlocked flow indicating whether some external condition requires sync to stay stopped (e.g. a
+ * pending Orchard migration transfer needs sync and broadcast decoupled in time for privacy). Gated the same way
+ * as [isTorEnabled] — while true, the synchronizer is closed and will not reopen, regardless of [persistableWallet].
  * @param accountName A human-readable name for the account, that will be used while instantiating [Synchronizer.new]
  * @param keySource A string identifier or other metadata describing the source of the seed, that will be used while
  * instantiating [Synchronizer.new]
@@ -49,6 +52,7 @@ class WalletCoordinator(
     val persistableWallet: Flow<PersistableWallet?>,
     val isTorEnabled: Flow<Boolean?>,
     val isExchangeRateEnabled: Flow<Boolean?>,
+    val isSyncBlocked: Flow<Boolean>,
     val accountName: String,
     val keySource: String?,
 ) {
@@ -76,6 +80,8 @@ class WalletCoordinator(
         class Lockout(
             val id: UUID
         ) : InternalSynchronizerStatus()
+
+        object Blocked : InternalSynchronizerStatus()
     }
 
     @Suppress("DestructuringDeclarationWithTooManyEntries")
@@ -85,17 +91,21 @@ class WalletCoordinator(
             persistableWallet,
             synchronizerLockoutId,
             isTorEnabled,
-            isExchangeRateEnabled
-        ) { persistableWallet, lockoutId, isTorEnabled, isExchangeRateEnabled ->
+            isExchangeRateEnabled,
+            isSyncBlocked
+        ) { persistableWallet, lockoutId, isTorEnabled, isExchangeRateEnabled, isSyncBlocked ->
             SynchronizerLockoutInternalState(
                 persistableWallet = persistableWallet,
                 lockoutId = lockoutId,
                 isTorEnabled = isTorEnabled,
-                isExchangeRateEnabled = isExchangeRateEnabled
+                isExchangeRateEnabled = isExchangeRateEnabled,
+                isSyncBlocked = isSyncBlocked
             )
-        }.flatMapLatest { (persistableWallet, lockoutId, isTorEnabled, isExchangeRateEnabled) ->
+        }.flatMapLatest { (persistableWallet, lockoutId, isTorEnabled, isExchangeRateEnabled, isSyncBlocked) ->
             if (null != lockoutId) { // this one needs to come first
                 flowOf(InternalSynchronizerStatus.Lockout(lockoutId))
+            } else if (isSyncBlocked) {
+                flowOf(InternalSynchronizerStatus.Blocked)
             } else if (null == persistableWallet) {
                 flowOf(InternalSynchronizerStatus.NoWallet)
             } else {
@@ -140,6 +150,7 @@ class WalletCoordinator(
                     is InternalSynchronizerStatus.Available -> it.synchronizer
                     is InternalSynchronizerStatus.Lockout -> null
                     InternalSynchronizerStatus.NoWallet -> null
+                    InternalSynchronizerStatus.Blocked -> null
                 }
             }.stateIn(
                 scope = walletScope,
@@ -247,5 +258,6 @@ private data class SynchronizerLockoutInternalState(
     val persistableWallet: PersistableWallet?,
     val lockoutId: UUID?,
     val isTorEnabled: Boolean?,
-    val isExchangeRateEnabled: Boolean?
+    val isExchangeRateEnabled: Boolean?,
+    val isSyncBlocked: Boolean
 )
