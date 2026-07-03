@@ -27,6 +27,13 @@ internal class TxOutputsView(
                 TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL,
             )
 
+        private val PROJECTION_ALL_OUTPUT_PROPERTIES =
+            arrayOf(
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
+                TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX,
+                TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL,
+            )
+
         private val PROJECTION_MEMOS =
             arrayOf(
                 TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID
@@ -34,6 +41,13 @@ internal class TxOutputsView(
 
         private val PROJECTION_RECIPIENT =
             arrayOf(
+                TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS,
+                TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT
+            )
+
+        private val PROJECTION_ALL_RECIPIENT =
+            arrayOf(
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
                 TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS,
                 TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT
             )
@@ -54,6 +68,23 @@ internal class TxOutputsView(
                 "LOWER(%s) LIKE LOWER(?)",
                 TxOutputsViewDefinition.COLUMN_BLOB_MEMO,
             )
+
+        private val SELECT_NOT_CHANGE =
+            String.format(
+                Locale.ROOT,
+                // $NON-NLS
+                "%s == 0",
+                TxOutputsViewDefinition.COLUMN_INTEGER_IS_CHANGE
+            )
+
+        private val ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX =
+            String.format(
+                Locale.ROOT,
+                // $NON-NLS
+                "%s ASC, %s ASC",
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
+                TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX
+            )
     }
 
     fun getOutputProperties(transactionId: FirstClassByteArray) =
@@ -72,6 +103,35 @@ internal class TxOutputsView(
                     // Converting blob to Int
                     poolType = it.getInt(idColumnOutputPoolIndex)
                 )
+            }
+        )
+
+    /**
+     * Returns the non-change output properties for ALL transactions in a single query, grouped by transaction ID
+     * via the emitted [Pair]. This is a batched alternative to [getOutputProperties] intended for callers that
+     * would otherwise need to query per-transaction in a loop.
+     */
+    fun getAllOutputProperties(): Flow<Pair<FirstClassByteArray, OutputProperties>> =
+        sqliteDatabase.queryAndMap(
+            table = TxOutputsViewDefinition.VIEW_NAME,
+            columns = PROJECTION_ALL_OUTPUT_PROPERTIES,
+            selection = SELECT_NOT_CHANGE,
+            selectionArgs = null,
+            orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
+            cursorParser = {
+                val idColumnTrxIdIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
+                val idColumnOutputIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX)
+                val idColumnOutputPoolIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL)
+
+                val transactionId = FirstClassByteArray(it.getBlob(idColumnTrxIdIndex))
+                val outputProperties =
+                    OutputProperties.new(
+                        index = it.getInt(idColumnOutputIndex),
+                        // Converting blob to Int
+                        poolType = it.getInt(idColumnOutputPoolIndex)
+                    )
+
+                transactionId to outputProperties
             }
         )
 
@@ -106,6 +166,34 @@ internal class TxOutputsView(
                     addressValue = if (!it.isNull(toAddressIndex)) it.getString(toAddressIndex) else null,
                     accountUuid = if (!it.isNull(toAccountIndex)) AccountUuid(it.getBlob(toAccountIndex)) else null
                 )
+            }
+        )
+
+    /**
+     * Returns the non-change recipients for ALL transactions in a single query, grouped by transaction ID via the
+     * emitted [Pair]. This is a batched alternative to [getRecipients] intended for callers that would otherwise
+     * need to query per-transaction in a loop.
+     */
+    fun getAllRecipients(): Flow<Pair<FirstClassByteArray, TransactionRecipient>> =
+        sqliteDatabase.queryAndMap(
+            table = TxOutputsViewDefinition.VIEW_NAME,
+            columns = PROJECTION_ALL_RECIPIENT,
+            selection = SELECT_NOT_CHANGE,
+            selectionArgs = null,
+            orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
+            cursorParser = {
+                val idColumnTrxIdIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
+                val toAccountIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT)
+                val toAddressIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS)
+
+                val transactionId = FirstClassByteArray(it.getBlob(idColumnTrxIdIndex))
+                val recipient =
+                    TransactionRecipient(
+                        addressValue = if (!it.isNull(toAddressIndex)) it.getString(toAddressIndex) else null,
+                        accountUuid = if (!it.isNull(toAccountIndex)) AccountUuid(it.getBlob(toAccountIndex)) else null
+                    )
+
+                transactionId to recipient
             }
         )
 }

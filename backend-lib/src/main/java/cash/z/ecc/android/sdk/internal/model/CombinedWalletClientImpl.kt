@@ -25,17 +25,21 @@ import kotlinx.coroutines.withContext
 @Suppress("TooManyFunctions")
 class CombinedWalletClientImpl private constructor(
     private val lightWalletClient: LightWalletClient,
-    private val torClient: TorClient?,
+    private val torClientProvider: (suspend () -> TorClient?)?,
     private val endpoint: LightWalletEndpoint,
 ) : CombinedWalletClient {
     private val cache = mutableMapOf<ServiceMode, PartialTorWalletClient>()
 
     private val semaphore = Mutex()
 
+    // Lazily-acquired isolated Tor client. Only ever accessed from within [create], which
+    // always runs under [semaphore] (via [execute]), so no additional synchronization is needed.
+    private var isolatedTorClient: TorClient? = null
+
     override suspend fun dispose() {
         semaphore.withLock {
             lightWalletClient.dispose()
-            torClient?.dispose()
+            isolatedTorClient?.dispose()
             cache.forEach { (_, client) -> client.dispose() }
             cache.clear()
         }
@@ -202,10 +206,17 @@ class CombinedWalletClientImpl private constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun create(): PartialTorWalletClient {
-        if (torClient == null) throw UninitializedTorClientException(NullPointerException("torClient is null"))
+        val tor =
+            isolatedTorClient
+                ?: try {
+                    torClientProvider?.invoke()?.also { isolatedTorClient = it }
+                } catch (e: Exception) {
+                    throw UninitializedTorClientException(e)
+                }
+                ?: throw UninitializedTorClientException(NullPointerException("torClient is null"))
 
         return try {
-            torClient.createWalletClient("https://${endpoint.host}:${endpoint.port}")
+            tor.createWalletClient("https://${endpoint.host}:${endpoint.port}")
         } catch (e: Exception) {
             throw UninitializedTorClientException(e)
         }
@@ -215,11 +226,11 @@ class CombinedWalletClientImpl private constructor(
         suspend fun new(
             endpoint: LightWalletEndpoint,
             lightWalletClient: LightWalletClient,
-            torClient: TorClient?
+            torClientProvider: (suspend () -> TorClient?)?
         ) = CombinedWalletClientImpl(
             endpoint = endpoint,
             lightWalletClient = lightWalletClient,
-            torClient = torClient
+            torClientProvider = torClientProvider
         )
     }
 }

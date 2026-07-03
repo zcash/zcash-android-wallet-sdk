@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal.db.derived
 import cash.z.ecc.android.sdk.internal.model.DbBlock
 import cash.z.ecc.android.sdk.internal.model.DbTransactionOverview
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
+import cash.z.ecc.android.sdk.internal.model.OutputProperties
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -57,6 +58,15 @@ internal class DbDerivedDataRepository(
         derivedDataDb.txOutputsView
             .getOutputProperties(transactionId.value)
 
+    override suspend fun getAllOutputProperties(): Map<TransactionId, List<OutputProperties>> =
+        derivedDataDb.txOutputsView
+            .getAllOutputProperties()
+            .toList()
+            .groupBy(
+                keySelector = { (transactionId, _) -> TransactionId(transactionId) },
+                valueTransform = { (_, outputProperties) -> outputProperties }
+            )
+
     override fun getTransactionsByMemoSubstring(query: String): Flow<List<TransactionId>> =
         flow {
             emit(
@@ -70,6 +80,15 @@ internal class DbDerivedDataRepository(
 
     override fun getRecipients(transactionId: TransactionId): Flow<TransactionRecipient> =
         derivedDataDb.txOutputsView.getRecipients(transactionId.value)
+
+    override suspend fun getAllRecipients(): Map<TransactionId, List<TransactionRecipient>> =
+        derivedDataDb.txOutputsView
+            .getAllRecipients()
+            .toList()
+            .groupBy(
+                keySelector = { (transactionId, _) -> TransactionId(transactionId) },
+                valueTransform = { (_, recipient) -> recipient }
+            )
 
     override suspend fun debugQuery(query: String): String = derivedDataDb.debugQuery(query)
 

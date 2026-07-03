@@ -45,10 +45,14 @@ data class TransactionId internal constructor(
         }
     }
 
+    // Computed once and reused; txIdString() is called many times per transaction on the same instance
+    // (activity-list mapping, cache keys, lookups), so caching avoids repeated byte->hex conversions.
+    private val txIdStringCache: String by lazy { value.byteArray.toHexReversed() }
+
     /**
      * @return Transaction ID in String
      */
-    fun txIdString() = value.byteArray.toHexReversed()
+    fun txIdString() = txIdStringCache
 
     override fun toString() = "TransactionId"
 }

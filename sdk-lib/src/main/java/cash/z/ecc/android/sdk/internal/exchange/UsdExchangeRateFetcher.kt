@@ -6,18 +6,26 @@ import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FiatCurrencyConversion
 import co.electriccoin.lightwallet.client.util.Disposable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
 
 internal class UsdExchangeRateFetcher(
-    private val isolatedTorClient: TorClient,
+    private val isolatedTorClientProvider: suspend () -> TorClient,
 ) : Disposable {
+    private val mutex = Mutex()
+    private var isolatedTorClient: TorClient? = null
+
+    private suspend fun getOrCreateIsolatedTorClient(): TorClient =
+        mutex.withLock { isolatedTorClient ?: isolatedTorClientProvider().also { isolatedTorClient = it } }
+
     @Suppress("TooGenericExceptionCaught", "ReturnCount")
     suspend operator fun invoke(): FetchFiatCurrencyResult {
         return retry {
             val rate =
                 try {
                     Twig.info { "[USD] Fetch start" }
-                    isolatedTorClient.getExchangeRateUsd()
+                    getOrCreateIsolatedTorClient().getExchangeRateUsd()
                 } catch (e: Exception) {
                     Twig.error(e) { "[USD] Fetch failed" }
                     return FetchFiatCurrencyResult.Error(e)
@@ -59,6 +67,9 @@ internal class UsdExchangeRateFetcher(
     }
 
     override suspend fun dispose() {
-        isolatedTorClient.dispose()
+        mutex.withLock {
+            isolatedTorClient?.dispose()
+            isolatedTorClient = null
+        }
     }
 }
