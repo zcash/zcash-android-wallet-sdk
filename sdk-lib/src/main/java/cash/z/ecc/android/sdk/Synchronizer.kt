@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
+import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
@@ -617,6 +618,13 @@ interface Synchronizer {
     fun getRecipients(transactionOverview: TransactionOverview): Flow<TransactionRecipient>
 
     /**
+     * Batched alternative to [getRecipients] that returns the recipients for ALL transactions in a single query,
+     * grouped by [TransactionId]. Prefer this over calling [getRecipients] in a loop for every transaction, e.g.
+     * when building a transaction list for the UI.
+     */
+    suspend fun getRecipients(): Map<TransactionId, List<TransactionRecipient>>
+
+    /**
      * Checks and provides file path to the existing data database file for the given input parameters or throws
      * [InitializeException.MissingDatabaseException] if the database does not exist yet.
      *
@@ -638,6 +646,13 @@ interface Synchronizer {
      * Returns a list of all transaction outputs for a transaction.
      */
     suspend fun getTransactionOutputs(transactionOverview: TransactionOverview): List<TransactionOutput>
+
+    /**
+     * Batched alternative to [getTransactionOutputs] that returns the transaction outputs for ALL transactions
+     * in a single query, grouped by [TransactionId]. Prefer this over calling [getTransactionOutputs] in a loop
+     * for every transaction, e.g. when building a transaction list for the UI.
+     */
+    suspend fun getTransactionOutputs(): Map<TransactionId, List<TransactionOutput>>
 
     /**
      * Returns all transactions belonging to the given account UUID
@@ -901,25 +916,24 @@ interface Synchronizer {
                     .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)
 
             val torDir = Files.getTorDir(context)
-            val torClient =
+
+            // Tor is only needed for on-demand/background work (sync-path Tor-mode RPCs, exchange rate
+            // fetch, getTorHttpClient), never on the cold-start critical path, so its creation (the ~1s
+            // Tor runtime creation cost) is always deferred to first use via LazyTorClient, regardless of
+            // whether isTorEnabled and/or isExchangeRateEnabled is set.
+            val lazyTorClient =
                 if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
-                    try {
-                        TorClient.new(torDir, backend.backend)
-                    } catch (e: Exception) {
-                        Twig.error(e) { "Error instantiating Tor Client" }
-                        null
-                    }
+                    LazyTorClient { TorClient.new(torDir, backend.backend) }
                 } else {
                     null
                 }
 
-            val exchangeRateIsolatedTorClient =
+            val fetchExchangeChangeUsd =
                 if (sdkFlags.isExchangeRateEnabled) {
-                    try {
-                        torClient?.isolatedTorClient()
-                    } catch (e: Exception) {
-                        Twig.error(e) { "Error instantiating an isolated Tor Client" }
-                        null
+                    lazyTorClient?.let { holder ->
+                        UsdExchangeRateFetcher(
+                            isolatedTorClientProvider = { holder.getOrCreate().isolatedTorClient() }
+                        )
                     }
                 } else {
                     null
@@ -928,7 +942,7 @@ interface Synchronizer {
             val walletClientFactory =
                 WalletClientFactory(
                     context = applicationContext,
-                    torClient = torClient.takeIf { sdkFlags.isTorEnabled }
+                    torClient = lazyTorClient?.takeIf { sdkFlags.isTorEnabled }
                 )
 
             val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
@@ -997,10 +1011,9 @@ interface Synchronizer {
                         walletClientFactory = walletClientFactory,
                         sdkFlags = sdkFlags
                     ),
-                fetchExchangeChangeUsd =
-                    exchangeRateIsolatedTorClient?.let { UsdExchangeRateFetcher(isolatedTorClient = it) },
+                fetchExchangeChangeUsd = fetchExchangeChangeUsd,
                 preferenceProvider = preferenceProvider,
-                torClient = torClient,
+                lazyTorClient = lazyTorClient,
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
                 defaultSubmitEndpoint = lightWalletEndpoint,
