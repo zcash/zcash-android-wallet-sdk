@@ -45,6 +45,7 @@ import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferencePro
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.StandardPreferenceKeys.SDK_VERSION_OF_LAST_FIX_WITNESSES_CALL
+import cash.z.ecc.android.sdk.internal.transaction.DandelionSubmitConfig
 import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManager
 import cash.z.ecc.android.sdk.internal.transaction.OutboundTransactionManagerImpl
@@ -53,6 +54,7 @@ import cash.z.ecc.android.sdk.internal.transaction.SdkBroadcaster
 import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoder
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoderImpl
+import cash.z.ecc.android.sdk.internal.transaction.ZcashP2PSubmitter
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
@@ -162,7 +164,8 @@ class SdkSynchronizer private constructor(
     private val walletClientFactory: WalletClientFactory,
     private val defaultSubmitEndpoint: LightWalletEndpoint,
     private val pendingSubmitPlanStore: PendingSubmitPlanStore,
-    private val sdkFlags: SdkFlags
+    private val sdkFlags: SdkFlags,
+    private val dandelionSubmitConfig: DandelionSubmitConfig = DandelionSubmitConfig.LightWalletD
 ) : CloseableSynchronizer {
     companion object {
         private sealed class InstanceState {
@@ -204,7 +207,8 @@ class SdkSynchronizer private constructor(
             walletClientFactory: WalletClientFactory,
             defaultSubmitEndpoint: LightWalletEndpoint,
             pendingSubmitPlanStore: PendingSubmitPlanStore,
-            sdkFlags: SdkFlags
+            sdkFlags: SdkFlags,
+            dandelionSubmitConfig: DandelionSubmitConfig = DandelionSubmitConfig.LightWalletD
         ): CloseableSynchronizer {
             val synchronizerKey = SynchronizerKey(zcashNetwork, alias)
             return mutex.withLock {
@@ -225,7 +229,8 @@ class SdkSynchronizer private constructor(
                     walletClientFactory = walletClientFactory,
                     defaultSubmitEndpoint = defaultSubmitEndpoint,
                     pendingSubmitPlanStore = pendingSubmitPlanStore,
-                    sdkFlags = sdkFlags
+                    sdkFlags = sdkFlags,
+                    dandelionSubmitConfig = dandelionSubmitConfig
                 ).apply {
                     instances[synchronizerKey] = InstanceState.Active
                     start()
@@ -301,13 +306,33 @@ class SdkSynchronizer private constructor(
     private val sdkBroadcaster =
         SdkBroadcaster(
             txManager = txManager,
-            transactionSubmitter =
-                EndpointTransactionSubmitter(
-                    walletClientFactory = walletClientFactory,
-                    sdkFlags = sdkFlags
-                ),
+            transactionSubmitter = buildTransactionSubmitter(
+                config = dandelionSubmitConfig,
+                walletClientFactory = walletClientFactory,
+                sdkFlags = sdkFlags
+            ),
             pendingSubmitPlanStore = pendingSubmitPlanStore
         )
+
+    private fun buildTransactionSubmitter(
+        config: DandelionSubmitConfig,
+        walletClientFactory: WalletClientFactory,
+        sdkFlags: SdkFlags
+    ) = when (config) {
+        is DandelionSubmitConfig.LightWalletD ->
+            EndpointTransactionSubmitter(walletClientFactory, sdkFlags)
+        is DandelionSubmitConfig.DirectP2P -> {
+            val p2p = ZcashP2PSubmitter(config.network)
+            if (config.fallbackToLightWalletD) {
+                FallbackTransactionSubmitter(
+                    primary = p2p,
+                    fallback = EndpointTransactionSubmitter(walletClientFactory, sdkFlags)
+                )
+            } else {
+                p2p
+            }
+        }
+    }
 
     override val broadcaster: Broadcaster = sdkBroadcaster
 

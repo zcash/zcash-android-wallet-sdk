@@ -23,9 +23,12 @@ import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
+import cash.z.ecc.android.sdk.internal.transaction.DandelionSubmitConfig
 import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
+import cash.z.ecc.android.sdk.internal.transaction.FallbackTransactionSubmitter
 import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
 import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
+import cash.z.ecc.android.sdk.internal.transaction.ZcashP2PSubmitter
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -852,6 +855,16 @@ interface Synchronizer {
          * [DefaultSynchronizerFactory].
          */
         @Suppress("LongParameterList", "LongMethod", "TooGenericExceptionCaught")
+        /**
+         * @param dandelionSubmitConfig Controls how outgoing transactions are submitted.
+         *   Use [DandelionSubmitConfig.DirectP2P] to submit directly to a Zcash P2P full
+         *   node via the native wire protocol, bypassing lightwalletd and preventing any
+         *   intermediary from observing the IP↔transaction correlation.  Defaults to
+         *   [DandelionSubmitConfig.LightWalletD] for backward compatibility.
+         *
+         *   Chain synchronisation always uses the lightwalletd endpoint regardless of this
+         *   setting.
+         */
         suspend fun new(
             alias: String = ZcashSdk.DEFAULT_ALIAS,
             birthday: BlockHeight?,
@@ -861,7 +874,8 @@ interface Synchronizer {
             walletInitMode: WalletInitMode,
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            dandelionSubmitConfig: DandelionSubmitConfig = DandelionSubmitConfig.LightWalletD
         ): CloseableSynchronizer {
             val applicationContext = context.applicationContext
 
@@ -963,11 +977,21 @@ interface Synchronizer {
                     preferenceProvider = encryptedPreferenceProvider(),
                     namespace = "${zcashNetwork.id}_$alias"
                 )
-            val transactionSubmitter =
-                EndpointTransactionSubmitter(
-                    walletClientFactory = walletClientFactory,
-                    sdkFlags = sdkFlags
-                )
+            val transactionSubmitter = when (dandelionSubmitConfig) {
+                is DandelionSubmitConfig.LightWalletD ->
+                    EndpointTransactionSubmitter(walletClientFactory, sdkFlags)
+                is DandelionSubmitConfig.DirectP2P -> {
+                    val p2p = ZcashP2PSubmitter(dandelionSubmitConfig.network)
+                    if (dandelionSubmitConfig.fallbackToLightWalletD) {
+                        FallbackTransactionSubmitter(
+                            primary = p2p,
+                            fallback = EndpointTransactionSubmitter(walletClientFactory, sdkFlags)
+                        )
+                    } else {
+                        p2p
+                    }
+                }
+            }
             val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
             val processor =
                 DefaultSynchronizerFactory.defaultProcessor(
@@ -1005,7 +1029,8 @@ interface Synchronizer {
                 walletClientFactory = walletClientFactory,
                 defaultSubmitEndpoint = lightWalletEndpoint,
                 pendingSubmitPlanStore = pendingSubmitPlanStore,
-                sdkFlags = sdkFlags
+                sdkFlags = sdkFlags,
+                dandelionSubmitConfig = dandelionSubmitConfig
             )
         }
 

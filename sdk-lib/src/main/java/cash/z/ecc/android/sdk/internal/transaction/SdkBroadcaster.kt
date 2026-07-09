@@ -124,6 +124,29 @@ internal class EndpointTransactionSubmitter(
     }
 }
 
+/**
+ * Tries [primary] first; if it returns a gRPC-level failure (peer unreachable),
+ * retries via [fallback].  If [primary] returns a node-level rejection (tx
+ * invalid), that failure is surfaced immediately without retrying.
+ */
+internal class FallbackTransactionSubmitter(
+    private val primary: TransactionSubmitter,
+    private val fallback: TransactionSubmitter
+) : TransactionSubmitter {
+    override suspend fun submit(
+        transaction: CreatedTransaction,
+        endpoint: LightWalletEndpoint
+    ): TransactionSubmitResult {
+        val result = primary.submit(transaction, endpoint)
+        return if (result is TransactionSubmitResult.Failure && result.grpcError) {
+            // P2P transport failed — try lwd.
+            fallback.submit(transaction, endpoint)
+        } else {
+            result
+        }
+    }
+}
+
 private fun List<CreatedTransaction>.createSubmitResultFlow(
     submit: suspend (CreatedTransaction) -> TransactionSubmitResult
 ): Flow<TransactionSubmitResult> {
