@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk
 
+import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.flow.Flow
 import kotlin.time.Duration
 
@@ -28,6 +29,15 @@ import kotlin.time.Duration
  *   Kotlin signatures are unchanged, but see their doc comments for the real implementation shape.
  * - [isSyncBlocked] / [privacySyncBufferDuration] are confirmed Kotlin-only (no Rust backing) —
  *   the sync/broadcast de-correlation technique they implement lives entirely in this SDK layer.
+ *
+ * Reconciled 2026-07-15 while wiring the real JNI implementation:
+ * - [submitNoteSplit] / [signAndStoreMigrationSchedule] gained a `usk: UnifiedSpendingKey`
+ *   parameter — sdk-lib never stores/derives a spending key itself (see
+ *   [Synchronizer.createProposedTransactions]), and the Rust calls they wrap require one.
+ * - [getMigrationState] / [getMigrationProgress] / [isNoteSplitNeeded] /
+ *   [isSyncRequiredBeforeNextTransfer] / [hasOverdueTransfers] / [hasInvalidTransfers] became
+ *   `suspend` — each opens a `MigrationContext` against the wallet's SQLite database, unlike the
+ *   mock's free in-memory answers.
  */
 
 // ─── Supporting types ─────────────────────────────────────────────────────────
@@ -183,11 +193,18 @@ interface OrchardMigrationSdk {
      *
      * Consider exposing as Flow<MigrationState> if the Rust bridge supports it —
      * that removes the need for manual polling.
+     *
+     * Implementation note (Rust bridge, 2026-07-15): this and the other state-query methods below
+     * (`getMigrationProgress`, `isNoteSplitNeeded`, `isSyncRequiredBeforeNextTransfer`,
+     * `hasOverdueTransfers`, `hasInvalidTransfers`) are `suspend` — not the synchronous calls their
+     * original signatures implied — because the real implementation opens a `MigrationContext`
+     * against the wallet's SQLite database on every call. The mock's answers were free (in-memory
+     * state), so the original interface didn't need `suspend` here; the real bridge does.
      */
-    fun getMigrationState(): MigrationState
+    suspend fun getMigrationState(): MigrationState
 
     /** Convenience accessor for progress details when state is InProgress. */
-    fun getMigrationProgress(): MigrationProgress?
+    suspend fun getMigrationProgress(): MigrationProgress?
 
     // ── Note splitting ───────────────────────────────────────────────────────
 
@@ -196,7 +213,7 @@ interface OrchardMigrationSdk {
      * Note splitting is mandatory — do not proceed to proposeMigrationTransfers()
      * without splitting first if this returns true.
      */
-    fun isNoteSplitNeeded(): Boolean
+    suspend fun isNoteSplitNeeded(): Boolean
 
     /**
      * SDK computes the optimal split (number of notes, sizes, randomisation).
@@ -220,8 +237,13 @@ interface OrchardMigrationSdk {
      * Open question: should this accept NetworkPrivacyOptions?
      * The split is on-chain visible, so routing through Tor may be desirable for
      * large balances. Defaulting to no Tor for simplicity for now.
+     *
+     * Implementation note (Rust bridge, 2026-07-15): [usk] is required because `sign_note_split`
+     * signs the split transaction — sdk-lib never stores or derives a spending key itself, it only
+     * ever receives one per-call from the caller, the same boundary
+     * [Synchronizer.createProposedTransactions] already establishes for ordinary sends.
      */
-    suspend fun submitNoteSplit(proposal: NoteSplitProposal): TransferResult
+    suspend fun submitNoteSplit(proposal: NoteSplitProposal, usk: UnifiedSpendingKey): TransferResult
 
     // ── Migration proposal ───────────────────────────────────────────────────
 
@@ -263,8 +285,12 @@ interface OrchardMigrationSdk {
      *
      * After this call, app reads nextExecutableAfterHeight from each TransferProposal
      * to schedule WorkManager tasks.
+     *
+     * Implementation note (Rust bridge, 2026-07-15): [usk] is required for the same reason as
+     * [submitNoteSplit]'s — `sign_and_store_migration_schedule` signs every transfer in the
+     * schedule.
      */
-    suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule)
+    suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey)
 
     // ── Background execution ─────────────────────────────────────────────────
 
@@ -277,7 +303,7 @@ interface OrchardMigrationSdk {
      * If true, task should exit and trigger a separate sync (not in the same session —
      * sync and broadcast must be decoupled in time).
      */
-    fun isSyncRequiredBeforeNextTransfer(): Boolean
+    suspend fun isSyncRequiredBeforeNextTransfer(): Boolean
 
     /**
      * Broadcasts the next pending transfer. App does not need to track which transfer
@@ -345,7 +371,7 @@ interface OrchardMigrationSdk {
      *
      * This is the primary catch-up mechanism — do not rely on notification delivery.
      */
-    fun hasOverdueTransfers(): Boolean
+    suspend fun hasOverdueTransfers(): Boolean
 
     /**
      * Defers the current overdue transfer to a later execution window, instead of broadcasting it
@@ -375,7 +401,7 @@ interface OrchardMigrationSdk {
      *
      * Detection condition: orchardBalance > 0 AND no valid queued migration transaction.
      */
-    fun hasInvalidTransfers(): Boolean
+    suspend fun hasInvalidTransfers(): Boolean
 
     // ── Invalidity recovery ──────────────────────────────────────────────────
 
@@ -392,4 +418,51 @@ interface OrchardMigrationSdk {
      * opt-in UI for that exists — see [proposeMigrationTransfers]'s doc).
      */
     suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationSchedule
+
+    companion object {
+        /**
+         * Constructs the real, Rust-backed [OrchardMigrationSdk].
+         *
+         * Deliberately independent of [Synchronizer] — [WalletCoordinator]'s `isSyncBlocked` input
+         * needs this *before* any `Synchronizer` exists (a `Synchronizer`-scoped factory would be
+         * circular), so this only needs the same inputs [Synchronizer.new] itself takes.
+         *
+         * [lightWalletEndpoint] should be the same endpoint the app passes to [Synchronizer.new] —
+         * there is no independent way for this factory to discover it (wallet/endpoint persistence
+         * is an app-layer concern, not an SDK one).
+         *
+         * [NetworkPrivacyOptions.useTor] uses its own dedicated [cash.z.ecc.android.sdk.internal.model.TorClient]
+         * (own on-disk directory, separate from the main `Synchronizer`'s), built lazily on first
+         * use — this is a genuinely per-migration setting, independent of the app's global Tor
+         * toggle.
+         *
+         * [account] is the wallet account this instance operates on — whichever account the
+         * migration flow is actually running for (the app resolves this, e.g. from the currently
+         * selected account; it is never auto-picked here). Pass `null` only for the one legitimate
+         * case that has no account selection to make yet: gating [Synchronizer]-independent sync
+         * (e.g. [WalletCoordinator]'s `isSyncBlocked` input) before any account is chosen — with a
+         * `null` account, [OrchardMigrationSdk.isSyncBlocked] checks every account in the wallet
+         * instead of assuming one, and every other method degrades to its "nothing to do" answer
+         * or throws (see [cash.z.ecc.android.sdk.internal.OrchardMigrationSdkImpl]'s doc).
+         */
+        fun new(
+            appContext: android.content.Context,
+            zcashNetwork: cash.z.ecc.android.sdk.model.ZcashNetwork,
+            lightWalletEndpoint: co.electriccoin.lightwallet.client.model.LightWalletEndpoint,
+            account: cash.z.ecc.android.sdk.model.AccountUuid?,
+            alias: String = cash.z.ecc.android.sdk.ext.ZcashSdk.DEFAULT_ALIAS
+        ): OrchardMigrationSdk =
+            cash.z.ecc.android.sdk.internal.OrchardMigrationSdkImpl(
+                context = appContext.applicationContext,
+                network = zcashNetwork,
+                alias = alias,
+                account = account,
+                migrationBackend = cash.z.ecc.android.sdk.internal.TypesafeMigrationBackendImpl(),
+                defaultSubmitEndpoint = lightWalletEndpoint,
+                preferenceProviderHolder =
+                    cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider(
+                        appContext.applicationContext
+                    )
+            )
+    }
 }
