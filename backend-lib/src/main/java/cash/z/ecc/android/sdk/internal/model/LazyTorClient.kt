@@ -14,17 +14,28 @@ import kotlinx.coroutines.sync.withLock
  *
  * The created [TorClient] is cached and shared between all callers of [getOrCreate], so the
  * expensive runtime creation happens at most once, and [dispose] frees it at most once.
+ *
+ * Once [dispose] has been called, this holder is permanently disposed: [getOrCreate] will throw
+ * [IllegalStateException] rather than creating a new [TorClient].
  */
 class LazyTorClient(
     private val factory: suspend () -> TorClient
 ) : Disposable {
     private val mutex = Mutex()
     private var instance: TorClient? = null
+    private var disposed = false
 
     /**
      * Returns the shared base [TorClient], creating it via [factory] on first call.
+     *
+     * @throws IllegalStateException if this holder has already been [dispose]d.
      */
-    suspend fun getOrCreate(): TorClient = mutex.withLock { instance ?: factory().also { instance = it } }
+    suspend fun getOrCreate(): TorClient =
+        mutex.withLock {
+            check(!disposed) { "LazyTorClient is disposed" }
+
+            instance ?: factory().also { instance = it }
+        }
 
     /**
      * Runs [action] against the underlying [TorClient] only if it has already been created,
@@ -40,5 +51,6 @@ class LazyTorClient(
         mutex.withLock {
             instance?.dispose()
             instance = null
+            disposed = true
         }
 }

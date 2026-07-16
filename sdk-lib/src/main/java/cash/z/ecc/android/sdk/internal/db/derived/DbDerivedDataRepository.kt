@@ -59,13 +59,7 @@ internal class DbDerivedDataRepository(
             .getOutputProperties(transactionId.value)
 
     override suspend fun getAllOutputProperties(): Map<TransactionId, List<OutputProperties>> =
-        derivedDataDb.txOutputsView
-            .getAllOutputProperties()
-            .toList()
-            .groupBy(
-                keySelector = { (transactionId, _) -> TransactionId(transactionId) },
-                valueTransform = { (_, outputProperties) -> outputProperties }
-            )
+        derivedDataDb.txOutputsView.getAllOutputProperties().groupByTransactionId()
 
     override fun getTransactionsByMemoSubstring(query: String): Flow<List<TransactionId>> =
         flow {
@@ -82,13 +76,7 @@ internal class DbDerivedDataRepository(
         derivedDataDb.txOutputsView.getRecipients(transactionId.value)
 
     override suspend fun getAllRecipients(): Map<TransactionId, List<TransactionRecipient>> =
-        derivedDataDb.txOutputsView
-            .getAllRecipients()
-            .toList()
-            .groupBy(
-                keySelector = { (transactionId, _) -> TransactionId(transactionId) },
-                valueTransform = { (_, recipient) -> recipient }
-            )
+        derivedDataDb.txOutputsView.getAllRecipients().groupByTransactionId()
 
     override suspend fun debugQuery(query: String): String = derivedDataDb.debugQuery(query)
 
@@ -101,3 +89,13 @@ internal class DbDerivedDataRepository(
 
     override suspend fun isClosed(): Boolean = derivedDataDb.isClosed()
 }
+
+/**
+ * Collects this [Flow] of (transaction ID, value) pairs, emitted grouped by transaction ID, e.g. by
+ * [TxOutputsView.getAllOutputProperties] or [TxOutputsView.getAllRecipients].
+ */
+private suspend fun <T> Flow<Pair<FirstClassByteArray, T>>.groupByTransactionId(): Map<TransactionId, List<T>> =
+    toList().groupBy(
+        keySelector = { (transactionId, _) -> TransactionId(transactionId) },
+        valueTransform = { (_, value) -> value }
+    )

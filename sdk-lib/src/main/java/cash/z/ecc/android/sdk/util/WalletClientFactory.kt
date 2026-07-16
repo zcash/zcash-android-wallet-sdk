@@ -30,6 +30,6 @@ class WalletClientFactory(
         CombinedWalletClientImpl.new(
             endpoint = endpoint,
             lightWalletClient = LightWalletClient.new(context, endpoint),
-            torClientProvider = torClient?.let { holder -> { holder.getOrCreate().isolatedTorClient() } },
+            isolatedTorClient = torClient?.let { holder -> LazyTorClient { holder.getOrCreate().isolatedTorClient() } },
         )
 }
