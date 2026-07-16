@@ -567,26 +567,12 @@ class SdkSynchronizer private constructor(
 
     override suspend fun getTransactionOutputs(transactionOverview: TransactionOverview): List<TransactionOutput> =
         storage.getOutputProperties(transactionOverview.txId).toList().map {
-            TransactionOutput(
-                when (it.protocol) {
-                    ZcashProtocol.TRANSPARENT -> TransactionPool.TRANSPARENT
-                    ZcashProtocol.SAPLING -> TransactionPool.SAPLING
-                    ZcashProtocol.ORCHARD -> TransactionPool.ORCHARD
-                }
-            )
+            TransactionOutput(it.protocol.toTransactionPool())
         }
 
     override suspend fun getTransactionOutputs(): Map<TransactionId, List<TransactionOutput>> =
         storage.getAllOutputProperties().mapValues { (_, outputProperties) ->
-            outputProperties.map {
-                TransactionOutput(
-                    when (it.protocol) {
-                        ZcashProtocol.TRANSPARENT -> TransactionPool.TRANSPARENT
-                        ZcashProtocol.SAPLING -> TransactionPool.SAPLING
-                        ZcashProtocol.ORCHARD -> TransactionPool.ORCHARD
-                    }
-                )
-            }
+            outputProperties.map { TransactionOutput(it.protocol.toTransactionPool()) }
         }
 
     override suspend fun getTransactions(accountUuid: AccountUuid): Flow<List<TransactionOverview>> =
@@ -645,9 +631,11 @@ class SdkSynchronizer private constructor(
         }
     }
 
+    /**
+     * Only puts an already-created Tor client to sleep; there's no reason to force lazy Tor runtime
+     * creation just to immediately mark it dormant.
+     */
     override fun onBackground() {
-        // Only put an already-created Tor client to sleep; there's no reason to force lazy Tor runtime
-        // creation just to immediately mark it dormant.
         coroutineScope.launch { lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) } }
     }
 
@@ -1018,6 +1006,12 @@ class SdkSynchronizer private constructor(
             null
         )
 
+    /**
+     * [lazyTorClient] is only ever `null` when [SdkFlags.isTorEnabled] is also `false` (see how [lazyTorClient]
+     * is constructed in [Synchronizer.Companion.new]), so this condition is never actually met: Tor client
+     * creation is lazy, and its failure is no longer observable at construction time. See
+     * [Synchronizer.InitializationError.TOR_NOT_AVAILABLE].
+     */
     override val initializationError =
         if (lazyTorClient == null && sdkFlags.isTorEnabled) {
             Synchronizer.InitializationError.TOR_NOT_AVAILABLE
@@ -1344,6 +1338,13 @@ class SdkSynchronizer private constructor(
                 absolutePath
             }
 }
+
+private fun ZcashProtocol.toTransactionPool(): TransactionPool =
+    when (this) {
+        ZcashProtocol.TRANSPARENT -> TransactionPool.TRANSPARENT
+        ZcashProtocol.SAPLING -> TransactionPool.SAPLING
+        ZcashProtocol.ORCHARD -> TransactionPool.ORCHARD
+    }
 
 /**
  * Provides a way of constructing a synchronizer where dependencies are injected in.

@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal.db.derived
 
+import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import cash.z.ecc.android.sdk.internal.db.queryAndMap
 import cash.z.ecc.android.sdk.internal.model.OutputProperties
@@ -94,22 +95,14 @@ internal class TxOutputsView(
             selection = SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE,
             selectionArgs = arrayOf(transactionId.byteArray),
             orderBy = ORDER_BY,
-            cursorParser = {
-                val idColumnOutputIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX)
-                val idColumnOutputPoolIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL)
-
-                OutputProperties.new(
-                    index = it.getInt(idColumnOutputIndex),
-                    // Converting blob to Int
-                    poolType = it.getInt(idColumnOutputPoolIndex)
-                )
-            }
+            cursorParser = { it.parseOutputProperties() }
         )
 
     /**
      * Returns the non-change output properties for ALL transactions in a single query, grouped by transaction ID
      * via the emitted [Pair]. This is a batched alternative to [getOutputProperties] intended for callers that
-     * would otherwise need to query per-transaction in a loop.
+     * would otherwise need to query per-transaction in a loop. A transaction with only change outputs (or no
+     * outputs) does not emit any [Pair].
      */
     fun getAllOutputProperties(): Flow<Pair<FirstClassByteArray, OutputProperties>> =
         sqliteDatabase.queryAndMap(
@@ -119,19 +112,8 @@ internal class TxOutputsView(
             selectionArgs = null,
             orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
             cursorParser = {
-                val idColumnTrxIdIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
-                val idColumnOutputIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX)
-                val idColumnOutputPoolIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL)
-
-                val transactionId = FirstClassByteArray(it.getBlob(idColumnTrxIdIndex))
-                val outputProperties =
-                    OutputProperties.new(
-                        index = it.getInt(idColumnOutputIndex),
-                        // Converting blob to Int
-                        poolType = it.getInt(idColumnOutputPoolIndex)
-                    )
-
-                transactionId to outputProperties
+                val transactionId = it.parseTransactionId()
+                transactionId to it.parseOutputProperties()
             }
         )
 
@@ -144,11 +126,7 @@ internal class TxOutputsView(
             selection = SELECT_BY_MEMO_QUERY,
             selectionArgs = arrayOf("%$query%"),
             orderBy = ORDER_BY,
-            cursorParser = {
-                val idColumnTrxIdIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
-
-                FirstClassByteArray(it.getBlob(idColumnTrxIdIndex))
-            }
+            cursorParser = { it.parseTransactionId() }
         )
 
     fun getRecipients(transactionId: FirstClassByteArray) =
@@ -158,21 +136,14 @@ internal class TxOutputsView(
             selection = SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE,
             selectionArgs = arrayOf(transactionId.byteArray),
             orderBy = ORDER_BY,
-            cursorParser = {
-                val toAccountIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT)
-                val toAddressIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS)
-
-                TransactionRecipient(
-                    addressValue = if (!it.isNull(toAddressIndex)) it.getString(toAddressIndex) else null,
-                    accountUuid = if (!it.isNull(toAccountIndex)) AccountUuid(it.getBlob(toAccountIndex)) else null
-                )
-            }
+            cursorParser = { it.parseRecipient() }
         )
 
     /**
      * Returns the non-change recipients for ALL transactions in a single query, grouped by transaction ID via the
      * emitted [Pair]. This is a batched alternative to [getRecipients] intended for callers that would otherwise
-     * need to query per-transaction in a loop.
+     * need to query per-transaction in a loop. A transaction with only change outputs (or no outputs) does not
+     * emit any [Pair].
      */
     fun getAllRecipients(): Flow<Pair<FirstClassByteArray, TransactionRecipient>> =
         sqliteDatabase.queryAndMap(
@@ -182,20 +153,35 @@ internal class TxOutputsView(
             selectionArgs = null,
             orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
             cursorParser = {
-                val idColumnTrxIdIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
-                val toAccountIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT)
-                val toAddressIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS)
-
-                val transactionId = FirstClassByteArray(it.getBlob(idColumnTrxIdIndex))
-                val recipient =
-                    TransactionRecipient(
-                        addressValue = if (!it.isNull(toAddressIndex)) it.getString(toAddressIndex) else null,
-                        accountUuid = if (!it.isNull(toAccountIndex)) AccountUuid(it.getBlob(toAccountIndex)) else null
-                    )
-
-                transactionId to recipient
+                val transactionId = it.parseTransactionId()
+                transactionId to it.parseRecipient()
             }
         )
+
+    private fun Cursor.parseTransactionId(): FirstClassByteArray {
+        val idColumnTrxIdIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
+        return FirstClassByteArray(getBlob(idColumnTrxIdIndex))
+    }
+
+    private fun Cursor.parseOutputProperties(): OutputProperties {
+        val idColumnOutputIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX)
+        val idColumnOutputPoolIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL)
+
+        return OutputProperties.new(
+            index = getInt(idColumnOutputIndex),
+            poolType = getInt(idColumnOutputPoolIndex)
+        )
+    }
+
+    private fun Cursor.parseRecipient(): TransactionRecipient {
+        val toAccountIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT)
+        val toAddressIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS)
+
+        return TransactionRecipient(
+            addressValue = if (!isNull(toAddressIndex)) getString(toAddressIndex) else null,
+            accountUuid = if (!isNull(toAccountIndex)) AccountUuid(getBlob(toAccountIndex)) else null
+        )
+    }
 }
 
 internal object TxOutputsViewDefinition {

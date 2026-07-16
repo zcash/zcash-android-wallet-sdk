@@ -15,6 +15,7 @@ import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.UninitializedTorClientException
 import co.electriccoin.lightwallet.client.util.use
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -25,16 +26,12 @@ import kotlinx.coroutines.withContext
 @Suppress("TooManyFunctions")
 class CombinedWalletClientImpl private constructor(
     private val lightWalletClient: LightWalletClient,
-    private val torClientProvider: (suspend () -> TorClient?)?,
+    private val isolatedTorClient: LazyTorClient?,
     private val endpoint: LightWalletEndpoint,
 ) : CombinedWalletClient {
     private val cache = mutableMapOf<ServiceMode, PartialTorWalletClient>()
 
     private val semaphore = Mutex()
-
-    // Lazily-acquired isolated Tor client. Only ever accessed from within [create], which
-    // always runs under [semaphore] (via [execute]), so no additional synchronization is needed.
-    private var isolatedTorClient: TorClient? = null
 
     override suspend fun dispose() {
         semaphore.withLock {
@@ -171,6 +168,11 @@ class CombinedWalletClientImpl private constructor(
             Response.Failure.OverTor(cause = e)
         }
 
+    /**
+     * Executes [block] against the client appropriate for [serviceMode] under [semaphore]. For
+     * [ServiceMode.Direct], the shared [lightWalletClient] is used directly. For Tor-mode requests, the
+     * Tor client is resolved lazily inside the Tor branches, backed by [LazyTorClient]'s cache.
+     */
     @Suppress("TooGenericExceptionCaught")
     private suspend inline fun <T> execute(
         serviceMode: ServiceMode,
@@ -183,7 +185,7 @@ class CombinedWalletClientImpl private constructor(
                 }
 
                 ServiceMode.UniqueTor -> {
-                    create().use { block(it) }
+                    createTorWalletClient().use { block(it) }
                 }
 
                 ServiceMode.DefaultTor,
@@ -202,21 +204,23 @@ class CombinedWalletClientImpl private constructor(
         withContext(Dispatchers.Default) { cache.remove(serviceMode) }
 
     private suspend fun getOrCreate(serviceMode: ServiceMode) =
-        withContext(Dispatchers.Default) { cache.getOrPut(serviceMode) { create() } }
+        withContext(Dispatchers.Default) { cache.getOrPut(serviceMode) { createTorWalletClient() } }
 
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun create(): PartialTorWalletClient {
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+    private suspend fun createTorWalletClient(): PartialTorWalletClient {
         val tor =
-            isolatedTorClient
-                ?: try {
-                    torClientProvider?.invoke()?.also { isolatedTorClient = it }
-                } catch (e: Exception) {
-                    throw UninitializedTorClientException(e)
-                }
-                ?: throw UninitializedTorClientException(NullPointerException("torClient is null"))
+            try {
+                isolatedTorClient?.getOrCreate()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw UninitializedTorClientException(e)
+            } ?: throw UninitializedTorClientException(NullPointerException("torClient is null"))
 
         return try {
             tor.createWalletClient("https://${endpoint.host}:${endpoint.port}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw UninitializedTorClientException(e)
         }
@@ -226,11 +230,11 @@ class CombinedWalletClientImpl private constructor(
         suspend fun new(
             endpoint: LightWalletEndpoint,
             lightWalletClient: LightWalletClient,
-            torClientProvider: (suspend () -> TorClient?)?
+            isolatedTorClient: LazyTorClient?
         ) = CombinedWalletClientImpl(
             endpoint = endpoint,
             lightWalletClient = lightWalletClient,
-            torClientProvider = torClientProvider
+            isolatedTorClient = isolatedTorClient
         )
     }
 }
