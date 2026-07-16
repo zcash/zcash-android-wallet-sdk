@@ -168,13 +168,13 @@ impl LwdConn {
 
     /// Calls the given closure with UTXOS corresponding to the given t-address within the given
     /// block range.
-    pub(crate) fn with_taddress_utxos(
+    pub(crate) fn with_taddress_utxos<AccountId>(
         &mut self,
         params: &impl consensus::Parameters,
         address: TransparentAddress,
         start: Option<BlockHeight>,
         limit: Option<u32>,
-        mut f: impl FnMut(WalletTransparentOutput) -> anyhow::Result<()>,
+        mut f: impl FnMut(WalletTransparentOutput<AccountId>) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         let request = service::GetAddressUtxosArg {
             addresses: vec![address.encode(params)],
@@ -197,6 +197,11 @@ impl LwdConn {
                         Script(script::Code(result.script)),
                     ),
                     Some(BlockHeight::from(u32::try_from(result.height)?)),
+                    // Account attribution isn't known at this raw address-level lightwalletd
+                    // lookup — the caller resolves/attaches it when persisting the output.
+                    None,
+                    None,
+                    None,
                 )
                 .ok_or(anyhow!(
                     "Received UTXO that doesn't correspond to a valid P2PKH or P2SH address"

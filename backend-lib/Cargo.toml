@@ -17,12 +17,17 @@ android-test-fixtures = []
 
 [dependencies]
 # Zcash dependencies
-orchard = { version = "=0.14.0", features = ["unstable-voting-circuits"] }
-pczt = { version = "0.7", features = ["prover", "orchard", "sapling"] }
+# Ironwood (NU6.3): tracks the same git rev as [patch.crates-io] below directly, since its
+# version (0.15.0-pre.2) can't satisfy a "=0.14.0" crates-io requirement.
+orchard = { version = "0.15.0-pre.2", features = ["unstable-voting-circuits"] }
+# Orchard->Ironwood migration engine — path dependency on the local librustzcash checkout
+# (see [patch.crates-io] below; this crate isn't published to crates.io).
+zcash_pool_migration = { path = '../../librustzcash/zcash_pool_migration' }
+pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
-transparent = { package = "zcash_transparent", version = "0.8", default-features = false }
-zcash_address = "0.12"
-zcash_client_backend = { version = "0.23", features = [
+transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
+zcash_address = "0.13"
+zcash_client_backend = { version = "0.24.0-rc.1", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -30,11 +35,11 @@ zcash_client_backend = { version = "0.23", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.21", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
-zcash_primitives = "0.28"
-zcash_proofs = "0.28"
-zcash_protocol = "0.9"
+zcash_primitives = "0.29"
+zcash_proofs = "0.29"
+zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
@@ -110,16 +115,20 @@ zcash_voting = { version = "=0.11.0", default-features = false, features = [
     "client-tree-sync",
 ] }
 
-## Uncomment this to test librustzcash changes locally
-#[patch.crates-io]
-#pczt = { package = "pczt", path = '../../clones/librustzcash/pczt' }
-#transparent = { package = "zcash_transparent", path = '../../clones/librustzcash/zcash_protocol' }
-#zcash_address = { path = '../../clones/librustzcash/components/zcash_address' }
-#zcash_client_backend = { path = '../../clones/librustzcash/zcash_client_backend' }
-#zcash_client_sqlite = { path = '../../clones/librustzcash/zcash_client_sqlite' }
-#zcash_primitives = { path = '../../clones/librustzcash/zcash_primitives' }
-#zcash_proofs = { path = '../../clones/librustzcash/zcash_proofs' }
-#zcash_protocol = { path = '../../clones/librustzcash/zcash_protocol' }
+## Local librustzcash checkout, on michal/ironwood-migration (PR #2572) — needed for
+## zcash_pool_migration above. orchard is patched to the exact rev that branch pins
+## (0.15.0-pre.2 isn't on crates.io yet), everything else is a local path for fast iteration.
+[patch.crates-io]
+pczt = { package = "pczt", path = '../../librustzcash/pczt' }
+transparent = { package = "zcash_transparent", path = '../../librustzcash/zcash_transparent' }
+zcash_address = { path = '../../librustzcash/components/zcash_address' }
+zcash_client_backend = { path = '../../librustzcash/zcash_client_backend' }
+zcash_client_sqlite = { path = '../../librustzcash/zcash_client_sqlite' }
+zcash_primitives = { path = '../../librustzcash/zcash_primitives' }
+zcash_proofs = { path = '../../librustzcash/zcash_proofs' }
+zcash_protocol = { path = '../../librustzcash/components/zcash_protocol' }
+zcash_keys = { path = '../../librustzcash/zcash_keys' }
+orchard = { git = "https://github.com/zcash/orchard", rev = "475ef0ff77d45aebff93cb039d639250d82518a3" }
 
 ## Uncomment this to test someone else's librustzcash changes in a branch
 #[patch.crates-io]
