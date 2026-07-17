@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+- The Rust JNI backend's Tor support now builds on the shared network-privacy layer in
+  `zcash_client_backend::privacy` (the `PrivacyRuntime` / `LwdConn` blocking facade) instead of a
+  hand-rolled Tor wrapper. This is an internal refactor: the `TorClient` / `TorWalletClient` JNI
+  surface and its observable behavior are unchanged, so no Kotlin or public API changes are
+  required. This lays the groundwork for runtime-selectable network-privacy backends (e.g. Nym),
+  which will be introduced in a later change.
+
 ## [2.5.2] - 2026-06-03
 
 ### Changed
