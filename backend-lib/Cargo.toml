@@ -20,6 +20,7 @@ zcash_address = "0.13"
 zcash_client_backend = { version = "0.24.0-rc.1", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
+    "lightwalletd-blocking",
     "tor",
     "transparent-inputs",
     "unstable",
@@ -76,6 +77,22 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 component = "0.1.1"
 rust-analyzer = "0.0.1"
+
+# Network-privacy layer: the `zcash_client_backend::privacy` module (and its
+# `lightwalletd-blocking` facade enabled above) is not yet in a published release; it lives
+# on zcash/librustzcash PR #2659 (`feat/lwd-network-privacy`), whose tip carries the same
+# crate versions as the published 0.24.0-rc.1 line. The whole librustzcash family is pinned
+# to that rev so the dependency graph stays coherent.
+# TODO: replace with a crates.io release (or a rev on librustzcash main) once PR #2659 merges.
+[patch.crates-io]
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]
