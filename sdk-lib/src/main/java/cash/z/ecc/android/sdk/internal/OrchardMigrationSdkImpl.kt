@@ -42,6 +42,8 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 import kotlin.time.Duration
@@ -118,6 +120,16 @@ internal class OrchardMigrationSdkImpl(
      * SDK operation in logcat instead of surfacing only as an opaque, unlabeled exception higher
      * up the call stack (e.g. inside a ViewModel's generic error handling).
      *
+     * Serializes against [MIGRATION_DB_ACCESS_MUTEX] — shared across every [OrchardMigrationSdkImpl]
+     * instance via the companion object, since a fresh instance is constructed per call site (see
+     * the class doc) — so this crate's own [isSyncBlocked] background poll (a separate instance,
+     * ticking every [SYNC_BLOCK_TICK] regardless of whether any migration screen is open) can never
+     * run concurrently with a real migration operation and read/write the shared wallet database at
+     * the same moment. This does not coordinate with
+     * [cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor]'s own sync cycles (no public
+     * hook exists for that — see [logged]'s retry note below) but removes one whole source of
+     * self-inflicted contention entirely.
+     *
      * Also retries a bounded number of times on an `InsufficientFunds`-shaped failure: this
      * crate opens its own SQLite connection to the same wallet database
      * [cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor] periodically writes to, with
@@ -127,7 +139,10 @@ internal class OrchardMigrationSdkImpl(
      * that window instead of surfacing a spurious failure. A genuine insufficient balance fails the
      * same way on every attempt and is still reported once retries are exhausted.
      */
-    private suspend fun <T> logged(operation: String, block: suspend () -> T): T {
+    private suspend fun <T> logged(operation: String, block: suspend () -> T): T =
+        MIGRATION_DB_ACCESS_MUTEX.withLock { loggedRetryLoop(operation, block) }
+
+    private suspend fun <T> loggedRetryLoop(operation: String, block: suspend () -> T): T {
         Twig.debug { "OrchardMigrationSdk: $operation starting" }
         var attempt = 1
         while (true) {
@@ -341,14 +356,19 @@ internal class OrchardMigrationSdkImpl(
 
     private suspend fun isSyncBlockedNow(preferenceProvider: PreferenceProvider): Boolean {
         val dbDataPath = dbDataPath()
-        // No account was bound at construction (the WalletCoordinatorFactory gate case, evaluated
-        // before any account is chosen) — check every account in the wallet rather than assuming
-        // one, so sync stays blocked if *any* of them has an overdue migration transfer.
-        val overdue = if (account != null) {
-            migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
-        } else {
-            migrationBackend.getAccountUuids(dbDataPath, network)
-                .any { migrationBackend.hasOverdueTransfers(dbDataPath, network, it) }
+        // Same mutex as logged() — this poll must never read the wallet DB at the same moment a
+        // real migration operation (propose/sign/execute) does; see logged()'s doc comment.
+        val overdue = MIGRATION_DB_ACCESS_MUTEX.withLock {
+            // No account was bound at construction (the WalletCoordinatorFactory gate case,
+            // evaluated before any account is chosen) — check every account in the wallet rather
+            // than assuming one, so sync stays blocked if *any* of them has an overdue migration
+            // transfer.
+            if (account != null) {
+                migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
+            } else {
+                migrationBackend.getAccountUuids(dbDataPath, network)
+                    .any { migrationBackend.hasOverdueTransfers(dbDataPath, network, it) }
+            }
         }
         val resumeAtEpochSeconds =
             preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key)?.toLongOrNull()
@@ -397,6 +417,12 @@ internal class OrchardMigrationSdkImpl(
         File(Files.getZcashNoBackupSubdirectory(context), MIGRATION_TOR_SUBDIR)
 
     private companion object {
+        // Shared across every OrchardMigrationSdkImpl instance (a fresh one is constructed per
+        // call site — see the class doc), so the isSyncBlocked() background poll and any real
+        // migration operation never touch the wallet database at the same moment. See logged()'s
+        // doc comment for the full rationale.
+        val MIGRATION_DB_ACCESS_MUTEX = Mutex()
+
         val SYNC_BLOCK_TICK = 15.seconds
 
         // How many extra attempts logged() makes for an InsufficientFunds-shaped failure before
