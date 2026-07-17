@@ -70,8 +70,6 @@ dlopen2 = "0.8"
 libc = "0.2"
 
 # Tor
-fs-mistrust = "0.12"
-tor-rtcompat = "0.35"
 rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }

@@ -20,7 +20,6 @@ use nonempty::NonEmpty;
 use prost::Message;
 use rand::rngs::OsRng;
 use secrecy::{ExposeSecret, SecretVec};
-use tor_rtcompat::ToplevelBlockOn;
 use tracing::{debug, error};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::reload;
@@ -61,11 +60,12 @@ use zcash_client_backend::{
         DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
         UnifiedFullViewingKey, UnifiedSpendingKey,
     },
-    proto::{proposal::Proposal, service::TreeState},
-    tor::{
+    privacy::{
         DormantMode,
-        http::{HttpError, cryptex},
+        blocking::{LwdConn, PrivacyRuntime},
+        http::{HttpError, Retry, cryptex},
     },
+    proto::{proposal::Proposal, service::TreeState},
     wallet::{Exposure, GapMetadata, NoteId, OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
 };
@@ -102,7 +102,6 @@ use crate::utils::{
 };
 
 mod eip681;
-mod tor;
 mod utils;
 
 #[cfg(debug_assertions)]
@@ -2990,7 +2989,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_createTor
     let res = catch_unwind(&mut env, |env| {
         let tor_dir = path_from_jni(env, tor_dir)?;
 
-        let tor = crate::tor::TorRuntime::create(&tor_dir)?;
+        // Android apps are sandboxed, so we can rely on the platform to enforce that only
+        // the app can access its Tor data; disable Tor's own filesystem permission checks.
+        let tor = PrivacyRuntime::create_tor(&tor_dir, true)?;
 
         Ok(Box::into_raw(Box::new(tor)).expose_provenance() as jlong)
     });
@@ -3004,7 +3005,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_freeTorRu
     _: JClass<'local>,
     ptr: jlong,
 ) {
-    let ptr = std::ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(ptr as usize);
+    let ptr = std::ptr::with_exposed_provenance_mut::<PrivacyRuntime>(ptr as usize);
     if !ptr.is_null() {
         let s = unsafe { Box::from_raw(ptr) };
         drop(s);
@@ -3030,7 +3031,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_isolatedC
 ) -> jlong {
     let res = panic::catch_unwind(|| {
         let tor_runtime =
-            ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+            ptr::with_exposed_provenance_mut::<PrivacyRuntime>(tor_runtime as usize);
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
@@ -3060,7 +3061,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_setDorman
 ) {
     let res = panic::catch_unwind(|| {
         let tor_runtime =
-            ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+            ptr::with_exposed_provenance_mut::<PrivacyRuntime>(tor_runtime as usize);
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
         let mode = parse_tor_dormant_mode(mode as u32)?;
@@ -3139,7 +3140,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
-            std::ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+            std::ptr::with_exposed_provenance_mut::<PrivacyRuntime>(tor_runtime as usize);
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
@@ -3150,25 +3151,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_get(
-                    url,
-                    |builder| {
-                        headers
-                            .iter()
-                            .fold(builder, |builder, (key, value)| builder.header(key, value))
-                    },
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
-                    retry_limit,
-                    |res| {
-                        res.is_err()
-                            .then_some(zcash_client_backend::tor::http::Retry::Same)
-                    },
-                )
-                .await
-        })?;
+        let response = tor_runtime.http_get(
+            url,
+            |builder| {
+                headers
+                    .iter()
+                    .fold(builder, |builder, (key, value)| builder.header(key, value))
+            },
+            |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+            retry_limit,
+            |res| res.is_err().then_some(Retry::Same),
+        )?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -3191,7 +3184,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
-            std::ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+            std::ptr::with_exposed_provenance_mut::<PrivacyRuntime>(tor_runtime as usize);
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
@@ -3203,26 +3196,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_post(
-                    url,
-                    |builder| {
-                        headers
-                            .iter()
-                            .fold(builder, |builder, (key, value)| builder.header(key, value))
-                    },
-                    http_body_util::Full::new(io::Cursor::new(body)),
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
-                    retry_limit,
-                    |res| {
-                        res.is_err()
-                            .then_some(zcash_client_backend::tor::http::Retry::Same)
-                    },
-                )
-                .await
-        })?;
+        let response = tor_runtime.http_post(
+            url,
+            |builder| {
+                headers
+                    .iter()
+                    .fold(builder, |builder, (key, value)| builder.header(key, value))
+            },
+            http_body_util::Full::new(io::Cursor::new(body)),
+            |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+            retry_limit,
+            |res| res.is_err().then_some(Retry::Same),
+        )?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -3240,7 +3225,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_getExchan
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
-            std::ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+            std::ptr::with_exposed_provenance_mut::<PrivacyRuntime>(tor_runtime as usize);
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
@@ -3252,12 +3237,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_getExchan
             .with(cryptex::exchanges::Mexc::unauthenticated())
             .build();
 
-        let rate = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .get_latest_zec_to_usd_rate(&exchanges)
-                .await
-        })?;
+        let rate = tor_runtime.get_latest_zec_to_usd_rate(&exchanges)?;
 
         let mantissa = env.byte_array_from_slice(&rate.mantissa().to_be_bytes())?;
         let unscaled_val =
@@ -3291,7 +3271,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_connectTo
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
-            ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+            ptr::with_exposed_provenance_mut::<PrivacyRuntime>(tor_runtime as usize);
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
@@ -3316,7 +3296,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fre
     _: JClass<'local>,
     lwd_conn: jlong,
 ) {
-    let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+    let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
     if !lwd_conn.is_null() {
         let s = unsafe { Box::from_raw(lwd_conn) };
         drop(s);
@@ -3333,7 +3313,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_get
     lwd_conn: jlong,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
@@ -3354,11 +3334,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_get
     lwd_conn: jlong,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
-        let block_id = lwd_conn.get_latest_block()?;
+        let block_id = lwd_conn.get_latest_block_id()?;
 
         Ok(utils::rust_bytes_to_java(env, &block_id.encode_to_vec())?.into_raw())
     });
@@ -3376,7 +3356,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
     txid_bytes: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
@@ -3402,13 +3382,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_sub
     tx_bytes: JByteArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
         let tx_bytes = utils::java_bytes_to_rust(env, &tx_bytes)?;
 
-        lwd_conn.send_transaction(tx_bytes)
+        lwd_conn.send_transaction(tx_bytes)?;
+        Ok(())
     });
     unwrap_exc_or(&mut env, res, ())
 }
@@ -3424,7 +3405,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_get
     height: jlong,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
@@ -3461,7 +3442,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
         let mut db_data = wallet_db(env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
@@ -3487,7 +3468,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
 
         let mut found = None;
         if let Some((addr, meta)) = selected_addr_meta {
-            lwd_conn.with_taddress_transactions(
+            lwd_conn.with_taddress_transactions::<anyhow::Error>(
                 &network,
                 addr,
                 match meta.exposure() {
@@ -3588,7 +3569,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_upd
     network_id: jint,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
@@ -3654,7 +3635,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
     address: JString<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = ptr::with_exposed_provenance_mut::<LwdConn>(lwd_conn as usize);
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
@@ -3675,7 +3656,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
 
         let mut found = None;
         if let Some(meta) = db_data.get_transparent_address_metadata(account_uuid, &address)? {
-            lwd_conn.with_taddress_utxos(
+            lwd_conn.with_taddress_utxos::<anyhow::Error>(
                 &network,
                 address,
                 match meta.exposure() {
@@ -3687,6 +3668,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
                 None,
                 |output| {
                     found = Some(address);
+                    // The blocking wrapper yields account-agnostic outputs
+                    // (`WalletTransparentOutput<()>`); re-type to the wallet's account
+                    // identifier for storage, with account context left unset exactly
+                    // as before.
+                    let output = WalletTransparentOutput::<AccountUuid>::from_parts(
+                        output.outpoint().clone(),
+                        output.txout().clone(),
+                        output.mined_height(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Received UTXO that doesn't correspond to a valid P2PKH or P2SH address"
+                        )
+                    })?;
                     db_data.put_received_transparent_utxo(&output)?;
                     Ok(())
                 },
