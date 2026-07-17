@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.PersistableWallet
+import com.zodl.slipstream.SlipstreamSynchronizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +41,8 @@ import java.util.UUID
  * @param accountName A human-readable name for the account, that will be used while instantiating [Synchronizer.new]
  * @param keySource A string identifier or other metadata describing the source of the seed, that will be used while
  * instantiating [Synchronizer.new]
+ * @param isSlipstreamEnabled selects which sync engine backs [synchronizer]: [SlipstreamSynchronizer.new] when true,
+ * [Synchronizer.new] when false. Both are constructed with the same argument values.
  *
  * One area where this class needs to change before it can be moved out of the incubator is that we need to be able to
  * start synchronization without necessarily decrypting the wallet.
@@ -55,6 +58,7 @@ class WalletCoordinator(
     val isSyncBlocked: Flow<Boolean>,
     val accountName: String,
     val keySource: String?,
+    val isSlipstreamEnabled: Boolean = false,
 ) {
     private val applicationContext = context.applicationContext
 
@@ -111,21 +115,39 @@ class WalletCoordinator(
             } else {
                 callbackFlow<InternalSynchronizerStatus.Available> {
                     val closeableSynchronizer =
-                        Synchronizer.new(
-                            context = context,
-                            zcashNetwork = persistableWallet.network,
-                            lightWalletEndpoint = persistableWallet.endpoint,
-                            birthday = persistableWallet.birthday,
-                            setup =
-                                AccountCreateSetup(
-                                    accountName = accountName,
-                                    keySource = keySource,
-                                    seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
-                                ),
-                            walletInitMode = persistableWallet.walletInitMode,
-                            isTorEnabled = isTorEnabled == true,
-                            isExchangeRateEnabled = isExchangeRateEnabled == true
-                        )
+                        if (isSlipstreamEnabled) {
+                            SlipstreamSynchronizer.new(
+                                context = context,
+                                zcashNetwork = persistableWallet.network,
+                                lightWalletEndpoint = persistableWallet.endpoint,
+                                birthday = persistableWallet.birthday,
+                                setup =
+                                    AccountCreateSetup(
+                                        accountName = accountName,
+                                        keySource = keySource,
+                                        seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
+                                    ),
+                                walletInitMode = persistableWallet.walletInitMode,
+                                isTorEnabled = isTorEnabled == true,
+                                isExchangeRateEnabled = isExchangeRateEnabled == true
+                            )
+                        } else {
+                            Synchronizer.new(
+                                context = context,
+                                zcashNetwork = persistableWallet.network,
+                                lightWalletEndpoint = persistableWallet.endpoint,
+                                birthday = persistableWallet.birthday,
+                                setup =
+                                    AccountCreateSetup(
+                                        accountName = accountName,
+                                        keySource = keySource,
+                                        seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
+                                    ),
+                                walletInitMode = persistableWallet.walletInitMode,
+                                isTorEnabled = isTorEnabled == true,
+                                isExchangeRateEnabled = isExchangeRateEnabled == true
+                            )
+                        }
 
                     trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
                     awaitClose {
