@@ -117,16 +117,38 @@ internal class OrchardMigrationSdkImpl(
      * `zcash_pool_migration`), so a failure deep in the Rust layer is attributable to a specific
      * SDK operation in logcat instead of surfacing only as an opaque, unlabeled exception higher
      * up the call stack (e.g. inside a ViewModel's generic error handling).
+     *
+     * Also retries a bounded number of times on an `InsufficientFunds`-shaped failure: this
+     * crate opens its own SQLite connection to the same wallet database
+     * [cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor] periodically writes to, with
+     * no coordination between the two. A sync cycle's write window overlapping a migration read
+     * has been observed in practice to transiently make the spendable balance/notes read back as
+     * empty, resolving itself within a second or two once that cycle finishes — retrying rides out
+     * that window instead of surfacing a spurious failure. A genuine insufficient balance fails the
+     * same way on every attempt and is still reported once retries are exhausted.
      */
     private suspend fun <T> logged(operation: String, block: suspend () -> T): T {
         Twig.debug { "OrchardMigrationSdk: $operation starting" }
-        return try {
-            val result = block()
-            Twig.debug { "OrchardMigrationSdk: $operation succeeded" }
-            result
-        } catch (e: Throwable) {
-            Twig.error(e) { "OrchardMigrationSdk: $operation failed" }
-            throw e
+        var attempt = 1
+        while (true) {
+            try {
+                val result = block()
+                Twig.debug { "OrchardMigrationSdk: $operation succeeded" }
+                return result
+            } catch (e: Throwable) {
+                val looksLikeSyncRace = e.message?.contains("InsufficientFunds") == true
+                if (looksLikeSyncRace && attempt <= RACE_RETRY_MAX_ATTEMPTS) {
+                    Twig.error(e) {
+                        "OrchardMigrationSdk: $operation failed (attempt $attempt/$RACE_RETRY_MAX_ATTEMPTS, " +
+                            "looks like a sync race) — retrying in $RACE_RETRY_DELAY"
+                    }
+                    delay(RACE_RETRY_DELAY)
+                    attempt++
+                    continue
+                }
+                Twig.error(e) { "OrchardMigrationSdk: $operation failed" }
+                throw e
+            }
         }
     }
 
@@ -376,6 +398,12 @@ internal class OrchardMigrationSdkImpl(
 
     private companion object {
         val SYNC_BLOCK_TICK = 15.seconds
+
+        // How many extra attempts logged() makes for an InsufficientFunds-shaped failure before
+        // giving up and reporting it — observed sync-cycle write windows are a few seconds, so two
+        // retries at RACE_RETRY_DELAY apart comfortably rides out one.
+        const val RACE_RETRY_MAX_ATTEMPTS = 2
+        val RACE_RETRY_DELAY = 2.seconds
 
         // Post-broadcast privacy buffer for the "send now" resume path — a real, fixed value
         // (unlike the app-side mock's debug-shrunk one): this decouples broadcast timing from
