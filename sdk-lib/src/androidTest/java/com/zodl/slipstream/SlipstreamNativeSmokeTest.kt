@@ -2,6 +2,7 @@ package com.zodl.slipstream
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -18,7 +19,7 @@ import java.io.File
 class SlipstreamNativeSmokeTest {
     @Test
     fun open_snapshot_drain_free() {
-        SlipstreamNative.ensureLoaded()
+        runBlocking { SlipstreamNative.ensureLoaded() }
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val db = File(ctx.filesDir, "smoke_data.sqlite3").also { it.delete() }
 
@@ -31,6 +32,27 @@ class SlipstreamNativeSmokeTest {
             assertEquals(false, snap.isRecovering)
             assertTrue("permille within contract range", snap.progressPermille in 0..1000)
             assertTrue("ring drains empty pre-start", SlipstreamNative.drainEvents(handle).isEmpty())
+        } finally {
+            SlipstreamNative.free(handle)
+        }
+    }
+
+    /**
+     * The `readQuery` host-utility export (worklog `08-engine-sigbus-android.md`): a trivial
+     * `SELECT 1` over the just-opened engine DB, on the SAME bundled SQLite instance `open`
+     * created the handle against - proof the binding round-trips a real connection + JSON row
+     * encoding, not just that it links. NOT run by this pass, same as [open_snapshot_drain_free].
+     */
+    @Test
+    fun readQuery_smoke() {
+        runBlocking { SlipstreamNative.ensureLoaded() }
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = File(ctx.filesDir, "smoke_readquery.sqlite3").also { it.delete() }
+
+        val handle = SlipstreamNative.open(db.absolutePath, "zec.rocks", 443, true, 1, 0L)
+        try {
+            val json = SlipstreamNative.readQuery(db.absolutePath, "SELECT 1", null, null)
+            assertEquals("[[1]]", json)
         } finally {
             SlipstreamNative.free(handle)
         }

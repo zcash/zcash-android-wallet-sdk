@@ -29,3 +29,19 @@ internal suspend fun newestBundledCheckpointHeight(
     context: Context,
     network: ZcashNetwork
 ): Long = CheckpointTool.loadLast(context, network).height.value
+
+/**
+ * The idempotency guard `DerivedDataDb.new` runs before calling `RustBackend.createAccount`
+ * (`DerivedDataDb.kt` ~150: `setup != null && backend.getAccounts().isEmpty()`) - mirrored here as a
+ * pure predicate so `SlipstreamSynchronizer.Companion.newLocked`'s fresh-wallet account-creation fix
+ * (nothing else in that factory ever wrote an `accounts` row) can unit-test its decision table
+ * without a JNI [cash.z.ecc.android.sdk.internal.Backend] or Android `Context`. [hasSetup] is
+ * `setup != null`; a non-null setup only ever accompanies [WalletInitMode.NewWallet]/
+ * [WalletInitMode.RestoreWallet] (the UFVK derivation in `newLocked` already requires it), so this
+ * predicate is what makes an `ExistingWallet` relaunch of an already-provisioned DB a no-op instead
+ * of writing a second account row.
+ */
+internal fun shouldCreateAccount(
+    hasSetup: Boolean,
+    accountsAreEmpty: Boolean
+): Boolean = hasSetup && accountsAreEmpty

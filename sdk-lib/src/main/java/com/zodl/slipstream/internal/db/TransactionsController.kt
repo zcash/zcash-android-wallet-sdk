@@ -4,14 +4,10 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import com.zodl.slipstream.internal.SlipstreamEngine
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.launch
 
 /**
  * Owns `allTransactions` (R18) and backs `getTransactions(accountUuid)` (R23) - the coroutine shape
@@ -23,33 +19,22 @@ import kotlinx.coroutines.launch
 internal class TransactionsController(
     private val reader: SlipstreamTransactionReader,
     private val engine: SlipstreamEngine,
-    private val scope: CoroutineScope
 ) {
-    private val mutableAllTransactions = MutableStateFlow<List<TransactionOverview>>(emptyList())
-    val allTransactions = mutableAllTransactions.asStateFlow()
 
-    private var job: Job? = null
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val allTransactions = engine.requeryTicks
+        .onStart { emit(Unit) }
+        .mapLatest { reader.queryVisible(isRecovering(), latestHeight()) }
 
-    fun start() {
-        job?.cancel()
-        job =
-            scope.launch {
-                engine.requeryTicks.collect {
-                    mutableAllTransactions.value = reader.queryVisible(isRecovering(), latestHeight())
-                }
-            }
-    }
-
-    fun stop() {
-        job?.cancel()
-        job = null
-    }
-
-    /** R23: same machinery as R18 plus the `account_uuid = ?` filter; the interface has no per-account flow. */
+    /**
+     * R23: same machinery as R18 plus the `account_uuid = ?` filter; the interface has no
+     * per-account flow.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun forAccount(accountUuid: AccountUuid): Flow<List<TransactionOverview>> =
         engine.requeryTicks
             .onStart { emit(Unit) }
-            .map { reader.queryVisible(isRecovering(), latestHeight(), accountUuid) }
+            .mapLatest { reader.queryVisible(isRecovering(), latestHeight(), accountUuid) }
 
     private fun isRecovering(): Boolean = engine.lastSnapshot.value?.isRecovering ?: false
 

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * The Slipstream handle owner and 2 s poll loop (`KOTLIN_ROSETTA.md` section 2.2). Every native
@@ -40,6 +41,18 @@ internal class SlipstreamEngine(
     private var errorGate = ErrorEpisodeGate.INITIAL
     private var pollJob: Job? = null
     private var lastStartBirthday: Long = 0L
+    private var running = false
+
+    /**
+     * Mirrors the iOS twin's `isRunning` member (`SlipstreamSynchronizer.swift`): true from a
+     * successful [start] until the next [stop], including the internal retry [dispatchState] issues
+     * on error-episode recovery. Lets a caller (`SlipstreamSynchronizer.onForeground`) tell an
+     * already-running engine apart from a stopped one - `FFI_JNI_CONTRACT.md` section 3.5's `start`
+     * unconditionally aborts any in-flight pass and reruns its bounded quiescence drain, so calling
+     * it again on an engine that is already live churns useful work instead of resuming it.
+     */
+    val isRunning: Boolean
+        get() = running
 
     /** R63: `state == 2` dispatch, once per error episode (`KOTLIN_ROSETTA.md` section 2.3). Wired in Phase 4, T10. */
     var onProcessorErrorHandler: ((Throwable?) -> Boolean)? = null
@@ -75,7 +88,14 @@ internal class SlipstreamEngine(
             check(handle == 0L) { "engine already open" }
             SlipstreamNative.ensureLoaded()
             handle =
-                SlipstreamNative.open(dbPath, endpoint.host, endpoint.port, endpoint.isSecure, networkId, totalMemoryBytes)
+                SlipstreamNative.open(
+                    dbPath = dbPath,
+                    serverHost = endpoint.host,
+                    serverPort = endpoint.port,
+                    useTls = endpoint.isSecure,
+                    networkId = networkId,
+                    totalMemoryBytes = totalMemoryBytes
+                )
             check(handle != 0L) { "slipstream open() failed" }
             // Truthful-from-open: publish before any start (a relaunched restore shows its true
             // position on the very first poll, HOSTING.md section 5).
@@ -89,11 +109,13 @@ internal class SlipstreamEngine(
         check(handle != 0L) { "start before open" }
         lastStartBirthday = birthday
         SlipstreamNative.start(handle, ufvk, birthday, torDir)
+        running = true
     }
 
     suspend fun stop() =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
             if (handle != 0L) SlipstreamNative.stop(handle)
+            running = false
         }
 
     suspend fun notifyTxChange() =
@@ -108,7 +130,7 @@ internal class SlipstreamEngine(
             scope.launch(SlipstreamDispatchers.SLIPSTREAM_IO) {
                 while (isActive) {
                     runCatching { tick() }.onFailure { onCriticalErrorHandler?.invoke(it) }
-                    delay(POLL_INTERVAL_MS)
+                    delay(POLL_INTERVAL_MS.milliseconds)
                 }
             }
     }
@@ -138,7 +160,12 @@ internal class SlipstreamEngine(
         }
 
         // 4. WALLET SUMMARY - every tick; the engine rations the expensive walk internally.
-        val summary = SlipstreamNative.walletSummary(handle, TRUSTED, UNTRUSTED, ALLOW_ZERO_CONF)
+        val summary = SlipstreamNative.walletSummary(
+            handle = handle,
+            trustedConfirmations = TRUSTED,
+            untrustedConfirmations = UNTRUSTED,
+            allowZeroConfShielding = ALLOW_ZERO_CONF
+        )
         summary?.let {
             walletBalances.value = it.toAccountBalances(isRecovering = snap.isRecovering, tipFresh = snap.tipFresh)
             fullyScannedHeight.value = it.fullyScannedHeight.takeIf { height -> height > 0 }?.let(BlockHeight::new)

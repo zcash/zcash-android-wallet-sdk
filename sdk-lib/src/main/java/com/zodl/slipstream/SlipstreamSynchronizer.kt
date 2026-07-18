@@ -36,8 +36,8 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
-import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Pczt
+import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
@@ -48,8 +48,8 @@ import cash.z.ecc.android.sdk.model.TransactionRecipient
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
-import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.tool.CheckpointTool
 import cash.z.ecc.android.sdk.tool.DerivationTool
 import cash.z.ecc.android.sdk.type.AddressType
@@ -65,6 +65,7 @@ import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
+import com.zodl.slipstream.SlipstreamSynchronizer.Companion.newLocked
 import com.zodl.slipstream.internal.DataDbPath
 import com.zodl.slipstream.internal.InstanceGuard
 import com.zodl.slipstream.internal.SlipstreamEngine
@@ -73,12 +74,13 @@ import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import com.zodl.slipstream.internal.db.TransactionsController
 import com.zodl.slipstream.internal.newestBundledCheckpointHeight
 import com.zodl.slipstream.internal.resolveIntent
-import com.zodl.slipstream.internal.toProcessorInfo
+import com.zodl.slipstream.internal.shouldCreateAccount
 import com.zodl.slipstream.internal.spend.ResubmissionTicker
 import com.zodl.slipstream.internal.spend.SaplingParams
 import com.zodl.slipstream.internal.spend.SlipstreamBroadcaster
 import com.zodl.slipstream.internal.spend.SlipstreamSpendService
 import com.zodl.slipstream.internal.spend.SubmitPlanStore
+import com.zodl.slipstream.internal.toProcessorInfo
 import com.zodl.slipstream.internal.validateAlias
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
@@ -120,6 +122,20 @@ import java.util.concurrent.atomic.AtomicBoolean
  * calls serialize on `slipstream-io`; all [Backend]/`RustBackend` calls serialize on `sdk-lib`'s own
  * `zc-io`. Cross-lane DB safety is WAL + `busy_timeout` (DECISIONS.md D5), never thread exclusion.
  */
+/**
+ * The three facts [SlipstreamSynchronizer.Companion.newLocked] derives from resolving
+ * [WalletInitMode]'s anchor - not just `startBirthday` (`engine.start`'s scan floor) but also the
+ * `treeState` and `recoverUntil` the upstream SDK threads through
+ * `resolveWalletInitializationState` -> `DerivedDataDb.new` (`Synchronizer.kt` ~1138,
+ * `DerivedDataDb.kt` ~126) to provision the fresh-wallet account row. Bundled together so the
+ * `when(intent)` block computes each of an anchor's three derived facts exactly once.
+ */
+private data class WalletProvisioningPlan(
+    val startBirthday: BlockHeight,
+    val treeState: ByteArray,
+    val recoverUntil: Long?
+)
+
 class SlipstreamSynchronizer internal constructor(
     private val context: Context,
     override val network: ZcashNetwork,
@@ -140,8 +156,10 @@ class SlipstreamSynchronizer internal constructor(
     private val broadcasterImpl: SlipstreamBroadcaster,
     private val resubmissionTicker: ResubmissionTicker,
     private var startBirthday: BlockHeight,
-    private val scope: CoroutineScope
 ) : CloseableSynchronizer {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val accountsBus = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val refreshExchangeRateTrigger = MutableSharedFlow<Unit>()
     private var lastExchangeRateValue = ObserveFiatCurrencyResult()
@@ -175,7 +193,10 @@ class SlipstreamSynchronizer internal constructor(
                                 when (val result = exchangeRateFetcher()) {
                                     is FetchFiatCurrencyResult.Error -> lastExchangeRateValue.copy(isLoading = false)
                                     is FetchFiatCurrencyResult.Success ->
-                                        lastExchangeRateValue.copy(isLoading = false, currencyConversion = result.currencyConversion)
+                                        lastExchangeRateValue.copy(
+                                            isLoading = false,
+                                            currencyConversion = result.currencyConversion
+                                        )
                                 }
                             emit(lastExchangeRateValue)
                         }
@@ -206,15 +227,21 @@ class SlipstreamSynchronizer internal constructor(
     /** R62-R64: forwarded straight to the engine, which owns the tick and the error-episode state (Phase 4 T10). */
     override var onCriticalErrorHandler: ((Throwable?) -> Boolean)?
         get() = engine.onCriticalErrorHandler
-        set(value) { engine.onCriticalErrorHandler = value }
+        set(value) {
+            engine.onCriticalErrorHandler = value
+        }
 
     override var onProcessorErrorHandler: ((Throwable?) -> Boolean)?
         get() = engine.onProcessorErrorHandler
-        set(value) { engine.onProcessorErrorHandler = value }
+        set(value) {
+            engine.onProcessorErrorHandler = value
+        }
 
     override var onProcessorErrorResolved: (() -> Unit)?
         get() = engine.onProcessorErrorResolved
-        set(value) { engine.onProcessorErrorResolved = value }
+        set(value) {
+            engine.onProcessorErrorResolved = value
+        }
 
     /**
      * R65, section 5.4 (narrowed scope): invoked only for construction-time failures
@@ -228,9 +255,18 @@ class SlipstreamSynchronizer internal constructor(
     /** R66, section 5.1: settable, documented never-invoked - the engine owns reorg recovery internally; there is no host-visible chain-error event. */
     override var onChainErrorHandler: ((BlockHeight, BlockHeight) -> Any)? = null
 
+    /**
+     * R5/R62-R66: unlike the upstream iOS synchronizer, the Android [Synchronizer] interface has
+     * no public `start()` - `Synchronizer.new`/[SlipstreamSynchronizer.new] auto-start the poll
+     * loop as part of construction, and [onForeground]/[onBackground] only pause/resume it
+     * thereafter. [SlipstreamEngine.startPolling] is safe to call again here even though
+     * [Companion.newLocked] already brought the engine up: it cancels any prior job before
+     * launching, so this is just the loop's first start, not a restart.
+     */
     init {
-        engine.onTick = { snap -> resubmissionTicker.onTick(engine.status.value == Synchronizer.Status.SYNCED, snap.chainTip) }
-        transactionsController.start()
+        engine.onTick =
+            { snap -> resubmissionTicker.onTick(engine.status.value == Synchronizer.Status.SYNCED, snap.chainTip) }
+        engine.startPolling()
     }
 
     override suspend fun getAccounts(): List<Account> = backend.getAccounts().map(Account::new)
@@ -243,7 +279,9 @@ class SlipstreamSynchronizer internal constructor(
      * account's scan window is a DIFFERENT fact than `recoverUntil` (a height, not a tree) - it
      * comes from the same bundled-checkpoint mechanism the T7 `NewWallet` provisioning path uses
      * (`CheckpointTool`, `internal object`, reachable in-module), nearest to the account's own
-     * birthday.
+     * birthday. The final `engine.start(ufvk = null, ...)` restart is `FFI_JNI_CONTRACT.md` section
+     * 3.5's keyless mode - the engine re-reads its accounts straight from `data.db` - legal here
+     * only because the `importAccountUfvk` call just above it wrote that very account row.
      */
     override suspend fun importAccountByUfvk(setup: AccountImportSetup): Account {
         val fallbackCheckpoint = newestBundledCheckpointHeight(context, network)
@@ -392,7 +430,8 @@ class SlipstreamSynchronizer internal constructor(
                 is Response.Success -> runCatching { BlockHeight.new(response.result.value) }.getOrNull()
                 is Response.Failure -> null
             }
-        val sdkBranchId = currentChainTip?.let { tip -> runCatching { backend.getBranchIdForHeight(tip.value) }.getOrNull() }
+        val sdkBranchId =
+            currentChainTip?.let { tip -> runCatching { backend.getBranchIdForHeight(tip.value) }.getOrNull() }
 
         return ConsensusMatchType(
             sdkBranch = sdkBranchId?.let(ConsensusBranchId::fromId),
@@ -406,7 +445,8 @@ class SlipstreamSynchronizer internal constructor(
     ): ServerValidation {
         val client = walletClientFactory.create(endpoint)
         try {
-            val serviceMode = sdkFlags ifTor ServiceMode.Group("SlipstreamSynchronizer.validateServerEndpoint(${endpoint.host}:${endpoint.port})")
+            val serviceMode =
+                sdkFlags ifTor ServiceMode.Group("SlipstreamSynchronizer.validateServerEndpoint(${endpoint.host}:${endpoint.port})")
             val remoteInfo =
                 when (val response = client.getServerInfo(serviceMode)) {
                     is Response.Success -> response.result
@@ -421,7 +461,11 @@ class SlipstreamSynchronizer internal constructor(
                 )
             }
             val remoteSaplingActivation =
-                runCatching { BlockHeight.new(remoteInfo.saplingActivationHeightUnsafe.value) }.getOrElse { return ServerValidation.InValid(it) }
+                runCatching { BlockHeight.new(remoteInfo.saplingActivationHeightUnsafe.value) }.getOrElse {
+                    return ServerValidation.InValid(
+                        it
+                    )
+                }
             if (network.saplingActivationHeight != remoteSaplingActivation) {
                 return ServerValidation.InValid(
                     CompactBlockProcessorException.MismatchedSaplingActivationHeight(
@@ -432,7 +476,12 @@ class SlipstreamSynchronizer internal constructor(
             }
             val currentChainTip =
                 when (val response = client.getLatestBlockHeight(serviceMode)) {
-                    is Response.Success -> runCatching { BlockHeight.new(response.result.value) }.getOrElse { return ServerValidation.InValid(it) }
+                    is Response.Success -> runCatching { BlockHeight.new(response.result.value) }.getOrElse {
+                        return ServerValidation.InValid(
+                            it
+                        )
+                    }
+
                     is Response.Failure -> return ServerValidation.InValid(response.toThrowable())
                 }
             val sdkBranchId =
@@ -480,6 +529,7 @@ class SlipstreamSynchronizer internal constructor(
             count
         }.getOrNull()
 
+    /** `FFI_JNI_CONTRACT.md` section 3.5: the `engine.start(ufvk = null, ...)` restart below is keyless - the engine re-reads its accounts straight from `data.db` - which is legal only because provisioning ([SlipstreamSynchronizer.Companion.newLocked]/[importAccountByUfvk]) guarantees an account row already exists by the time any restart runs. */
     override suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight? {
         engine.stop()
         val result = rewindRetrying(height)
@@ -498,6 +548,7 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    /** Same `ufvk = null` keyless-restart contract as [rewindToNearestHeight] (`FFI_JNI_CONTRACT.md` section 3.5). */
     override suspend fun rewindToHeight(height: BlockHeight) {
         engine.stop()
         backend.rewindToHeight(height.value)
@@ -512,7 +563,13 @@ class SlipstreamSynchronizer internal constructor(
                     emit("")
                 } else {
                     val memo =
-                        runCatching { backend.getMemoAsUtf8(transactionOverview.txId.value.byteArray, output.poolCode, output.index) }
+                        runCatching {
+                            backend.getMemoAsUtf8(
+                                transactionOverview.txId.value.byteArray,
+                                output.poolCode,
+                                output.index
+                            )
+                        }
                             .getOrNull()
                     emit(memo ?: "")
                 }
@@ -569,6 +626,7 @@ class SlipstreamSynchronizer internal constructor(
                 is Response.Success -> {
                     backend.decryptAndStoreTransaction(response.result.data, minedHeight = null)
                 }
+
                 is Response.Failure -> {
                     backend.setTransactionStatus(txId.value.byteArray, status = TXID_NOT_RECOGNIZED_STATUS)
                 }
@@ -577,6 +635,7 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    /** Pairs with [onForeground]'s [SlipstreamEngine.isRunning] guard below: stop always clears it (via [SlipstreamEngine.stop]), so a foreground that follows always sees an honest running/stopped state. */
     override fun onBackground() {
         scope.launch {
             engine.stopPolling()
@@ -585,17 +644,29 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    /**
+     * `FFI_JNI_CONTRACT.md` section 3.5: [SlipstreamEngine.start] unconditionally aborts any
+     * in-flight pass and reruns its bounded quiescence drain, so restarting an ALREADY-running
+     * engine on every foreground would churn useful work instead of resuming it (device evidence:
+     * two "engine pass starting" logs 110 ms apart). [SlipstreamEngine.isRunning] mirrors the iOS
+     * twin's `isRunning` guard for exactly this - skip the native restart when the engine is already
+     * live. [SlipstreamEngine.startPolling] stays unconditional; it is already an idempotent
+     * cancel-and-relaunch.
+     */
     override fun onForeground() {
         scope.launch {
             torClient?.setDormant(TorDormantMode.NORMAL)
-            engine.start(ufvk = null, birthday = startBirthday.value)
+            if (!engine.isRunning) {
+                engine.start(ufvk = null, birthday = startBirthday.value)
+            }
             engine.startPolling()
         }
     }
 
     override suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit): HttpClient {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
-        val client = torClient ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
+        val client = torClient
+            ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
         val isolatedTor = try {
             client.isolatedTorClient()
         } catch (e: Exception) {
@@ -613,7 +684,13 @@ class SlipstreamSynchronizer internal constructor(
 
     override suspend fun debugQuery(query: String): String = transactionReader.debugQuery(query)
 
-    /** R38: stop engine (B4-16 invariant) -> delete -> poke (dead rows drop next tick) -> restart -> poke the accounts bus. */
+    /**
+     * R38: stop engine (B4-16 invariant) -> delete -> poke (dead rows drop next tick) -> restart ->
+     * poke the accounts bus. The restart's `ufvk = null` is `FFI_JNI_CONTRACT.md` section 3.5's
+     * keyless mode - safe here because the wallet's OTHER accounts (if any) still exist in `data.db`
+     * for the engine to read; deleting the only account still leaves that row set consistent
+     * (empty), it just means the next poll reports nothing.
+     */
     override suspend fun deleteAccount(accountUuid: AccountUuid): Boolean {
         engine.stop()
         val deleted = backend.deleteAccount(accountUuid.value)
@@ -638,14 +715,12 @@ class SlipstreamSynchronizer internal constructor(
     private suspend fun shutdown() {
         val shutdownJob =
             scope.launch {
-                transactionsController.stop()
                 engine.stopPolling()
                 engine.stop()
                 engine.free()
                 torClient?.dispose()
                 walletClient.dispose()
                 exchangeRateFetcher?.dispose()
-                transactionReader.close()
             }
         InstanceGuard.markShuttingDown(key, shutdownJob)
         shutdownJob.join()
@@ -676,6 +751,11 @@ class SlipstreamSynchronizer internal constructor(
          * alias + instance guard -> `SlipstreamNative.ensureLoaded()` -> resolve the UFVK ->
          * NewWallet/RestoreWallet call `restoreAnchor` -> `engine.open` -> `engine.start` -> store
          * `latestBirthdayHeight`.
+         *
+         * The [newLocked] call below runs on `Dispatchers.IO`: construction is disk/JNI-heavy
+         * (`System.loadLibrary`, `engine.open()`, `RustBackend.new()`) and callers include
+         * `Dispatchers.Main` scopes (the `WalletCoordinator` construction flow) - dispatching here
+         * keeps every caller agnostic to that instead of pushing the requirement onto them.
          */
         suspend fun new(
             alias: String = ZcashSdk.DEFAULT_ALIAS,
@@ -693,24 +773,31 @@ class SlipstreamSynchronizer internal constructor(
             val key = SlipstreamKey(zcashNetwork, alias)
             InstanceGuard.acquire(key)
             try {
-                return newLocked(
-                    alias = alias,
-                    birthday = birthday,
-                    applicationContext = applicationContext,
-                    lightWalletEndpoint = lightWalletEndpoint,
-                    setup = setup,
-                    walletInitMode = walletInitMode,
-                    zcashNetwork = zcashNetwork,
-                    isTorEnabled = isTorEnabled,
-                    isExchangeRateEnabled = isExchangeRateEnabled,
-                    key = key
-                )
+                return withContext(Dispatchers.IO) {
+                    newLocked(
+                        alias = alias,
+                        birthday = birthday,
+                        applicationContext = applicationContext,
+                        lightWalletEndpoint = lightWalletEndpoint,
+                        setup = setup,
+                        walletInitMode = walletInitMode,
+                        zcashNetwork = zcashNetwork,
+                        isTorEnabled = isTorEnabled,
+                        isExchangeRateEnabled = isExchangeRateEnabled,
+                        key = key
+                    )
+                }
             } catch (t: Throwable) {
                 InstanceGuard.release(key)
                 throw t
             }
         }
 
+        /**
+         * [SlipstreamNative.ensureLoaded] here is called with `logLevel = "info"` rather than its
+         * own `"warn"` default: a dev-time default for field diagnosability (surfaces the engine's
+         * `info!` lifecycle logs, e.g. pass/handle open); release tuning is a later decision.
+         */
         @Suppress("LongMethod")
         private suspend fun newLocked(
             alias: String,
@@ -724,28 +811,35 @@ class SlipstreamSynchronizer internal constructor(
             isExchangeRateEnabled: Boolean,
             key: SlipstreamKey
         ): CloseableSynchronizer {
-            SlipstreamNative.ensureLoaded()
+            SlipstreamNative.ensureLoaded(logLevel = "info")
             val sdkFlags = SdkFlags(isTorEnabled = isTorEnabled, isExchangeRateEnabled = isExchangeRateEnabled)
 
             val ufvk: String? =
                 when (walletInitMode) {
                     WalletInitMode.ExistingWallet -> null
                     WalletInitMode.NewWallet, WalletInitMode.RestoreWallet -> {
-                        val seed = requireNotNull(setup?.seed) { "AccountCreateSetup with a seed is required for $walletInitMode" }
-                        DerivationTool.getInstance().deriveUnifiedFullViewingKeys(seed.byteArray, zcashNetwork, numberOfAccounts = 1)[0].encoding
+                        val seed =
+                            requireNotNull(setup?.seed) { "AccountCreateSetup with a seed is required for $walletInitMode" }
+                        DerivationTool.getInstance().deriveUnifiedFullViewingKeys(
+                            seed.byteArray,
+                            zcashNetwork,
+                            numberOfAccounts = 1
+                        )[0].encoding
                     }
                 }
 
             val noBackupRoot = applicationContext.getNoBackupFilesDirSuspend()
             val zcashNoBackupDir = Files.getZcashNoBackupSubdirectory(applicationContext)
-            val engineTorDir = if (isTorEnabled) File(zcashNoBackupDir, ENGINE_TOR_SUBDIR).apply { mkdirs() }.absolutePath else null
+            val engineTorDir =
+                if (isTorEnabled) File(zcashNoBackupDir, ENGINE_TOR_SUBDIR).apply { mkdirs() }.absolutePath else null
             val fallbackCheckpoint = newestBundledCheckpointHeight(applicationContext, zcashNetwork)
 
             val intent = resolveIntent(walletInitMode)
-            val startBirthday: BlockHeight =
+            val provisioning: WalletProvisioningPlan =
                 when (intent) {
                     1 -> {
-                        val requestedBirthday = requireNotNull(birthday) { "birthday is required for WalletInitMode.RestoreWallet" }
+                        val requestedBirthday =
+                            requireNotNull(birthday) { "birthday is required for WalletInitMode.RestoreWallet" }
                         val anchor =
                             withContext(Dispatchers.IO) {
                                 SlipstreamNative.restoreAnchor(
@@ -759,8 +853,14 @@ class SlipstreamSynchronizer internal constructor(
                                     torDir = engineTorDir
                                 )
                             }
-                        BlockHeight.new(anchor.height)
+                        WalletProvisioningPlan(
+                            startBirthday = BlockHeight.new(anchor.height),
+                            treeState = CheckpointTool.loadNearest(applicationContext, zcashNetwork, requestedBirthday)
+                                .treeState().encoded,
+                            recoverUntil = anchor.height
+                        )
                     }
+
                     0 -> {
                         val anchor =
                             withContext(Dispatchers.IO) {
@@ -775,18 +875,33 @@ class SlipstreamSynchronizer internal constructor(
                                     torDir = engineTorDir
                                 )
                             }
-                        anchor.height.takeIf { it > 0 }?.let(BlockHeight::new) ?: BlockHeight.new(fallbackCheckpoint)
+                        WalletProvisioningPlan(
+                            startBirthday = anchor.height.takeIf { it > 0 }?.let(BlockHeight::new) ?: BlockHeight.new(
+                                fallbackCheckpoint
+                            ),
+                            treeState = anchor.treestate ?: CheckpointTool.loadLast(applicationContext, zcashNetwork)
+                                .treeState().encoded,
+                            recoverUntil = null
+                        )
                     }
-                    else -> birthday ?: BlockHeight.new(fallbackCheckpoint)
+
+                    else ->
+                        WalletProvisioningPlan(
+                            startBirthday = birthday ?: BlockHeight.new(fallbackCheckpoint),
+                            treeState =
+                                CheckpointTool.loadNearest(
+                                    applicationContext,
+                                    zcashNetwork,
+                                    birthday ?: zcashNetwork.saplingActivationHeight
+                                )
+                                    .treeState()
+                                    .encoded,
+                            recoverUntil = null
+                        )
                 }
+            val startBirthday = provisioning.startBirthday
 
             val dbFile = DataDbPath.dataDbFile(noBackupRoot, alias, zcashNetwork)
-            val engine = SlipstreamEngine(dbFile.absolutePath, lightWalletEndpoint, zcashNetwork.id, engineTorDir, CoroutineScope(SupervisorJob() + Dispatchers.Default))
-
-            val activityManager = applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val memoryInfo = ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
-            engine.open(totalMemoryBytes = memoryInfo.totalMem)
-            engine.start(ufvk, startBirthday.value)
 
             val fsBlockDbRoot = File(applicationContext.filesDir, "slipstream_unused_fsblockdb").apply { mkdirs() }
             val saplingParamsDir = File(zcashNoBackupDir, "sapling_params")
@@ -799,6 +914,60 @@ class SlipstreamSynchronizer internal constructor(
                     zcashNetworkId = zcashNetwork.id
                 )
             val typesafeBackend = TypesafeBackendImpl(backend)
+
+            /**
+             * Fresh-wallet provisioning bug fix: [Backend.createAccount] is the ONLY place a fresh
+             * install ever gets an `accounts` row - nothing else in this factory writes one, so
+             * skipping it left every fresh restore/new-wallet syncing 27k+ block rows against zero
+             * accounts (no balances, no transactions). Mirrors `DerivedDataDb.new` (`DerivedDataDb.kt` ~126) verbatim:
+             * unconditional [Backend.initDataDb] (schema/migration bootstrap, same return-code
+             * contract as [TypesafeBackendImpl.initDataDb]) followed by a [Backend.createAccount]
+             * gated on `setup != null && accounts.isEmpty()` - non-null setup is exactly
+             * `WalletInitMode.NewWallet`/`RestoreWallet` (the `ufvk` derivation above already
+             * requires it), and the emptiness check is what makes an `ExistingWallet` relaunch of an
+             * already-provisioned DB a no-op instead of a duplicate account. [engine] is not
+             * constructed yet at this point, so there is no stop/restart bracket to worry about
+             * (contrast [importAccountByUfvk], which must stop/restart a LIVE engine).
+             */
+            when (backend.initDataDb(setup?.seed?.byteArray)) {
+                0 -> Unit
+                1 -> throw InitializeException.SeedRequired
+                2 -> throw InitializeException.SeedNotRelevant
+                -1 -> error("Rust backend only uses -1 as an error sentinel")
+                else -> error("Rust backend used a code that needs to be defined here")
+            }
+            if (shouldCreateAccount(hasSetup = setup != null, accountsAreEmpty = backend.getAccounts().isEmpty())) {
+                val accountSetup = requireNotNull(setup)
+                runCatching {
+                    backend.createAccount(
+                        accountName = accountSetup.accountName,
+                        keySource = accountSetup.keySource,
+                        seed = accountSetup.seed.byteArray,
+                        treeState = provisioning.treeState,
+                        recoverUntil = provisioning.recoverUntil
+                    )
+                }.getOrElse { throw InitializeException.CreateAccountException(it) }
+            }
+
+            val engine = SlipstreamEngine(
+                dbFile.absolutePath,
+                lightWalletEndpoint,
+                zcashNetwork.id,
+                engineTorDir,
+                CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            )
+
+            val activityManager = applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val memoryInfo = ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
+            engine.open(totalMemoryBytes = memoryInfo.totalMem)
+            /**
+             * `ufvk` stays non-null here even though the account row now already exists by this
+             * point (created above): `FFI_JNI_CONTRACT.md` section 3.5's `start(ufvk != null)` is
+             * defined as a no-op when any account is already present, so this is a harmless,
+             * contract-legal import attempt on every NewWallet/RestoreWallet launch, not a second
+             * provisioning path.
+             */
+            engine.start(ufvk, startBirthday.value)
 
             val torClient =
                 if (isTorEnabled || isExchangeRateEnabled) {
@@ -813,13 +982,14 @@ class SlipstreamSynchronizer internal constructor(
                     null
                 }
 
-            val walletClientFactory = WalletClientFactory(context = applicationContext, torClient = torClient.takeIf { isTorEnabled })
+            val walletClientFactory =
+                WalletClientFactory(context = applicationContext, torClient = torClient.takeIf { isTorEnabled })
             val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
-            val fastestServerFetcher = FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
+            val fastestServerFetcher =
+                FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
 
-            val transactionReader = SlipstreamTransactionReader(applicationContext, dbFile)
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            val transactionsController = TransactionsController(transactionReader, engine, scope)
+            val transactionReader = SlipstreamTransactionReader(dbFile)
+            val transactionsController = TransactionsController(transactionReader, engine)
 
             val spendService =
                 SlipstreamSpendService(
@@ -832,7 +1002,10 @@ class SlipstreamSynchronizer internal constructor(
                 )
 
             val submitPlanPreferences =
-                applicationContext.getSharedPreferences("com.zodl.slipstream.submit_plan_${zcashNetwork.id}_$alias", Context.MODE_PRIVATE)
+                applicationContext.getSharedPreferences(
+                    "com.zodl.slipstream.submit_plan_${zcashNetwork.id}_$alias",
+                    Context.MODE_PRIVATE
+                )
             val broadcaster =
                 SlipstreamBroadcaster(
                     backend = backend,
@@ -848,7 +1021,11 @@ class SlipstreamSynchronizer internal constructor(
                 ResubmissionTicker(
                     findCandidates = transactionReader::findResubmissionCandidates,
                     resubmit = { candidate ->
-                        walletClient.submitTransaction(FirstClassByteArray(candidate.raw), FirstClassByteArray(candidate.txId), sdkFlags)
+                        walletClient.submitTransaction(
+                            FirstClassByteArray(candidate.raw),
+                            FirstClassByteArray(candidate.txId),
+                            sdkFlags
+                        )
                         Unit
                     },
                     notifyTxChange = engine::notifyTxChange
@@ -873,8 +1050,7 @@ class SlipstreamSynchronizer internal constructor(
                 spendService = spendService,
                 broadcasterImpl = broadcaster,
                 resubmissionTicker = resubmissionTicker,
-                startBirthday = startBirthday,
-                scope = scope
+                startBirthday = startBirthday
             )
         }
 
@@ -919,7 +1095,8 @@ class SlipstreamSynchronizer internal constructor(
             val key = SlipstreamKey(network, alias)
             check(!InstanceGuard.isActive(key)) { "Cannot erase while a Slipstream synchronizer for $key is active" }
             return withContext(Dispatchers.IO) {
-                val dbFile = DataDbPath.dataDbFile(appContext.applicationContext.getNoBackupFilesDirSuspend(), alias, network)
+                val dbFile =
+                    DataDbPath.dataDbFile(appContext.applicationContext.getNoBackupFilesDirSuspend(), alias, network)
                 val walFile = File("${dbFile.path}-wal")
                 val shmFile = File("${dbFile.path}-shm")
                 listOf(dbFile, walFile, shmFile).map { !it.exists() || it.delete() }.all { it }
