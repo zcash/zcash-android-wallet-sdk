@@ -2,6 +2,8 @@ package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.AttentionReason
+import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
+import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
@@ -14,6 +16,8 @@ import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.migration.JniAttentionReason
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
@@ -225,6 +229,95 @@ internal class OrchardMigrationSdkImpl(
             )
             mapped.transferResult
         }
+
+    // ── External signer (Keystone hardware wallet) ──────────────────────────
+
+    override suspend fun createUnsignedNoteSplitPczt(): ByteArray = logged("createUnsignedNoteSplitPczt") {
+        val dbDataPath = dbDataPath()
+        val account = account ?: noAccountAvailable()
+        migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account)
+    }
+
+    override suspend fun storeSignedNoteSplitPczt(
+        signedPczt: ByteArray,
+        options: NetworkPrivacyOptions
+    ): TransferResult = logged("storeSignedNoteSplitPczt") {
+        val dbDataPath = dbDataPath()
+        val account = account ?: noAccountAvailable()
+        val prepared = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt)
+        val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
+        val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
+        val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
+        val mapped = mapSubmitResult(submitResult)
+        migrationBackend.recordTransferResult(
+            dbDataPath,
+            network,
+            account,
+            prepared.id,
+            mapped.tag,
+            mapped.retryable,
+            mapped.txIdBytes,
+        )
+        mapped.transferResult
+    }
+
+    override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<String, ByteArray>> =
+        logged("createUnsignedTransferPczts") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.createUnsignedTransferPczts(dbDataPath, network, account, schedule.toJni())
+                .map { it.id to it.pcztBytes }
+        }
+
+    override suspend fun storeSignedSchedulePczts(signed: List<Pair<String, ByteArray>>) =
+        logged("storeSignedSchedulePczts") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.storeSignedSchedulePczts(
+                dbDataPath,
+                network,
+                account,
+                Array(signed.size) { signed[it].first },
+                Array(signed.size) { signed[it].second },
+            )
+        }
+
+    override suspend fun buildKeystoneSignBatchQrParts(
+        requestId: ByteArray,
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: List<ByteArray>,
+        maxFragmentLen: Int
+    ): List<String> = logged("buildKeystoneSignBatchQrParts") {
+        migrationBackend.buildKeystoneSignBatchQrParts(
+            requestId,
+            splitUnsignedPczt,
+            transferUnsignedPczts.toTypedArray(),
+            maxFragmentLen,
+        ).toList()
+    }
+
+    override suspend fun resetKeystoneSignBatchDecoder() = logged("resetKeystoneSignBatchDecoder") {
+        migrationBackend.resetKeystoneSignBatchDecoder()
+    }
+
+    override suspend fun decodeKeystoneSignBatchPart(
+        part: String,
+        expectedRequestId: ByteArray
+    ): KeystoneBatchDecodeResult = logged("decodeKeystoneSignBatchPart") {
+        migrationBackend.decodeKeystoneSignBatchPart(part, expectedRequestId).toPublic()
+    }
+
+    override suspend fun applyKeystoneBatchSignatures(
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: List<ByteArray>,
+        batchSignResponse: ByteArray
+    ): KeystoneBatchSignedPczts = logged("applyKeystoneBatchSignatures") {
+        migrationBackend.applyKeystoneBatchSignatures(
+            splitUnsignedPczt,
+            transferUnsignedPczts.toTypedArray(),
+            batchSignResponse,
+        ).toPublic()
+    }
 
     // ── Migration proposal ───────────────────────────────────────────────────
 
@@ -546,6 +639,15 @@ private fun MigrationSchedule.toJni(): JniMigrationSchedule =
     JniMigrationSchedule(
         transfers = transfers.map { it.toJni() }.toTypedArray(),
         estimatedDurationHours = estimatedDurationHours,
+    )
+
+private fun JniKeystoneBatchDecodeResult.toPublic(): KeystoneBatchDecodeResult =
+    KeystoneBatchDecodeResult(complete = complete, progress = progress, data = data)
+
+private fun JniKeystoneBatchSignedPczts.toPublic(): KeystoneBatchSignedPczts =
+    KeystoneBatchSignedPczts(
+        splitSignedPczt = splitSignedPczt,
+        transferSignedPczts = transferSignedPczts.toList(),
     )
 
 private fun JniMigrationState.toPublic(): MigrationState =
