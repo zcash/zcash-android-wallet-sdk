@@ -4,10 +4,7 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
-    sys::{
-        JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jlongArray, jobject, jobjectArray,
-        jstring,
-    },
+    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
 };
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
@@ -19,10 +16,11 @@ use std::{
     },
 };
 use zcash_client_backend::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
-use zcash_protocol::consensus::{BranchId, Network, NetworkConstants};
+use zcash_protocol::consensus::Network;
 use zcash_voting as voting;
 
-use voting::storage::{RoundPhase, RoundState, RoundSummary, VoteRecord, VotingDb};
+use voting::recovery::VoteRecovery;
+use voting::storage::{RoundPhase, RoundState, RoundSummary, VotingDb};
 use voting::tree_sync::VoteTreeSync;
 use voting::types::{
     DelegationPirPrecomputeResult, DelegationProofResult, DelegationSubmissionData, GovernancePczt,
