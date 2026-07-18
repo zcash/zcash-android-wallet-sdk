@@ -289,6 +289,12 @@ interface OrchardMigrationSdk {
      * Implementation note (Rust bridge, 2026-07-15): [usk] is required for the same reason as
      * [submitNoteSplit]'s — `sign_and_store_migration_schedule` signs every transfer in the
      * schedule.
+     *
+     * Implementation note (Rust bridge, 2026-07-18, sign-now/prove-later): this signs every
+     * transfer immediately, even one whose funding note (a not-yet-mined note-split output) isn't
+     * witnessed yet — it defers the proof for such transfers rather than requiring them to wait.
+     * Callers do not need to wait for note-split to confirm on-chain before calling this. See
+     * [finalizeReadyTransfers] for how those deferred-proof transfers are later completed.
      */
     suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey)
 
@@ -304,6 +310,31 @@ interface OrchardMigrationSdk {
      * sync and broadcast must be decoupled in time).
      */
     suspend fun isSyncRequiredBeforeNextTransfer(): Boolean
+
+    /**
+     * Completes every pre-signed transfer that is awaiting a proof (its funding note — a
+     * not-yet-mined note-split output — was not yet witnessed at signing time) and whose funding
+     * note has since become witnessed: attaches the note's real witness and anchor, runs the
+     * prover, and makes the transfer eligible for [executeNextPendingTransfer] from then on.
+     *
+     * Idempotent and cheap to call redundantly — returns `0`, **not** an error, whenever there is
+     * nothing awaiting a proof yet or every awaiting transfer's funding note is still unwitnessed;
+     * that is the ordinary, expected steady state while a note-preparation output is still mining,
+     * not a failure. Callers do not need to guard calls to this with [isNoteSplitNeeded] or any
+     * other state check first.
+     *
+     * WorkManager task should call this before [isSyncRequiredBeforeNextTransfer] /
+     * [executeNextPendingTransfer] on every run, so a funding note that became witnessed since the
+     * last run gets finalized to broadcastable in the same session that might then immediately
+     * find and broadcast it.
+     *
+     * Implementation note (Rust bridge, 2026-07-18): backed by
+     * `MigrationContext::finalize_ready_transfers`, added alongside the sign-now/prove-later
+     * pipeline change to `signAndStoreMigrationSchedule` (see that method's implementation note) —
+     * that change lets signing succeed immediately even when a transfer's funding note isn't
+     * witnessed yet; this method is what later completes such a transfer once its note is.
+     */
+    suspend fun finalizeReadyTransfers(): Int
 
     /**
      * Broadcasts the next pending transfer. App does not need to track which transfer

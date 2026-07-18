@@ -197,6 +197,16 @@ class MigrationRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
+    suspend fun finalizeReadyTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            finalizeReadyTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
     suspend fun nextDueTransfer(
         dbDataPath: String,
         networkId: Int,
@@ -371,6 +381,14 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun finalizeReadyTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
 
         @JvmStatic
         @Throws(RuntimeException::class)

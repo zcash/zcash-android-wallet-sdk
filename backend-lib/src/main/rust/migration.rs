@@ -610,6 +610,30 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
+/// Completes every `SignedAwaitingProof` transfer whose funding note is now witnessed, attaching
+/// its real witness/anchor and running the Prover role. Idempotent and safe to call redundantly —
+/// returns 0, not an error, when there is nothing to finalize yet (see
+/// `MigrationContext::finalize_ready_transfers`'s doc comment for the full contract).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_finalizeReadyTransfersNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jint {
+    let res = catch_unwind(&mut env, |env| {
+        let context = migration_context(env, db_data, network_id, account_uuid)?;
+        let finalized_count = context
+            .finalize_ready_transfers()
+            .map_err(|e| anyhow!("Error finalizing ready transfers: {}", e))?;
+        Ok(finalized_count as jint)
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_nextDueTransferNative<
     'local,

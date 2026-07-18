@@ -105,6 +105,12 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Boolean
 
+    suspend fun finalizeReadyTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int
+
     suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,

@@ -119,6 +119,12 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Boolean = rustBackend().isSyncRequiredBeforeNextTransfer(dbDataPath, network.id, account.value)
 
+    override suspend fun finalizeReadyTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int = rustBackend().finalizeReadyTransfers(dbDataPath, network.id, account.value)
+
     override suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,
