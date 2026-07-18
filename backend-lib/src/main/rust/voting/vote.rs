@@ -154,7 +154,7 @@ fn require_delegation_ready_for_vote(
     db: &VotingDbHandle,
     round_id: &str,
     bundle_index: u32,
-    witness: &voting::tree_sync::VanWitness,
+    witness: &voting::vote::VanWitness,
 ) -> anyhow::Result<()> {
     // Callers hold VotingDbHandle::access_lock while this read-check sequence
     // runs. Managed handles for the same DB path and wallet share that lock, so
