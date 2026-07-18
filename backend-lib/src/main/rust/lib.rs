@@ -104,6 +104,7 @@ mod eip681;
 mod migration;
 mod tor;
 mod utils;
+#[cfg(feature = "chp-voting")]
 mod voting;
 
 /// Re-exports the Slipstream sync engine's JNI binding crate so its

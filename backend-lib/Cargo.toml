@@ -14,6 +14,11 @@ rust-version = "1.92"
 # Enables JNI helpers that are only used by Android instrumentation tests.
 # This feature must not be enabled for production native builds.
 android-test-fixtures = []
+# Enables the shielded-voting JNI surface (src/main/rust/voting.rs and its
+# `Java_..._VotingRustBackend_*` exports) and pulls in the optional `zcash_voting` dependency
+# below. NOT part of default features: zcash_voting 1.0's API surface has not yet been fully
+# ported past its own rename-level drift, so a default build must compile with zero voting code.
+chp-voting = ["dep:zcash_voting"]
 
 [dependencies]
 # Zcash dependencies
