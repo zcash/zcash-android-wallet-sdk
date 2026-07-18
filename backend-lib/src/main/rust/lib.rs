@@ -106,6 +106,17 @@ mod tor;
 mod utils;
 mod voting;
 
+/// Re-exports the Slipstream sync engine's JNI binding crate so its
+/// `Java_com_zodl_slipstream_*` `#[no_mangle]` exports are linked into this cdylib rather
+/// than being dropped as an unused dependency. `slipstream-jni` is a plain path dependency
+/// (see backend-lib/Cargo.toml); this crate's own code never calls into it directly, so
+/// without this reference the linker's symbol garbage collection would strip its exports and
+/// the merged library would carry only the RustBackend JNI surface. The extern crate name is
+/// `slipstream`, not `slipstream_jni` - `slipstream-jni`'s own `Cargo.toml` sets `[lib] name =
+/// "slipstream"`, and Cargo derives `--extern` names from the lib target's name, not the
+/// package name.
+pub use slipstream;
+
 #[cfg(debug_assertions)]
 fn print_debug_state() {
     debug!("WARNING! Debugging enabled! This will likely slow things down 10X!");
