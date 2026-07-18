@@ -16,7 +16,8 @@ use std::ptr;
 use zcash_client_backend::data_api::WalletRead;
 use zcash_pool_migration::{
     AttentionReason, MigrationContext, MigrationProgress, MigrationSchedule, MigrationState,
-    NoteSplitProposal, PreparedTransfer, TransferId, TransferProposal, TransferResult,
+    NoteSplitProposal, PreparedTransfer, SignedTransferPczt, TransferId, TransferProposal,
+    TransferResult, UnsignedTransferPczt,
 };
 use zcash_protocol::consensus::{BlockHeight, Network};
 use zcash_protocol::value::Zatoshis;
@@ -37,6 +38,12 @@ const JNI_TRANSFER_PROPOSAL: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniTransferProposal";
 const JNI_MIGRATION_SCHEDULE: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniMigrationSchedule";
+const JNI_UNSIGNED_TRANSFER_PCZT: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniUnsignedTransferPczt";
+const JNI_KEYSTONE_BATCH_DECODE_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniKeystoneBatchDecodeResult";
+const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniKeystoneBatchSignedPczts";
 
 fn migration_context(
     env: &mut JNIEnv,
@@ -291,6 +298,41 @@ fn decode_migration_schedule(
         transfers,
         estimated_duration_hours as u32,
     ))
+}
+
+fn encode_unsigned_transfer_pczt<'a>(
+    env: &mut JNIEnv<'a>,
+    transfer: &UnsignedTransferPczt,
+) -> jni::errors::Result<JObject<'a>> {
+    let id = env.new_string(transfer.id().as_str())?;
+    let pczt_bytes = crate::utils::rust_bytes_to_java(env, transfer.pczt_bytes())?;
+    env.new_object(
+        JNI_UNSIGNED_TRANSFER_PCZT,
+        "(Ljava/lang/String;[B)V",
+        &[JValue::Object(&id), JValue::Object(&pczt_bytes)],
+    )
+}
+
+/// Decodes the `(id, pcztBytes)` pairs an external signer returned for a schedule, in the same
+/// parallel-array shape [`decode_migration_schedule`] already uses for the schedule itself.
+fn decode_signed_transfer_pczts(
+    env: &mut JNIEnv,
+    ids: &JObjectArray,
+    pczt_bytes_list: &JObjectArray,
+) -> anyhow::Result<Vec<SignedTransferPczt>> {
+    let count = env.get_array_length(ids)?;
+    let mut signed = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let id_obj = env.get_object_array_element(ids, i)?;
+        let id = crate::utils::java_string_to_rust(env, &JString::from(id_obj))?;
+        let bytes_obj = env.get_object_array_element(pczt_bytes_list, i)?;
+        let pczt_bytes = crate::utils::java_bytes_to_rust(env, &JByteArray::from(bytes_obj))?;
+        signed.push(SignedTransferPczt::from_parts(
+            TransferId::from_raw(id),
+            pczt_bytes,
+        ));
+    }
+    Ok(signed)
 }
 
 #[unsafe(no_mangle)]
@@ -740,6 +782,255 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             Some(proposal) => encode_transfer_proposal(env, &proposal)?.into_raw(),
             None => ptr::null_mut(),
         })
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+// ----- External signer (Keystone hardware wallet) -----
+//
+// `refresh_stale_transfers` is deliberately NOT bound here — it takes a `UnifiedSpendingKey` and
+// re-signs in-process via `sign_and_store_migration_schedule`, so it's software-signing-only.
+// The external-signer equivalent of "refresh" is simply calling `create_unsigned_transfer_pczts`
+// again — its own doc already states "any previously staged (unconsumed) transfer PCZTs for the
+// account are replaced", so it's naturally idempotent/re-callable for this purpose.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_createUnsignedNoteSplitPcztNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let context = migration_context(env, db_data, network_id, account_uuid)?;
+        let unsigned = context
+            .create_unsigned_note_split_pczt()
+            .map_err(|e| anyhow!("Error creating unsigned note-split PCZT: {}", e))?;
+        Ok(crate::utils::rust_bytes_to_java(env, &unsigned)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_storeSignedNoteSplitPcztNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    signed_pczt: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let context = migration_context(env, db_data, network_id, account_uuid)?;
+        let signed_pczt = crate::utils::java_bytes_to_rust(env, &signed_pczt)?;
+        let prepared = context
+            .store_signed_note_split_pczt(&signed_pczt)
+            .map_err(|e| anyhow!("Error storing signed note-split PCZT: {}", e))?;
+        Ok(encode_prepared_transfer(env, &prepared)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_createUnsignedTransferPcztsNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    ids: JObjectArray<'local>,
+    amounts_zatoshi: JLongArray<'local>,
+    anchor_heights: JLongArray<'local>,
+    next_executable_after_heights: JLongArray<'local>,
+    expiry_heights: JLongArray<'local>,
+    estimated_duration_hours: jint,
+) -> jobjectArray {
+    let res = catch_unwind(&mut env, |env| {
+        let context = migration_context(env, db_data, network_id, account_uuid)?;
+        let schedule = decode_migration_schedule(
+            env,
+            ids,
+            amounts_zatoshi,
+            anchor_heights,
+            next_executable_after_heights,
+            expiry_heights,
+            estimated_duration_hours,
+        )?;
+        let unsigned = context
+            .create_unsigned_transfer_pczts(&schedule)
+            .map_err(|e| anyhow!("Error creating unsigned transfer PCZTs: {}", e))?;
+        Ok(
+            crate::utils::rust_vec_to_java(env, unsigned, JNI_UNSIGNED_TRANSFER_PCZT, |env, t| {
+                encode_unsigned_transfer_pczt(env, &t)
+            })?
+            .into_raw(),
+        )
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_storeSignedSchedulePcztsNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    ids: JObjectArray<'local>,
+    pczt_bytes_list: JObjectArray<'local>,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let context = migration_context(env, db_data, network_id, account_uuid)?;
+        let signed = decode_signed_transfer_pczts(env, &ids, &pczt_bytes_list)?;
+        context
+            .store_signed_schedule_pczts(&signed)
+            .map_err(|e| anyhow!("Error storing signed schedule PCZTs: {}", e))
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+// ----- Keystone batch-signing UR bridge (crate::migration_keystone) -----
+//
+// These do not touch the wallet database — no MigrationContext, no (db_data, network_id,
+// account_uuid) triple — they are pure PCZT/UR operations over the bytes the caller already holds.
+
+fn decode_byte_array_list(env: &mut JNIEnv, list: &JObjectArray) -> anyhow::Result<Vec<Vec<u8>>> {
+    let count = env.get_array_length(list)?;
+    let mut out = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let obj = env.get_object_array_element(list, i)?;
+        out.push(crate::utils::java_bytes_to_rust(
+            env,
+            &JByteArray::from(obj),
+        )?);
+    }
+    Ok(out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_buildKeystoneSignBatchQrPartsNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    request_id: JByteArray<'local>,
+    split_unsigned: JByteArray<'local>,
+    transfer_unsigned: JObjectArray<'local>,
+    max_fragment_len: jint,
+) -> jobjectArray {
+    let res = catch_unwind(&mut env, |env| {
+        let request_id = crate::utils::java_bytes_to_rust(env, &request_id)?;
+        let split_unsigned = crate::utils::java_nullable_bytes_to_rust(env, &split_unsigned)?;
+        let transfer_unsigned = decode_byte_array_list(env, &transfer_unsigned)?;
+        let parts = crate::migration_keystone::build_sign_batch_qr_parts(
+            request_id,
+            split_unsigned.as_deref(),
+            &transfer_unsigned,
+            max_fragment_len as usize,
+        )
+        .map_err(|e| anyhow!("Error building Keystone sign-batch QR parts: {}", e))?;
+        Ok(
+            crate::utils::rust_vec_to_java(env, parts, "java/lang/String", |env, part| {
+                env.new_string(part)
+            })?
+            .into_raw(),
+        )
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_resetKeystoneSignBatchDecoderNative<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _: JClass<'local>,
+) {
+    crate::migration_keystone::reset_sign_batch_decoder();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_decodeKeystoneSignBatchPartNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    part: JString<'local>,
+    expected_request_id: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let part = crate::utils::java_string_to_rust(env, &part)?;
+        let expected_request_id = crate::utils::java_bytes_to_rust(env, &expected_request_id)?;
+        let result =
+            crate::migration_keystone::decode_sign_batch_part(&part, &expected_request_id)
+                .map_err(|e| anyhow!("Error decoding Keystone sign-batch QR part: {}", e))?;
+        let data = match &result.data {
+            Some(bytes) => crate::utils::rust_bytes_to_java(env, bytes)?.into(),
+            None => JObject::null(),
+        };
+        Ok(env
+            .new_object(
+                JNI_KEYSTONE_BATCH_DECODE_RESULT,
+                "(ZI[B)V",
+                &[
+                    JValue::Bool(if result.complete { JNI_TRUE } else { JNI_FALSE }),
+                    JValue::Int(result.progress as jint),
+                    JValue::Object(&data),
+                ],
+            )?
+            .into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_applyKeystoneBatchSignaturesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    split_unsigned: JByteArray<'local>,
+    transfer_unsigned: JObjectArray<'local>,
+    batch_sign_response: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let split_unsigned = crate::utils::java_nullable_bytes_to_rust(env, &split_unsigned)?;
+        let transfer_unsigned = decode_byte_array_list(env, &transfer_unsigned)?;
+        let batch_sign_response = crate::utils::java_bytes_to_rust(env, &batch_sign_response)?;
+        let (split_signed, transfers_signed) = crate::migration_keystone::apply_batch_signatures(
+            split_unsigned.as_deref(),
+            &transfer_unsigned,
+            &batch_sign_response,
+        )
+        .map_err(|e| anyhow!("Error applying Keystone batch signatures: {}", e))?;
+
+        let split_signed_obj = match &split_signed {
+            Some(bytes) => crate::utils::rust_bytes_to_java(env, bytes)?.into(),
+            None => JObject::null(),
+        };
+        let transfers_signed_obj =
+            crate::utils::rust_vec_to_java(env, transfers_signed, "[B", |env, bytes| {
+                crate::utils::rust_bytes_to_java(env, &bytes)
+            })?;
+        Ok(env
+            .new_object(
+                JNI_KEYSTONE_BATCH_SIGNED_PCZTS,
+                format!("([B[[B)V"),
+                &[
+                    JValue::Object(&split_signed_obj),
+                    JValue::Object(&transfers_signed_obj),
+                ],
+            )?
+            .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }

@@ -102,6 +102,7 @@ use crate::utils::{
 
 mod eip681;
 mod migration;
+mod migration_keystone;
 mod tor;
 mod utils;
 mod voting;

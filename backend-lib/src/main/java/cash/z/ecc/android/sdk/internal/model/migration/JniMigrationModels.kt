@@ -63,6 +63,40 @@ class JniMigrationSchedule(
 )
 
 /**
+ * Serves as cross layer (Kotlin, Rust) communication class. One transfer's unsigned, proven (self-
+ * funding transfers are the exception: not yet proven, per the sign-now/prove-later scheme) PCZT,
+ * staged in the engine and awaiting an external signer (e.g. Keystone).
+ */
+@Keep
+class JniUnsignedTransferPczt(
+    val id: String,
+    val pcztBytes: ByteArray
+)
+
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class. The result of feeding one scanned QR
+ * frame to the Keystone batch-signing UR decoder — see `migration_keystone::decode_sign_batch_part`.
+ */
+@Keep
+class JniKeystoneBatchDecodeResult(
+    val complete: Boolean,
+    val progress: Int,
+    val data: ByteArray?
+)
+
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class. The signed-but-unproven PCZT bytes
+ * produced by applying a Keystone batch-signing response back to the retained unsigned PCZTs —
+ * see `migration_keystone::apply_batch_signatures`. `transferSignedPczts` is index-aligned with
+ * whatever order the caller passed the unsigned transfer PCZTs in.
+ */
+@Keep
+class JniKeystoneBatchSignedPczts(
+    val splitSignedPczt: ByteArray?,
+    val transferSignedPczts: Array<ByteArray>
+)
+
+/**
  * Serves as cross layer (Kotlin, Rust) communication class.
  */
 @Keep

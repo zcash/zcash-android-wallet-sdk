@@ -553,7 +553,7 @@ class RustBackend private constructor(
     companion object {
         internal val rustLibraryLoader = NativeLibraryLoader("zcashwalletsdk")
 
-        private val rustLogging: RustLogging = RustLogging.Off
+        private val rustLogging: RustLogging = RustLogging.Debug
 
         suspend fun loadLibrary() {
             rustLibraryLoader.load {
