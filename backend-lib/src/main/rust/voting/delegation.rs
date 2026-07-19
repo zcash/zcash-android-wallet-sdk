@@ -127,8 +127,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 /// Builds a governance PCZT for one deterministic bundle from the full snapshot note set.
 ///
 /// Shared by the explicit-FVK Keystone path and the seed-validated software path. Callers must
-/// provide already validated signer material; this helper verifies the bundle index, enforces the
-/// round phase, persists the constructed delegation state, and advances the phase on success.
+/// provide already validated signer material; this helper verifies the bundle index, advances the
+/// round phase forward to `HotkeyGenerated` at PCZT-build time (the delegation ordering is
+/// data-enforced — the build consumes the hotkey secret directly), persists the constructed
+/// delegation state, and advances the phase to `DelegationConstructed` on success.
 #[allow(clippy::too_many_arguments)]
 fn build_governance_pczt_for_bundle(
     db: &VotingDbHandle,
@@ -142,7 +144,7 @@ fn build_governance_pczt_for_bundle(
     round_name: &str,
 ) -> anyhow::Result<GovernancePczt> {
     let bundle_notes = bundled_notes_for_index(notes, bundle_index)?;
-    require_round_phase_for_delegation_construction(db, round_id)?;
+    update_round_phase_forward(db, round_id, RoundPhase::HotkeyGenerated)?;
 
     let hotkey = voting::types::VotingHotkey::from_stored_secret(hotkey_secret, db.network)
         .map_err(|e| anyhow!("VotingHotkey::from_stored_secret: {}", e))?;

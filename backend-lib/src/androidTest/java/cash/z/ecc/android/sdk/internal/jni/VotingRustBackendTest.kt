@@ -682,7 +682,7 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun build_governance_pczt_requires_hotkey_generated_phase() =
+    fun build_governance_pczt_advances_phase_from_initialized_round() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
@@ -697,12 +697,16 @@ class VotingRustBackendTest {
                     sessionJson = null
                 )
                 db.setupBundles(PCZT_ROUND_ID, notes)
-
-                assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, notes)
-                }
                 assertEquals(
                     JniRoundPhase.INITIALIZED,
+                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
+                )
+
+                val pczt = db.buildTestGovernancePczt(ufvk, notes)
+
+                assertTrue(pczt.pcztBytes.isNotEmpty())
+                assertEquals(
+                    JniRoundPhase.DELEGATION_CONSTRUCTED,
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
                 )
             } finally {

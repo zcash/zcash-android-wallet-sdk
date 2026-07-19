@@ -11,13 +11,17 @@ edition = "2024"
 rust-version = "1.92"
 
 [features]
+# The shielded-voting JNI surface is on by default now that the zcash_voting 1.0 port has
+# landed. Named so a future no-chp build can subtract it via
+# `--no-default-features` plus an explicit feature list; `android-test-fixtures` stays
+# out of default (it must never be enabled for production native builds).
+default = ["chp-voting"]
 # Enables JNI helpers that are only used by Android instrumentation tests.
 # This feature must not be enabled for production native builds.
 android-test-fixtures = []
 # Enables the shielded-voting JNI surface (src/main/rust/voting.rs and its
 # `Java_..._VotingRustBackend_*` exports) and pulls in the optional `zcash_voting` dependency
-# below. NOT part of default features: zcash_voting 1.0's API surface has not yet been fully
-# ported past its own rename-level drift, so a default build must compile with zero voting code.
+# below.
 chp-voting = ["dep:zcash_voting", "dep:pasta_curves", "dep:ff"]
 
 [dependencies]
