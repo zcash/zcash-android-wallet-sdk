@@ -30,6 +30,21 @@ import kotlin.time.Duration
  * - [isSyncBlocked] / [privacySyncBufferDuration] are confirmed Kotlin-only (no Rust backing) —
  *   the sync/broadcast de-correlation technique they implement lives entirely in this SDK layer.
  *
+ * Reconciled 2026-07-18 while wiring the external-signer (Keystone hardware wallet) path:
+ * - New: [createUnsignedNoteSplitPczt] / [storeSignedNoteSplitPczt] and
+ *   [createUnsignedTransferPczts] / [storeSignedSchedulePczts] split [submitNoteSplit]'s and
+ *   [signAndStoreMigrationSchedule]'s "sign" step into "build the unsigned PCZT" / "accept an
+ *   externally-produced signature" halves, for callers with no software spending key at all.
+ *   [createUnsignedTransferPczts]'s self-funding transfers use the same sign-now/prove-later
+ *   placeholder-witness scheme [signAndStoreMigrationSchedule] does — [finalizeReadyTransfers]
+ *   completes them the same way regardless of which path signed them.
+ * - New: [buildKeystoneSignBatchQrParts] / [resetKeystoneSignBatchDecoder] /
+ *   [decodeKeystoneSignBatchPart] / [applyKeystoneBatchSignatures] — the Keystone-specific
+ *   animated-QR batch-signing bridge (encode every unsigned PCZT the caller wants signed as one
+ *   multi-part UR QR sequence; decode the device's scanned response back into per-PCZT
+ *   signatures). Pure PCZT/UR operations with no wallet-database access, unlike almost everything
+ *   else in this interface.
+ *
  * Reconciled 2026-07-15 while wiring the real JNI implementation:
  * - [submitNoteSplit] / [signAndStoreMigrationSchedule] gained a `usk: UnifiedSpendingKey`
  *   parameter — sdk-lib never stores/derives a spending key itself (see
@@ -97,6 +112,34 @@ data class TransferProposal(
 data class MigrationSchedule(
     val transfers: List<TransferProposal>,
     val estimatedDurationHours: Int
+)
+
+/**
+ * The result of feeding one scanned QR frame to the Keystone batch-signing UR decoder —
+ * see [OrchardMigrationSdk.decodeKeystoneSignBatchPart].
+ *
+ * [complete] is `false` while more frames are still expected — [progress] (0–100) tracks how far
+ * the multi-part scan has gotten. Once `complete` is `true`, [data] carries the decoded batch
+ * signing response bytes to pass to [OrchardMigrationSdk.applyKeystoneBatchSignatures]; `null`
+ * otherwise.
+ */
+data class KeystoneBatchDecodeResult(
+    val complete: Boolean,
+    val progress: Int,
+    val data: ByteArray?
+)
+
+/**
+ * The signed-but-unproven PCZT bytes produced by [OrchardMigrationSdk.applyKeystoneBatchSignatures]
+ * — [splitSignedPczt] is `null` iff no split PCZT was included in the batch;
+ * [transferSignedPczts] is in the same order the unsigned PCZTs were passed to
+ * [OrchardMigrationSdk.buildKeystoneSignBatchQrParts]. Pass [splitSignedPczt] to
+ * [OrchardMigrationSdk.storeSignedNoteSplitPczt] and [transferSignedPczts] (paired back up with
+ * their transfer ids) to [OrchardMigrationSdk.storeSignedSchedulePczts].
+ */
+data class KeystoneBatchSignedPczts(
+    val splitSignedPczt: ByteArray?,
+    val transferSignedPczts: List<ByteArray>
 )
 
 /**
@@ -245,6 +288,85 @@ interface OrchardMigrationSdk {
      */
     suspend fun submitNoteSplit(proposal: NoteSplitProposal, usk: UnifiedSpendingKey): TransferResult
 
+    // ── External signer (Keystone hardware wallet) ───────────────────────────
+
+    /**
+     * Builds the note-split transaction as an unsigned PCZT for an external signer — the
+     * [submitNoteSplit] equivalent for callers with no software spending key. Nothing is
+     * broadcast; pass the device's returned signature to [storeSignedNoteSplitPczt].
+     */
+    suspend fun createUnsignedNoteSplitPczt(): ByteArray
+
+    /**
+     * Accepts the externally-signed note-split PCZT, finalizes it, and broadcasts it — the
+     * back half of [createUnsignedNoteSplitPczt], mirroring [submitNoteSplit]'s composition
+     * (extract → broadcast via the existing submission path → record result) exactly.
+     */
+    suspend fun storeSignedNoteSplitPczt(signedPczt: ByteArray, options: NetworkPrivacyOptions): TransferResult
+
+    /**
+     * Builds one unsigned PCZT per transfer of `schedule` for an external signer — the
+     * [signAndStoreMigrationSchedule] equivalent for callers with no software spending key.
+     * Returns `(transfer id, unsigned PCZT bytes)` pairs; the pairing must survive to
+     * [storeSignedSchedulePczts], which matches signed PCZTs back to these by id.
+     *
+     * Self-funding transfers (the common case) use the same sign-now/prove-later
+     * placeholder-witness scheme [signAndStoreMigrationSchedule] does — callers do not need to
+     * wait for the note-split to confirm on-chain before calling this either.
+     */
+    suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<String, ByteArray>>
+
+    /**
+     * Accepts the full set of externally-signed transfer PCZTs — **all-or-nothing**, matched back
+     * to their staged unsigned originals by id (from [createUnsignedTransferPczts]) — and persists
+     * the committed schedule. No broadcast happens here (mirrors [signAndStoreMigrationSchedule]'s
+     * role): [finalizeReadyTransfers] later completes any transfer that was staged awaiting proof,
+     * exactly as it already does for the software-signing path.
+     */
+    suspend fun storeSignedSchedulePczts(signed: List<Pair<String, ByteArray>>)
+
+    /**
+     * Builds the animated multi-part QR frames for one combined Keystone batch-signing request
+     * covering the optional note-split PCZT (pass `null` when [isNoteSplitNeeded] is `false`) and
+     * every schedule transfer's unsigned PCZT, in that order — so split and schedule sign in a
+     * single device round trip rather than two. [requestId] is an opaque correlation token (e.g. a
+     * UUID's bytes) the device round-trips, checked by [decodeKeystoneSignBatchPart].
+     *
+     * Pure PCZT/UR encoding — no wallet-database access, unlike almost every other method here.
+     */
+    suspend fun buildKeystoneSignBatchQrParts(
+        requestId: ByteArray,
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: List<ByteArray>,
+        maxFragmentLen: Int
+    ): List<String>
+
+    /**
+     * Discards any in-flight multi-part Keystone batch-signing scan session. Call on scan-screen
+     * entry so a new attempt always starts from a clean slate.
+     */
+    suspend fun resetKeystoneSignBatchDecoder()
+
+    /**
+     * Feeds one scanned QR frame into the active (or a freshly started) Keystone batch-signing
+     * decode session. [expectedRequestId] must match [buildKeystoneSignBatchQrParts]'s
+     * `requestId` — a mismatch (or any other decode error) resets the session; call
+     * [resetKeystoneSignBatchDecoder] before retrying.
+     */
+    suspend fun decodeKeystoneSignBatchPart(part: String, expectedRequestId: ByteArray): KeystoneBatchDecodeResult
+
+    /**
+     * Applies a completed Keystone batch-signing response ([KeystoneBatchDecodeResult.data] once
+     * `complete`) back to the retained unsigned PCZTs — in the exact split-then-transfers order
+     * they were passed to [buildKeystoneSignBatchQrParts] — producing signed-but-unproven PCZT
+     * bytes for each, ready for [storeSignedNoteSplitPczt]/[storeSignedSchedulePczts].
+     */
+    suspend fun applyKeystoneBatchSignatures(
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: List<ByteArray>,
+        batchSignResponse: ByteArray
+    ): KeystoneBatchSignedPczts
+
     // ── Migration proposal ───────────────────────────────────────────────────
 
     /**
@@ -289,6 +411,12 @@ interface OrchardMigrationSdk {
      * Implementation note (Rust bridge, 2026-07-15): [usk] is required for the same reason as
      * [submitNoteSplit]'s — `sign_and_store_migration_schedule` signs every transfer in the
      * schedule.
+     *
+     * Implementation note (Rust bridge, 2026-07-18, sign-now/prove-later): this signs every
+     * transfer immediately, even one whose funding note (a not-yet-mined note-split output) isn't
+     * witnessed yet — it defers the proof for such transfers rather than requiring them to wait.
+     * Callers do not need to wait for note-split to confirm on-chain before calling this. See
+     * [finalizeReadyTransfers] for how those deferred-proof transfers are later completed.
      */
     suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey)
 
@@ -304,6 +432,31 @@ interface OrchardMigrationSdk {
      * sync and broadcast must be decoupled in time).
      */
     suspend fun isSyncRequiredBeforeNextTransfer(): Boolean
+
+    /**
+     * Completes every pre-signed transfer that is awaiting a proof (its funding note — a
+     * not-yet-mined note-split output — was not yet witnessed at signing time) and whose funding
+     * note has since become witnessed: attaches the note's real witness and anchor, runs the
+     * prover, and makes the transfer eligible for [executeNextPendingTransfer] from then on.
+     *
+     * Idempotent and cheap to call redundantly — returns `0`, **not** an error, whenever there is
+     * nothing awaiting a proof yet or every awaiting transfer's funding note is still unwitnessed;
+     * that is the ordinary, expected steady state while a note-preparation output is still mining,
+     * not a failure. Callers do not need to guard calls to this with [isNoteSplitNeeded] or any
+     * other state check first.
+     *
+     * WorkManager task should call this before [isSyncRequiredBeforeNextTransfer] /
+     * [executeNextPendingTransfer] on every run, so a funding note that became witnessed since the
+     * last run gets finalized to broadcastable in the same session that might then immediately
+     * find and broadcast it.
+     *
+     * Implementation note (Rust bridge, 2026-07-18): backed by
+     * `MigrationContext::finalize_ready_transfers`, added alongside the sign-now/prove-later
+     * pipeline change to `signAndStoreMigrationSchedule` (see that method's implementation note) —
+     * that change lets signing succeed immediately even when a transfer's funding note isn't
+     * witnessed yet; this method is what later completes such a transfer once its note is.
+     */
+    suspend fun finalizeReadyTransfers(): Int
 
     /**
      * Broadcasts the next pending transfer. App does not need to track which transfer

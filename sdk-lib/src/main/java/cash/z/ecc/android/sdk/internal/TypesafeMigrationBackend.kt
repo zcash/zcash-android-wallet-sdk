@@ -1,11 +1,14 @@
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
+import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 
@@ -105,6 +108,12 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Boolean
 
+    suspend fun finalizeReadyTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int
+
     suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,
@@ -135,4 +144,61 @@ internal interface TypesafeMigrationBackend {
         network: ZcashNetwork,
         account: AccountUuid
     ): JniTransferProposal?
+
+    // ----- External signer (Keystone hardware wallet) -----
+
+    suspend fun createUnsignedNoteSplitPczt(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): ByteArray
+
+    suspend fun storeSignedNoteSplitPczt(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        signedPczt: ByteArray
+    ): JniPreparedTransfer
+
+    suspend fun createUnsignedTransferPczts(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        schedule: JniMigrationSchedule
+    ): Array<JniUnsignedTransferPczt>
+
+    /**
+     * [ids]/[pcztBytesList] are parallel arrays — signed PCZTs matched back to their staged
+     * unsigned originals by id, not by array position (all-or-nothing across whatever set of ids
+     * is provided here).
+     */
+    suspend fun storeSignedSchedulePczts(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        ids: Array<String>,
+        pcztBytesList: Array<ByteArray>
+    )
+
+    // ----- Keystone batch-signing UR bridge (no wallet database access) -----
+
+    suspend fun buildKeystoneSignBatchQrParts(
+        requestId: ByteArray,
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        maxFragmentLen: Int
+    ): Array<String>
+
+    suspend fun resetKeystoneSignBatchDecoder()
+
+    suspend fun decodeKeystoneSignBatchPart(
+        part: String,
+        expectedRequestId: ByteArray
+    ): JniKeystoneBatchDecodeResult
+
+    suspend fun applyKeystoneBatchSignatures(
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        batchSignResponse: ByteArray
+    ): JniKeystoneBatchSignedPczts
 }

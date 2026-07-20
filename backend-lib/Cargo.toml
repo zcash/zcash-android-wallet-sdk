@@ -33,7 +33,7 @@ orchard = { version = "0.15.0", features = ["unstable-voting-circuits"] }
 # Orchard->Ironwood migration engine — path dependency on the local librustzcash checkout
 # (see [patch.crates-io] below; this crate isn't published to crates.io).
 zcash_pool_migration = { path = "../../../../../librustzcash/zcash_pool_migration" }
-pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling"] }
+pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 # zcash_transparent, zcash_address, zcash_client_backend, zcash_client_sqlite, zcash_primitives,
 # zcash_proofs and zcash_protocol are bumped to the minor line the convergence-pin librustzcash
@@ -158,6 +158,21 @@ ff = { version = "0.13", optional = true }
 # own worktree for this branch — its work moved there too, so the old
 # `../../../../../slipstream/slipstream/android/jni` path is dead.
 slipstream-jni = { path = "../../../../../slipstream/.claude/worktrees/android-slipstream-ironwood-chp/slipstream/android/jni" }
+
+# Keystone hardware-wallet batch signing for the Orchard migration flow.
+#
+# The compiled `keystone-sdk-android` AAR this project's Kotlin layer otherwise depends on
+# (co.electriccoin.zcash ui-lib) is stale (last release Oct 2025) and has no batch-signing API —
+# only single-PCZT `generatePczt`/`parsePczt`. Batch signing for Zcash (firmware + these UR
+# envelope types) was added to the Keystone ecosystem within the last month, but hasn't reached a
+# new Android SDK release yet. `chainapsis/vizor-wallet` (a different Zcash wallet, run by the
+# same contributors behind the Keystone firmware/core PRs) bypasses the compiled AAR entirely by
+# depending on `keystone-sdk-rust`'s `ur-registry` crate and `ur-rs` directly from git — this
+# mirrors that exact, verified-working pattern instead of waiting on an Android SDK release.
+# The actual batching primitive is `pczt::roles::signer::batch` (see the `signer` feature above),
+# not Keystone-specific; these crates only provide the outer UR/QR envelope.
+ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
+ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
 # ════════════════════════════════════════════════════════════════════════════════════════
 # [patch.crates-io] — unify on the convergence-pin librustzcash lineage

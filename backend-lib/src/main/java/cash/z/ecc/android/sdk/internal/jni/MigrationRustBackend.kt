@@ -2,12 +2,15 @@ package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
+import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
 import kotlinx.coroutines.withContext
 
 /**
@@ -197,6 +200,16 @@ class MigrationRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
+    suspend fun finalizeReadyTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            finalizeReadyTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
     suspend fun nextDueTransfer(
         dbDataPath: String,
         networkId: Int,
@@ -242,6 +255,137 @@ class MigrationRustBackend private constructor() {
     ): List<ByteArray> =
         withContext(SdkDispatchers.DATABASE_IO) {
             getAccountUuidsNative(dbDataPath, networkId).asList()
+        }
+
+    // ----- External signer (Keystone hardware wallet) -----
+
+    @Throws(RuntimeException::class)
+    suspend fun createUnsignedNoteSplitPczt(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): ByteArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            createUnsignedNoteSplitPcztNative(dbDataPath, networkId, accountUuidBytes)
+                ?: error("createUnsignedNoteSplitPczt returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun storeSignedNoteSplitPczt(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        signedPczt: ByteArray
+    ): JniPreparedTransfer =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            storeSignedNoteSplitPcztNative(dbDataPath, networkId, accountUuidBytes, signedPczt)
+                ?: error("storeSignedNoteSplitPczt returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun createUnsignedTransferPczts(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        schedule: JniMigrationSchedule
+    ): Array<JniUnsignedTransferPczt> =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            createUnsignedTransferPcztsNative(
+                dbDataPath,
+                networkId,
+                accountUuidBytes,
+                Array(schedule.transfers.size) { schedule.transfers[it].id },
+                LongArray(schedule.transfers.size) { schedule.transfers[it].amountZatoshi },
+                LongArray(schedule.transfers.size) { schedule.transfers[it].anchorHeight },
+                LongArray(schedule.transfers.size) { schedule.transfers[it].nextExecutableAfterHeight },
+                LongArray(schedule.transfers.size) { schedule.transfers[it].expiryHeight },
+                schedule.estimatedDurationHours
+            ) ?: error("createUnsignedTransferPczts returned null")
+        }
+
+    /**
+     * [ids]/[pcztBytesList] are parallel arrays — signed PCZTs matched back to their staged
+     * unsigned originals by id, not by array position (`store_signed_schedule_pczts` is
+     * all-or-nothing across whatever set of ids is provided here).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun storeSignedSchedulePczts(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        ids: Array<String>,
+        pcztBytesList: Array<ByteArray>
+    ) = withContext(SdkDispatchers.DATABASE_IO) {
+        storeSignedSchedulePcztsNative(dbDataPath, networkId, accountUuidBytes, ids, pcztBytesList)
+    }
+
+    // ----- Keystone batch-signing UR bridge (no wallet database access) -----
+
+    /**
+     * Builds the animated multi-part QR frames for a Keystone batch-signing request covering the
+     * optional note-split PCZT (pass `null` when no split is needed) and every schedule
+     * transfer's unsigned PCZT, in that order. [requestId] is an opaque correlation token (e.g. a
+     * UUID's bytes) the device round-trips, checked by [decodeKeystoneSignBatchPart].
+     */
+    @Throws(RuntimeException::class)
+    suspend fun buildKeystoneSignBatchQrParts(
+        requestId: ByteArray,
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        maxFragmentLen: Int
+    ): Array<String> =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            buildKeystoneSignBatchQrPartsNative(
+                requestId,
+                splitUnsignedPczt,
+                transferUnsignedPczts,
+                maxFragmentLen
+            ) ?: error("buildKeystoneSignBatchQrParts returned null")
+        }
+
+    /**
+     * Discards any in-flight multi-part scan session. Call on scan-screen entry so a new attempt
+     * always starts from a clean slate.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun resetKeystoneSignBatchDecoder() =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            resetKeystoneSignBatchDecoderNative()
+        }
+
+    /**
+     * Feeds one scanned QR frame into the active (or a freshly started) decode session. Errors
+     * (including a decoded [JniKeystoneBatchDecodeResult.data] whose request id doesn't match
+     * [expectedRequestId]) reset the session; call [resetKeystoneSignBatchDecoder] before retrying.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun decodeKeystoneSignBatchPart(
+        part: String,
+        expectedRequestId: ByteArray
+    ): JniKeystoneBatchDecodeResult =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            decodeKeystoneSignBatchPartNative(part, expectedRequestId)
+                ?: error("decodeKeystoneSignBatchPart returned null")
+        }
+
+    /**
+     * Applies a completed batch-signing response back to the retained unsigned PCZTs — in the
+     * exact split-then-transfers order they were passed to [buildKeystoneSignBatchQrParts] —
+     * producing signed-but-unproven PCZT bytes for each, ready for
+     * [storeSignedNoteSplitPczt]/[storeSignedSchedulePczts].
+     */
+    @Throws(RuntimeException::class)
+    suspend fun applyKeystoneBatchSignatures(
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        batchSignResponse: ByteArray
+    ): JniKeystoneBatchSignedPczts =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            applyKeystoneBatchSignaturesNative(
+                splitUnsignedPczt,
+                transferUnsignedPczts,
+                batchSignResponse
+            ) ?: error("applyKeystoneBatchSignatures returned null")
         }
 
     companion object {
@@ -374,6 +518,14 @@ class MigrationRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun finalizeReadyTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun nextDueTransferNative(
             dbDataPath: String,
             networkId: Int,
@@ -403,5 +555,75 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): JniTransferProposal?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun createUnsignedNoteSplitPcztNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeSignedNoteSplitPcztNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            signedPczt: ByteArray
+        ): JniPreparedTransfer?
+
+        @JvmStatic
+        @Suppress("LongParameterList")
+        @Throws(RuntimeException::class)
+        private external fun createUnsignedTransferPcztsNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            ids: Array<String>,
+            amountsZatoshi: LongArray,
+            anchorHeights: LongArray,
+            nextExecutableAfterHeights: LongArray,
+            expiryHeights: LongArray,
+            estimatedDurationHours: Int
+        ): Array<JniUnsignedTransferPczt>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeSignedSchedulePcztsNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            ids: Array<String>,
+            pcztBytesList: Array<ByteArray>
+        )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildKeystoneSignBatchQrPartsNative(
+            requestId: ByteArray,
+            splitUnsignedPczt: ByteArray?,
+            transferUnsignedPczts: Array<ByteArray>,
+            maxFragmentLen: Int
+        ): Array<String>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun resetKeystoneSignBatchDecoderNative()
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun decodeKeystoneSignBatchPartNative(
+            part: String,
+            expectedRequestId: ByteArray
+        ): JniKeystoneBatchDecodeResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun applyKeystoneBatchSignaturesNative(
+            splitUnsignedPczt: ByteArray?,
+            transferUnsignedPczts: Array<ByteArray>,
+            batchSignResponse: ByteArray
+        ): JniKeystoneBatchSignedPczts?
     }
 }

@@ -1,12 +1,15 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
+import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 
@@ -119,6 +122,12 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Boolean = rustBackend().isSyncRequiredBeforeNextTransfer(dbDataPath, network.id, account.value)
 
+    override suspend fun finalizeReadyTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int = rustBackend().finalizeReadyTransfers(dbDataPath, network.id, account.value)
+
     override suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,
@@ -144,6 +153,58 @@ internal class TypesafeMigrationBackendImpl(
         network: ZcashNetwork,
         account: AccountUuid
     ): JniTransferProposal? = rustBackend().pendingTransferProposal(dbDataPath, network.id, account.value)
+
+    override suspend fun createUnsignedNoteSplitPczt(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): ByteArray = rustBackend().createUnsignedNoteSplitPczt(dbDataPath, network.id, account.value)
+
+    override suspend fun storeSignedNoteSplitPczt(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        signedPczt: ByteArray
+    ): JniPreparedTransfer =
+        rustBackend().storeSignedNoteSplitPczt(dbDataPath, network.id, account.value, signedPczt)
+
+    override suspend fun createUnsignedTransferPczts(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        schedule: JniMigrationSchedule
+    ): Array<JniUnsignedTransferPczt> =
+        rustBackend().createUnsignedTransferPczts(dbDataPath, network.id, account.value, schedule)
+
+    override suspend fun storeSignedSchedulePczts(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        ids: Array<String>,
+        pcztBytesList: Array<ByteArray>
+    ) = rustBackend().storeSignedSchedulePczts(dbDataPath, network.id, account.value, ids, pcztBytesList)
+
+    override suspend fun buildKeystoneSignBatchQrParts(
+        requestId: ByteArray,
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        maxFragmentLen: Int
+    ): Array<String> =
+        rustBackend().buildKeystoneSignBatchQrParts(requestId, splitUnsignedPczt, transferUnsignedPczts, maxFragmentLen)
+
+    override suspend fun resetKeystoneSignBatchDecoder() = rustBackend().resetKeystoneSignBatchDecoder()
+
+    override suspend fun decodeKeystoneSignBatchPart(
+        part: String,
+        expectedRequestId: ByteArray
+    ): JniKeystoneBatchDecodeResult = rustBackend().decodeKeystoneSignBatchPart(part, expectedRequestId)
+
+    override suspend fun applyKeystoneBatchSignatures(
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        batchSignResponse: ByteArray
+    ): JniKeystoneBatchSignedPczts =
+        rustBackend().applyKeystoneBatchSignatures(splitUnsignedPczt, transferUnsignedPczts, batchSignResponse)
 
     private suspend fun rustBackend() = rustBackendLazy.getInstance(Unit)
 }
