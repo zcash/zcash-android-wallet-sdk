@@ -13,6 +13,13 @@ import java.io.File
  * this object is ever memoized, lazily opened, or reused across calls - the native side opens
  * and closes its own connection within the single JNI call.
  *
+ * [query] now backs `Synchronizer.debugQuery` ONLY (`com.zodl.slipstream.internal.db.
+ * SlipstreamTransactionReader.debugQuery`) - production reads moved to the 5 typed
+ * `SlipstreamNative` host-read exports (`FFI_JNI_CONTRACT.md` section 9.3), which construct
+ * `com.zodl.slipstream.model` row objects instead of crossing JSON. The connection strategy this
+ * object settled on, and every lesson below, still applies verbatim to the debug lane; the
+ * chronicle is kept in full since a future connection change must not re-learn it.
+ *
  * This is the FOURTH connection strategy tried for the Slipstream reader, after three prior
  * designs each failed on-device:
  *
@@ -87,17 +94,20 @@ import java.io.File
  * the process's fcntl locks on the file, including the engine's own WAL locks, corrupting the
  * engine's WAL/`-shm` index out from under it while it was mmapped. THE RULE GOING FORWARD:
  * the Android framework SQLite (`android.database.sqlite.*`) must NEVER open the engine's
- * `data.sqlite3` again, in this object or anywhere else. Every host read now goes through
- * [SlipstreamNative.readQuery] - the engine's OWN bundled SQLite instance, so host and engine
- * share one library and SQLite's lock coordination works as designed.
+ * `data.sqlite3` again, in this object or anywhere else. Every host read - typed production
+ * reads and this debug-only [query] alike - goes through the engine's OWN bundled SQLite
+ * instance ([SlipstreamNative.readQuery] here; the 5 typed exports for production), so host and
+ * engine share one library and SQLite's lock coordination works as designed.
  */
 object SlipstreamWalletDb {
     /**
-     * Runs [sql] as a single read-only query against [dbFile] on the engine's bundled SQLite
-     * instance, with at most one of [blobParam]/[textParam] non-null bound as the statement's
-     * sole `?1` parameter - see this object's KDoc, especially incident #5, for why no
-     * connection is ever opened through the Android framework. Returns the rows as a
-     * [JSONArray] of arrays (columns per [SlipstreamNative.readQuery]'s encoding).
+     * DEBUG-ONLY lane (`Synchronizer.debugQuery`) - production reads use the 5 typed
+     * `SlipstreamNative` host-read exports instead. Runs [sql] as a single read-only query
+     * against [dbFile] on the engine's bundled SQLite instance, with at most one of
+     * [blobParam]/[textParam] non-null bound as the statement's sole `?1` parameter - see this
+     * object's KDoc, especially incident #5, for why no connection is ever opened through the
+     * Android framework. Returns the rows as a [JSONArray] of arrays (columns per
+     * [SlipstreamNative.readQuery]'s encoding).
      */
     suspend fun query(
         dbFile: File,

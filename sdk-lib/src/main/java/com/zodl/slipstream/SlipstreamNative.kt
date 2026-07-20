@@ -2,8 +2,12 @@ package com.zodl.slipstream
 
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import com.zodl.slipstream.model.SlipstreamEvent
+import com.zodl.slipstream.model.SlipstreamRawTransaction
+import com.zodl.slipstream.model.SlipstreamResubmissionRow
 import com.zodl.slipstream.model.SlipstreamRestoreAnchor
 import com.zodl.slipstream.model.SlipstreamSnapshot
+import com.zodl.slipstream.model.SlipstreamTransactionRow
+import com.zodl.slipstream.model.SlipstreamTxOutputRow
 import com.zodl.slipstream.model.SlipstreamWalletSummary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -123,10 +127,55 @@ internal object SlipstreamNative {
     external fun free(handle: Long)
 
     /**
-     * EMERGENCY host-utility export, added while the engine owner is away - NOT part of the
-     * [CONTRACT_VERSION] surface (no C-ABI twin, no handle, no engine state). Runs [sql] as a
-     * single read-only query against [dbPath] on the SAME bundled SQLite instance the engine's
-     * own writer uses, closing the dual-SQLite-instance hazard the Android-framework
+     * `listTransactions`: the first of 5 typed host-read exports (`FFI_JNI_CONTRACT.md`
+     * section 9.3) - NOT part of the [CONTRACT_VERSION] surface (no C-ABI twin, no handle, no
+     * engine state); `com.zodl.slipstream.internal.db.SlipstreamTransactionReader`'s production
+     * read path, replacing the JSON [readQuery] lane below. Each of the 5 constructs
+     * `com.zodl.slipstream.model` row objects on the SAME bundled SQLite instance the engine's
+     * own writer uses (`host_read.rs`), same connection law as [readQuery]. This one is the
+     * visible-transactions read (section 7.1), optionally scoped to one account.
+     */
+    @JvmStatic
+    external fun listTransactions(
+        dbPath: String,
+        isRecovering: Boolean,
+        accountUuid: ByteArray?
+    ): Array<SlipstreamTransactionRow>
+
+    /** `getTransactionRaw`: raw bytes + expiry height for one txid, or `null` if not stored. */
+    @JvmStatic
+    external fun getTransactionRaw(
+        dbPath: String,
+        txid: ByteArray
+    ): SlipstreamRawTransaction?
+
+    /** `listTransactionOutputs`: non-change outputs for one txid, or - when [txid] is `null` - every account's. */
+    @JvmStatic
+    external fun listTransactionOutputs(
+        dbPath: String,
+        txid: ByteArray?
+    ): Array<SlipstreamTxOutputRow>
+
+    /** `findTransactionsByMemo`: txids whose memo contains [substring] (case-insensitive; wildcarding is native-side). */
+    @JvmStatic
+    external fun findTransactionsByMemo(
+        dbPath: String,
+        substring: String
+    ): Array<ByteArray>
+
+    /** `listResubmissionCandidates`: unmined, unexpired, outgoing transactions as of [chainTip]. */
+    @JvmStatic
+    external fun listResubmissionCandidates(
+        dbPath: String,
+        chainTip: Long
+    ): Array<SlipstreamResubmissionRow>
+
+    /**
+     * DEBUG-ONLY host-utility export, added while the engine owner is away - NOT part of the
+     * [CONTRACT_VERSION] surface (no C-ABI twin, no handle, no engine state). Kept wired for
+     * `Synchronizer.debugQuery` only; production reads use the typed exports above. Runs [sql]
+     * as a single read-only query against [dbPath] on the SAME bundled SQLite instance the
+     * engine's own writer uses, closing the dual-SQLite-instance hazard the Android-framework
      * `SlipstreamWalletDb`/`SlipstreamTransactionReader` reader used to carry (see
      * `worklog/08-engine-sigbus-android.md`: two independent SQLite library instances against
      * one `data.sqlite3` in one process corrupt each other's fcntl locks on every framework

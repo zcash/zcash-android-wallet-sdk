@@ -38,10 +38,11 @@ class SlipstreamNativeSmokeTest {
     }
 
     /**
-     * The `readQuery` host-utility export (worklog `08-engine-sigbus-android.md`): a trivial
-     * `SELECT 1` over the just-opened engine DB, on the SAME bundled SQLite instance `open`
-     * created the handle against - proof the binding round-trips a real connection + JSON row
-     * encoding, not just that it links. NOT run by this pass, same as [open_snapshot_drain_free].
+     * The `readQuery` host-utility export, DEBUG LANE ONLY (`Synchronizer.debugQuery`; worklog
+     * `08-engine-sigbus-android.md`): a trivial `SELECT 1` over the just-opened engine DB, on
+     * the SAME bundled SQLite instance `open` created the handle against - proof the binding
+     * round-trips a real connection + JSON row encoding, not just that it links. NOT run by this
+     * pass, same as [open_snapshot_drain_free].
      */
     @Test
     fun readQuery_smoke() {
@@ -53,6 +54,88 @@ class SlipstreamNativeSmokeTest {
         try {
             val json = SlipstreamNative.readQuery(db.absolutePath, "SELECT 1", null, null)
             assertEquals("[[1]]", json)
+        } finally {
+            SlipstreamNative.free(handle)
+        }
+    }
+
+    /**
+     * The 5 typed host-read exports (`FFI_JNI_CONTRACT.md` section 9.3) that replaced
+     * `readQuery` as the production read path - one existence-level smoke per export, same
+     * "NOT run by this pass" caveat as [open_snapshot_drain_free]: proof each export links and
+     * round-trips a real connection against the freshly-migrated, still-account-less views
+     * `open` installs (compile-gate only, not a behavior test).
+     */
+    @Test
+    fun listTransactions_smoke() {
+        runBlocking { SlipstreamNative.ensureLoaded() }
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = File(ctx.filesDir, "smoke_list_transactions.sqlite3").also { it.delete() }
+
+        val handle = SlipstreamNative.open(db.absolutePath, "zec.rocks", 443, true, 1, 0L)
+        try {
+            val rows = SlipstreamNative.listTransactions(db.absolutePath, false, null)
+            assertTrue("no accounts yet -> no rows", rows.isEmpty())
+        } finally {
+            SlipstreamNative.free(handle)
+        }
+    }
+
+    @Test
+    fun getTransactionRaw_smoke() {
+        runBlocking { SlipstreamNative.ensureLoaded() }
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = File(ctx.filesDir, "smoke_get_transaction_raw.sqlite3").also { it.delete() }
+
+        val handle = SlipstreamNative.open(db.absolutePath, "zec.rocks", 443, true, 1, 0L)
+        try {
+            val row = SlipstreamNative.getTransactionRaw(db.absolutePath, ByteArray(32))
+            assertEquals(null, row)
+        } finally {
+            SlipstreamNative.free(handle)
+        }
+    }
+
+    @Test
+    fun listTransactionOutputs_smoke() {
+        runBlocking { SlipstreamNative.ensureLoaded() }
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = File(ctx.filesDir, "smoke_list_transaction_outputs.sqlite3").also { it.delete() }
+
+        val handle = SlipstreamNative.open(db.absolutePath, "zec.rocks", 443, true, 1, 0L)
+        try {
+            val rows = SlipstreamNative.listTransactionOutputs(db.absolutePath, null)
+            assertTrue("no accounts yet -> no rows", rows.isEmpty())
+        } finally {
+            SlipstreamNative.free(handle)
+        }
+    }
+
+    @Test
+    fun findTransactionsByMemo_smoke() {
+        runBlocking { SlipstreamNative.ensureLoaded() }
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = File(ctx.filesDir, "smoke_find_transactions_by_memo.sqlite3").also { it.delete() }
+
+        val handle = SlipstreamNative.open(db.absolutePath, "zec.rocks", 443, true, 1, 0L)
+        try {
+            val rows = SlipstreamNative.findTransactionsByMemo(db.absolutePath, "memo")
+            assertTrue("no accounts yet -> no rows", rows.isEmpty())
+        } finally {
+            SlipstreamNative.free(handle)
+        }
+    }
+
+    @Test
+    fun listResubmissionCandidates_smoke() {
+        runBlocking { SlipstreamNative.ensureLoaded() }
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = File(ctx.filesDir, "smoke_list_resubmission_candidates.sqlite3").also { it.delete() }
+
+        val handle = SlipstreamNative.open(db.absolutePath, "zec.rocks", 443, true, 1, 0L)
+        try {
+            val rows = SlipstreamNative.listResubmissionCandidates(db.absolutePath, 0L)
+            assertTrue("no accounts yet -> no rows", rows.isEmpty())
         } finally {
             SlipstreamNative.free(handle)
         }

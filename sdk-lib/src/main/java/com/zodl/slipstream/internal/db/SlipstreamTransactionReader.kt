@@ -8,16 +8,17 @@ import cash.z.ecc.android.sdk.model.TransactionOutput
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionPool
 import cash.z.ecc.android.sdk.model.TransactionRecipient
+import com.zodl.slipstream.SlipstreamNative
 import com.zodl.slipstream.db.SlipstreamWalletDb
 import com.zodl.slipstream.internal.spend.ResubmissionCandidate
-import com.zodl.slipstream.internal.spend.ResubmissionQuery
-import org.json.JSONArray
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /** One non-change output of a transaction, as read from `v_tx_outputs`. */
 internal data class OutputProperty(
     val index: Int,
-    /** The upstream `ZcashProtocol` pool code: 0 = transparent, 2 = sapling, 3 = orchard. */
+    /** The upstream `ZcashProtocol` pool code: 0 = transparent, 2 = sapling, 3 = orchard, 4 = ironwood. */
     val poolCode: Int
 )
 
@@ -26,44 +27,19 @@ private fun poolFromCode(poolCode: Int): TransactionPool =
         0 -> TransactionPool.TRANSPARENT
         2 -> TransactionPool.SAPLING
         3 -> TransactionPool.ORCHARD
+        4 -> TransactionPool.IRONWOOD
         else -> error("Unsupported pool code: $poolCode")
     }
 
 /**
- * Decodes a [com.zodl.slipstream.SlipstreamNative.readQuery] BLOB column (lowercase hex) back
- * into bytes. `internal` (not `private`) so the row-decoding unit tests can pin it directly
- * without a loaded native library.
- */
-internal fun hexToBytes(hex: String): ByteArray =
-    ByteArray(hex.length / 2) { i ->
-        ((Character.digit(hex[2 * i], 16) shl 4) + Character.digit(hex[2 * i + 1], 16)).toByte()
-    }
-
-/**
- * [JSONArray] column accessors matching [com.zodl.slipstream.SlipstreamNative.readQuery]'s
- * encoding (INTEGER/REAL as a JSON number, TEXT as a JSON string, BLOB as hex, NULL as JSON
- * null). `internal` (not `private`) for the same reason as [hexToBytes].
- */
-internal fun JSONArray.longOrNull(index: Int): Long? = if (isNull(index)) null else getLong(index)
-
-internal fun JSONArray.intOrNull(index: Int): Int? = if (isNull(index)) null else getInt(index)
-
-internal fun JSONArray.stringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
-
-internal fun JSONArray.blobOrNull(index: Int): ByteArray? = if (isNull(index)) null else hexToBytes(getString(index))
-
-internal fun JSONArray.blob(index: Int): ByteArray = hexToBytes(getString(index))
-
-/**
- * Read-only access over the engine-managed `data.sqlite3` that backs `allTransactions` (R18),
+ * Typed access over the engine-managed `data.sqlite3` that backs `allTransactions` (R18),
  * `getTransactions(accountUuid)` (R23), and the raw-bytes reads the T8 spend path needs after a
- * store-first `create` (`SDK_ADAPTER_PLAN.md` T8). Wraps [VisibleTransactionsQuery] +
- * [TransactionOverviewCursor] (T6) with the actual query execution T6 deliberately left unwired
- * (`worklog/03-read-side.md`). Every method runs its query through [SlipstreamWalletDb.query],
- * which executes on the engine's own bundled SQLite instance
- * ([com.zodl.slipstream.SlipstreamNative.readQuery]) rather than the Android framework - see
- * [SlipstreamWalletDb]'s KDoc, especially incident #5, for why. Rows come back as a JSON array
- * of arrays; BLOB columns are hex-decoded back into [ByteArray] via [hexToBytes].
+ * store-first `create` (`SDK_ADAPTER_PLAN.md` T8). Every method below (all but [debugQuery]) runs
+ * through one of the 5 typed [SlipstreamNative] host-read exports (`FFI_JNI_CONTRACT.md`
+ * section 9.3), which construct `com.zodl.slipstream.model` row objects on the engine's own
+ * bundled SQLite instance - the JSON `readQuery` lane [SlipstreamWalletDb.query] wrapped is now
+ * debug-only (`Synchronizer.debugQuery`, see [debugQuery] and [SlipstreamWalletDb]'s KDoc,
+ * especially incident #5, for why no connection ever crosses through the Android framework).
  */
 internal class SlipstreamTransactionReader(
     private val dbFile: File
@@ -73,66 +49,40 @@ internal class SlipstreamTransactionReader(
         isRecovering: Boolean,
         latestHeight: BlockHeight?,
         accountUuid: AccountUuid? = null
-    ): List<TransactionOverview> {
-        val sql = VisibleTransactionsQuery.forScope(isRecovering, filterByAccount = accountUuid != null)
-        val rows = SlipstreamWalletDb.query(dbFile, sql, blobParam = accountUuid?.value)
-        return buildList {
-            for (i in 0 until rows.length()) {
-                val row = rows.getJSONArray(i)
-                add(
-                    TransactionOverviewCursor.fromRow(
-                        txid = row.blob(0),
-                        minedHeight = row.longOrNull(1),
-                        expiryHeight = row.longOrNull(2),
-                        txIndex = row.longOrNull(3),
-                        raw = row.blobOrNull(4),
-                        accountBalanceDelta = row.getLong(5),
-                        totalSpent = row.getLong(6),
-                        totalReceived = row.getLong(7),
-                        feePaid = row.longOrNull(8),
-                        hasChange = row.getInt(9) != 0,
-                        sentNoteCount = row.getInt(10),
-                        receivedNoteCount = row.getInt(11),
-                        memoCount = row.getInt(12),
-                        blockTimeEpochSeconds = row.longOrNull(13),
-                        isShielding = row.getInt(14) != 0,
-                        isExpiredUnmined = row.intOrNull(15)?.let { it != 0 },
-                        latestHeight = latestHeight
-                    )
-                )
+    ): List<TransactionOverview> =
+        withContext(Dispatchers.IO) {
+            SlipstreamNative.listTransactions(dbFile.absolutePath, isRecovering, accountUuid?.value).map { row ->
+                TransactionOverviewCursor.fromRow(row, latestHeight)
             }
         }
-    }
 
     /** T8's "T6 SQL: SELECT raw FROM transactions WHERE txid = ?" - post-`create` raw-bytes read-back. */
-    suspend fun readRawTransaction(txId: FirstClassByteArray): FirstClassByteArray {
-        val rows = SlipstreamWalletDb.query(dbFile, RAW_TRANSACTION_SQL, blobParam = txId.byteArray)
-        check(rows.length() > 0) { "No stored transaction found for the given txid" }
-        return FirstClassByteArray(rows.getJSONArray(0).blob(0))
-    }
+    suspend fun readRawTransaction(txId: FirstClassByteArray): FirstClassByteArray =
+        withContext(Dispatchers.IO) {
+            val row = SlipstreamNative.getTransactionRaw(dbFile.absolutePath, txId.byteArray)
+            checkNotNull(row) { "No stored transaction found for the given txid" }
+            FirstClassByteArray(row.raw)
+        }
 
     /** Same read, plus `expiry_height` - what the R29 [cash.z.ecc.android.sdk.Broadcaster] needs to build a [CreatedTransaction]. */
-    suspend fun readCreatedTransaction(txId: FirstClassByteArray): CreatedTransaction {
-        val rows = SlipstreamWalletDb.query(dbFile, RAW_TRANSACTION_WITH_EXPIRY_SQL, blobParam = txId.byteArray)
-        check(rows.length() > 0) { "No stored transaction found for the given txid" }
-        val row = rows.getJSONArray(0)
-        return CreatedTransaction(
-            txId = txId,
-            raw = FirstClassByteArray(row.blob(0)),
-            expiryHeight = row.longOrNull(1)?.takeIf { it != 0L }?.let(BlockHeight::new)
-        )
-    }
+    suspend fun readCreatedTransaction(txId: FirstClassByteArray): CreatedTransaction =
+        withContext(Dispatchers.IO) {
+            val row = SlipstreamNative.getTransactionRaw(dbFile.absolutePath, txId.byteArray)
+            checkNotNull(row) { "No stored transaction found for the given txid" }
+            CreatedTransaction(
+                txId = txId,
+                raw = FirstClassByteArray(row.raw),
+                expiryHeight = row.expiryHeight.takeIf { it != 0L }?.let(BlockHeight::new)
+            )
+        }
 
     /** R19/R22: non-change output properties for [txId], oldest-first - `v_tx_outputs` (`TxOutputsViewDefinition`). */
-    suspend fun getOutputProperties(txId: FirstClassByteArray): List<OutputProperty> {
-        val rows = SlipstreamWalletDb.query(dbFile, OUTPUT_PROPERTIES_SQL, blobParam = txId.byteArray)
-        return buildList {
-            for (i in 0 until rows.length()) {
-                val row = rows.getJSONArray(i)
-                add(OutputProperty(index = row.getInt(0), poolCode = row.getInt(1)))
+    suspend fun getOutputProperties(txId: FirstClassByteArray): List<OutputProperty> =
+        withContext(Dispatchers.IO) {
+            SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, txId.byteArray).map {
+                OutputProperty(index = it.outputIndex, poolCode = it.outputPool)
             }
         }
-    }
 
     /** R22: [getOutputProperties] mapped to the public `TransactionOutput` pool enum. */
     suspend fun getTransactionOutputs(txId: FirstClassByteArray): List<TransactionOutput> =
@@ -146,17 +96,15 @@ internal class SlipstreamTransactionReader(
      * only change outputs (or no outputs) is absent from the map rather than present with an
      * empty list.
      */
-    suspend fun getAllOutputProperties(): Map<FirstClassByteArray, List<OutputProperty>> {
-        val rows = SlipstreamWalletDb.query(dbFile, ALL_OUTPUT_PROPERTIES_SQL)
-        val result = LinkedHashMap<FirstClassByteArray, MutableList<OutputProperty>>()
-        for (i in 0 until rows.length()) {
-            val row = rows.getJSONArray(i)
-            val txId = FirstClassByteArray(row.blob(0))
-            result.getOrPut(txId) { mutableListOf() }
-                .add(OutputProperty(index = row.getInt(1), poolCode = row.getInt(2)))
+    suspend fun getAllOutputProperties(): Map<FirstClassByteArray, List<OutputProperty>> =
+        withContext(Dispatchers.IO) {
+            val result = LinkedHashMap<FirstClassByteArray, MutableList<OutputProperty>>()
+            for (row in SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, null)) {
+                result.getOrPut(FirstClassByteArray(row.txId)) { mutableListOf() }
+                    .add(OutputProperty(index = row.outputIndex, poolCode = row.outputPool))
+            }
+            result
         }
-        return result
-    }
 
     /** Batched alternative to [getTransactionOutputs]; see [getAllOutputProperties] for the grouping semantics. */
     suspend fun getAllTransactionOutputs(): Map<FirstClassByteArray, List<TransactionOutput>> =
@@ -165,72 +113,60 @@ internal class SlipstreamTransactionReader(
         }
 
     /** R20: `v_tx_outputs.memo LIKE '%query%'`, case-insensitive. */
-    suspend fun getTransactionsByMemoSubstring(substring: String): List<FirstClassByteArray> {
-        val rows = SlipstreamWalletDb.query(dbFile, MEMO_SEARCH_SQL, textParam = "%$substring%")
-        return buildList {
-            for (i in 0 until rows.length()) add(FirstClassByteArray(rows.getJSONArray(i).blob(0)))
+    suspend fun getTransactionsByMemoSubstring(substring: String): List<FirstClassByteArray> =
+        withContext(Dispatchers.IO) {
+            SlipstreamNative.findTransactionsByMemo(dbFile.absolutePath, substring).map(::FirstClassByteArray)
         }
-    }
 
     /** R21: non-change recipients for [txId] - either an address or an internal account, never both. */
-    suspend fun getRecipients(txId: FirstClassByteArray): List<TransactionRecipient> {
-        val rows = SlipstreamWalletDb.query(dbFile, RECIPIENTS_SQL, blobParam = txId.byteArray)
-        return buildList {
-            for (i in 0 until rows.length()) {
-                val row = rows.getJSONArray(i)
-                add(
-                    TransactionRecipient(
-                        addressValue = row.stringOrNull(0),
-                        accountUuid = row.blobOrNull(1)?.let(AccountUuid::new)
-                    )
+    suspend fun getRecipients(txId: FirstClassByteArray): List<TransactionRecipient> =
+        withContext(Dispatchers.IO) {
+            SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, txId.byteArray).map {
+                TransactionRecipient(
+                    addressValue = it.toAddress,
+                    accountUuid = it.toAccountUuid?.let(AccountUuid::new)
                 )
             }
         }
-    }
 
     /**
      * Batched alternative to [getRecipients] that returns the non-change recipients for ALL
      * transactions in a single query, grouped by txid; see [getAllOutputProperties] for the
      * grouping semantics.
      */
-    suspend fun getAllRecipients(): Map<FirstClassByteArray, List<TransactionRecipient>> {
-        val rows = SlipstreamWalletDb.query(dbFile, ALL_RECIPIENTS_SQL)
-        val result = LinkedHashMap<FirstClassByteArray, MutableList<TransactionRecipient>>()
-        for (i in 0 until rows.length()) {
-            val row = rows.getJSONArray(i)
-            val txId = FirstClassByteArray(row.blob(0))
-            result.getOrPut(txId) { mutableListOf() }
-                .add(
-                    TransactionRecipient(
-                        addressValue = row.stringOrNull(1),
-                        accountUuid = row.blobOrNull(2)?.let(AccountUuid::new)
+    suspend fun getAllRecipients(): Map<FirstClassByteArray, List<TransactionRecipient>> =
+        withContext(Dispatchers.IO) {
+            val result = LinkedHashMap<FirstClassByteArray, MutableList<TransactionRecipient>>()
+            for (row in SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, null)) {
+                result.getOrPut(FirstClassByteArray(row.txId)) { mutableListOf() }
+                    .add(
+                        TransactionRecipient(
+                            addressValue = row.toAddress,
+                            accountUuid = row.toAccountUuid?.let(AccountUuid::new)
+                        )
                     )
-                )
+            }
+            result
         }
-        return result
-    }
 
     /**
-     * T8 section 3.7: the resubmission scan itself, `ResubmissionQuery.SQL` bound to
-     * [chainTip]. Bound as [SlipstreamWalletDb.query]'s `textParam` (not `blobParam`) - the
-     * same string-bound comparison the framework `rawQuery` used before (SQLite's INTEGER
-     * column affinity coerces the bound text back for the comparison).
+     * T8 section 3.7: the resubmission scan itself, bound to [chainTip] as a typed INTEGER
+     * parameter (`host_read.rs`'s `listResubmissionCandidates` SQL - no TEXT-affinity
+     * workaround needed now that the native binds it typed).
      */
-    suspend fun findResubmissionCandidates(chainTip: Long): List<ResubmissionCandidate> {
-        val rows = SlipstreamWalletDb.query(dbFile, ResubmissionQuery.SQL, textParam = chainTip.toString())
-        return buildList {
-            for (i in 0 until rows.length()) {
-                val row = rows.getJSONArray(i)
-                add(ResubmissionCandidate(txId = row.blob(0), raw = row.blob(1)))
+    suspend fun findResubmissionCandidates(chainTip: Long): List<ResubmissionCandidate> =
+        withContext(Dispatchers.IO) {
+            SlipstreamNative.listResubmissionCandidates(dbFile.absolutePath, chainTip).map {
+                ResubmissionCandidate(txId = it.txId, raw = it.raw)
             }
         }
-    }
 
     /**
-     * R59 `debugQuery`: free-form SQL over the engine's bundled SQLite instance. Column NAMES
-     * are not available here - [com.zodl.slipstream.SlipstreamNative.readQuery] returns row
-     * values only, not result-set metadata - so columns render positionally (`column0=...
-     * column1=...`) rather than by their real name.
+     * R59 `debugQuery`: free-form SQL over the engine's bundled SQLite instance, via the
+     * debug-only [SlipstreamNative.readQuery] lane [SlipstreamWalletDb.query] wraps. Column
+     * NAMES are not available here - `readQuery` returns row values only, not result-set
+     * metadata - so columns render positionally (`column0=... column1=...`) rather than by their
+     * real name.
      */
     suspend fun debugQuery(sql: String): String {
         val rows = SlipstreamWalletDb.query(dbFile, sql)
@@ -244,20 +180,5 @@ internal class SlipstreamTransactionReader(
                 append('\n')
             }
         }
-    }
-
-    companion object {
-        private const val RAW_TRANSACTION_SQL = "SELECT raw FROM transactions WHERE txid = ?"
-        private const val RAW_TRANSACTION_WITH_EXPIRY_SQL = "SELECT raw, expiry_height FROM transactions WHERE txid = ?"
-        private const val NON_CHANGE_CONDITION = "txid = ? AND is_change = 0"
-        private const val OUTPUT_PROPERTIES_SQL = "SELECT output_index, output_pool FROM v_tx_outputs WHERE $NON_CHANGE_CONDITION"
-        private const val MEMO_SEARCH_SQL = "SELECT txid FROM v_tx_outputs WHERE LOWER(memo) LIKE LOWER(?)"
-        private const val RECIPIENTS_SQL = "SELECT to_address, to_account_uuid FROM v_tx_outputs WHERE $NON_CHANGE_CONDITION"
-        private const val ALL_NOT_CHANGE_CONDITION = "is_change = 0"
-        private const val ALL_ORDER_BY = "txid ASC, output_index ASC"
-        private const val ALL_OUTPUT_PROPERTIES_SQL =
-            "SELECT txid, output_index, output_pool FROM v_tx_outputs WHERE $ALL_NOT_CHANGE_CONDITION ORDER BY $ALL_ORDER_BY"
-        private const val ALL_RECIPIENTS_SQL =
-            "SELECT txid, to_address, to_account_uuid FROM v_tx_outputs WHERE $ALL_NOT_CHANGE_CONDITION ORDER BY $ALL_ORDER_BY"
     }
 }

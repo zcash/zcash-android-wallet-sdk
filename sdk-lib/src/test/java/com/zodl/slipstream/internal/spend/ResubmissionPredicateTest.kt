@@ -4,7 +4,7 @@ import org.junit.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** The pure twin of `ResubmissionQuery.SQL`'s `WHERE` clause - `SDK_ADAPTER_PLAN.md` T8's four cases. */
+/** The pure twin of `host_read.rs`'s `listResubmissionCandidates` `WHERE` clause - `SDK_ADAPTER_PLAN.md` T8's four cases. */
 class ResubmissionPredicateTest {
     @Test
     fun mined_is_not_eligible() =

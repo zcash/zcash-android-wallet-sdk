@@ -5,74 +5,61 @@ import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.Zatoshi
+import com.zodl.slipstream.model.SlipstreamTransactionRow
 import kotlin.math.absoluteValue
 
 /**
- * Maps one `v_transactions` row (via [VisibleTransactionsQuery]) to the SDK's public
- * [TransactionOverview] - the adapter's twin of the upstream SDK's internal
+ * Maps one [SlipstreamTransactionRow] (the `listTransactions` native's output) to the SDK's
+ * public [TransactionOverview] - the adapter's twin of the upstream SDK's internal
  * `AllTransactionView.kt` cursor parser + `TransactionOverview.new` factory (both unreachable
  * from this module: the cursor parser is a private val, and `TransactionOverview.new` depends on
  * the internal `DbTransactionOverview` type), built instead over the public 17-field constructor.
  */
 internal object TransactionOverviewCursor {
     /**
-     * Pure row mapper - every parameter is an already-extracted column value, so this is fully
+     * Pure row mapper - [row] is already-constructed by the native, so this is fully
      * JVM-unit-testable without an `android.database.Cursor` (`SDK_ADAPTER_PLAN.md` law 5).
      *
      * @param latestHeight the engine snapshot's `chainTip` at query time (the adapter's twin of
      *   the upstream SDK folding `processor.networkHeight` into the flow,
      *   `SdkSynchronizer.kt:360-374`); 0 or unknown -> pass `null`.
      */
-    @Suppress("LongParameterList")
     fun fromRow(
-        txid: ByteArray,
-        minedHeight: Long?,
-        expiryHeight: Long?,
-        txIndex: Long?,
-        raw: ByteArray?,
-        accountBalanceDelta: Long,
-        totalSpent: Long,
-        totalReceived: Long,
-        feePaid: Long?,
-        hasChange: Boolean,
-        sentNoteCount: Int,
-        receivedNoteCount: Int,
-        memoCount: Int,
-        blockTimeEpochSeconds: Long?,
-        isShielding: Boolean,
-        isExpiredUnmined: Boolean?,
+        row: SlipstreamTransactionRow,
         latestHeight: BlockHeight?
     ): TransactionOverview {
-        val minedBlockHeight = minedHeight?.let(BlockHeight::new)
-        // A raw expiry height of 0 means "no expiry" (disables expiry) - matches the upstream
-        // cursor mapper (AllTransactionView.kt) folding 0 into null before state derivation.
-        val expiryBlockHeight = expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
-        val isSent = accountBalanceDelta < 0
+        val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
+        /**
+         * A raw expiry height of 0 means "no expiry" (disables expiry) - matches the upstream
+         * cursor mapper (AllTransactionView.kt) folding 0 into null before state derivation.
+         */
+        val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
+        val isSent = row.accountBalanceDelta < 0
 
         return TransactionOverview(
-            txId = TransactionId.new(txid),
+            txId = TransactionId.new(row.txId),
             minedHeight = minedBlockHeight,
             expiryHeight = expiryBlockHeight,
-            index = txIndex,
-            raw = raw?.let(::FirstClassByteArray),
+            index = row.txIndex,
+            raw = row.raw?.let(::FirstClassByteArray),
             isSentTransaction = isSent,
-            netValue = Zatoshi(accountBalanceDelta.absoluteValue),
-            totalSpent = Zatoshi(totalSpent),
-            totalReceived = Zatoshi(totalReceived),
-            feePaid = feePaid?.let(::Zatoshi),
-            isChange = hasChange,
-            receivedNoteCount = receivedNoteCount,
-            sentNoteCount = sentNoteCount,
-            memoCount = memoCount,
-            blockTimeEpochSeconds = blockTimeEpochSeconds,
+            netValue = Zatoshi(row.accountBalanceDelta.absoluteValue),
+            totalSpent = Zatoshi(row.totalSpent),
+            totalReceived = Zatoshi(row.totalReceived),
+            feePaid = row.feePaid?.let(::Zatoshi),
+            isChange = row.hasChange,
+            receivedNoteCount = row.receivedNoteCount,
+            sentNoteCount = row.sentNoteCount,
+            memoCount = row.memoCount,
+            blockTimeEpochSeconds = row.blockTime,
             transactionState =
                 computeTransactionState(
                     latestHeight = latestHeight,
                     minedHeight = minedBlockHeight,
                     expiryHeight = expiryBlockHeight,
-                    isExpiredUnmined = isExpiredUnmined
+                    isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L }
                 ),
-            isShielding = isShielding
+            isShielding = row.isShielding
         )
     }
 }

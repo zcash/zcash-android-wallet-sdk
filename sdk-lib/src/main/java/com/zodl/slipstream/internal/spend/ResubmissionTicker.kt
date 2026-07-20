@@ -1,12 +1,5 @@
 package com.zodl.slipstream.internal.spend
 
-/** The raw SQL for the T8 resubmission scan - ports the upstream `SELECTION_TRX_RESUBMISSION` selection verbatim. */
-internal object ResubmissionQuery {
-    const val SQL =
-        "SELECT tx.txid, tx.raw FROM v_transactions AS tx WHERE tx.mined_height IS NULL " +
-            "AND tx.expiry_height > ? AND tx.account_balance_delta < 0"
-}
-
 /** One row the resubmission scan considers. */
 internal data class ResubmissionCandidate(
     val txId: ByteArray,
@@ -14,11 +7,13 @@ internal data class ResubmissionCandidate(
 )
 
 /**
- * Pure twin of [ResubmissionQuery.SQL]'s `WHERE` clause - unmined, unexpired (relative to
- * [chainTip]), and a send (negative account balance delta). Kept as its own function so the
- * eligibility rule is unit-testable without a SQLite connection (`SDK_ADAPTER_PLAN.md` T8: "the
- * eligibility predicate is pure -> JUnit-5 it"), independently of the actual query, which applies
- * the identical condition in SQL.
+ * Pure twin of the resubmission scan's `WHERE` clause (`host_read.rs`'s
+ * `listResubmissionCandidates` SQL, ported verbatim from the upstream
+ * `SELECTION_TRX_RESUBMISSION` selection) - unmined, unexpired (relative to [chainTip]), and a
+ * send (negative account balance delta). Kept as its own function so the eligibility rule is
+ * unit-testable without a SQLite connection (`SDK_ADAPTER_PLAN.md` T8: "the eligibility
+ * predicate is pure -> JUnit-5 it"), independently of the actual query, which applies the
+ * identical condition in SQL.
  */
 internal fun isEligibleForResubmission(
     minedHeight: Long?,

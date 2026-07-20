@@ -16,7 +16,9 @@ import kotlinx.coroutines.flow.onStart
  * `SDK_ADAPTER_PLAN.md` section 2.1 specifies: a `MutableStateFlow<List<TransactionOverview>>`,
  * re-set ONLY on [SlipstreamEngine.requeryTicks] (the section 3.2/5.4 re-query rule), full-list
  * replace, never diffed. Applies the section 3.1 visibility filter via
- * [SlipstreamTransactionReader.queryVisible] (the filter itself lives in [VisibleTransactionsQuery]).
+ * [SlipstreamTransactionReader.queryVisible] (the filter itself lives in `host_read.rs`'s
+ * `list_transactions_sql`, moved from the Kotlin `VisibleTransactionsQuery` this reader used to
+ * build).
  */
 internal class TransactionsController(
     private val reader: SlipstreamTransactionReader,
