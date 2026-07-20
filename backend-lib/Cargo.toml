@@ -15,7 +15,7 @@ rust-version = "1.92"
 # landed. Named so a future no-chp build can subtract it via
 # `--no-default-features` plus an explicit feature list; `android-test-fixtures` stays
 # out of default (it must never be enabled for production native builds).
-default = ["chp-voting"]
+default = []
 # Enables JNI helpers that are only used by Android instrumentation tests.
 # This feature must not be enabled for production native builds.
 android-test-fixtures = []
