@@ -10,18 +10,19 @@
 # Stages (fast -> slow):
 #   1. detekt       -> static_analysis_detekt
 #   2. ktlint       -> static_analysis_ktlint
-#   3. unit tests   -> test_android_modules_unit
-#   4. android lint -> static_analysis_android_lint
-#   5. demo app     -> demo_app_release_build
-#   6. androidTest  -> (approximation of) test_android_modules_wtf
+#   3. rust         -> test_rust_unit
+#   4. unit tests   -> test_android_modules_unit
+#   5. android lint -> static_analysis_android_lint
+#   6. demo app     -> demo_app_release_build
+#   7. androidTest  -> (approximation of) test_android_modules_wtf
 #
-# Stage 6 uses a Gradle Managed Device (pixel2Target, SDK 36). It downloads an
+# Stage 7 uses a Gradle Managed Device (pixel2Target, SDK 36). It downloads an
 # AVD on first run (~1.5 GB) and is the slowest stage.
 #
 # Usage:
 #   ./scripts/ci-local.sh             # run every stage in sequence
 #   ./scripts/ci-local.sh fast        # stages 1-2 only (lint + style)
-#   ./scripts/ci-local.sh quick       # stages 1-3 (lint + style + unit tests)
+#   ./scripts/ci-local.sh quick       # stages 1-4 (lint + style + rust + unit tests)
 #   ./scripts/ci-local.sh full        # all stages including androidTest (default)
 #   ./scripts/ci-local.sh detekt      # run one named stage
 #
@@ -29,7 +30,10 @@
 #   - JDK 17 or 21 (Android Gradle Plugin 8.13.x does not support JDK 25+).
 #     Set JAVA_HOME if your default `java` is a different version.
 #   - Android SDK installed at ANDROID_HOME or $HOME/Library/Android/sdk.
-#   - For stage 6, an Apple Silicon Mac needs the `aosp` SDK-36 system image.
+#   - For stage 3, a Rust toolchain matching rust-toolchain.toml (rustup installs
+#     it automatically on first cargo invocation). The first run is slow because
+#     it builds ~640 crates; later runs are incremental.
+#   - For stage 7, an Apple Silicon Mac needs the `aosp` SDK-36 system image.
 
 set -euo pipefail
 
@@ -40,32 +44,42 @@ cd "${REPO_ROOT}"
 GRADLE="./gradlew"
 
 stage_detekt() {
-    echo "==> [1/6] detekt (static_analysis_detekt)"
+    echo "==> [1/7] detekt (static_analysis_detekt)"
     "${GRADLE}" detektAll
 }
 
 stage_ktlint() {
-    echo "==> [2/6] ktlint (static_analysis_ktlint)"
+    echo "==> [2/7] ktlint (static_analysis_ktlint)"
     "${GRADLE}" ktlint
 }
 
+# `--locked` is deliberately absent here and in CI: backend-lib/Cargo.lock
+# currently cannot satisfy Cargo.toml. Add it once the lockfile is reconciled.
+stage_rust() {
+    echo "==> [3/7] rust (test_rust_unit)"
+    (
+        cd "${REPO_ROOT}/backend-lib"
+        cargo test --all-features
+    )
+}
+
 stage_unit() {
-    echo "==> [3/6] unit tests (test_android_modules_unit)"
+    echo "==> [4/7] unit tests (test_android_modules_unit)"
     "${GRADLE}" test
 }
 
 stage_lint() {
-    echo "==> [4/6] android lint (static_analysis_android_lint)"
+    echo "==> [5/7] android lint (static_analysis_android_lint)"
     "${GRADLE}" :sdk-lib:lintRelease :demo-app:lintZcashmainnetRelease
 }
 
 stage_demoapp() {
-    echo "==> [5/6] demo app release build (demo_app_release_build)"
+    echo "==> [6/7] demo app release build (demo_app_release_build)"
     "${GRADLE}" assembleRelease
 }
 
 stage_androidtest() {
-    echo "==> [6/6] android instrumentation tests (test_android_modules_wtf approximation)"
+    echo "==> [7/7] android instrumentation tests (test_android_modules_wtf approximation)"
     echo "    Note: CI uses testDebugWithEmulatorWtf (cloud). Local approximation runs the"
     echo "    same tests on a Gradle managed Pixel 2 (SDK 36) virtual device."
     "${GRADLE}" \
@@ -78,6 +92,7 @@ stage_androidtest() {
 run_all() {
     stage_detekt
     stage_ktlint
+    stage_rust
     stage_unit
     stage_lint
     stage_demoapp
@@ -91,6 +106,7 @@ run_fast() {
 
 run_quick() {
     run_fast
+    stage_rust
     stage_unit
 }
 
@@ -100,6 +116,7 @@ case "${1:-full}" in
     full)         run_all ;;
     detekt)       stage_detekt ;;
     ktlint)       stage_ktlint ;;
+    rust)         stage_rust ;;
     unit)         stage_unit ;;
     lint)         stage_lint ;;
     demoapp)      stage_demoapp ;;
