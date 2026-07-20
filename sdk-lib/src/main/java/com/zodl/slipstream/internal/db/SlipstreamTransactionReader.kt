@@ -138,6 +138,32 @@ internal class SlipstreamTransactionReader(
     suspend fun getTransactionOutputs(txId: FirstClassByteArray): List<TransactionOutput> =
         getOutputProperties(txId).map { TransactionOutput(poolFromCode(it.poolCode)) }
 
+    /**
+     * Batched alternative to [getOutputProperties] that returns the non-change output properties
+     * for ALL transactions in a single query, grouped by txid. Mirrors the upstream SDK's
+     * `TxOutputsView.getAllOutputProperties`/`DbDerivedDataRepository.getAllOutputProperties`
+     * filter (`is_change = 0`) and ordering (`txid ASC, output_index ASC`); a transaction with
+     * only change outputs (or no outputs) is absent from the map rather than present with an
+     * empty list.
+     */
+    suspend fun getAllOutputProperties(): Map<FirstClassByteArray, List<OutputProperty>> {
+        val rows = SlipstreamWalletDb.query(dbFile, ALL_OUTPUT_PROPERTIES_SQL)
+        val result = LinkedHashMap<FirstClassByteArray, MutableList<OutputProperty>>()
+        for (i in 0 until rows.length()) {
+            val row = rows.getJSONArray(i)
+            val txId = FirstClassByteArray(row.blob(0))
+            result.getOrPut(txId) { mutableListOf() }
+                .add(OutputProperty(index = row.getInt(1), poolCode = row.getInt(2)))
+        }
+        return result
+    }
+
+    /** Batched alternative to [getTransactionOutputs]; see [getAllOutputProperties] for the grouping semantics. */
+    suspend fun getAllTransactionOutputs(): Map<FirstClassByteArray, List<TransactionOutput>> =
+        getAllOutputProperties().mapValues { (_, properties) ->
+            properties.map { TransactionOutput(poolFromCode(it.poolCode)) }
+        }
+
     /** R20: `v_tx_outputs.memo LIKE '%query%'`, case-insensitive. */
     suspend fun getTransactionsByMemoSubstring(substring: String): List<FirstClassByteArray> {
         val rows = SlipstreamWalletDb.query(dbFile, MEMO_SEARCH_SQL, textParam = "%$substring%")
@@ -160,6 +186,28 @@ internal class SlipstreamTransactionReader(
                 )
             }
         }
+    }
+
+    /**
+     * Batched alternative to [getRecipients] that returns the non-change recipients for ALL
+     * transactions in a single query, grouped by txid; see [getAllOutputProperties] for the
+     * grouping semantics.
+     */
+    suspend fun getAllRecipients(): Map<FirstClassByteArray, List<TransactionRecipient>> {
+        val rows = SlipstreamWalletDb.query(dbFile, ALL_RECIPIENTS_SQL)
+        val result = LinkedHashMap<FirstClassByteArray, MutableList<TransactionRecipient>>()
+        for (i in 0 until rows.length()) {
+            val row = rows.getJSONArray(i)
+            val txId = FirstClassByteArray(row.blob(0))
+            result.getOrPut(txId) { mutableListOf() }
+                .add(
+                    TransactionRecipient(
+                        addressValue = row.stringOrNull(1),
+                        accountUuid = row.blobOrNull(2)?.let(AccountUuid::new)
+                    )
+                )
+        }
+        return result
     }
 
     /**
@@ -205,5 +253,11 @@ internal class SlipstreamTransactionReader(
         private const val OUTPUT_PROPERTIES_SQL = "SELECT output_index, output_pool FROM v_tx_outputs WHERE $NON_CHANGE_CONDITION"
         private const val MEMO_SEARCH_SQL = "SELECT txid FROM v_tx_outputs WHERE LOWER(memo) LIKE LOWER(?)"
         private const val RECIPIENTS_SQL = "SELECT to_address, to_account_uuid FROM v_tx_outputs WHERE $NON_CHANGE_CONDITION"
+        private const val ALL_NOT_CHANGE_CONDITION = "is_change = 0"
+        private const val ALL_ORDER_BY = "txid ASC, output_index ASC"
+        private const val ALL_OUTPUT_PROPERTIES_SQL =
+            "SELECT txid, output_index, output_pool FROM v_tx_outputs WHERE $ALL_NOT_CHANGE_CONDITION ORDER BY $ALL_ORDER_BY"
+        private const val ALL_RECIPIENTS_SQL =
+            "SELECT txid, to_address, to_account_uuid FROM v_tx_outputs WHERE $ALL_NOT_CHANGE_CONDITION ORDER BY $ALL_ORDER_BY"
     }
 }
