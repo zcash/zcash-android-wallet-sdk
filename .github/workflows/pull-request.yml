@@ -91,6 +91,30 @@ jobs:
             -not -path "./build/*" -not -path "./.gradle/*" \
             -print -exec shellcheck {} +
 
+  # Verifies the Kotlin `external fun` declarations and the Rust `Java_*` exports
+  # agree on name, arity, and parameter types.
+  #
+  # JNI resolves a native method by its short name, which encodes no argument
+  # types. A wrong NAME gives an UnsatisfiedLinkError, but a right name with the
+  # wrong types or arity links silently and corrupts the call frame. Nothing else
+  # in the toolchain catches that: clippy cannot see Kotlin, and Android Studio
+  # only checks it in an IDE session.
+  #
+  # Pure text analysis, so it needs no Rust or Android toolchain and finishes in
+  # seconds.
+  static_analysis_jni_abi:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Check JNI ABI
+        timeout-minutes: 2
+        run: |
+          ./scripts/check-jni-abi.sh
+
   static_analysis_detekt:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
