@@ -12,16 +12,28 @@ Use `scripts/ci-local.sh` to mirror the `.github/workflows/pull-request.yml`
 jobs that are runnable on a dev machine:
 
 ```bash
-./scripts/ci-local.sh fast     # detekt + ktlint (~30s) -- run this first
+./scripts/ci-local.sh fast     # detekt + ktlint + JNI ABI (~30s) -- run first
 ./scripts/ci-local.sh quick    # fast + rust + unit tests (~2-5m)
 ./scripts/ci-local.sh full     # everything, including androidTest (~15-30m)
 
 # Or a single stage when iterating:
 ./scripts/ci-local.sh detekt
+./scripts/ci-local.sh jniabi
 ./scripts/ci-local.sh rust
 ./scripts/ci-local.sh lint
 ./scripts/ci-local.sh demoapp
 ```
+
+The `jniabi` stage runs `scripts/check-jni-abi.sh`, which verifies that the
+Kotlin `external fun` declarations and the Rust `Java_*` exports agree on name,
+arity, and parameter types. It is pure text analysis, needs no toolchain, and
+takes a few seconds, which is why it is in `fast`.
+
+Run it after ANY change to a native declaration or a `Java_*` export. JNI
+resolves a native method by its short name, which encodes no argument types: a
+wrong name gives an `UnsatisfiedLinkError`, but a right name with wrong types or
+arity links silently and corrupts the call frame. Nothing else in the toolchain
+catches that.
 
 The `rust` stage runs `cargo clippy --tests` and `cargo test` against
 `backend-lib`. Note that clippy only COMPILES the Rust tests; `cargo test` is
@@ -54,6 +66,7 @@ around 640 crates and is slow; later runs are incremental.
 | Style / rename / doc | `fast` |
 | Logic or refactor | `quick` |
 | Rust-only change under `backend-lib/src/main/rust` | `fast` then `rust` |
+| Any `external fun` or `Java_*` export added/renamed/resignatured | `jniabi` first, then `full` |
 | New public API, new module, JNI/Rust boundary | `full` |
 | Demo-app only | `fast` then `demoapp` |
 

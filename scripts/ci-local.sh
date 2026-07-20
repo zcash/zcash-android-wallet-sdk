@@ -10,19 +10,20 @@
 # Stages (fast -> slow):
 #   1. detekt       -> static_analysis_detekt
 #   2. ktlint       -> static_analysis_ktlint
-#   3. rust         -> static_analysis_clippy + test_rust_unit
-#   4. unit tests   -> test_android_modules_unit
-#   5. android lint -> static_analysis_android_lint
-#   6. demo app     -> demo_app_release_build
-#   7. androidTest  -> (approximation of) test_android_modules_wtf
+#   3. jniabi       -> static_analysis_jni_abi
+#   4. rust         -> static_analysis_clippy + test_rust_unit
+#   5. unit tests   -> test_android_modules_unit
+#   6. android lint -> static_analysis_android_lint
+#   7. demo app     -> demo_app_release_build
+#   8. androidTest  -> (approximation of) test_android_modules_wtf
 #
-# Stage 7 uses a Gradle Managed Device (pixel2Target, SDK 36). It downloads an
+# Stage 8 uses a Gradle Managed Device (pixel2Target, SDK 36). It downloads an
 # AVD on first run (~1.5 GB) and is the slowest stage.
 #
 # Usage:
 #   ./scripts/ci-local.sh             # run every stage in sequence
-#   ./scripts/ci-local.sh fast        # stages 1-2 only (lint + style)
-#   ./scripts/ci-local.sh quick       # stages 1-4 (lint + style + rust + unit tests)
+#   ./scripts/ci-local.sh fast        # stages 1-3 (lint + style + JNI ABI)
+#   ./scripts/ci-local.sh quick       # stages 1-5 (fast + rust + unit tests)
 #   ./scripts/ci-local.sh full        # all stages including androidTest (default)
 #   ./scripts/ci-local.sh detekt      # run one named stage
 #
@@ -30,10 +31,10 @@
 #   - JDK 17 or 21 (Android Gradle Plugin 8.13.x does not support JDK 25+).
 #     Set JAVA_HOME if your default `java` is a different version.
 #   - Android SDK installed at ANDROID_HOME or $HOME/Library/Android/sdk.
-#   - For stage 3, a Rust toolchain matching rust-toolchain.toml (rustup installs
+#   - For stage 4, a Rust toolchain matching rust-toolchain.toml (rustup installs
 #     it automatically on first cargo invocation). The first run is slow because
 #     it builds ~640 crates; later runs are incremental.
-#   - For stage 7, an Apple Silicon Mac needs the `aosp` SDK-36 system image.
+#   - For stage 8, an Apple Silicon Mac needs the `aosp` SDK-36 system image.
 
 set -euo pipefail
 
@@ -44,13 +45,23 @@ cd "${REPO_ROOT}"
 GRADLE="./gradlew"
 
 stage_detekt() {
-    echo "==> [1/7] detekt (static_analysis_detekt)"
+    echo "==> [1/8] detekt (static_analysis_detekt)"
     "${GRADLE}" detektAll
 }
 
 stage_ktlint() {
-    echo "==> [2/7] ktlint (static_analysis_ktlint)"
+    echo "==> [2/8] ktlint (static_analysis_ktlint)"
     "${GRADLE}" ktlint
+}
+
+# Pure text analysis, so it needs no toolchain and runs in seconds. Belongs in
+# `fast` because a JNI signature mismatch is cheap to detect here and expensive
+# to find any other way: the JVM links a name-matching export regardless of its
+# argument types, so drift corrupts the call frame instead of raising
+# UnsatisfiedLinkError. See the header of check-jni-abi.sh.
+stage_jniabi() {
+    echo "==> [3/8] JNI ABI (static_analysis_jni_abi)"
+    "${SCRIPT_DIR}/check-jni-abi.sh"
 }
 
 # Mirrors both Rust CI jobs. Clippy only compiles the test targets, so
@@ -66,7 +77,7 @@ stage_ktlint() {
 # `--locked` is deliberately absent here and in CI: backend-lib/Cargo.lock
 # currently cannot satisfy Cargo.toml. Add it once the lockfile is reconciled.
 stage_rust() {
-    echo "==> [3/7] rust (static_analysis_clippy + test_rust_unit)"
+    echo "==> [4/8] rust (static_analysis_clippy + test_rust_unit)"
     (
         cd "${REPO_ROOT}/backend-lib"
         cargo clippy --all-targets --all-features -- -W clippy::all -D warnings
@@ -75,22 +86,22 @@ stage_rust() {
 }
 
 stage_unit() {
-    echo "==> [4/7] unit tests (test_android_modules_unit)"
+    echo "==> [5/8] unit tests (test_android_modules_unit)"
     "${GRADLE}" test
 }
 
 stage_lint() {
-    echo "==> [5/7] android lint (static_analysis_android_lint)"
+    echo "==> [6/8] android lint (static_analysis_android_lint)"
     "${GRADLE}" :sdk-lib:lintRelease :demo-app:lintZcashmainnetRelease
 }
 
 stage_demoapp() {
-    echo "==> [6/7] demo app release build (demo_app_release_build)"
+    echo "==> [7/8] demo app release build (demo_app_release_build)"
     "${GRADLE}" assembleRelease
 }
 
 stage_androidtest() {
-    echo "==> [7/7] android instrumentation tests (test_android_modules_wtf approximation)"
+    echo "==> [8/8] android instrumentation tests (test_android_modules_wtf approximation)"
     echo "    Note: CI uses testDebugWithEmulatorWtf (cloud). Local approximation runs the"
     echo "    same tests on a Gradle managed Pixel 2 (SDK 36) virtual device."
     "${GRADLE}" \
@@ -103,6 +114,7 @@ stage_androidtest() {
 run_all() {
     stage_detekt
     stage_ktlint
+    stage_jniabi
     stage_rust
     stage_unit
     stage_lint
@@ -113,6 +125,7 @@ run_all() {
 run_fast() {
     stage_detekt
     stage_ktlint
+    stage_jniabi
 }
 
 run_quick() {
@@ -127,6 +140,7 @@ case "${1:-full}" in
     full)         run_all ;;
     detekt)       stage_detekt ;;
     ktlint)       stage_ktlint ;;
+    jniabi)       stage_jniabi ;;
     rust)         stage_rust ;;
     unit)         stage_unit ;;
     lint)         stage_lint ;;
