@@ -200,6 +200,8 @@ internal interface TypesafeBackend {
         saplingRoots: List<SubtreeRoot>,
         orchardStartIndex: UInt,
         orchardRoots: List<SubtreeRoot>,
+        ironwoodStartIndex: UInt,
+        ironwoodRoots: List<SubtreeRoot>,
     )
 
     /**
