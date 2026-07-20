@@ -221,6 +221,35 @@ jobs:
         run: |
           cargo clippy --tests --all-features -- -W clippy::all -D warnings
 
+  # `static_analysis_clippy` runs `cargo clippy --tests`, which only COMPILES the
+  # Rust test targets. This job executes them. Without it a failing Rust test
+  # passes CI, which is how `utils::exception::tests::unknown_any` stayed red on
+  # main undetected.
+  #
+  # `--locked` is deliberately absent: backend-lib/Cargo.lock currently cannot
+  # satisfy Cargo.toml, so `--locked` would fail the build. Add it once the
+  # lockfile is reconciled.
+  test_rust_unit:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+      - name: Test
+        timeout-minutes: 15
+        working-directory: backend-lib
+        run: |
+          cargo test --all-features
+
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
     runs-on: ubuntu-latest

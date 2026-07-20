@@ -13,14 +13,20 @@ jobs that are runnable on a dev machine:
 
 ```bash
 ./scripts/ci-local.sh fast     # detekt + ktlint (~30s) -- run this first
-./scripts/ci-local.sh quick    # fast + unit tests (~2-5m)
+./scripts/ci-local.sh quick    # fast + rust + unit tests (~2-5m)
 ./scripts/ci-local.sh full     # everything, including androidTest (~15-30m)
 
 # Or a single stage when iterating:
 ./scripts/ci-local.sh detekt
+./scripts/ci-local.sh rust
 ./scripts/ci-local.sh lint
 ./scripts/ci-local.sh demoapp
 ```
+
+The `rust` stage runs `cargo clippy --tests` and `cargo test` against
+`backend-lib`. Note that clippy only COMPILES the Rust tests; `cargo test` is
+what runs them, which is why both are in the stage. The first invocation builds
+around 640 crates and is slow; later runs are incremental.
 
 ### Environment requirements
 
@@ -47,6 +53,7 @@ jobs that are runnable on a dev machine:
 |---|---|
 | Style / rename / doc | `fast` |
 | Logic or refactor | `quick` |
+| Rust-only change under `backend-lib/src/main/rust` | `fast` then `rust` |
 | New public API, new module, JNI/Rust boundary | `full` |
 | Demo-app only | `fast` then `demoapp` |
 
