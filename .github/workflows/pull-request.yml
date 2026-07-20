@@ -258,6 +258,33 @@ jobs:
           name: Android Lint static analysis results
           path: ~/artifacts
 
+  test_rust_unit:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
+      - name: Test
+        timeout-minutes: 15
+        working-directory: backend-lib
+        run: |
+          cargo test --all-features
+
   static_analysis_clippy:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
