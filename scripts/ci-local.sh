@@ -53,8 +53,15 @@ stage_ktlint() {
     "${GRADLE}" ktlint
 }
 
-# Mirrors both Rust CI jobs. `cargo clippy --tests` only compiles the test
-# targets, so `cargo test` is what actually runs them.
+# Mirrors both Rust CI jobs. Clippy only compiles the test targets, so
+# `cargo test` is what actually runs them.
+#
+# Clippy uses `--all-targets`, not `--tests`: `--tests` lints only the lib built
+# as a test harness, leaving the plain staticlib/cdylib build (the one that ships
+# to Android) unlinted. `--all-targets` covers both.
+#
+# `cargo test` deliberately does NOT use `--all-targets`, which would exclude
+# doctests (cargo#6669).
 #
 # `--locked` is deliberately absent here and in CI: backend-lib/Cargo.lock
 # currently cannot satisfy Cargo.toml. Add it once the lockfile is reconciled.
@@ -62,7 +69,7 @@ stage_rust() {
     echo "==> [3/7] rust (static_analysis_clippy + test_rust_unit)"
     (
         cd "${REPO_ROOT}/backend-lib"
-        cargo clippy --tests --all-features -- -W clippy::all -D warnings
+        cargo clippy --all-targets --all-features -- -W clippy::all -D warnings
         cargo test --all-features
     )
 }
