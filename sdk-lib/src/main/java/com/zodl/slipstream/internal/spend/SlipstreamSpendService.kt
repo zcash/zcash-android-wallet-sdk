@@ -13,8 +13,10 @@ import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import com.zodl.slipstream.internal.SlipstreamEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
 
 /**
  * The R25-R28/R30-R34/R17 send + PCZT delegation over the *published* backend artifact
@@ -94,7 +96,9 @@ internal class SlipstreamSpendService(
 
     suspend fun addProofsToPczt(pczt: Pczt): Pczt {
         ensureSaplingParams()
-        return Pczt(backend.addProofsToPczt(pczt.toByteArray()))
+        return withContext(Dispatchers.Default) {
+            Pczt(backend.addProofsToPczt(pczt.toByteArray()))
+        }
     }
 
     fun createTransactionFromPczt(

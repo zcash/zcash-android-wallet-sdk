@@ -4,8 +4,10 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import com.zodl.slipstream.internal.SlipstreamEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
 
@@ -25,6 +27,7 @@ internal class TransactionsController(
     val allTransactions = engine.requeryTicks
         .onStart { emit(Unit) }
         .mapLatest { reader.queryVisible(isRecovering(), latestHeight()) }
+        .flowOn(Dispatchers.Default)
 
     /**
      * R23: same machinery as R18 plus the `account_uuid = ?` filter; the interface has no
@@ -35,6 +38,7 @@ internal class TransactionsController(
         engine.requeryTicks
             .onStart { emit(Unit) }
             .mapLatest { reader.queryVisible(isRecovering(), latestHeight(), accountUuid) }
+            .flowOn(Dispatchers.Default)
 
     private fun isRecovering(): Boolean = engine.lastSnapshot.value?.isRecovering ?: false
 

@@ -712,26 +712,34 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun getWalletDbPathForVoting(): String =
         DataDbPath.dataDbFile(context.getNoBackupFilesDirSuspend(), alias, network).absolutePath
 
-    private suspend fun shutdown() {
-        val shutdownJob =
-            scope.launch {
-                engine.stopPolling()
-                engine.stop()
-                engine.free()
-                torClient?.dispose()
-                walletClient.dispose()
-                exchangeRateFetcher?.dispose()
-            }
-        InstanceGuard.markShuttingDown(key, shutdownJob)
-        shutdownJob.join()
-        InstanceGuard.release(key)
-        scope.cancel()
-    }
-
-    /** R13: explicit stop -> free -> drop the instance-guard key. Kotlin has no deinit, so a double-free guard is required. */
+    /**
+     * R13: explicit stop -> free -> drop the instance-guard key. Kotlin has no deinit, so a
+     * double-free guard is required.
+     *
+     * Mirrors the upstream `SdkSynchronizer.close()` shape (`SdkSynchronizer.kt` ~472-494)
+     * rather than blocking the caller's thread for the full shutdown:
+     * [InstanceGuard.markShuttingDown] registers [shutdownJob] synchronously, on the caller's
+     * thread, before this function returns - same as [InstanceGuard.acquire]'s own `job.join()`
+     * expects from a concurrent `new`/`newBlocking` for the same [key] - and the actual
+     * stop/free work then runs asynchronously on [scope]. This makes `close()` safe to call
+     * from `Dispatchers.Main`.
+     */
     override fun close() {
         if (closed.compareAndSet(false, true)) {
-            runBlocking { shutdown() }
+            val shutdownJob =
+                scope.launch {
+                    engine.stopPolling()
+                    engine.stop()
+                    engine.free()
+                    torClient?.dispose()
+                    walletClient.dispose()
+                    exchangeRateFetcher?.dispose()
+                }
+            InstanceGuard.markShuttingDown(key, shutdownJob)
+            shutdownJob.invokeOnCompletion {
+                InstanceGuard.release(key)
+                scope.cancel()
+            }
         }
     }
 

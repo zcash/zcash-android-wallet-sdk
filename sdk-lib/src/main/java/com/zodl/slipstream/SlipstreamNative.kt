@@ -5,8 +5,10 @@ import com.zodl.slipstream.model.SlipstreamEvent
 import com.zodl.slipstream.model.SlipstreamRestoreAnchor
 import com.zodl.slipstream.model.SlipstreamSnapshot
 import com.zodl.slipstream.model.SlipstreamWalletSummary
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Raw JNI surface over the Slipstream engine. One-to-one binding of the Slipstream C ABI
@@ -43,11 +45,13 @@ internal object SlipstreamNative {
      */
     suspend fun ensureLoaded(logLevel: String = "warn") {
         if (!loaded) {
-            loadMutex.withLock {
-                if (!loaded) {
-                    RustBackend.loadLibrary()
-                    initOnLoad(logLevel)
-                    loaded = true
+            withContext(Dispatchers.IO) {
+                loadMutex.withLock {
+                    if (!loaded) {
+                        RustBackend.loadLibrary()
+                        initOnLoad(logLevel)
+                        loaded = true
+                    }
                 }
             }
         }
