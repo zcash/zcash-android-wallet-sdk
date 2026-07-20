@@ -88,6 +88,14 @@ internal interface TypesafeMigrationBackend {
         includeResidual: Boolean
     ): JniMigrationSchedule
 
+    suspend fun proposeMigrationTransfersFromSplit(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        outputValuesZatoshi: LongArray,
+        feeZatoshi: Long
+    ): JniMigrationSchedule
+
     suspend fun proposeImmediateMigrationTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

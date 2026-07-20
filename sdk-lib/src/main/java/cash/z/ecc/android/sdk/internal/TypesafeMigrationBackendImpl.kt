@@ -101,6 +101,21 @@ internal class TypesafeMigrationBackendImpl(
     ): JniMigrationSchedule =
         rustBackend().proposeMigrationTransfers(dbDataPath, network.id, account.value, includeResidual)
 
+    override suspend fun proposeMigrationTransfersFromSplit(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        outputValuesZatoshi: LongArray,
+        feeZatoshi: Long
+    ): JniMigrationSchedule =
+        rustBackend().proposeMigrationTransfersFromSplit(
+            dbDataPath,
+            network.id,
+            account.value,
+            outputValuesZatoshi,
+            feeZatoshi
+        )
+
     override suspend fun proposeImmediateMigrationTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

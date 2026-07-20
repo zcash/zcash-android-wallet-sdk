@@ -155,6 +155,30 @@ class MigrationRustBackend private constructor() {
                 ?: error("proposeMigrationTransfers returned null")
         }
 
+    /**
+     * Proposes the migration schedule directly from a note-split's own output plan — use this
+     * instead of [proposeMigrationTransfers] whenever a split is about to run or just ran, so
+     * every crossing value is guaranteed to match a note the split actually produces (see
+     * `MigrationContext::propose_migration_transfers_from_split`'s Rust doc comment for why).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun proposeMigrationTransfersFromSplit(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        outputValuesZatoshi: LongArray,
+        feeZatoshi: Long
+    ): JniMigrationSchedule =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            proposeMigrationTransfersFromSplitNative(
+                dbDataPath,
+                networkId,
+                accountUuidBytes,
+                outputValuesZatoshi,
+                feeZatoshi
+            ) ?: error("proposeMigrationTransfersFromSplit returned null")
+        }
+
     @Throws(RuntimeException::class)
     suspend fun proposeImmediateMigrationTransfers(
         dbDataPath: String,
@@ -482,6 +506,16 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray,
             includeResidual: Boolean
+        ): JniMigrationSchedule?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun proposeMigrationTransfersFromSplitNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            outputValuesZatoshi: LongArray,
+            feeZatoshi: Long
         ): JniMigrationSchedule?
 
         @JvmStatic

@@ -328,6 +328,19 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.proposeMigrationTransfers(dbDataPath, network, account, includeResidual).toPublic()
         }
 
+    override suspend fun proposeMigrationTransfersFromSplit(splitProposal: NoteSplitProposal): MigrationSchedule =
+        logged("proposeMigrationTransfersFromSplit") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.proposeMigrationTransfersFromSplit(
+                dbDataPath,
+                network,
+                account,
+                splitProposal.outputNotes.toLongArray(),
+                splitProposal.fee,
+            ).toPublic()
+        }
+
     override suspend fun proposeImmediateMigration(): MigrationSchedule = logged("proposeImmediateMigration") {
         val dbDataPath = dbDataPath()
         val account = account ?: noAccountAvailable()

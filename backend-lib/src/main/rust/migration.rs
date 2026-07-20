@@ -569,6 +569,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Proposes the migration schedule directly from a note-split's own output plan — the caller
+/// should use this instead of `proposeMigrationTransfersNative` whenever a split is about to run
+/// or just ran, so every crossing value is guaranteed to match a note the split actually produces
+/// (see `MigrationContext::propose_migration_transfers_from_split`'s doc comment for why).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_proposeMigrationTransfersFromSplitNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    output_values_zatoshi: JLongArray<'local>,
+    fee_zatoshi: jlong,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let context = migration_context(env, db_data, network_id, account_uuid)?;
+        let proposal = decode_note_split_proposal(env, output_values_zatoshi, fee_zatoshi)?;
+        let schedule = context
+            .propose_migration_transfers_from_split(&proposal)
+            .map_err(|e| anyhow!("Error proposing migration transfers from split: {}", e))?;
+        Ok(encode_migration_schedule(env, &schedule)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_proposeImmediateMigrationTransfersNative<
     'local,

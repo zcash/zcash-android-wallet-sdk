@@ -387,6 +387,27 @@ interface OrchardMigrationSdk {
     suspend fun proposeMigrationTransfers(includeResidual: Boolean = false): MigrationSchedule
 
     /**
+     * Proposes the migration schedule directly from a note-split's own output plan
+     * ([NoteSplitProposal] returned by [prepareNoteSplit]) — use this instead of
+     * [proposeMigrationTransfers] whenever a split is about to run or just ran (i.e. whenever
+     * [isNoteSplitNeeded] returned `true`), so every crossing value is guaranteed to match a note
+     * the split actually produces.
+     *
+     * [proposeMigrationTransfers] and [prepareNoteSplit] each compute their own denomination plan
+     * independently over the same balance, and are not guaranteed to agree — a schedule built from
+     * [proposeMigrationTransfers] before the split has run can end up needing a note the split
+     * never actually mints, which then silently (and incorrectly) falls back to an unrelated
+     * already-existing note — one the split's own "sweep every spendable note" construction may
+     * already be consuming as one of its own inputs, a double-spend once the split mines. Deriving
+     * the schedule from the split's own realized output plan instead makes this class of mismatch
+     * structurally impossible.
+     *
+     * Implementation note (Rust bridge, 2026-07-20): backed by
+     * `MigrationContext::propose_migration_transfers_from_split`.
+     */
+    suspend fun proposeMigrationTransfersFromSplit(splitProposal: NoteSplitProposal): MigrationSchedule
+
+    /**
      * Proposes a single, unsplit, full-balance migration transfer for immediate broadcast —
      * no privacy-preserving multi-transfer split. The returned [MigrationSchedule] always
      * contains exactly one [TransferProposal] whose [TransferProposal.nextExecutableAfterHeight]
