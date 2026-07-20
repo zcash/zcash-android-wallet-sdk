@@ -109,11 +109,19 @@ mod tests {
 
     #[test]
     fn unknown_any() {
-        let error = panic_error(1);
+        let error = panic_any_error(1u32);
         assert_eq!("Unknown error occurred", any_to_string(&error));
     }
 
     fn panic_error<T: fmt::Display + Send + 'static>(val: T) -> Box<dyn Any + Send> {
         panic::catch_unwind(panic::AssertUnwindSafe(|| panic!("{}", val))).unwrap_err()
+    }
+
+    // Panics with `val` itself as the payload. `panic_error` cannot reach
+    // `any_to_string`'s fallback branch: `panic!("{}", val)` formats the value, so the
+    // payload is always a `String` and downcasting succeeds. Only a payload that is
+    // neither `&str`, `String`, nor `Box<dyn Error + Send>` exercises the fallback.
+    fn panic_any_error<T: Any + Send + 'static>(val: T) -> Box<dyn Any + Send> {
+        panic::catch_unwind(panic::AssertUnwindSafe(|| panic::panic_any(val))).unwrap_err()
     }
 }
