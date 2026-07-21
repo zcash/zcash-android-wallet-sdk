@@ -146,6 +146,35 @@ fn plan(
     let mut rng = OsRng;
     let migration_plan = engine::plan_migration(&network, &backend, &mut rng)
         .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
+    let prep = migration_plan.preparation();
+    tracing::debug!(
+        "MIGRATION_DIAG plan: preparation has {} layer(s), {} prep transaction(s) total, {} \
+         direct-funding note(s) (used as-is, no split needed); funding_notes total={} zat over {} \
+         note(s)",
+        prep.layer_count(),
+        prep.transaction_count(),
+        prep.direct_funding_notes().len(),
+        migration_plan
+            .funding_notes()
+            .iter()
+            .map(|z| u64::from(*z))
+            .sum::<u64>(),
+        migration_plan.funding_notes().len(),
+    );
+    for (layer_idx, layer) in prep.layers().iter().enumerate() {
+        for (tx_idx, prep_tx) in layer.iter().enumerate() {
+            tracing::debug!(
+                "MIGRATION_DIAG plan: prep layer={layer_idx} tx={tx_idx} outputs={:?}",
+                prep_tx.outputs(),
+            );
+        }
+    }
+    for &(note_idx, value) in prep.direct_funding_notes() {
+        tracing::debug!(
+            "MIGRATION_DIAG plan: direct-funding wallet note index={note_idx} value={} zat",
+            u64::from(value),
+        );
+    }
     let tip = wallet
         .chain_height()
         .map_err(|e| anyhow!("chain height lookup failed: {}", e))?
@@ -459,7 +488,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (migration_plan, tip) = plan(env, db_data, network_id, account_uuid)?;
+        let (migration_plan, _tip) = plan(env, db_data, network_id, account_uuid)?;
         Ok(encode_note_split_proposal(env, &migration_plan)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -784,12 +813,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (migration_plan, tip) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(if migration_plan.note_split().crossing_values().is_empty() {
-            JNI_FALSE
-        } else {
-            JNI_TRUE
-        })
+        // `note_split().crossing_values()` is the target `{1,2,5}×10ⁿ` denomination breakdown —
+        // it's computed unconditionally whenever a migration is needed at all, so it's NEVER
+        // empty and checking it here always returned true (confirmed live: this forced Kotlin's
+        // `MigrationReviewVM.kt:186 if (sdk.isNoteSplitNeeded())` branch every time, even when the
+        // wallet's existing notes already matched every target denomination exactly via
+        // `direct_funding_notes()` and zero preparation transactions were actually needed —
+        // `submitNoteSplit` then failed with "no note-split preparation transaction" since there
+        // was nothing to sign). The real signal is whether the preparation plan has any
+        // transactions to build at all.
+        let (migration_plan, _tip) = plan(env, db_data, network_id, account_uuid)?;
+        Ok(
+            if migration_plan.preparation().transaction_count() > 0 {
+                JNI_TRUE
+            } else {
+                JNI_FALSE
+            },
+        )
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
