@@ -387,15 +387,37 @@ fn encode_migration_schedule<'a>(
         ));
     }
 
+    // The real `MigrationTxId` the engine will assign at commit time numbers every preparation
+    // transaction (across all layers) first, THEN transfers in `schedule()` order (confirmed
+    // directly against `commit_preparation_inner` in `zcash_pool_migration_backend::engine`) — so
+    // transfer `i`'s id is `prep_tx_count + i`, not `i`. Getting this wrong doesn't affect Kotlin
+    // (it tracks transfers by array position, not by this id — confirmed directly against
+    // `MigrationPlanRepository`/`MigrationProgressVM`), but the SDK's own `nextDueTransfer`/
+    // `recordTransferResult` round-trip inside this file depends on ids being internally
+    // consistent, so keep them correct regardless.
+    let prep_tx_count: u32 = plan
+        .preparation()
+        .layers()
+        .iter()
+        .map(|layer| layer.len() as u32)
+        .sum();
+
     let mut proposals = Vec::with_capacity(schedule.len());
     for (i, (amount, entry)) in crossings.iter().zip(schedule.iter()).enumerate() {
         proposals.push((
-            MigrationTxId::new(i as u32),
+            MigrationTxId::new(prep_tx_count + i as u32),
             *amount,
             entry.broadcast_height(),
             entry.expiry_height(),
         ));
     }
+    // Kotlin renders "Transfer N" from array position, unsorted (confirmed directly against
+    // `MigrationPlan.kt`/`MigrationReviewScreen.kt`/`MigrationProgressScreen.kt` — no sort
+    // anywhere) — so the displayed order must already be chronological (ZIP 318 SHUFFLE means
+    // funding-note order and broadcast order are deliberately NOT the same; without this sort the
+    // UI showed e.g. "Transfer 1" broadcasting after "Transfer 5", confirmed live and flagged as a
+    // real UX problem, not just cosmetic).
+    proposals.sort_by_key(|(_, _, broadcast_height, _)| *broadcast_height);
 
     let transfers = crate::utils::rust_vec_to_java(
         env,
