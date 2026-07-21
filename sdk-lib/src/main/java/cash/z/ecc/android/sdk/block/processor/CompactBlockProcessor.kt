@@ -1353,7 +1353,7 @@ class CompactBlockProcessor internal constructor(
                     saplingStartIndex,
                     shieldedProtocol = ShieldedProtocolEnum.SAPLING,
                     maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                 ).onEach { response ->
                     when (response) {
                         is Response.Success -> {
@@ -1405,7 +1405,7 @@ class CompactBlockProcessor internal constructor(
                     startIndex = orchardStartIndex,
                     shieldedProtocol = ShieldedProtocolEnum.ORCHARD,
                     maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                 ).onEach { response ->
                     when (response) {
                         is Response.Success -> {
@@ -1924,7 +1924,7 @@ class CompactBlockProcessor internal constructor(
             downloadedBlocks =
                 downloader.downloadBlockRange(
                     heightRange = batch.range,
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                 )
         }
         traceScope.end()

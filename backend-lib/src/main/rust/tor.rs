@@ -251,6 +251,54 @@ impl LwdConn {
         })
     }
 
+    /// Streams compact blocks in the given range, calling the closure for each.
+    pub(crate) fn with_block_range(
+        &mut self,
+        start: u64,
+        end: u64,
+        mut f: impl FnMut(Vec<u8>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let request = service::BlockRange {
+            start: Some(service::BlockId { height: start, ..Default::default() }),
+            end: Some(service::BlockId { height: end, ..Default::default() }),
+            pool_types: vec![],
+        };
+
+        self.runtime.clone().block_on(async {
+            let mut blocks = self.conn.get_block_range(request).await?.into_inner();
+            while let Some(block) = blocks.message().await? {
+                use prost::Message;
+                f(block.encode_to_vec())?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Fetches subtree roots for the given shielded protocol.
+    /// protocol: 0=Sapling, 1=Orchard
+    pub(crate) fn with_subtree_roots(
+        &mut self,
+        start_index: u32,
+        shielded_protocol: i32,
+        max_entries: u32,
+        mut f: impl FnMut(Vec<u8>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let request = service::GetSubtreeRootsArg {
+            start_index,
+            shielded_protocol,
+            max_entries,
+        };
+
+        self.runtime.clone().block_on(async {
+            let mut roots = self.conn.get_subtree_roots(request).await?.into_inner();
+            while let Some(root) = roots.message().await? {
+                use prost::Message;
+                f(root.encode_to_vec())?;
+            }
+            Ok(())
+        })
+    }
+
     /// Fetches the note commitment tree state corresponding to the given block.
     pub(crate) fn get_tree_state(
         &mut self,

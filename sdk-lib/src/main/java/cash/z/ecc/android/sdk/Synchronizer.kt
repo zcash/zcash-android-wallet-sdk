@@ -901,8 +901,9 @@ interface Synchronizer {
                     .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)
 
             val torDir = Files.getTorDir(context)
+            val isOnionEndpoint = lightWalletEndpoint.host.endsWith(".onion")
             val torClient =
-                if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
+                if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled || isOnionEndpoint) {
                     try {
                         TorClient.new(torDir, backend.backend)
                     } catch (e: Exception) {
@@ -928,7 +929,7 @@ interface Synchronizer {
             val walletClientFactory =
                 WalletClientFactory(
                     context = applicationContext,
-                    torClient = torClient.takeIf { sdkFlags.isTorEnabled }
+                    torClient = torClient.takeIf { sdkFlags.isTorEnabled || isOnionEndpoint }
                 )
 
             val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)

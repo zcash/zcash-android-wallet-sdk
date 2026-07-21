@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.util
 
+
 import android.content.Context
 import cash.z.ecc.android.sdk.internal.model.CombinedWalletClientImpl
 import cash.z.ecc.android.sdk.internal.model.TorClient
@@ -25,13 +26,9 @@ class WalletClientFactory(
      */
     @Suppress("TooGenericExceptionCaught")
     suspend fun create(endpoint: LightWalletEndpoint): CombinedWalletClient {
-        val torClient =
-            try {
-                torClient?.isolatedTorClient()
-            } catch (_: Exception) {
-                null
-            }
-
+        // Pass the original TorClient (not an isolated copy) so it stays alive
+        // for the lifetime of CombinedWalletClientImpl. The isolated clients
+        // for individual RPC calls are created inside CombinedWalletClientImpl.
         return CombinedWalletClientImpl.new(
             endpoint = endpoint,
             lightWalletClient = LightWalletClient.new(context, endpoint),
