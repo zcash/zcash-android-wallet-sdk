@@ -47,10 +47,10 @@ private fun SlipstreamPoolBalance.maskIfStale(mask: Boolean): SlipstreamPoolBala
     }
 
 /**
- * Maps the engine's phase-resolving summary to the SDK's public balance model. The v1 engine
- * tag is v0.6.x (pre-ironwood on this AAR line, DECISIONS.md D4): `ironwood` is always null on
- * this line and folds nowhere; when an ironwood-tagged AAR ships, fold ironwood into the orchard
- * bucket (both are Orchard pool).
+ * Maps the engine's phase-resolving summary to the SDK's public balance model. `ironwood` is
+ * read straight from the engine's own `SlipstreamAccountBalance.ironwood` FORWARD FIELD; on the
+ * v0.6.x AAR line (pre-ironwood, DECISIONS.md D4) it is always null and surfaces as a zero
+ * balance until an ironwood-tagged AAR ships real values.
  */
 internal fun SlipstreamWalletSummary.toAccountBalances(
     isRecovering: Boolean,
@@ -62,6 +62,8 @@ internal fun SlipstreamWalletSummary.toAccountBalances(
             AccountBalance(
                 sapling = ab.sapling.maskIfStale(mask).toWalletBalance(),
                 orchard = ab.orchard.maskIfStale(mask).toWalletBalance(),
+                ironwood = ab.ironwood?.maskIfStale(mask)?.toWalletBalance()
+                    ?: WalletBalance(Zatoshi(0), Zatoshi(0), Zatoshi(0)),
                 unshielded = Zatoshi(ab.unshielded)
             )
     }
