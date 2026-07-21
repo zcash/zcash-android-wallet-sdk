@@ -2534,14 +2534,40 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         let pczt = parse_pczt(env, pczt)?;
 
+        // The Orchard proving key must match the circuit governing the Orchard pool under the
+        // consensus branch this PCZT was created for; derive it from the PCZT's branch id before
+        // the PCZT is consumed by the prover. The Ironwood bundle always uses PostNu6_3.
+        let pczt_branch_id = BranchId::try_from(*pczt.global().consensus_branch_id())
+            .map_err(|_| anyhow!("PCZT has an invalid consensus branch id"))?;
+
         let mut prover = Prover::new(pczt);
 
         if prover.requires_orchard_proof() {
+            let orchard_circuit_version =
+                zcash_primitives::transaction::components::orchard::bundle_version_for_branch(
+                    pczt_branch_id,
+                    orchard::ValuePool::Orchard,
+                )
+                .ok_or_else(|| {
+                    anyhow!("PCZT's consensus branch does not support the Orchard pool")
+                })?
+                .circuit_version();
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::PostNu6_3))
+                .create_orchard_proof(&orchard::circuit::ProvingKey::build(
+                    orchard_circuit_version,
+                ))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
+
+        if prover.requires_ironwood_proof() {
+            prover = prover
+                .create_ironwood_proof(&orchard::circuit::ProvingKey::build(
+                    orchard::circuit::OrchardCircuitVersion::PostNu6_3,
+                ))
+                .map_err(|e| anyhow!("Failed to create Ironwood proof for PCZT: {:?}", e))?;
+        }
+        assert!(!prover.requires_ironwood_proof());
 
         if prover.requires_sapling_proofs() {
             let spend_params = path_from_jni(env, spend_params)?;
