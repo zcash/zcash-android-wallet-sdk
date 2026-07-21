@@ -3050,8 +3050,7 @@ dependencies = [
 [[package]]
 name = "orchard"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cca2ede6a4a77bd729eed3be9303d98a08b217edc85190dcf4dbe004086d5a65"
+source = "git+https://github.com/zcash/orchard.git?rev=3bd2b736d1273226595773265313fc3f3428af16#3bd2b736d1273226595773265313fc3f3428af16"
 dependencies = [
  "aes",
  "bitvec",
@@ -7299,6 +7298,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "shardtree 0.7.0",
  "tonic",
  "tor-rtcompat",
  "tracing",
@@ -7311,7 +7311,8 @@ dependencies = [
  "zcash_client_backend",
  "zcash_client_sqlite",
  "zcash_note_encryption",
- "zcash_pool_migration",
+ "zcash_pool_migration_backend",
+ "zcash_pool_migration_sqlite",
  "zcash_primitives 0.29.0",
  "zcash_proofs",
  "zcash_protocol 0.10.0",
@@ -7451,6 +7452,7 @@ dependencies = [
  "zcash_client_backend",
  "zcash_encoding 0.4.0",
  "zcash_keys 0.15.0",
+ "zcash_pool_migration_sqlite",
  "zcash_primitives 0.29.0",
  "zcash_protocol 0.10.0",
  "zcash_script",
@@ -7548,26 +7550,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "zcash_pool_migration"
+name = "zcash_pool_migration_backend"
 version = "0.1.0"
 dependencies = [
+ "getset",
  "incrementalmerkletree",
+ "libm",
  "orchard 0.15.0",
  "pczt 0.8.0-rc.1",
- "rand 0.8.6",
- "rand_distr",
- "rusqlite",
+ "rand_core 0.6.4",
  "shardtree 0.7.0",
- "tracing",
- "uuid",
- "zcash_address 0.13.0",
  "zcash_client_backend",
- "zcash_client_sqlite",
  "zcash_keys 0.15.0",
  "zcash_primitives 0.29.0",
  "zcash_protocol 0.10.0",
- "zcash_transparent 0.9.0",
- "zip321",
+]
+
+[[package]]
+name = "zcash_pool_migration_sqlite"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "uuid",
+ "zcash_pool_migration_backend",
+ "zcash_protocol 0.10.0",
 ]
 
 [[package]]
@@ -7906,8 +7912,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "orchard"
-version = "0.15.0-pre.2"
-source = "git+https://github.com/zcash/orchard?rev=475ef0ff77d45aebff93cb039d639250d82518a3#475ef0ff77d45aebff93cb039d639250d82518a3"

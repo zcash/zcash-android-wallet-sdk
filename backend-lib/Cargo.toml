@@ -18,11 +18,13 @@ android-test-fixtures = []
 [dependencies]
 # Zcash dependencies
 # Ironwood (NU6.3): tracks the same git rev as [patch.crates-io] below directly, since its
-# version (0.15.0-pre.2) can't satisfy a "=0.14.0" crates-io requirement.
-orchard = { version = "0.15.0-pre.2", features = ["unstable-voting-circuits"] }
-# Orchard->Ironwood migration engine — path dependency on the local librustzcash checkout
-# (see [patch.crates-io] below; this crate isn't published to crates.io).
-zcash_pool_migration = { path = '../../librustzcash/zcash_pool_migration' }
+# version (0.15.0) can't satisfy crates-io requirements while pinned to a ZIP 374 branch rev.
+orchard = { version = "0.15.0", features = ["unstable-voting-circuits"] }
+# Orchard->Ironwood migration engine (core/upstream implementation) — path dependencies on the
+# local librustzcash checkout (this crate isn't published to crates.io). Replaces the former
+# hand-rolled `zcash_pool_migration` crate.
+zcash_pool_migration_backend = { path = '../../librustzcash/zcash_pool_migration_backend', features = ["wallet"] }
+zcash_pool_migration_sqlite = { path = '../../librustzcash/zcash_pool_migration_sqlite' }
 pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
@@ -43,6 +45,9 @@ zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
+# Used by migration_finalize.rs to read `ShardTreeError`/`QueryError` variants when checking
+# note-witness availability at a migration transaction's anchor boundary.
+shardtree = "0.7"
 # Used by voting/notes.rs to construct historical Orchard witness positions.
 incrementalmerkletree = { version = "0.8", default-features = false }
 
@@ -130,9 +135,11 @@ zcash_voting = { version = "=0.11.0", default-features = false, features = [
 ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
-## Local librustzcash checkout, on michal/ironwood-migration (PR #2572) — needed for
-## zcash_pool_migration above. orchard is patched to the exact rev that branch pins
-## (0.15.0-pre.2 isn't on crates.io yet), everything else is a local path for fast iteration.
+## Local librustzcash checkout, on feature/orchard_migration_core (tracks Danny/core team's
+## origin/feat/pool-migration-sqlite, PR #2669 + stack) — needed for zcash_pool_migration_backend
+## and zcash_pool_migration_sqlite above. orchard is patched to the exact rev that branch pins
+## (0.15.0 isn't on crates.io yet with ZIP 374 support), everything else is a local path for fast
+## iteration.
 [patch.crates-io]
 pczt = { package = "pczt", path = '../../librustzcash/pczt' }
 transparent = { package = "zcash_transparent", path = '../../librustzcash/zcash_transparent' }
@@ -143,7 +150,7 @@ zcash_primitives = { path = '../../librustzcash/zcash_primitives' }
 zcash_proofs = { path = '../../librustzcash/zcash_proofs' }
 zcash_protocol = { path = '../../librustzcash/components/zcash_protocol' }
 zcash_keys = { path = '../../librustzcash/zcash_keys' }
-orchard = { git = "https://github.com/zcash/orchard", rev = "475ef0ff77d45aebff93cb039d639250d82518a3" }
+orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d1273226595773265313fc3f3428af16" }
 
 ## Uncomment this to test someone else's librustzcash changes in a branch
 #[patch.crates-io]
