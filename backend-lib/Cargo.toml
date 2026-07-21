@@ -26,13 +26,14 @@ chp-voting = ["dep:zcash_voting", "dep:pasta_curves", "dep:ff"]
 
 [dependencies]
 # Zcash dependencies
-# Ironwood (NU6.3): released on crates.io as 0.15.0 (has the `unstable-voting-circuits` feature),
-# so this tracks a plain crates-io version instead of the [patch.crates-io] git rev the
-# pre-release (0.15.0-pre.2) required.
+# Ironwood (NU6.3): tracks the same git rev as [patch.crates-io] below directly, since its
+# version (0.15.0) can't satisfy crates-io requirements while pinned to a ZIP 374 branch rev.
 orchard = { version = "0.15.0", features = ["unstable-voting-circuits"] }
-# Orchard->Ironwood migration engine — path dependency on the local librustzcash checkout
-# (see [patch.crates-io] below; this crate isn't published to crates.io).
-zcash_pool_migration = { path = "../../../../../librustzcash/zcash_pool_migration" }
+# Orchard->Ironwood migration engine (core/upstream implementation) — path dependencies on the
+# local librustzcash checkout (this crate isn't published to crates.io). Replaces the former
+# hand-rolled `zcash_pool_migration` crate.
+zcash_pool_migration_backend = { path = "../../../../../librustzcash/zcash_pool_migration_backend", features = ["wallet"] }
+zcash_pool_migration_sqlite = { path = "../../../../../librustzcash/zcash_pool_migration_sqlite" }
 pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 # zcash_transparent, zcash_address, zcash_client_backend, zcash_client_sqlite, zcash_primitives,
@@ -62,6 +63,9 @@ zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
+# Used by migration_finalize.rs to read `ShardTreeError`/`QueryError` variants when checking
+# note-witness availability at a migration transaction's anchor boundary.
+shardtree = "0.7"
 # Used by voting/notes.rs to construct historical Orchard witness positions.
 incrementalmerkletree = { version = "0.8", default-features = false }
 
@@ -175,21 +179,32 @@ ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
 # ════════════════════════════════════════════════════════════════════════════════════════
-# [patch.crates-io] — unify on the convergence-pin librustzcash lineage
+# [patch.crates-io] — unify on the local librustzcash checkout (branch `sqlite-pin`, tracking
+# Danny/core team's upstream `feat/pool-migration-sqlite`, PR #2669 + stack)
 # ════════════════════════════════════════════════════════════════════════════════════════
-# Required by the slipstream-jni merge above: slipstream-core (which slipstream-jni depends
-# on) only builds against the `convergence-pin` sibling checkout of librustzcash (an
-# unreleased, in-progress lineage that also carries zcash_pool_migration, PR #2572), not the
-# published 0.21/0.23-era crates.io releases this crate's own [dependencies] declare. Patching
-# the whole family to the same checkout keeps exactly ONE copy of each of these crates (and
-# their shared transitive, libsqlite3-sys) in the merged dependency graph — verified via
-# `cargo tree -i libsqlite3-sys` showing a single node. This also happens to dissolve the
-# D5 schema-mismatch caveat: backend-lib's zcash_client_sqlite now natively understands the
-# ironwood-migrated schema the engine writes, instead of running an older generation against
-# it. Orchard needs no patch entry here: 0.15.0 is released on crates.io directly (see the
-# direct-dependency comment above), unlike the rest of this family. Revert this whole block
-# (and the version bumps above) once the librustzcash family's next real release ships
-# zcash_pool_migration and this patch is no longer needed to reach it.
+# Required by two things at once:
+#   - slipstream-core (which slipstream-jni depends on) only builds against this same sibling
+#     librustzcash checkout, not the published 0.21/0.23-era crates.io releases this crate's own
+#     [dependencies] declare;
+#   - zcash_pool_migration_backend/_sqlite above (Danny/core team's split migration engine)
+#     aren't published to crates.io at all and only exist in this checkout.
+# Patching the whole family to the same checkout keeps exactly ONE copy of each of these crates
+# (and their shared transitive, libsqlite3-sys) in the merged dependency graph — verified via
+# `cargo tree -i libsqlite3-sys` showing a single node. This also happens to dissolve the D5
+# schema-mismatch caveat: backend-lib's zcash_client_sqlite now natively understands the
+# ironwood-migrated schema the engine writes, instead of running an older generation against it.
+# Revert this whole block (and the version bumps above) once the librustzcash family's next real
+# release ships zcash_pool_migration_backend/_sqlite and this patch is no longer needed to reach
+# it.
+#
+# `orchard`: pinned to the exact ZIP 374 branch rev this checkout's own deferred-anchor builder
+# support needs (orchard #534, now merged, plus the PCZT Updater setters/Prover guard from #535)
+# — 0.15.0 isn't published on crates.io with that support yet, so this MUST be a git patch, not
+# a version bump like the rest of the family. This is the ONLY orchard patch entry; the checkout's
+# own workspace-root [patch.crates-io] (which pins a different rev, 63f4101, for its own internal
+# builds) never applies here — [patch] sections declared in a path dependency's own manifest are
+# ignored by Cargo, only THIS workspace root's patch block governs. Drop once a released orchard
+# ships ZIP 374 support.
 #
 # 13th entry, `zcash_voting`: the published 1.0.0 (see the version-bump comment above) still
 # declares `zcash_keys ^0.14`, which does not semver-match this patch's `zcash_keys 0.15.0`, so
@@ -220,6 +235,7 @@ zip321 = { path = "../../../../../librustzcash/components/zip321" }
 pczt = { path = "../../../../../librustzcash/pczt" }
 equihash = { path = "../../../../../librustzcash/components/equihash" }
 zcash_voting = { path = "../../../../../zcash_voting/zcash_voting" }
+orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d1273226595773265313fc3f3428af16" }
 
 ## Uncomment this to test someone else's librustzcash changes in a branch
 #[patch.crates-io]

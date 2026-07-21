@@ -593,6 +593,19 @@ interface OrchardMigrationSdk {
      */
     suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationSchedule
 
+    // ── Dust locking ─────────────────────────────────────────────────────────
+
+    /**
+     * Marks whatever Orchard balance remains after migration (dust below the migratable
+     * threshold, or an opted-out residual) as unspendable, so it can't later be swept into a
+     * transaction that reveals its specific — and therefore identifying — amount.
+     *
+     * Stub: not yet backed by real Rust-side unspendable-note tracking. Exists purely as a
+     * wiring point for the app's "Lock balance" UI flow; the real implementation (persisting
+     * the lock, and having note selection actually respect it) is still to be done.
+     */
+    suspend fun lockRemainingOrchardBalance()
+
     companion object {
         /**
          * Constructs the real, Rust-backed [OrchardMigrationSdk].
