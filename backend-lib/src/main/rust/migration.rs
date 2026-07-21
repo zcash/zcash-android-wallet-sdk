@@ -85,6 +85,20 @@ type Wallet = zcash_client_sqlite::WalletDb<
 /// `MigrationContext::open_wallet`/`store_conn` pattern, which also opened two connections).
 /// Every JNI function here calls this fresh and drops it at the end (no persistent handle),
 /// exactly like the old file's documented contract.
+///
+/// JNI-free (takes a plain path, not a `JString`) so it — and everything built on top of it — is
+/// callable directly from `cargo test` against a real wallet DB file, without an emulator or a
+/// Kotlin/JNI round-trip. See the `tests` module at the bottom of this file.
+fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Wallet, Connection)> {
+    let wallet = Wallet::for_path(db_path.to_path_buf(), network, SystemClock, OsRng)
+        .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
+    let store_conn = Connection::open(db_path)
+        .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
+    zcash_pool_migration_sqlite::init_migration_tables(&store_conn)
+        .map_err(|e| anyhow!("Error initializing migration tables: {:?}", e))?;
+    Ok((wallet, store_conn))
+}
+
 fn open(
     env: &mut JNIEnv,
     db_data: JString,
@@ -92,17 +106,7 @@ fn open(
 ) -> anyhow::Result<(Network, Wallet, Connection)> {
     let network = crate::parse_network(network_id as u32)?;
     let db_path = crate::path_from_jni(env, db_data)?;
-    let wallet = Wallet::for_path(
-        db_path.clone(),
-        network,
-        SystemClock,
-        OsRng,
-    )
-    .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
-    let store_conn = Connection::open(&db_path)
-        .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
-    zcash_pool_migration_sqlite::init_migration_tables(&store_conn)
-        .map_err(|e| anyhow!("Error initializing migration tables: {:?}", e))?;
+    let (wallet, store_conn) = open_at(&db_path, network)?;
     Ok((network, wallet, store_conn))
 }
 
@@ -134,17 +138,19 @@ fn natural_anchor_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
 /// so a later commit call signs exactly this plan, not an independently re-randomized one. Also
 /// returns the wallet's current tip, needed as the "now" reference point when encoding transfer
 /// proposals (see `encode_transfer_proposal`'s doc comment for why this matters).
-fn plan(
-    env: &mut JNIEnv,
-    db_data: JString,
-    network_id: jint,
-    account_uuid: JByteArray,
+///
+/// JNI-free — see `open_at`'s doc comment. Every `MIGRATION_DIAG` log line this crate has needed
+/// so far to diagnose a live bug (anchor/witness resolution, schedule spread, note-split
+/// detection) came from here or `migration_finalize`, both callable directly from `cargo test`.
+fn plan_for(
+    network: &Network,
+    wallet: &Wallet,
+    account: AccountUuid,
+    store_conn: &mut Connection,
 ) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
-    let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
-    let account = crate::account_id_from_jni(env, account_uuid)?;
-    let backend = Backend::new(&wallet, account, None, &mut store_conn);
+    let backend = Backend::new(wallet, account, None, store_conn);
     let mut rng = OsRng;
-    let migration_plan = engine::plan_migration(&network, &backend, &mut rng)
+    let migration_plan = engine::plan_migration(network, &backend, &mut rng)
         .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
     let prep = migration_plan.preparation();
     tracing::debug!(
@@ -191,6 +197,17 @@ fn plan(
     }
     crate::migration_plan_cache::set(account, migration_plan.clone());
     Ok((migration_plan, tip))
+}
+
+fn plan(
+    env: &mut JNIEnv,
+    db_data: JString,
+    network_id: jint,
+    account_uuid: JByteArray,
+) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
+    let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+    let account = crate::account_id_from_jni(env, account_uuid)?;
+    plan_for(&network, &wallet, account, &mut store_conn)
 }
 
 /// Returns the already-committed migration state if one exists (non-terminal), otherwise commits
@@ -1563,4 +1580,140 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Integration tests that exercise the actual migration planning/build/finalize logic directly
+/// against a real wallet SQLite DB file — no JNI, no Android, no Gradle app build, no emulator UI
+/// click-through. Point `MIGRATION_TEST_WALLET_DB` at a copy of a real wallet DB (pull one via
+/// `adb -s emulator-5554 shell "run-as <pkg> cat <path>" > /tmp/wallet_fixture.sqlite3`, path from
+/// the handoff doc's testing-setup notes) to iterate on migration bugs in seconds. Every bug found
+/// live this session (multi-witness resolution, anchor fallback for preparation transactions,
+/// schedule/amount pairing, note-split-needed detection) would have been caught by these tests
+/// without ever launching the app.
+///
+/// Run with, e.g.:
+/// `MIGRATION_TEST_WALLET_DB=/tmp/wallet_fixture.sqlite3 cargo test --package zcash-android-wallet-sdk --lib migration::live_wallet_tests -- --ignored --nocapture`
+#[cfg(test)]
+mod live_wallet_tests {
+    use super::*;
+
+    fn fixture_db_path() -> Option<std::path::PathBuf> {
+        std::env::var("MIGRATION_TEST_WALLET_DB")
+            .ok()
+            .map(std::path::PathBuf::from)
+    }
+
+    fn first_account(wallet: &Wallet) -> AccountUuid {
+        wallet
+            .get_account_ids()
+            .expect("list accounts")
+            .into_iter()
+            .next()
+            .expect("wallet has at least one account — restore/sync one first")
+    }
+
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB pointing at a copy of a real wallet DB"]
+    fn plan_a_real_wallet() {
+        let db_path = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
+        let network = Network::TestNetwork;
+        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        let (plan, tip) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+
+        println!(
+            "tip={tip:?} funding_notes={} prep_layers={} prep_txs={} direct_funding={}",
+            plan.funding_notes().len(),
+            plan.preparation().layer_count(),
+            plan.preparation().transaction_count(),
+            plan.preparation().direct_funding_notes().len(),
+        );
+        for entry in plan.schedule() {
+            let delta = i64::from(u32::from(entry.broadcast_height())) - i64::from(u32::from(tip));
+            println!(
+                "broadcast_height={:?} ({delta} blocks from tip) expiry={:?}",
+                entry.broadcast_height(),
+                entry.expiry_height(),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB pointing at a copy of a real wallet DB"]
+    fn build_and_finalize_all_unsigned() {
+        let db_path = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
+        let network = Network::TestNetwork;
+        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        let (migration_plan, tip) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let target = tip + 1;
+
+        let (fvk, spendable) = {
+            let backend = Backend::new(&wallet, account, None, &mut store_conn);
+            let fvk = backend.orchard_fvk().expect("account has an Orchard FVK");
+            let spendable = backend
+                .spendable_orchard_notes()
+                .expect("read spendable notes");
+            (fvk, spendable)
+        };
+
+        let (state, unsigned) = {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
+            let mut rng = OsRng;
+            engine::build_preparation_unsigned(
+                &network,
+                target,
+                &mut backend,
+                &migration_plan,
+                &mut rng,
+            )
+            .expect("build_preparation_unsigned")
+        };
+        println!("{} unsigned transaction(s) built", unsigned.len());
+
+        let mut finalized = 0;
+        let mut transient = 0;
+        for tx in unsigned {
+            let (id, pczt_bytes) = tx.into_parts();
+            let committed_tx = state
+                .transactions()
+                .iter()
+                .find(|t| t.id() == id)
+                .expect("built tx must appear in committed state");
+            let anchor_height = match committed_tx.anchor_boundary() {
+                Some(h) => Some(h),
+                None => Some(natural_anchor_height(&wallet).expect("natural anchor height")),
+            };
+            match crate::migration_finalize::finalize_transaction(
+                &mut wallet,
+                &fvk,
+                &spendable,
+                anchor_height,
+                &pczt_bytes,
+            ) {
+                Ok(Some((_bytes, txid))) => {
+                    finalized += 1;
+                    println!(
+                        "id={id:?} kind={:?} finalized txid={}",
+                        committed_tx.kind(),
+                        hex::encode(txid)
+                    );
+                }
+                Ok(None) => {
+                    transient += 1;
+                    println!(
+                        "id={id:?} kind={:?} not yet finalizable (transient — funding note not \
+                         observed, or not witnessable at anchor_height {anchor_height:?} yet)",
+                        committed_tx.kind(),
+                    );
+                }
+                Err(e) => panic!("id={id:?} kind={:?} FAILED: {e}", committed_tx.kind()),
+            }
+        }
+        println!("{finalized} finalized, {transient} transient (not yet ready)");
+    }
 }
