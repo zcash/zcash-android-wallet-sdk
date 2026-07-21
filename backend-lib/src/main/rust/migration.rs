@@ -101,7 +101,7 @@ fn open(
     .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
     let store_conn = Connection::open(&db_path)
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
-    zcash_pool_migration_sqlite::init_migration_tables(&store_conn)
+    zcash_pool_migration_sqlite::orchard_ironwood::init_migration_tables(&store_conn)
         .map_err(|e| anyhow!("Error initializing migration tables: {:?}", e))?;
     Ok((network, wallet, store_conn))
 }
@@ -691,7 +691,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     .ok_or_else(|| anyhow!("No migration in progress"))?;
                 state.mark_broadcast(id, txid);
                 backend
-                    .put_migration(&state)
+                    .replace_migration(&state)
                     .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))
             }
             // NetworkError/InvalidNote/Expired: no destructive state transition exists in the new
@@ -1257,7 +1257,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             return Err(anyhow!("Error applying note-split signature"));
         }
         backend
-            .put_migration(&state)
+            .replace_migration(&state)
             .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
         let id = encode_transfer_id(env, split_id)?;
         let txid_placeholder = crate::utils::rust_bytes_to_java(env, &[0u8; 32])?;
@@ -1382,7 +1382,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             }
         }
         backend
-            .put_migration(&state)
+            .replace_migration(&state)
             .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))
     });
     unwrap_exc_or(&mut env, res, ())

@@ -29,7 +29,7 @@ use zcash_pool_migration_backend::engine::{
     MigrationBackend, MigrationCrypto, MigrationState, MigrationTxId, MigrationTxState,
     PoolMigrationRead, PoolMigrationWrite,
 };
-use zcash_pool_migration_sqlite::PoolMigrations;
+use zcash_pool_migration_sqlite::orchard_ironwood::PoolMigrations;
 
 type SpendableNote = (OrchardNote, Position, u64);
 
@@ -197,9 +197,9 @@ where
     <W as WalletRead>::Error: std::error::Error + Send + Sync + 'static,
     <W as InputSource>::Error: std::error::Error + Send + Sync + 'static,
 {
-    fn put_migration(&mut self, state: &MigrationState) -> Result<(), Self::Error> {
+    fn replace_migration(&mut self, state: &MigrationState) -> Result<(), Self::Error> {
         self.store
-            .put_migration(state)
+            .replace_migration(state)
             .map_err(|e| anyhow::anyhow!("persisting migration failed: {e:?}"))
     }
 
