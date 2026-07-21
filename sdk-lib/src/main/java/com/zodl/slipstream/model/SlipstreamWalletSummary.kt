@@ -5,8 +5,8 @@ import androidx.annotation.Keep
 /**
  * Balance of one value pool within one account. All values are zatoshi.
  *
- * Constructed by the `slipstream-jni` crate (`POOL_BALANCE_CTOR = "(JJJ)V"`) - field order is the
- * binding contract.
+ * Constructed by the `slipstream-jni` crate's `POOL_BALANCE_CTOR`; field order is the JNI
+ * binding contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamPoolBalance(
@@ -26,10 +26,10 @@ data class SlipstreamPoolBalance(
  * recovery-safe net is surfaced as orchard.spendableValue and every other component is zero -
  * render the total, not the pools, in that phase.
  *
- * Constructed by the `slipstream-jni` crate (`ACCOUNT_BALANCE_CTOR =
- * "([BLcom/zodl/slipstream/model/SlipstreamPoolBalance;Lcom/zodl/slipstream/model/SlipstreamPoolBalance;Lcom/zodl/slipstream/model/SlipstreamPoolBalance;J)V"`)
- * - field order is the binding contract. `accountUuid`/`Array` fields make the generated `equals`
- * identity-based for those fields; these are transport objects, not map keys.
+ * Constructed by the `slipstream-jni` crate's `ACCOUNT_BALANCE_CTOR`; field order is the JNI
+ * binding contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder. `accountUuid`/`Array` fields
+ * make the generated `equals` identity-based for those fields; these are transport objects, not
+ * map keys.
  */
 @Keep
 data class SlipstreamAccountBalance(
@@ -52,8 +52,8 @@ data class SlipstreamAccountBalance(
  * the numerator is a non-progress indicator: 0 = progress unknown, 1 = an error occurred. FOR
  * DISPLAY DIAGNOSTICS ONLY - the blessed UI progress value is snapshot.progressPermille.
  *
- * Constructed by the `slipstream-jni` crate (`SCAN_PROGRESS_CTOR = "(JJ)V"`) - field order is the
- * binding contract.
+ * Constructed by the `slipstream-jni` crate's `SCAN_PROGRESS_CTOR`; field order is the JNI
+ * binding contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamScanProgress(
@@ -67,9 +67,8 @@ data class SlipstreamScanProgress(
  * class) means "no balance data yet". Never re-derive balances from notes or transactions; never
  * serve a cached balance across the restore phase.
  *
- * Constructed by the `slipstream-jni` crate (`WALLET_SUMMARY_CTOR =
- * "([Lcom/zodl/slipstream/model/SlipstreamAccountBalance;JJLcom/zodl/slipstream/model/SlipstreamScanProgress;Lcom/zodl/slipstream/model/SlipstreamScanProgress;JJLjava/lang/Long;)V"`)
- * - field order is the binding contract.
+ * Constructed by the `slipstream-jni` crate's `WALLET_SUMMARY_CTOR`; field order is the JNI
+ * binding contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamWalletSummary(

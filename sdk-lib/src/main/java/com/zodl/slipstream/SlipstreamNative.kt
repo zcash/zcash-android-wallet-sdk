@@ -21,6 +21,9 @@ import kotlinx.coroutines.withContext
  * (see [com.zodl.slipstream.internal.SlipstreamDispatchers]) - never concurrently. All failures
  * surface as `java.lang.RuntimeException` (see the error mapping contract, `FFI_JNI_CONTRACT.md`
  * section 6).
+ *
+ * `setAlternateServers` is a v0.7 fast-follow (`FFI_JNI_CONTRACT.md` section 3.4 / 9.1), not
+ * part of the v0.6.0 surface this object binds.
  */
 internal object SlipstreamNative {
     /** Contract version this binding implements (`HOSTING.md` as of engine v0.6.0). */
@@ -30,22 +33,11 @@ internal object SlipstreamNative {
     private val loadMutex = Mutex()
 
     /**
-     * Loads the merged native library (`libzcashwalletsdk.so`, which now also carries every
-     * `Java_com_zodl_slipstream_*` export alongside the RustBackend JNI surface - see
-     * `backend-lib/Cargo.toml`'s `slipstream-jni` path dependency) via [RustBackend.loadLibrary],
-     * then runs Slipstream's own process-global native init (logging, panic hook, rayon pool)
-     * exactly once. [RustBackend.loadLibrary] owns the ONE `System.loadLibrary` call for the
-     * whole process and, inside its own once-guard, always runs backend's `initOnLoad` first -
-     * regardless of whether TorClient, DerivationTool, or this adapter is the caller that gets
-     * there first - so backend's `tracing` subscriber is always installed before Slipstream's own
-     * `initOnLoad` tries to install one (Slipstream's install is a no-op against an
-     * already-installed global subscriber). This method's own [loaded]/[loadMutex] guard only
-     * sequences Slipstream's `initOnLoad` to run after that, exactly once; it does not duplicate
-     * [RustBackend.loadLibrary]'s own guard, which is why a plain double-checked lock (matching
-     * `NativeLibraryLoader`'s own idiom) replaces the previous `@Synchronized` - a suspend
-     * function must not suspend while holding a JVM monitor. Idempotent and thread-safe; every
-     * entry point of the adapter calls this first. logLevel: "error" | "warn" | "info" | "debug" |
-     * "trace" | "off".
+     * Loads the merged native library via [RustBackend.loadLibrary] (the one process-wide
+     * `System.loadLibrary` call), then runs Slipstream's own `initOnLoad` exactly once.
+     * Idempotent and thread-safe; every entry point of the adapter calls this first. A plain
+     * double-checked lock replaces `@Synchronized` because a suspend function must not suspend
+     * while holding a JVM monitor. logLevel: "error" | "warn" | "info" | "debug" | "trace" | "off".
      */
     suspend fun ensureLoaded(logLevel: String = "warn") {
         if (!loaded) {
@@ -77,11 +69,6 @@ internal object SlipstreamNative {
         networkId: Int,
         totalMemoryBytes: Long
     ): Long
-
-    // v0.7 fast-follow (forward-compat; see FFI_JNI_CONTRACT.md section 3.4 / 9.1) - NOT part of
-    // the v0.6.0 surface, and the matching native export is unbound at v0.6.0. Present from AAR
-    // 0.7.x, absent from 0.6.x:
-    // @JvmStatic external fun setAlternateServers(handle: Long, urisNewlineSeparated: String?): Boolean
 
     @JvmStatic
     external fun start(
@@ -126,15 +113,7 @@ internal object SlipstreamNative {
     @JvmStatic
     external fun free(handle: Long)
 
-    /**
-     * `listTransactions`: the first of 5 typed host-read exports (`FFI_JNI_CONTRACT.md`
-     * section 9.3) - NOT part of the [CONTRACT_VERSION] surface (no C-ABI twin, no handle, no
-     * engine state); `com.zodl.slipstream.internal.db.SlipstreamTransactionReader`'s production
-     * read path, replacing the JSON [readQuery] lane below. Each of the 5 constructs
-     * `com.zodl.slipstream.model` row objects on the SAME bundled SQLite instance the engine's
-     * own writer uses (`host_read.rs`), same connection law as [readQuery]. This one is the
-     * visible-transactions read (section 7.1), optionally scoped to one account.
-     */
+    /** First of 5 typed host-read exports; production visible-transactions read, optionally account-scoped. Not part of [CONTRACT_VERSION]. */
     @JvmStatic
     external fun listTransactions(
         dbPath: String,
@@ -171,20 +150,11 @@ internal object SlipstreamNative {
     ): Array<SlipstreamResubmissionRow>
 
     /**
-     * DEBUG-ONLY host-utility export, added while the engine owner is away - NOT part of the
-     * [CONTRACT_VERSION] surface (no C-ABI twin, no handle, no engine state). Kept wired for
-     * `Synchronizer.debugQuery` only; production reads use the typed exports above. Runs [sql]
-     * as a single read-only query against [dbPath] on the SAME bundled SQLite instance the
-     * engine's own writer uses, closing the dual-SQLite-instance hazard the Android-framework
-     * `SlipstreamWalletDb`/`SlipstreamTransactionReader` reader used to carry (see
-     * `worklog/08-engine-sigbus-android.md`: two independent SQLite library instances against
-     * one `data.sqlite3` in one process corrupt each other's fcntl locks on every framework
-     * `close()`, destroying the engine's WAL/`-shm` index). At most one of [blobParam]/
-     * [textParam] may be non-null; it binds as the statement's sole `?1` parameter - callers
-     * MUST bind, never concatenate, any user-influenced text into [sql]. Returns the rows as a
-     * JSON array of arrays (columns: INTEGER/REAL as a JSON number, TEXT as a JSON string,
-     * BLOB as a lowercase-hex JSON string, NULL as JSON null), or `null` on error (a
-     * `RuntimeException` is also thrown).
+     * DEBUG-ONLY host utility backing `Synchronizer.debugQuery`; not part of [CONTRACT_VERSION].
+     * Runs [sql] as a single read-only query on the engine's bundled SQLite instance. At most
+     * one of [blobParam]/[textParam] may be non-null; it binds as the statement's sole `?1`
+     * parameter - callers MUST bind, never concatenate, any user-influenced text into [sql].
+     * Returns the rows as a JSON array of arrays, or `null` on error.
      */
     @JvmStatic
     external fun readQuery(

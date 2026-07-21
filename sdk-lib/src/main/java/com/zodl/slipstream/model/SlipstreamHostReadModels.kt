@@ -10,9 +10,8 @@ import androidx.annotation.Keep
  * generated `equals`/`hashCode` are identity-based for those fields; this is a transport object,
  * not a map key.)
  *
- * Constructed by the `slipstream-jni` crate (`TX_ROW_CTOR =
- * "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;ZIIILjava/lang/Long;ZLjava/lang/Long;)V"`)
- * - field order is the binding contract.
+ * Constructed by the `slipstream-jni` crate's `TX_ROW_CTOR`; field order is the JNI binding
+ * contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamTransactionRow(
@@ -38,8 +37,8 @@ data class SlipstreamTransactionRow(
  * Raw transaction bytes + expiry height for one txid (the `getTransactionRaw` native) - a Kotlin
  * `null` return (not this class) means the transaction is not stored.
  *
- * Constructed by the `slipstream-jni` crate (`RAW_TX_CTOR = "([BJ)V"`) - field order is the
- * binding contract.
+ * Constructed by the `slipstream-jni` crate's `RAW_TX_CTOR`; field order is the JNI binding
+ * contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamRawTransaction(
@@ -51,8 +50,8 @@ data class SlipstreamRawTransaction(
  * One non-change `v_tx_outputs` row (the `listTransactionOutputs` native) - either scoped to one
  * txid or, when the native's `txid` argument is `null`, every account's rows.
  *
- * Constructed by the `slipstream-jni` crate (`TX_OUTPUT_ROW_CTOR =
- * "([BIILjava/lang/String;[B)V"`) - field order is the binding contract.
+ * Constructed by the `slipstream-jni` crate's `TX_OUTPUT_ROW_CTOR`; field order is the JNI
+ * binding contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamTxOutputRow(
@@ -67,8 +66,8 @@ data class SlipstreamTxOutputRow(
  * One resubmission-candidate row (the `listResubmissionCandidates` native): unmined, unexpired,
  * outgoing transactions.
  *
- * Constructed by the `slipstream-jni` crate (`RESUBMISSION_ROW_CTOR = "([B[B)V"`) - field order
- * is the binding contract.
+ * Constructed by the `slipstream-jni` crate's `RESUBMISSION_ROW_CTOR`; field order is the JNI
+ * binding contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamResubmissionRow(

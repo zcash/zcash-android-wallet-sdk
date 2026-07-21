@@ -8,8 +8,8 @@ import androidx.annotation.Keep
  * ignore every tag (state == 2 covers errors, txSetVersion covers tag 5) but must still drain the
  * ring. Unknown tags MUST be ignored, never treated as errors.
  *
- * Constructed by the `slipstream-jni` crate (`EVENT_CTOR = "(IJ)V"`) - field order is the binding
- * contract.
+ * Constructed by the `slipstream-jni` crate's `EVENT_CTOR`; field order is the JNI binding
+ * contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamEvent(

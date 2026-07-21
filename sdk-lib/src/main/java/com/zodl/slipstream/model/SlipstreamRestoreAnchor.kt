@@ -9,8 +9,8 @@ import androidx.annotation.Keep
  * NEW intent: height + serialized TreeState protobuf = a reorg-safe recent tree state; height 0 +
  * null treestate when offline (keep the bundled checkpoint).
  *
- * Constructed by the `slipstream-jni` crate (`RESTORE_ANCHOR_CTOR = "(J[B)V"`) - field order is
- * the binding contract.
+ * Constructed by the `slipstream-jni` crate's `RESTORE_ANCHOR_CTOR`; field order is the JNI
+ * binding contract (`FFI_JNI_CONTRACT.md` §4.2) - do not reorder.
  */
 @Keep
 data class SlipstreamRestoreAnchor(

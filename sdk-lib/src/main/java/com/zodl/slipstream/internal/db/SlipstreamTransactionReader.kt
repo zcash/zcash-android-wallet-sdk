@@ -32,14 +32,10 @@ private fun poolFromCode(poolCode: Int): TransactionPool =
     }
 
 /**
- * Typed access over the engine-managed `data.sqlite3` that backs `allTransactions` (R18),
- * `getTransactions(accountUuid)` (R23), and the raw-bytes reads the T8 spend path needs after a
- * store-first `create` (`SDK_ADAPTER_PLAN.md` T8). Every method below (all but [debugQuery]) runs
- * through one of the 5 typed [SlipstreamNative] host-read exports (`FFI_JNI_CONTRACT.md`
- * section 9.3), which construct `com.zodl.slipstream.model` row objects on the engine's own
- * bundled SQLite instance - the JSON `readQuery` lane [SlipstreamWalletDb.query] wrapped is now
- * debug-only (`Synchronizer.debugQuery`, see [debugQuery] and [SlipstreamWalletDb]'s KDoc,
- * especially incident #5, for why no connection ever crosses through the Android framework).
+ * Typed access over the engine-managed `data.sqlite3`. Every method below (all but [debugQuery])
+ * runs through one of the 5 typed [SlipstreamNative] host-read exports, which construct
+ * `com.zodl.slipstream.model` row objects on the engine's own bundled SQLite instance
+ * (debug-only lane; see [SlipstreamWalletDb]).
  */
 internal class SlipstreamTransactionReader(
     private val dbFile: File
@@ -162,11 +158,9 @@ internal class SlipstreamTransactionReader(
         }
 
     /**
-     * R59 `debugQuery`: free-form SQL over the engine's bundled SQLite instance, via the
-     * debug-only [SlipstreamNative.readQuery] lane [SlipstreamWalletDb.query] wraps. Column
-     * NAMES are not available here - `readQuery` returns row values only, not result-set
-     * metadata - so columns render positionally (`column0=... column1=...`) rather than by their
-     * real name.
+     * Free-form SQL over the engine's bundled SQLite instance (debug-only lane; see
+     * [SlipstreamWalletDb]). Column NAMES are not available - `readQuery` returns row values
+     * only - so columns render positionally (`column0=... column1=...`).
      */
     suspend fun debugQuery(sql: String): String {
         val rows = SlipstreamWalletDb.query(dbFile, sql)

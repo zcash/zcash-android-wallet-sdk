@@ -13,21 +13,7 @@ internal data class SaplingParamPaths(
     val outputFile: File
 )
 
-/**
- * Re-implements the upstream SDK's internal `SaplingParamTool` (`sdk-lib/.../internal/
- * SaplingParamTool.kt:36-76`) with its exact verified constants (`SDK_ADAPTER_PLAN.md` T8):
- * downloads `sapling-spend.params` (SHA-1 `a15ab54c2888880e53c823a3063820c728444126`, <= 50 MiB)
- * and `sapling-output.params` (SHA-1 `0ebc5a1ef3653948e1c46cf7a16071eac4b7e352`, <= 5 MiB) from
- * `https://download.z.cash/downloads/` into the caller-supplied directory (the adapter's own
- * `<no_backup>/co.electricoin.zcash/` per the R57 path derivation). Only the `create`/
- * `addProofsToPczt` spend paths need these files - everything else in [SlipstreamSpendService]
- * never touches them. Re-implemented rather than linked because `SaplingParamTool` is `internal`
- * to `sdk-lib` (the same-module reuse this adapter takes elsewhere does not apply here, since
- * calling an internal object from a different Gradle module is exactly the barrier D3 exists to
- * respect - this file lives in `sdk-lib` itself, so it IS reachable; re-implementing rather than
- * reusing was still chosen to keep the adapter's fetch/verify policy independent and inspectable
- * in one place - see the T8 worklog entry for the full rationale).
- */
+/** Downloads sapling-spend/output.params (SHA-1s below) into the caller's dir; needed by the create/addProofsToPczt paths. */
 internal object SaplingParams {
     private const val BASE_URL = "https://download.z.cash/downloads/"
     private const val SPEND_FILE_NAME = "sapling-spend.params"

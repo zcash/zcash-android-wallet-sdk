@@ -29,10 +29,6 @@ internal object TransactionOverviewCursor {
         latestHeight: BlockHeight?
     ): TransactionOverview {
         val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
-        /**
-         * A raw expiry height of 0 means "no expiry" (disables expiry) - matches the upstream
-         * cursor mapper (AllTransactionView.kt) folding 0 into null before state derivation.
-         */
         val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
         val isSent = row.accountBalanceDelta < 0
 

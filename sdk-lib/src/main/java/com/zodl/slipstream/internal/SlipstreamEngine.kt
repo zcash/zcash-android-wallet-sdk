@@ -97,8 +97,6 @@ internal class SlipstreamEngine(
                     totalMemoryBytes = totalMemoryBytes
                 )
             check(handle != 0L) { "slipstream open() failed" }
-            // Truthful-from-open: publish before any start (a relaunched restore shows its true
-            // position on the very first poll, HOSTING.md section 5).
             tick()
         }
 
@@ -144,14 +142,10 @@ internal class SlipstreamEngine(
     private suspend fun tick() {
         if (handle == 0L) return
 
-        // 1. SNAPSHOT - the single source of truth.
         val snap = SlipstreamNative.snapshot(handle)
 
-        // 2. DRAIN - ring hygiene ONLY. Contents discarded: state==2 covers errors, txSetVersion
-        //    covers found-tx. Must still drain every tick or the 64-slot ring warns.
         SlipstreamNative.drainEvents(handle)
 
-        // 3. STALL WATCHDOG - the engine supplies the fact, the host owns the policy (section 3.3).
         if (snap.state == 1 && snap.stalledSeconds >= STALL_LOG_SECONDS) {
             android.util.Log.e(
                 "slipstream",
@@ -159,7 +153,6 @@ internal class SlipstreamEngine(
             )
         }
 
-        // 4. WALLET SUMMARY - every tick; the engine rations the expensive walk internally.
         val summary = SlipstreamNative.walletSummary(
             handle = handle,
             trustedConfirmations = TRUSTED,
@@ -171,16 +164,13 @@ internal class SlipstreamEngine(
             fullyScannedHeight.value = it.fullyScannedHeight.takeIf { height -> height > 0 }?.let(BlockHeight::new)
         }
 
-        // 5. SCALAR FLOWS - render, never derive (DECISIONS.md D11).
         if (snap.chainTip > 0) networkHeight.value = BlockHeight.new(snap.chainTip)
         progress.value = permilleToPercentDecimal(snap.progressPermille)
         areFundsSpendable.value = snap.spendableHint
 
-        // 6. STATE DISPATCH, incl. the error-handler protocol (section 2.3).
         lastSnapshot.value = snap
         dispatchState(snap)
 
-        // 7. THE ONE TX RE-QUERY RULE (section 5.4).
         val decision = gate.reduce(snap)
         gate = decision.next
         if (decision.requeryTransactions) requeryTicks.tryEmit(Unit)

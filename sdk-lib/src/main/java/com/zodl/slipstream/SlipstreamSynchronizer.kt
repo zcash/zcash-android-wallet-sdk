@@ -113,17 +113,6 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * `SlipstreamSynchronizer : CloseableSynchronizer` - the drop-in replacement for `SdkSynchronizer`
- * behind the Slipstream engine. Built member-by-member across T5-T10 (`SDK_ADAPTER_PLAN.md`
- * Appendix Z item 2); this file is T7-T10's slice: provisioning (`Companion.new`,
- * `importAccountByUfvk`), lifecycle (`close`/`onForeground`/`onBackground`/`erase`), spend/PCZT/
- * broadcaster delegation, and every remaining member.
- *
- * Two single-threaded lanes throughout (`KOTLIN_ROSETTA.md` section 0.3): all [SlipstreamEngine]
- * calls serialize on `slipstream-io`; all [Backend]/`RustBackend` calls serialize on `sdk-lib`'s own
- * `zc-io`. Cross-lane DB safety is WAL + `busy_timeout` (DECISIONS.md D5), never thread exclusion.
- */
-/**
  * The three facts [SlipstreamSynchronizer.Companion.newLocked] derives from resolving
  * [WalletInitMode]'s anchor - not just `startBirthday` (`engine.start`'s scan floor) but also the
  * `treeState` and `recoverUntil` the upstream SDK threads through
@@ -137,6 +126,16 @@ private data class WalletProvisioningPlan(
     val recoverUntil: Long?
 )
 
+/**
+ * `SlipstreamSynchronizer : CloseableSynchronizer` - the drop-in replacement for `SdkSynchronizer`
+ * behind the Slipstream engine. Owns provisioning (`Companion.new`, `importAccountByUfvk`),
+ * lifecycle (`close`/`onForeground`/`onBackground`/`erase`), and spend/PCZT/broadcaster
+ * delegation.
+ *
+ * Two single-threaded lanes throughout: all [SlipstreamEngine] calls serialize on
+ * `slipstream-io`; all [Backend]/`RustBackend` calls serialize on `sdk-lib`'s own `zc-io`.
+ * Cross-lane DB safety is WAL + `busy_timeout`, never thread exclusion.
+ */
 class SlipstreamSynchronizer internal constructor(
     private val context: Context,
     override val network: ZcashNetwork,
@@ -176,7 +175,7 @@ class SlipstreamSynchronizer internal constructor(
     override val walletBalances = engine.walletBalances
     override val allTransactions: Flow<List<TransactionOverview>> = transactionsController.allTransactions
 
-    /** R5, section 5.2: degraded on purpose - `overallSyncRange`/`firstUnenhancedHeight` describe processor internals that do not exist under this engine. */
+    /** Degraded on purpose - `overallSyncRange`/`firstUnenhancedHeight` describe processor internals that don't exist under this engine. */
     override val processorInfo: Flow<CompactBlockProcessor.ProcessorInfo> = engine.networkHeight.map(::toProcessorInfo)
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -251,24 +250,20 @@ class SlipstreamSynchronizer internal constructor(
         }
 
     /**
-     * R65, section 5.4 (narrowed scope): invoked only for construction-time failures
-     * (open/provisioning/Tor) - which, since [Companion.new] throws directly on those failures
-     * rather than returning a half-built instance, means this adapter never actually has an
-     * instance alive to invoke it on. Settable for interface completeness; server-mismatch and
-     * runtime setup problems surface through [onProcessorErrorHandler] instead (R63).
+     * Settable for interface completeness, but never invoked: [Companion.new] throws directly on
+     * construction-time failures rather than returning a half-built instance to call this on.
+     * Server-mismatch and runtime setup problems surface through [onProcessorErrorHandler] instead.
      */
     override var onSetupErrorHandler: ((Throwable?) -> Boolean)? = null
 
-    /** R66, section 5.1: settable, documented never-invoked - the engine owns reorg recovery internally; there is no host-visible chain-error event. */
+    /** Settable, but never invoked - the engine owns reorg recovery internally; there is no host-visible chain-error event. */
     override var onChainErrorHandler: ((BlockHeight, BlockHeight) -> Any)? = null
 
     /**
-     * R5/R62-R66: unlike the upstream iOS synchronizer, the Android [Synchronizer] interface has
-     * no public `start()` - `Synchronizer.new`/[SlipstreamSynchronizer.new] auto-start the poll
+     * The Android [Synchronizer] interface has no public `start()`; `new` auto-starts the poll
      * loop as part of construction, and [onForeground]/[onBackground] only pause/resume it
-     * thereafter. [SlipstreamEngine.startPolling] is safe to call again here even though
-     * [Companion.newLocked] already brought the engine up: it cancels any prior job before
-     * launching, so this is just the loop's first start, not a restart.
+     * thereafter. [SlipstreamEngine.startPolling] cancels any prior job before launching, so
+     * this is just the loop's first start, not a restart.
      */
     init {
         engine.onTick =
@@ -279,16 +274,10 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun getAccounts(): List<Account> = backend.getAccounts().map(Account::new)
 
     /**
-     * R37: `restoreAnchor(intent = 1)` for the `recoverUntil` (network-only, engine stays live) ->
-     * stop engine -> `RustBackend.importAccountUfvk` -> restart (the H2 serialization invariant;
-     * the restart re-baselines the progress floor, section 5.1). Never fetches the chain tip
-     * itself - the anchor is the policy. The `treeState` the backend needs to bootstrap the new
-     * account's scan window is a DIFFERENT fact than `recoverUntil` (a height, not a tree) - it
-     * comes from the same bundled-checkpoint mechanism the T7 `NewWallet` provisioning path uses
-     * (`CheckpointTool`, `internal object`, reachable in-module), nearest to the account's own
-     * birthday. The final `engine.start(ufvk = null, ...)` restart is `FFI_JNI_CONTRACT.md` section
-     * 3.5's keyless mode - the engine re-reads its accounts straight from `data.db` - legal here
-     * only because the `importAccountUfvk` call just above it wrote that very account row.
+     * Sequence: `restoreAnchor(intent = 1)` for `recoverUntil` (network-only, engine stays live)
+     * -> stop engine -> `RustBackend.importAccountUfvk` -> restart. The restart's `ufvk = null`
+     * is `FFI_JNI_CONTRACT.md` section 3.5's keyless mode - legal here only because the
+     * `importAccountUfvk` call just above it wrote that account row.
      */
     override suspend fun importAccountByUfvk(setup: AccountImportSetup): Account {
         val fallbackCheckpoint = newestBundledCheckpointHeight(context, network)
@@ -536,7 +525,7 @@ class SlipstreamSynchronizer internal constructor(
             count
         }.getOrNull()
 
-    /** `FFI_JNI_CONTRACT.md` section 3.5: the `engine.start(ufvk = null, ...)` restart below is keyless - the engine re-reads its accounts straight from `data.db` - which is legal only because provisioning ([SlipstreamSynchronizer.Companion.newLocked]/[importAccountByUfvk]) guarantees an account row already exists by the time any restart runs. */
+    /** The `engine.start(ufvk = null, ...)` restart below is keyless (`FFI_JNI_CONTRACT.md` section 3.5) - legal only because provisioning guarantees an account row already exists by the time any restart runs. */
     override suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight? {
         engine.stop()
         val result = rewindRetrying(height)
@@ -648,7 +637,7 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
-    /** Pairs with [onForeground]'s [SlipstreamEngine.isRunning] guard below: stop always clears it (via [SlipstreamEngine.stop]), so a foreground that follows always sees an honest running/stopped state. */
+    /** Pairs with [onForeground]'s [SlipstreamEngine.isRunning] guard: [SlipstreamEngine.stop] always clears it, so a following foreground sees an honest running/stopped state. */
     override fun onBackground() {
         scope.launch {
             engine.stopPolling()
@@ -658,13 +647,11 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     /**
-     * `FFI_JNI_CONTRACT.md` section 3.5: [SlipstreamEngine.start] unconditionally aborts any
-     * in-flight pass and reruns its bounded quiescence drain, so restarting an ALREADY-running
-     * engine on every foreground would churn useful work instead of resuming it (device evidence:
-     * two "engine pass starting" logs 110 ms apart). [SlipstreamEngine.isRunning] mirrors the iOS
-     * twin's `isRunning` guard for exactly this - skip the native restart when the engine is already
-     * live. [SlipstreamEngine.startPolling] stays unconditional; it is already an idempotent
-     * cancel-and-relaunch.
+     * [SlipstreamEngine.start] unconditionally aborts any in-flight pass and reruns its bounded
+     * quiescence drain, so restarting an already-running engine on every foreground would churn
+     * useful work instead of resuming it. [SlipstreamEngine.isRunning] guards against that - skip
+     * the native restart when the engine is already live. [SlipstreamEngine.startPolling] stays
+     * unconditional; it is already an idempotent cancel-and-relaunch.
      */
     override fun onForeground() {
         scope.launch {
@@ -698,11 +685,9 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun debugQuery(query: String): String = transactionReader.debugQuery(query)
 
     /**
-     * R38: stop engine (B4-16 invariant) -> delete -> poke (dead rows drop next tick) -> restart ->
-     * poke the accounts bus. The restart's `ufvk = null` is `FFI_JNI_CONTRACT.md` section 3.5's
-     * keyless mode - safe here because the wallet's OTHER accounts (if any) still exist in `data.db`
-     * for the engine to read; deleting the only account still leaves that row set consistent
-     * (empty), it just means the next poll reports nothing.
+     * Sequence: stop engine -> delete -> restart -> poke the accounts bus. The restart's
+     * `ufvk = null` is `FFI_JNI_CONTRACT.md` section 3.5's keyless mode - safe here because any
+     * other accounts still exist in `data.db` for the engine to read.
      */
     override suspend fun deleteAccount(accountUuid: AccountUuid): Boolean {
         engine.stop()
@@ -726,16 +711,10 @@ class SlipstreamSynchronizer internal constructor(
         DataDbPath.dataDbFile(context.getNoBackupFilesDirSuspend(), alias, network).absolutePath
 
     /**
-     * R13: explicit stop -> free -> drop the instance-guard key. Kotlin has no deinit, so a
-     * double-free guard is required.
-     *
-     * Mirrors the upstream `SdkSynchronizer.close()` shape (`SdkSynchronizer.kt` ~472-494)
-     * rather than blocking the caller's thread for the full shutdown:
-     * [InstanceGuard.markShuttingDown] registers [shutdownJob] synchronously, on the caller's
-     * thread, before this function returns - same as [InstanceGuard.acquire]'s own `job.join()`
-     * expects from a concurrent `new`/`newBlocking` for the same [key] - and the actual
-     * stop/free work then runs asynchronously on [scope]. This makes `close()` safe to call
-     * from `Dispatchers.Main`.
+     * Kotlin has no deinit, so a double-free guard ([closed]) is required. Registers the
+     * shutdown job synchronously, on the caller's thread, before this function returns; the
+     * actual stop/free work then runs asynchronously on [scope]. This makes `close()` safe to
+     * call from `Dispatchers.Main`.
      */
     override fun close() {
         if (closed.compareAndSet(false, true)) {
@@ -766,17 +745,13 @@ class SlipstreamSynchronizer internal constructor(
         private const val TXID_NOT_RECOGNIZED_STATUS = -1L
 
         /**
-         * Mirrors `Synchronizer.new` (`Synchronizer.kt:855`) parameter-for-parameter - same names,
-         * order, and defaults - so an app call site changes exactly one token
-         * (`Synchronizer.new` -> `SlipstreamSynchronizer.new`). Sequence (`SDK_ADAPTER_PLAN.md` T7):
-         * alias + instance guard -> `SlipstreamNative.ensureLoaded()` -> resolve the UFVK ->
-         * NewWallet/RestoreWallet call `restoreAnchor` -> `engine.open` -> `engine.start` -> store
-         * `latestBirthdayHeight`.
+         * Mirrors `Synchronizer.new` parameter-for-parameter - same names, order, and defaults -
+         * so an app call site changes exactly one token. Sequence: alias + instance guard ->
+         * `SlipstreamNative.ensureLoaded()` -> resolve the UFVK -> NewWallet/RestoreWallet call
+         * `restoreAnchor` -> `engine.open` -> `engine.start` -> store `latestBirthdayHeight`.
          *
-         * The [newLocked] call below runs on `Dispatchers.IO`: construction is disk/JNI-heavy
-         * (`System.loadLibrary`, `engine.open()`, `RustBackend.new()`) and callers include
-         * `Dispatchers.Main` scopes (the `WalletCoordinator` construction flow) - dispatching here
-         * keeps every caller agnostic to that instead of pushing the requirement onto them.
+         * Runs on `Dispatchers.IO`: construction is disk/JNI-heavy and callers include
+         * `Dispatchers.Main` scopes, so dispatching here keeps every caller agnostic to that.
          */
         suspend fun new(
             alias: String = ZcashSdk.DEFAULT_ALIAS,
@@ -814,11 +789,7 @@ class SlipstreamSynchronizer internal constructor(
             }
         }
 
-        /**
-         * [SlipstreamNative.ensureLoaded] here is called with `logLevel = "info"` rather than its
-         * own `"warn"` default: a dev-time default for field diagnosability (surfaces the engine's
-         * `info!` lifecycle logs, e.g. pass/handle open); release tuning is a later decision.
-         */
+        /** [SlipstreamNative.ensureLoaded] uses `logLevel = "info"` here, not its `"warn"` default: a dev-time default for field diagnosability (surfaces engine lifecycle logs). */
         @Suppress("LongMethod")
         private suspend fun newLocked(
             alias: String,
@@ -937,18 +908,8 @@ class SlipstreamSynchronizer internal constructor(
             val typesafeBackend = TypesafeBackendImpl(backend)
 
             /**
-             * Fresh-wallet provisioning bug fix: [Backend.createAccount] is the ONLY place a fresh
-             * install ever gets an `accounts` row - nothing else in this factory writes one, so
-             * skipping it left every fresh restore/new-wallet syncing 27k+ block rows against zero
-             * accounts (no balances, no transactions). Mirrors `DerivedDataDb.new` (`DerivedDataDb.kt` ~126) verbatim:
-             * unconditional [Backend.initDataDb] (schema/migration bootstrap, same return-code
-             * contract as [TypesafeBackendImpl.initDataDb]) followed by a [Backend.createAccount]
-             * gated on `setup != null && accounts.isEmpty()` - non-null setup is exactly
-             * `WalletInitMode.NewWallet`/`RestoreWallet` (the `ufvk` derivation above already
-             * requires it), and the emptiness check is what makes an `ExistingWallet` relaunch of an
-             * already-provisioned DB a no-op instead of a duplicate account. [engine] is not
-             * constructed yet at this point, so there is no stop/restart bracket to worry about
-             * (contrast [importAccountByUfvk], which must stop/restart a LIVE engine).
+             * Mirrors `DerivedDataDb.new`: unconditional [Backend.initDataDb], then
+             * [Backend.createAccount] gated on `setup != null && accounts.isEmpty()`.
              */
             when (backend.initDataDb(setup?.seed?.byteArray)) {
                 0 -> Unit
@@ -982,19 +943,14 @@ class SlipstreamSynchronizer internal constructor(
             val memoryInfo = ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
             engine.open(totalMemoryBytes = memoryInfo.totalMem)
             /**
-             * `ufvk` stays non-null here even though the account row now already exists by this
-             * point (created above): `FFI_JNI_CONTRACT.md` section 3.5's `start(ufvk != null)` is
-             * defined as a no-op when any account is already present, so this is a harmless,
-             * contract-legal import attempt on every NewWallet/RestoreWallet launch, not a second
-             * provisioning path.
+             * `ufvk` stays non-null even though the account row already exists: `FFI_JNI_CONTRACT.md`
+             * section 3.5's `start(ufvk != null)` is a no-op when an account is already present.
              */
             engine.start(ufvk, startBirthday.value)
 
             /**
-             * Tor is only needed for on-demand/background work (sync-path Tor-mode RPCs, exchange rate
-             * fetch, getTorHttpClient), never on the cold-start critical path, so its creation (the ~1s
-             * Tor runtime creation cost) is deferred to first use via [LazyTorClient] (mirrors
-             * `Synchronizer.Companion.new`'s post-MOB-1403 shape).
+             * Tor is only needed for on-demand/background work, never on the cold-start critical
+             * path, so its creation (~1s) is deferred to first use via [LazyTorClient].
              */
             val lazyTorClient =
                 if (isTorEnabled || isExchangeRateEnabled) {
@@ -1111,10 +1067,9 @@ class SlipstreamSynchronizer internal constructor(
             }
 
         /**
-         * C3: delete `data.sqlite3` + `-wal` + `-shm` via the R57 path derivation; refuse while an
-         * instance is `Active` (their semantic). This engine has no separate on-disk block cache
-         * directory to delete alongside it (unlike the upstream SDK's `fs_cache`) - every persisted
-         * fact Slipstream keeps lives inside `data.sqlite3` itself.
+         * Deletes `data.sqlite3` + `-wal` + `-shm`; refuses while an instance is `Active`. No
+         * separate on-disk block cache directory to delete alongside it - every persisted fact
+         * Slipstream keeps lives inside `data.sqlite3` itself.
          */
         suspend fun erase(
             appContext: Context,
