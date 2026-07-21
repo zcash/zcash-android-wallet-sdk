@@ -1444,6 +1444,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putSubtre
     sapling_roots: JObjectArray<'local>,
     orchard_start_index: jlong,
     orchard_roots: JObjectArray<'local>,
+    ironwood_start_index: jlong,
+    ironwood_roots: JObjectArray<'local>,
     network_id: jint,
 ) {
     let res = catch_unwind(&mut env, |env| {
@@ -1484,6 +1486,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putSubtre
             orchard::tree::MerkleHashOrchard::read(n)
         })?;
 
+        // Ironwood is Orchard note-version V3 and shares Orchard's commitment-tree machinery, so
+        // its subtree roots are Orchard-shaped too — reuse the same hash type/parser.
+        let ironwood_start_index = if ironwood_start_index >= 0 {
+            ironwood_start_index as u64
+        } else {
+            return Err(anyhow!("Ironwood start index must be nonnegative."));
+        };
+        let ironwood_roots = parse_roots(env, ironwood_roots, |n| {
+            orchard::tree::MerkleHashOrchard::read(n)
+        })?;
+
         db_data
             .put_sapling_subtree_roots(sapling_start_index, &sapling_roots)
             .map_err(|e| anyhow!("Error while storing Sapling subtree roots: {}", e))?;
@@ -1491,6 +1504,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putSubtre
         db_data
             .put_orchard_subtree_roots(orchard_start_index, &orchard_roots)
             .map_err(|e| anyhow!("Error while storing Orchard subtree roots: {}", e))?;
+
+        db_data
+            .put_ironwood_subtree_roots(ironwood_start_index, &ironwood_roots)
+            .map_err(|e| anyhow!("Error while storing Ironwood subtree roots: {}", e))?;
 
         Ok(())
     });
@@ -1593,11 +1610,17 @@ fn encode_account_balance<'a>(
     let orchard_value_pending =
         ZatBalance::from(balance.orchard_balance().value_pending_spendability());
 
+    let ironwood_verified_balance = ZatBalance::from(balance.ironwood_balance().spendable_value());
+    let ironwood_change_pending =
+        ZatBalance::from(balance.ironwood_balance().change_pending_confirmation());
+    let ironwood_value_pending =
+        ZatBalance::from(balance.ironwood_balance().value_pending_spendability());
+
     let unshielded = ZatBalance::from(balance.unshielded_balance().total());
 
     env.new_object(
         JNI_ACCOUNT_BALANCE,
-        "([BJJJJJJJ)V",
+        "([BJJJJJJJJJJ)V",
         &[
             (&env.byte_array_from_slice(account_uuid.expose_uuid().as_bytes())?).into(),
             JValue::Long(sapling_verified_balance.into()),
@@ -1606,6 +1629,9 @@ fn encode_account_balance<'a>(
             JValue::Long(orchard_verified_balance.into()),
             JValue::Long(orchard_change_pending.into()),
             JValue::Long(orchard_value_pending.into()),
+            JValue::Long(ironwood_verified_balance.into()),
+            JValue::Long(ironwood_change_pending.into()),
+            JValue::Long(ironwood_value_pending.into()),
             JValue::Long(unshielded.into()),
         ],
     )
@@ -1651,7 +1677,7 @@ fn encode_wallet_summary<'a>(
     Ok(env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniWalletSummary",
         format!(
-            "([L{};JJJJLjava/lang/Long;Ljava/lang/Long;JJ)V",
+            "([L{};JJJJLjava/lang/Long;Ljava/lang/Long;JJJ)V",
             JNI_ACCOUNT_BALANCE
         ),
         &[
@@ -1664,6 +1690,7 @@ fn encode_wallet_summary<'a>(
             JValue::Object(&recovery_progress_denominator),
             JValue::Long(summary.next_sapling_subtree_index() as i64),
             JValue::Long(summary.next_orchard_subtree_index() as i64),
+            JValue::Long(summary.next_ironwood_subtree_index() as i64),
         ],
     )?)
 }
@@ -3692,6 +3719,9 @@ fn parse_protocol(code: i32) -> anyhow::Result<ShieldedProtocol> {
     match code {
         2 => Ok(ShieldedProtocol::Sapling),
         3 => Ok(ShieldedProtocol::Orchard),
+        // Must match ZcashProtocol.kt's poolCode and zcash_client_sqlite's own pool-type
+        // encoding (wallet/encoding.rs) exactly.
+        4 => Ok(ShieldedProtocol::Ironwood),
         _ => Err(anyhow!("Shielded protocol not recognized: {code}")),
     }
 }

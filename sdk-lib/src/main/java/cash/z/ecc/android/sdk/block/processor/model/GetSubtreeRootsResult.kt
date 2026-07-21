@@ -10,7 +10,9 @@ internal sealed class GetSubtreeRootsResult {
         val saplingStartIndex: UInt,
         val saplingSubtreeRootList: List<SubtreeRoot>,
         val orchardStartIndex: UInt,
-        val orchardSubtreeRootList: List<SubtreeRoot>
+        val orchardSubtreeRootList: List<SubtreeRoot>,
+        val ironwoodStartIndex: UInt,
+        val ironwoodSubtreeRootList: List<SubtreeRoot>
     ) : GetSubtreeRootsResult()
 
     data object Linear : GetSubtreeRootsResult()

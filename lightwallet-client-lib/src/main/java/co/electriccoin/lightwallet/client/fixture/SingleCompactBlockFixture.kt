@@ -11,6 +11,7 @@ internal object SingleCompactBlockFixture {
     internal const val DEFAULT_TIME = 0
     internal const val DEFAULT_SAPLING_OUTPUT_COUNT = 1u
     internal const val DEFAULT_ORCHARD_OUTPUT_COUNT = 2u
+    internal const val DEFAULT_IRONWOOD_OUTPUT_COUNT = 0u
     internal const val DEFAULT_HASH = DEFAULT_HEIGHT
     internal const val DEFAULT_BLOCK_BYTES = DEFAULT_HEIGHT
 
@@ -25,6 +26,7 @@ internal object SingleCompactBlockFixture {
         time: Int = DEFAULT_TIME,
         saplingOutputsCount: UInt = DEFAULT_SAPLING_OUTPUT_COUNT,
         orchardOutputsCount: UInt = DEFAULT_ORCHARD_OUTPUT_COUNT,
+        ironwoodOutputsCount: UInt = DEFAULT_IRONWOOD_OUTPUT_COUNT,
         blockBytes: ByteArray = heightToFixtureData(DEFAULT_BLOCK_BYTES)
     ): CompactBlockUnsafe =
         CompactBlockUnsafe(
@@ -33,6 +35,7 @@ internal object SingleCompactBlockFixture {
             time = time,
             saplingOutputsCount = saplingOutputsCount,
             orchardOutputsCount = orchardOutputsCount,
+            ironwoodOutputsCount = ironwoodOutputsCount,
             compactBlockBytes = blockBytes
         )
 }

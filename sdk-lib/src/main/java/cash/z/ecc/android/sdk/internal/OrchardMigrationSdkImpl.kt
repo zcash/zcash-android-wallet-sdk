@@ -148,25 +148,25 @@ internal class OrchardMigrationSdkImpl(
         MIGRATION_DB_ACCESS_MUTEX.withLock { loggedRetryLoop(operation, block) }
 
     private suspend fun <T> loggedRetryLoop(operation: String, block: suspend () -> T): T {
-        Twig.debug { "OrchardMigrationSdk: $operation starting" }
+        Twig.debug { "MIGRATION_DIAG OrchardMigrationSdk: $operation starting" }
         var attempt = 1
         while (true) {
             try {
                 val result = block()
-                Twig.debug { "OrchardMigrationSdk: $operation succeeded" }
+                Twig.debug { "MIGRATION_DIAG OrchardMigrationSdk: $operation succeeded" }
                 return result
             } catch (e: Throwable) {
                 val looksLikeSyncRace = e.message?.contains("InsufficientFunds") == true
                 if (looksLikeSyncRace && attempt <= RACE_RETRY_MAX_ATTEMPTS) {
                     Twig.error(e) {
-                        "OrchardMigrationSdk: $operation failed (attempt $attempt/$RACE_RETRY_MAX_ATTEMPTS, " +
-                            "looks like a sync race) — retrying in $RACE_RETRY_DELAY"
+                        "MIGRATION_DIAG OrchardMigrationSdk: $operation failed (attempt $attempt/" +
+                            "$RACE_RETRY_MAX_ATTEMPTS, looks like a sync race) — retrying in $RACE_RETRY_DELAY"
                     }
                     delay(RACE_RETRY_DELAY)
                     attempt++
                     continue
                 }
-                Twig.error(e) { "OrchardMigrationSdk: $operation failed" }
+                Twig.error(e) { "MIGRATION_DIAG OrchardMigrationSdk: $operation failed" }
                 throw e
             }
         }
@@ -327,6 +327,19 @@ internal class OrchardMigrationSdkImpl(
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend.proposeMigrationTransfers(dbDataPath, network, account, includeResidual).toPublic()
+        }
+
+    override suspend fun proposeMigrationTransfersFromSplit(splitProposal: NoteSplitProposal): MigrationSchedule =
+        logged("proposeMigrationTransfersFromSplit") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.proposeMigrationTransfersFromSplit(
+                dbDataPath,
+                network,
+                account,
+                splitProposal.outputNotes.toLongArray(),
+                splitProposal.fee,
+            ).toPublic()
         }
 
     override suspend fun proposeImmediateMigration(): MigrationSchedule = logged("proposeImmediateMigration") {
