@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
@@ -101,7 +102,12 @@ class WalletCoordinator(
                 isExchangeRateEnabled = isExchangeRateEnabled,
                 isSyncBlocked = isSyncBlocked
             )
-        }.flatMapLatest { (persistableWallet, lockoutId, isTorEnabled, isExchangeRateEnabled, isSyncBlocked) ->
+            // isSyncBlocked's first real value always arrives asynchronously, after this combine()
+            // has already fired once using its stale placeholder — without dropping that redundant
+            // re-emission, flatMapLatest below would cancel an in-flight Synchronizer.new() (and
+            // therefore its checkpoint loading) on every cold start, even though nothing changed.
+        }.distinctUntilChanged()
+            .flatMapLatest { (persistableWallet, lockoutId, isTorEnabled, isExchangeRateEnabled, isSyncBlocked) ->
             if (null != lockoutId) { // this one needs to come first
                 flowOf(InternalSynchronizerStatus.Lockout(lockoutId))
             } else if (isSyncBlocked) {
