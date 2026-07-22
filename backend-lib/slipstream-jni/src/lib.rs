@@ -245,33 +245,38 @@ unsafe fn handle_from_jlong<'a>(ptr: jlong) -> anyhow::Result<&'a mut JniSlipstr
 /// [quiescence] Bounded wait (≤10 s) for an aborted sync task to finish unwinding.
 /// `abort()` is ASYNCHRONOUS — the task keeps running until its next await point, so a
 /// synchronous in-flight wallet write can land AFTER `abort()` returns. Behavior matches the
-/// iOS/macOS reference wrapper.
-fn join_aborted_task(task: &AbortHandle) {
+/// iOS/macOS reference wrapper. Returns `true` once the task is confirmed finished, `false`
+/// if the 10 s deadline was hit first (a warning is still logged in that case).
+fn join_aborted_task(task: &AbortHandle) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !task.is_finished() {
         if Instant::now() >= deadline {
             tracing::warn!("slipstream stop/start: aborted pass still unwinding after 10 s — proceeding");
-            return;
+            return false;
         }
         thread::sleep(Duration::from_millis(10));
     }
+    true
 }
 
 /// [drain] Bounded wait (≤10 s) for the engine's detached write-behind commit (a
 /// `spawn_blocking` closure `abort()` cannot cancel). Combined with `join_aborted_task`, a
 /// returned stop/start means the wallet file is QUIESCENT — the host's next write cannot
-/// interleave with an orphan commit. Behavior matches the iOS/macOS reference wrapper.
-fn drain_wallet_writers(progress: &ProgressArc) {
+/// interleave with an orphan commit. Behavior matches the iOS/macOS reference wrapper. Returns
+/// `true` once no wallet writer is in flight, `false` if the 10 s deadline was hit first (a
+/// warning is still logged in that case).
+fn drain_wallet_writers(progress: &ProgressArc) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while progress.wallet_writers() > 0 {
         if Instant::now() >= deadline {
             tracing::warn!(
                 "slipstream stop/start: in-flight wallet commit still running after 10 s — proceeding (busy_timeouts remain the backstop)"
             );
-            return;
+            return false;
         }
         thread::sleep(Duration::from_millis(10));
     }
+    true
 }
 
 /// Allocates the handle: a 4-worker tokio runtime, the core handle, and the
@@ -575,9 +580,12 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_start<'local>(
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
-/// `stop`: cancel the sync task and perform the bounded join + writer-drain — a returned
-/// `stop` means the wallet file is QUIESCENT. Sets state Idle; stamps the 120 s tip-fresh
-/// window. The handle stays usable (snapshot/drain still work).
+/// `stop`: cancel the sync task and perform the bounded join + writer-drain. Sets state Idle;
+/// stamps the 120 s tip-fresh window. The handle stays usable (snapshot/drain still work).
+///
+/// Returns `JNI_TRUE` only if BOTH the task join and the writer drain confirmed quiescence
+/// within their 10 s deadlines; `JNI_FALSE` if either timed out, meaning the wallet file may
+/// not actually be quiescent yet (a warning is logged for each timeout that occurs).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_stop<'local>(
     mut env: JNIEnv<'local>,
@@ -589,13 +597,14 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_stop<'local>(
         // [E-2] Stamp the stop: a start() within 120 s keeps tip freshness.
         *h.last_stop_at.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
         let inner = &mut h.inner;
+        let mut quiescent = true;
         if let Some(task) = inner.task.take() {
             task.abort();
-            join_aborted_task(&task);
+            quiescent &= join_aborted_task(&task);
         }
-        drain_wallet_writers(&inner.progress);
+        quiescent &= drain_wallet_writers(&inner.progress);
         *inner.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
-        Ok(JNI_TRUE)
+        Ok(if quiescent { JNI_TRUE } else { JNI_FALSE })
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }

@@ -110,10 +110,18 @@ internal class SlipstreamEngine(
         running = true
     }
 
-    suspend fun stop() =
+    /**
+     * @return the native quiescence verdict: `true` if the aborted task join and the wallet-writer
+     * drain both confirmed quiescence within their bounded waits, `false` if either timed out
+     * (see `FFI_JNI_CONTRACT.md` section 3.6's deliberate deviation from the iOS reference
+     * wrapper). `true` unconditionally when the handle is already closed (`handle == 0L`), since
+     * there is nothing left to quiesce.
+     */
+    suspend fun stop(): Boolean =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
-            if (handle != 0L) SlipstreamNative.stop(handle)
+            val quiescent = if (handle != 0L) SlipstreamNative.stop(handle) else true
             running = false
+            quiescent
         }
 
     suspend fun notifyTxChange() =
