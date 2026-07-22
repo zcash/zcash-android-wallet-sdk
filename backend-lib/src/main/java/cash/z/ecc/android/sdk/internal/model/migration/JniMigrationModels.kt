@@ -76,12 +76,18 @@ class JniUnsignedTransferPczt(
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The result of feeding one scanned QR
  * frame to the Keystone batch-signing UR decoder — see `migration_keystone::decode_sign_batch_part`.
+ *
+ * [firmwareVersion] is the signing device's raw `[major, minor, build]` firmware version, non-null
+ * once [complete] — read directly from the `zcash-batch-sig-result` envelope's own field, not
+ * scanned out of any signed PCZT (the batch response is signatures-only and never echoes PCZT
+ * bytes back, so a PCZT-proprietary-field scan always comes back empty for this flow).
  */
 @Keep
 class JniKeystoneBatchDecodeResult(
     val complete: Boolean,
     val progress: Int,
-    val data: ByteArray?
+    val data: ByteArray?,
+    val firmwareVersion: ByteArray?
 )
 
 /**

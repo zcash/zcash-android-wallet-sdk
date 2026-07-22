@@ -660,7 +660,12 @@ private fun MigrationSchedule.toJni(): JniMigrationSchedule =
     )
 
 private fun JniKeystoneBatchDecodeResult.toPublic(): KeystoneBatchDecodeResult =
-    KeystoneBatchDecodeResult(complete = complete, progress = progress, data = data)
+    KeystoneBatchDecodeResult(
+        complete = complete,
+        progress = progress,
+        data = data,
+        firmwareVersion = firmwareVersion,
+    )
 
 private fun JniKeystoneBatchSignedPczts.toPublic(): KeystoneBatchSignedPczts =
     KeystoneBatchSignedPczts(

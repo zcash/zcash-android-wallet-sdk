@@ -175,6 +175,17 @@ pub struct DecodePartResult {
     /// The serialized `BatchSignResponse` bytes, once `complete` — feed into
     /// [`apply_batch_signatures`].
     pub data: Option<Vec<u8>>,
+    /// The signing device's raw `[major, minor, build]` firmware version, once `complete` — the
+    /// `zcash-batch-sig-result` envelope's own field 3 (see keystone-sdk-rust's
+    /// `ZcashBatchSigResult::get_firmware_version`), not anything recovered from the resulting
+    /// signed PCZT bytes. The batch response is signatures-only (no PCZT is echoed back — see
+    /// [`build_sign_batch_qr_parts`]'s doc comment), so this is the *only* place a batch-signed
+    /// migration can learn the device's firmware version; a PCZT-proprietary-field scan (the
+    /// mechanism the single-transaction Keystone sign flow's firmware stamp relies on) always
+    /// comes back empty here, since [`apply_batch_signatures`] reconstructs the "signed" PCZT from
+    /// the caller's own retained unsigned bytes plus these signatures, never from device-returned
+    /// PCZT bytes.
+    pub firmware_version: Option<[u8; 3]>,
 }
 
 /// Discards any in-flight multi-part scan session. Callers should invoke this on scan-screen
@@ -215,6 +226,7 @@ pub fn decode_sign_batch_part(
                     complete: false,
                     progress: progress as u32,
                     data: None,
+                    firmware_version: None,
                 });
             }
         }
@@ -241,6 +253,7 @@ pub fn decode_sign_batch_part(
         complete: false,
         progress: progress as u32,
         data: None,
+        firmware_version: None,
     })
 }
 
@@ -256,6 +269,7 @@ fn finish_decode(cbor: Vec<u8>, expected_request_id: &[u8]) -> anyhow::Result<De
         complete: true,
         progress: 100,
         data: Some(result.get_data().to_vec()),
+        firmware_version: Some(*result.get_firmware_version()),
     })
 }
 

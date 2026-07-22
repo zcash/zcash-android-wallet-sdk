@@ -122,11 +122,20 @@ data class MigrationSchedule(
  * the multi-part scan has gotten. Once `complete` is `true`, [data] carries the decoded batch
  * signing response bytes to pass to [OrchardMigrationSdk.applyKeystoneBatchSignatures]; `null`
  * otherwise.
+ *
+ * [firmwareVersion] is the signing device's raw `[major, minor, build]` firmware version — also
+ * non-null exactly when [complete]. This comes straight from the `zcash-batch-sig-result` UR
+ * envelope, not from any signed PCZT: the batch protocol returns signatures only and never echoes
+ * PCZT bytes back, so this field is the only way to learn the device's firmware version for a
+ * batch-signed migration. Callers should check this **before** relying on any PCZT-embedded
+ * firmware stamp (that mechanism belongs to the single-transaction Keystone sign flow and will
+ * never be present on a batch-reconstructed PCZT).
  */
 data class KeystoneBatchDecodeResult(
     val complete: Boolean,
     val progress: Int,
-    val data: ByteArray?
+    val data: ByteArray?,
+    val firmwareVersion: ByteArray?
 )
 
 /**

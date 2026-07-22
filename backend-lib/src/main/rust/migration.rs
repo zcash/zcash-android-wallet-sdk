@@ -1574,14 +1574,19 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             Some(bytes) => crate::utils::rust_bytes_to_java(env, bytes)?.into(),
             None => JObject::null(),
         };
+        let firmware_version = match &result.firmware_version {
+            Some(bytes) => crate::utils::rust_bytes_to_java(env, bytes)?.into(),
+            None => JObject::null(),
+        };
         Ok(env
             .new_object(
                 JNI_KEYSTONE_BATCH_DECODE_RESULT,
-                "(ZI[B)V",
+                "(ZI[B[B)V",
                 &[
                     JValue::Bool(if result.complete { JNI_TRUE } else { JNI_FALSE }),
                     JValue::Int(result.progress as jint),
                     JValue::Object(&data),
+                    JValue::Object(&firmware_version),
                 ],
             )?
             .into_raw())
