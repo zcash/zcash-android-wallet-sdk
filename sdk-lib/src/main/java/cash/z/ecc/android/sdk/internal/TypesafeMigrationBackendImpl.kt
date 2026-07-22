@@ -40,6 +40,12 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Boolean = rustBackend().isNoteSplitNeeded(dbDataPath, network.id, account.value)
 
+    override suspend fun estimateMigrationRunCount(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int = rustBackend().estimateMigrationRunCount(dbDataPath, network.id, account.value)
+
     override suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

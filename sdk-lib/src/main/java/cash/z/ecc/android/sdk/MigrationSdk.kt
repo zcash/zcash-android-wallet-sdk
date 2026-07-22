@@ -258,6 +258,16 @@ interface OrchardMigrationSdk {
     /** Convenience accessor for progress details when state is InProgress. */
     suspend fun getMigrationProgress(): MigrationProgress?
 
+    /**
+     * How many successive migration runs the account's current Orchard balance would need, given
+     * the engine's per-run note cap — a read-only, stateless preview with no memory of prior
+     * calls or rounds already committed. Callers must call this fresh every time they need it
+     * (e.g. on every entry to the migration Review screen); the answer reflects whatever balance
+     * remains right now, not a running count from when a multi-round campaign started. `null` when
+     * no account is bound yet.
+     */
+    suspend fun estimateMigrationRunCount(): Int?
+
     // ── Note splitting ───────────────────────────────────────────────────────
 
     /**

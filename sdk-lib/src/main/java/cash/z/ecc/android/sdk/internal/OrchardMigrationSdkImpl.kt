@@ -185,6 +185,12 @@ internal class OrchardMigrationSdkImpl(
         migrationBackend.migrationProgress(dbDataPath, network, account)?.toPublic()
     }
 
+    override suspend fun estimateMigrationRunCount(): Int? = logged("estimateMigrationRunCount") {
+        val dbDataPath = dbDataPath()
+        val account = account ?: return@logged null
+        migrationBackend.estimateMigrationRunCount(dbDataPath, network, account)
+    }
+
     // ── Note splitting ───────────────────────────────────────────────────────
 
     override suspend fun isNoteSplitNeeded(): Boolean = logged("isNoteSplitNeeded") {
