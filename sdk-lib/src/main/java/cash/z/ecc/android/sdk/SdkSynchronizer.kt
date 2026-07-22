@@ -19,6 +19,7 @@ import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
+import cash.z.ecc.android.sdk.internal.ImportAccountErrors
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.SaplingParamTool
 import cash.z.ecc.android.sdk.internal.Twig
@@ -976,8 +977,13 @@ class SdkSynchronizer private constructor(
                 }
         }.onFailure {
             Twig.error(it) { "Import account failed." }
-        }.getOrElse {
-            throw InitializeException.ImportAccountException(it)
+        }.getOrElse { cause ->
+            if (cause is CancellationException) throw cause
+            throw if (ImportAccountErrors.isCheckpointsNotReady(cause)) {
+                InitializeException.ImportAccountCheckpointsNotReadyException(cause)
+            } else {
+                InitializeException.ImportAccountException(cause)
+            }
         }
     }
 

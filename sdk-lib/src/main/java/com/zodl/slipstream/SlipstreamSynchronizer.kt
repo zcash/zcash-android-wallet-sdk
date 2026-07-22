@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.Files
+import cash.z.ecc.android.sdk.internal.ImportAccountErrors
 import cash.z.ecc.android.sdk.internal.TypesafeBackendImpl
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.getNoBackupFilesDirSuspend
@@ -86,6 +87,7 @@ import com.zodl.slipstream.internal.validateAlias
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngineConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -278,6 +280,13 @@ class SlipstreamSynchronizer internal constructor(
      * -> stop engine -> `RustBackend.importAccountUfvk` -> restart. The restart's `ufvk = null`
      * is `FFI_JNI_CONTRACT.md` section 3.5's keyless mode - legal here only because the
      * `importAccountUfvk` call just above it wrote that account row.
+     *
+     * The engine is ALWAYS restarted once stopped, even when the import fails, so a failed
+     * import never leaves the wallet permanently stuck in a non-syncing state. If [engine]
+     * fails to quiesce before the import (see `FFI_JNI_CONTRACT.md` section 3.6), the import is
+     * refused up front - `import_account_ufvk` is transactional, so nothing has been written
+     * yet - and [InitializeException.ImportAccountCheckpointsNotReadyException] is thrown
+     * instead of risking a write racing the still-unwinding sync pass.
      */
     override suspend fun importAccountByUfvk(setup: AccountImportSetup): Account {
         val fallbackCheckpoint = newestBundledCheckpointHeight(context, network)
@@ -298,19 +307,40 @@ class SlipstreamSynchronizer internal constructor(
         val treeState = CheckpointTool.loadNearest(context, network, setup.birthday).treeState().encoded
         val purpose = setup.purpose
 
-        engine.stop()
-        val jniAccount =
-            backend.importAccountUfvk(
-                accountName = setup.accountName,
-                keySource = setup.keySource,
-                ufvk = setup.ufvk.encoding,
-                treeState = treeState,
-                recoverUntil = recoverUntil,
-                purpose = purpose.value,
-                seedFingerprint = (purpose as? AccountPurpose.Spending)?.seedFingerprint,
-                zip32AccountIndex = (purpose as? AccountPurpose.Spending)?.zip32AccountIndex?.index
+        val quiescent = engine.stop()
+        if (!quiescent) {
+            engine.start(ufvk = null, birthday = startBirthday.value)
+            throw InitializeException.ImportAccountCheckpointsNotReadyException(
+                IllegalStateException(
+                    "Slipstream engine did not quiesce before account import; refusing to import " +
+                        "to avoid racing the still-unwinding sync pass."
+                )
             )
-        engine.start(ufvk = null, birthday = startBirthday.value)
+        }
+
+        val jniAccount =
+            try {
+                backend.importAccountUfvk(
+                    accountName = setup.accountName,
+                    keySource = setup.keySource,
+                    ufvk = setup.ufvk.encoding,
+                    treeState = treeState,
+                    recoverUntil = recoverUntil,
+                    purpose = purpose.value,
+                    seedFingerprint = (purpose as? AccountPurpose.Spending)?.seedFingerprint,
+                    zip32AccountIndex = (purpose as? AccountPurpose.Spending)?.zip32AccountIndex?.index
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                throw if (ImportAccountErrors.isCheckpointsNotReady(e)) {
+                    InitializeException.ImportAccountCheckpointsNotReadyException(e)
+                } else {
+                    InitializeException.ImportAccountException(e)
+                }
+            } finally {
+                engine.start(ufvk = null, birthday = startBirthday.value)
+            }
         accountsBus.tryEmit(Unit)
         return Account.new(jniAccount)
     }
