@@ -154,14 +154,14 @@ ff = { version = "0.13", optional = true }
 # bundled SQLite): backend-lib's own bundled rusqlite and the engine's must be the SAME
 # SQLite instance in the SAME process, or closing one connection drops the other's fcntl
 # locks out from under it (the dual-instance SIGBUS/disk-I/O hazard; see
-# docs/slipstream/android/worklog/09-merged-so.md in the slipstream repo for the full
+# docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md in this repo for the full
 # writeup). slipstream-jni builds as rlib + cdylib; Rust keeps `#[no_mangle]` exports from an
 # rlib dependency, so depending on it here is sufficient to carry its exports into our cdylib
 # (see the `pub use slipstream;` reference in src/main/rust/lib.rs that keeps the linker
-# from garbage-collecting it as an unused dependency). Path points into the slipstream repo's
-# own worktree for this branch — its work moved there too, so the old
-# `../../../../../slipstream/slipstream/android/jni` path is dead.
-slipstream-jni = { path = "../../../../../slipstream/.claude/worktrees/android-slipstream-ironwood-chp/slipstream/android/jni" }
+# from garbage-collecting it as an unused dependency). The crate is now vendored in-tree
+# alongside this manifest; only its own `slipstream-core` dependency still resolves
+# cross-repo, into the clean slipstream `main` checkout (see slipstream-jni/Cargo.toml).
+slipstream-jni = { path = "slipstream-jni" }
 
 # Keystone hardware-wallet batch signing for the Orchard migration flow.
 #
@@ -252,3 +252,10 @@ orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d127322
 name = "zcashwalletsdk"
 path = "src/main/rust/lib.rs"
 crate-type = ["staticlib", "cdylib"]
+
+# slipstream-jni is deliberately its own one-crate Cargo workspace (own [workspace] table);
+# Cargo auto-adopts path deps inside this directory as workspace members, which collides
+# with that nested root. Excluding it keeps it a plain out-of-workspace path dependency
+# (nested-workspace workaround, rust-lang/cargo#5042).
+[workspace]
+exclude = ["slipstream-jni"]

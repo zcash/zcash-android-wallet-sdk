@@ -1,0 +1,4 @@
+# slipstream-jni build output. The monorepo root .gitignore's anchored `/target` rule does
+# not match this nested crate, so ignore it here — the crate's `target/` holds engine build
+# metadata (`.rmeta`/`.rlib`) that must never be committed.
+/target
