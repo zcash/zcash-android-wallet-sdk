@@ -171,6 +171,8 @@ dependencies = [
  "tor-dirmgr",
  "tor-error",
  "tor-guardmgr",
+ "tor-hsclient",
+ "tor-hscrypto",
  "tor-keymgr",
  "tor-linkspec",
  "tor-llcrypto",
@@ -413,6 +415,20 @@ checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
 dependencies = [
  "serde",
  "unty",
+]
+
+[[package]]
+name = "bip0039"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "568b6890865156d9043af490d4c4081c385dd68ea10acd6ca15733d511e6b51c"
+dependencies = [
+ "hmac 0.12.1",
+ "pbkdf2",
+ "rand 0.8.6",
+ "sha2 0.10.9",
+ "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -3191,6 +3207,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
+]
+
+[[package]]
 name = "pasta_curves"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3210,6 +3237,16 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest 0.10.7",
+ "password-hash",
+]
 
 [[package]]
 name = "pczt"
@@ -5325,6 +5362,7 @@ dependencies = [
  "tor-bytes",
  "tor-cert",
  "tor-error",
+ "tor-hscrypto",
  "tor-linkspec",
  "tor-llcrypto",
  "tor-memquota",
@@ -5524,6 +5562,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tor-circmgr",
  "tor-error",
+ "tor-hscrypto",
  "tor-linkspec",
  "tor-llcrypto",
  "tor-netdoc",
@@ -5680,6 +5719,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "tor-hsclient"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6c0438676badc6265d6f34ce91c9b50fdb4dfe89ab85795f013fbfa80614304"
+dependencies = [
+ "async-trait",
+ "derive-deftly",
+ "derive_more",
+ "educe",
+ "either",
+ "futures",
+ "itertools 0.14.0",
+ "oneshot-fused-workaround",
+ "postage",
+ "rand 0.9.4",
+ "retry-error",
+ "safelog",
+ "slotmap-careful",
+ "strum",
+ "thiserror 2.0.18",
+ "tor-async-utils",
+ "tor-basic-utils",
+ "tor-bytes",
+ "tor-cell",
+ "tor-checkable",
+ "tor-circmgr",
+ "tor-config",
+ "tor-dirclient",
+ "tor-error",
+ "tor-hscrypto",
+ "tor-keymgr",
+ "tor-linkspec",
+ "tor-llcrypto",
+ "tor-memquota",
+ "tor-netdir",
+ "tor-netdoc",
+ "tor-persist",
+ "tor-proto",
+ "tor-protover",
+ "tor-rtcompat",
+ "tracing",
+]
+
+[[package]]
 name = "tor-hscrypto"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5704,6 +5787,7 @@ dependencies = [
  "tor-error",
  "tor-key-forge",
  "tor-llcrypto",
+ "tor-memquota",
  "tor-units",
  "void",
 ]
@@ -5891,7 +5975,9 @@ dependencies = [
  "async-trait",
  "bitflags",
  "derive_more",
+ "digest 0.10.7",
  "futures",
+ "hex",
  "humantime",
  "itertools 0.14.0",
  "num_enum",
@@ -5899,8 +5985,10 @@ dependencies = [
  "serde",
  "strum",
  "thiserror 2.0.18",
+ "time",
  "tor-basic-utils",
  "tor-error",
+ "tor-hscrypto",
  "tor-linkspec",
  "tor-llcrypto",
  "tor-netdoc",
@@ -5931,6 +6019,7 @@ dependencies = [
  "memchr",
  "paste",
  "phf 0.13.1",
+ "rand 0.9.4",
  "serde",
  "serde_with",
  "signature",
@@ -5946,8 +6035,11 @@ dependencies = [
  "tor-cert",
  "tor-checkable",
  "tor-error",
+ "tor-hscrypto",
+ "tor-linkspec",
  "tor-llcrypto",
  "tor-protover",
+ "tor-units",
  "void",
  "weak-table",
  "zeroize",
@@ -6029,6 +6121,7 @@ dependencies = [
  "tor-checkable",
  "tor-config",
  "tor-error",
+ "tor-hscrypto",
  "tor-linkspec",
  "tor-llcrypto",
  "tor-log-ratelim",
@@ -7273,6 +7366,7 @@ name = "zcash-android-wallet-sdk"
 version = "2.6.5"
 dependencies = [
  "anyhow",
+ "bip0039",
  "bitflags",
  "bytes",
  "dlopen2",
@@ -7312,7 +7406,6 @@ dependencies = [
  "zcash_client_sqlite",
  "zcash_note_encryption",
  "zcash_pool_migration_backend",
- "zcash_pool_migration_sqlite",
  "zcash_primitives 0.29.0",
  "zcash_proofs",
  "zcash_protocol 0.10.0",
@@ -7452,7 +7545,7 @@ dependencies = [
  "zcash_client_backend",
  "zcash_encoding 0.4.0",
  "zcash_keys 0.15.0",
- "zcash_pool_migration_sqlite",
+ "zcash_pool_migration_backend",
  "zcash_primitives 0.29.0",
  "zcash_protocol 0.10.0",
  "zcash_script",
@@ -7553,6 +7646,7 @@ dependencies = [
 name = "zcash_pool_migration_backend"
 version = "0.1.0"
 dependencies = [
+ "corez",
  "getset",
  "incrementalmerkletree",
  "libm",
@@ -7563,16 +7657,6 @@ dependencies = [
  "zcash_client_backend",
  "zcash_keys 0.15.0",
  "zcash_primitives 0.29.0",
- "zcash_protocol 0.10.0",
-]
-
-[[package]]
-name = "zcash_pool_migration_sqlite"
-version = "0.1.0"
-dependencies = [
- "rusqlite",
- "uuid",
- "zcash_pool_migration_backend",
  "zcash_protocol 0.10.0",
 ]
 

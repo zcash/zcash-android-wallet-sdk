@@ -20,11 +20,12 @@ android-test-fixtures = []
 # Ironwood (NU6.3): tracks the same git rev as [patch.crates-io] below directly, since its
 # version (0.15.0) can't satisfy crates-io requirements while pinned to a ZIP 374 branch rev.
 orchard = { version = "0.15.0", features = ["unstable-voting-circuits"] }
-# Orchard->Ironwood migration engine (core/upstream implementation) — path dependencies on the
-# local librustzcash checkout (this crate isn't published to crates.io). Replaces the former
-# hand-rolled `zcash_pool_migration` crate.
+# Orchard->Ironwood migration engine (core/upstream implementation) — path dependency on the local
+# librustzcash checkout (this crate isn't published to crates.io). Replaces the former hand-rolled
+# `zcash_pool_migration` crate. The SQLite persistence side (formerly the separate
+# `zcash_pool_migration_sqlite` crate) has since been folded into `zcash_client_sqlite::pool_migration`
+# (see that dependency's `[patch.crates-io]` entry below) — no separate dependency needed for it.
 zcash_pool_migration_backend = { path = '../../librustzcash/zcash_pool_migration_backend', features = ["wallet"] }
-zcash_pool_migration_sqlite = { path = '../../librustzcash/zcash_pool_migration_sqlite' }
 pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
@@ -135,11 +136,16 @@ zcash_voting = { version = "=0.11.0", default-features = false, features = [
 ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
-## Local librustzcash checkout, on feature/orchard_migration_core (tracks Danny/core team's
-## origin/feat/pool-migration-sqlite, PR #2669 + stack) — needed for zcash_pool_migration_backend
-## and zcash_pool_migration_sqlite above. orchard is patched to the exact rev that branch pins
-## (0.15.0 isn't on crates.io yet with ZIP 374 support), everything else is a local path for fast
-## iteration.
+## Local librustzcash checkout, on main-latest (tracks upstream origin/main directly — this has
+## absorbed Danny/core team's former feat/pool-migration-sqlite stack, PR #2669) — needed for
+## zcash_pool_migration_backend above and zcash_client_sqlite::pool_migration below. orchard is
+## patched to the exact rev main pins (0.15.0 isn't on crates.io yet with ZIP 374 support),
+## everything else is a local path for fast iteration.
+##
+## NOTE: the pool-migration store on main is still singleton-per-pool, NOT account-keyed (see
+## Michal's PR #2712 / MOB-1455 for that follow-up) — `Backend::get_migration`/`replace_migration`
+## in `migration_engine.rs` therefore don't filter by account either; this is a known, tracked gap
+## (see `project_core_migration_swap` notes), not something this checkout swap introduced.
 [patch.crates-io]
 pczt = { package = "pczt", path = '../../librustzcash/pczt' }
 transparent = { package = "zcash_transparent", path = '../../librustzcash/zcash_transparent' }
@@ -162,6 +168,13 @@ orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d127322
 #zcash_primitives = { git = "https://github.com/zcash/librustzcash", branch = "main" }
 #zcash_proofs = { git = "https://github.com/zcash/librustzcash", branch = "main" }
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", branch = "main" }
+
+[dev-dependencies]
+# Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
+# which needs a real UnifiedSpendingKey to exercise the in-process-signing path
+# (`commit_preparation`) against a real wallet DB fixture — the app itself never uses this crate
+# (Kotlin does the mnemonic-to-seed conversion, Rust always receives already-derived seed bytes).
+bip0039 = "0.12"
 
 [lib]
 name = "zcashwalletsdk"

@@ -1,9 +1,10 @@
 //! JNI bindings for the migration engine.
 //!
 //! Rewired (2026-07-21) from our own hand-rolled `zcash_pool_migration` crate onto the core/
-//! upstream `zcash_pool_migration_backend` + `zcash_pool_migration_sqlite` crates (Danny/core
-//! team, `zcash/librustzcash` PR #2669 + stack). See `migration_engine.rs` for the adapter wiring
-//! our wallet DB into the new engine's traits, and
+//! upstream `zcash_pool_migration_backend` crate plus `zcash_client_sqlite::pool_migration`
+//! (Danny/core team, `zcash/librustzcash` PR #2669 + stack; the SQLite persistence side was later
+//! folded from a standalone `zcash_pool_migration_sqlite` crate into `zcash_client_sqlite` proper).
+//! See `migration_engine.rs` for the adapter wiring our wallet DB into the new engine's traits, and
 //! `docs/superpowers/specs/2026-07-21-current-migration-implementation-spec.md` (zashi-android
 //! repo) for the full gap analysis this rewire is based on.
 //!
@@ -94,8 +95,9 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
     let store_conn = Connection::open(db_path)
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
-    zcash_pool_migration_sqlite::init_migration_tables(&store_conn)
-        .map_err(|e| anyhow!("Error initializing migration tables: {:?}", e))?;
+    // The pool-migration tables are created by `zcash_client_sqlite`'s own schema migrations
+    // (`orchard_ironwood_migration_tables`, run as part of the wallet's normal `init_wallet_db`
+    // call, see `lib.rs`), not by this crate — no separate init call needed here.
     Ok((wallet, store_conn))
 }
 
@@ -423,15 +425,30 @@ fn encode_migration_schedule<'a>(
     // schedule heights whenever reconciliation drops anything (confirmed live: this produced a
     // suspiciously perfectly-sorted-by-size transfer list, the opposite of ZIP 318 SHUFFLE's
     // intent, plus every transfer immediately overdue).
-    let crossings = plan.funding_notes();
+    //
+    // `funding_notes()` values are the *spent* note values (crossing + note_fee_buffer, i.e. what
+    // funds the transfer's own fee) — NOT what actually lands in the destination pool. The app
+    // shows this as the user-facing transfer amount (Slack #ext-zodl-valargroup 2026-07-21: "only
+    // round values on this [confirm] screen", matching the shielding-transaction convention of
+    // displaying the received amount, fee visible only in the transaction detail), so subtract the
+    // constant fee buffer back out to recover the round `{1,2,5}×10ⁿ` crossing value per note.
+    let funding_notes = plan.funding_notes();
+    let note_fee_buffer = plan.note_split().note_fee_buffer();
     let schedule = plan.schedule();
-    if crossings.len() != schedule.len() {
+    if funding_notes.len() != schedule.len() {
         return Err(anyhow!(
             "Migration plan invariant violated: {} funding notes but {} schedule entries",
-            crossings.len(),
+            funding_notes.len(),
             schedule.len()
         ));
     }
+    let crossings: Vec<Zatoshis> = funding_notes
+        .iter()
+        .map(|&note| {
+            (note - note_fee_buffer)
+                .expect("every funding note is crossing + note_fee_buffer by construction")
+        })
+        .collect();
 
     // The real `MigrationTxId` the engine will assign at commit time numbers every preparation
     // transaction (across all layers) first, THEN transfers in `schedule()` order (confirmed
@@ -572,9 +589,58 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Resolves the note split's deferred witness/anchor and proves it, shared by both signing paths
+/// (`signNoteSplitNative`'s in-process signing and `storeSignedNoteSplitPcztNative`'s Keystone
+/// external-signer path) — without this, `extractBroadcastTxNative` fails with
+/// `OrchardParse(MissingAnchor)` on the un-finalized PCZT (confirmed live: the Keystone path
+/// originally skipped this step entirely and returned the merely-signed-but-unproven bytes
+/// straight to Kotlin for extraction).
+///
+/// The split is a preparation transaction: `anchor_boundary()` is `None` for these (they wait on
+/// their dependencies rather than a drawn ZIP 318 boundary — see
+/// `migration_finalize::finalize_transaction`'s doc comment), but it still has a deferred witness
+/// to resolve like any other ZIP 374 transaction, just against the wallet's current natural
+/// anchor instead of a scheduled one (confirmed live: the split's spend is redacted just like a
+/// transfer's).
+fn finalize_note_split(
+    wallet: &mut Wallet,
+    account: AccountUuid,
+    store_conn: &mut Connection,
+    split_tx: &engine::MigrationTransaction,
+    split_pczt: &[u8],
+) -> anyhow::Result<(Vec<u8>, [u8; 32])> {
+    let (fvk, spendable) = {
+        let backend = Backend::new(wallet, account, None, store_conn);
+        let fvk = backend
+            .orchard_fvk()
+            .map_err(|e| anyhow!("Error reading account FVK: {:?}", e))?;
+        let spendable = backend
+            .spendable_orchard_notes()
+            .map_err(|e| anyhow!("Error reading spendable notes: {:?}", e))?;
+        (fvk, spendable)
+    };
+    let anchor_height = match split_tx.anchor_boundary() {
+        Some(h) => Some(h),
+        None => Some(natural_anchor_height(wallet)?),
+    };
+    let (proven_pczt, txid) = crate::migration_finalize::finalize_transaction(
+        wallet,
+        &fvk,
+        &spendable,
+        anchor_height,
+        split_pczt,
+    )
+    .map_err(|e| anyhow!("Error finalizing note split: {}", e))?
+    .ok_or_else(|| {
+        anyhow!("Note-split transaction is not yet finalizable — its funding note isn't witnessable yet")
+    })?;
+    crate::migration_finalize::put_proven(store_conn, split_tx.id(), &proven_pczt, &txid)
+        .map_err(|e| anyhow!("Error caching proven pczt: {}", e))?;
+    Ok((proven_pczt, txid))
+}
+
 /// In-process signing (software key, not Keystone) of the note split, as its own standalone,
-/// immediately-broadcastable transaction — this is currently zodl's primary tested migration path
-/// (Keystone hasn't been exercised yet), so unlike most of this file's other functions this one is
+/// immediately-broadcastable transaction — unlike most of this file's other functions this one is
 /// NOT a thin wrapper deferring everything to the background worker.
 ///
 /// Commits and signs the WHOLE migration (split + every transfer) in one pass via
@@ -623,45 +689,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 Ok((state, Vec::new()))
             },
         )?;
-        let (fvk, spendable) = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn);
-            let fvk = backend
-                .orchard_fvk()
-                .map_err(|e| anyhow!("Error reading account FVK: {:?}", e))?;
-            let spendable = backend
-                .spendable_orchard_notes()
-                .map_err(|e| anyhow!("Error reading spendable notes: {:?}", e))?;
-            (fvk, spendable)
-        };
         let split_tx = state
             .transactions()
             .iter()
             .find(|t| matches!(t.kind(), MigrationTxKind::Preparation { layer: 0, .. }))
             .ok_or_else(|| anyhow!("Migration has no note-split preparation transaction"))?;
-
-        // The split is a preparation transaction: `anchor_boundary()` is `None` for these (they
-        // wait on their dependencies rather than a drawn ZIP 318 boundary — see
-        // `migration_finalize::finalize_transaction`'s doc comment), but it still has a deferred
-        // witness to resolve like any other ZIP 374 transaction, just against the wallet's current
-        // natural anchor instead of a scheduled one (confirmed live: the split's spend is redacted
-        // just like a transfer's, this fallback was documented but not wired up before).
-        let anchor_height = match split_tx.anchor_boundary() {
-            Some(h) => Some(h),
-            None => Some(natural_anchor_height(&wallet)?),
-        };
-        let (proven_pczt, txid) = crate::migration_finalize::finalize_transaction(
-            &mut wallet,
-            &fvk,
-            &spendable,
-            anchor_height,
-            split_tx.pczt(),
-        )
-        .map_err(|e| anyhow!("Error finalizing note split: {}", e))?
-        .ok_or_else(|| {
-            anyhow!("Note-split transaction is not yet finalizable — its funding note isn't witnessable yet")
-        })?;
-        crate::migration_finalize::put_proven(&store_conn, split_tx.id(), &proven_pczt, &txid)
-            .map_err(|e| anyhow!("Error caching proven pczt: {}", e))?;
+        let (proven_pczt, txid) =
+            finalize_note_split(&mut wallet, account, &mut store_conn, split_tx, split_tx.pczt())?;
 
         let id = encode_transfer_id(env, split_tx.id())?;
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -737,7 +771,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     .ok_or_else(|| anyhow!("No migration in progress"))?;
                 state.mark_broadcast(id, txid);
                 backend
-                    .put_migration(&state)
+                    .replace_migration(&state)
                     .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))
             }
             // NetworkError/InvalidNote/Expired: no destructive state transition exists in the new
@@ -1335,36 +1369,54 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     signed_pczt: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        crate::migration_finalize::init_proven_cache(&store_conn)
+            .map_err(|e| anyhow!("Error initializing proven-pczt cache: {}", e))?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let signed_pczt_bytes = crate::utils::java_bytes_to_rust(env, &signed_pczt)?;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
-        let mut state = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
-            .ok_or_else(|| anyhow!("No migration committed yet"))?;
+        let mut state = {
+            let backend = Backend::new(&wallet, account, None, &mut store_conn);
+            backend
+                .get_migration()
+                .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+                .ok_or_else(|| anyhow!("No migration committed yet"))?
+        };
         let split_id = state
             .transactions()
             .iter()
             .find(|t| matches!(t.kind(), MigrationTxKind::Preparation { layer: 0, .. }))
             .map(|t| t.id())
             .ok_or_else(|| anyhow!("Migration has no note-split preparation transaction"))?;
-        if !state.apply_signature(split_id, signed_pczt_bytes.clone()) {
+        if !state.apply_signature(split_id, signed_pczt_bytes) {
             return Err(anyhow!("Error applying note-split signature"));
         }
-        backend
-            .put_migration(&state)
-            .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
+        {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
+            backend
+                .replace_migration(&state)
+                .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
+        }
+        let split_tx = state
+            .transactions()
+            .iter()
+            .find(|t| t.id() == split_id)
+            .ok_or_else(|| anyhow!("Migration has no note-split preparation transaction"))?;
+        // Resolve the deferred witness/anchor and prove before extraction — without this,
+        // `extractBroadcastTxNative` fails with `OrchardParse(MissingAnchor)` on the
+        // merely-signed-but-unproven bytes just applied above (confirmed live).
+        let (proven_pczt, txid) =
+            finalize_note_split(&mut wallet, account, &mut store_conn, split_tx, split_tx.pczt())?;
+
         let id = encode_transfer_id(env, split_id)?;
-        let txid_placeholder = crate::utils::rust_bytes_to_java(env, &[0u8; 32])?;
-        let pczt_bytes = crate::utils::rust_bytes_to_java(env, &signed_pczt_bytes)?;
+        let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
+        let pczt_bytes = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
                 "(Ljava/lang/String;[B[B)V",
                 &[
                     JValue::Object(&id),
-                    JValue::Object(&txid_placeholder),
+                    JValue::Object(&txid_obj),
                     JValue::Object(&pczt_bytes),
                 ],
             )?
@@ -1489,7 +1541,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             }
         }
         backend
-            .put_migration(&state)
+            .replace_migration(&state)
             .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))
     });
     unwrap_exc_or(&mut env, res, ())
@@ -1648,6 +1700,26 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ///
 /// Run with, e.g.:
 /// `MIGRATION_TEST_WALLET_DB=/tmp/wallet_fixture.sqlite3 cargo test --package zcash-android-wallet-sdk --lib migration::live_wallet_tests -- --ignored --nocapture`
+/// Copies the fixture DB to a fresh, uniquely-named temp file so each test run starts from a
+/// pristine copy instead of mutating (and being mutated by) the shared fixture on disk — tests
+/// like `build_and_finalize_all_unsigned` and `commit_and_finalize_with_real_signing` both commit
+/// real migration state, and the engine refuses to recommit over an in-progress migration.
+#[cfg(test)]
+fn fresh_test_db_copy(fixture: &std::path::Path) -> std::path::PathBuf {
+    let mut dest = std::env::temp_dir();
+    let unique = format!(
+        "migration_test_{}_{}.sqlite3",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    );
+    dest.push(unique);
+    std::fs::copy(fixture, &dest).expect("copy fixture db to fresh temp path");
+    dest
+}
+
 #[cfg(test)]
 mod live_wallet_tests {
     use super::*;
@@ -1670,7 +1742,8 @@ mod live_wallet_tests {
     #[test]
     #[ignore = "requires MIGRATION_TEST_WALLET_DB pointing at a copy of a real wallet DB"]
     fn plan_a_real_wallet() {
-        let db_path = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
+        let fixture = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
+        let db_path = fresh_test_db_copy(&fixture);
         let network = Network::TestNetwork;
         let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account = first_account(&wallet);
@@ -1698,7 +1771,8 @@ mod live_wallet_tests {
     #[test]
     #[ignore = "requires MIGRATION_TEST_WALLET_DB pointing at a copy of a real wallet DB"]
     fn build_and_finalize_all_unsigned() {
-        let db_path = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
+        let fixture = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
+        let db_path = fresh_test_db_copy(&fixture);
         let network = Network::TestNetwork;
         let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account = first_account(&wallet);
@@ -1730,8 +1804,21 @@ mod live_wallet_tests {
         };
         println!("{} unsigned transaction(s) built", unsigned.len());
 
+        // These PCZTs are deliberately UNSIGNED (this is the external/hardware-signer path —
+        // `build_preparation_unsigned`, not `commit_preparation`), so `finalize_transaction` can
+        // never actually extract a broadcastable transaction from one: extraction always needs a
+        // valid spend-authorization signature, whether or not the transaction had a deferred
+        // witness to resolve first (see `migration_finalize.rs`'s two extract() call sites). What
+        // this test actually exercises is the witness/anchor RESOLUTION logic up to that point —
+        // the real bug surface here historically (see this crate's git history for the multi-
+        // witness and anchor-fallback fixes this test caught). A transaction reaching extraction
+        // and failing on the missing signature is therefore an EXPECTED outcome, not a failure;
+        // any other error still fails the test. The fully-signed end-to-end path (where
+        // extraction actually succeeds) is covered separately by
+        // `live_wallet_signing_tests::commit_and_finalize_with_real_signing`.
         let mut finalized = 0;
         let mut transient = 0;
+        let mut ready_but_unsigned = 0;
         for tx in unsigned {
             let (id, pczt_bytes) = tx.into_parts();
             let committed_tx = state
@@ -1766,9 +1853,556 @@ mod live_wallet_tests {
                         committed_tx.kind(),
                     );
                 }
+                Err(e) if e.to_string().contains("MissingSpendAuthSig") => {
+                    ready_but_unsigned += 1;
+                    println!(
+                        "id={id:?} kind={:?} witness/anchor resolution succeeded — extraction \
+                         correctly stopped only on the missing signature (expected: this PCZT is \
+                         deliberately unsigned)",
+                        committed_tx.kind(),
+                    );
+                }
                 Err(e) => panic!("id={id:?} kind={:?} FAILED: {e}", committed_tx.kind()),
             }
         }
-        println!("{finalized} finalized, {transient} transient (not yet ready)");
+        println!(
+            "{finalized} finalized, {transient} transient (not yet ready), \
+             {ready_but_unsigned} ready-but-deliberately-unsigned"
+        );
+    }
+}
+
+/// Full-loop test (plan → in-process sign/commit → finalize) exercising real signing via
+/// `commit_preparation`, still entirely local/offline: `commit_preparation` only builds and signs
+/// PCZTs against the wallet DB copy, `finalize_transaction` only installs anchor/witness and
+/// proves. Neither does any network I/O — nothing here is ever broadcast or submitted anywhere.
+/// Needs a real `UnifiedSpendingKey`, provided via `MIGRATION_TEST_SEED_PHRASE` (a BIP-39 mnemonic,
+/// account 0) — never logged or persisted by this test.
+#[cfg(test)]
+mod live_wallet_signing_tests {
+    use super::*;
+    use zcash_client_backend::data_api::Account;
+
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB and MIGRATION_TEST_SEED_PHRASE"]
+    fn commit_and_finalize_with_real_signing() {
+        let fixture = std::env::var("MIGRATION_TEST_WALLET_DB")
+            .map(std::path::PathBuf::from)
+            .expect("set MIGRATION_TEST_WALLET_DB");
+        let db_path = fresh_test_db_copy(&fixture);
+        let phrase = std::env::var("MIGRATION_TEST_SEED_PHRASE")
+            .expect("set MIGRATION_TEST_SEED_PHRASE (BIP-39 mnemonic, space-separated words)");
+        let network = Network::TestNetwork;
+        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = wallet
+            .get_account_ids()
+            .expect("list accounts")
+            .into_iter()
+            .next()
+            .expect("wallet has at least one account");
+
+        let mnemonic = bip0039::Mnemonic::<bip0039::English>::from_phrase(phrase.trim())
+            .expect("valid BIP-39 mnemonic");
+        let seed = mnemonic.to_seed("");
+        let usk = UnifiedSpendingKey::from_seed(&network, &seed, zip32::AccountId::ZERO)
+            .expect("derive USK from seed for account 0");
+
+        // Sanity check the derived key actually matches this wallet's account before doing
+        // anything else — a mismatched seed/account index would otherwise fail confusingly deep
+        // inside signing instead of here, with a clear message.
+        let derived_ufvk = usk.to_unified_full_viewing_key();
+        let wallet_account = wallet
+            .get_account(account)
+            .expect("account lookup")
+            .expect("account exists");
+        let wallet_ufvk = wallet_account.ufvk().expect("account has a UFVK");
+        assert_eq!(
+            derived_ufvk.encode(&network),
+            wallet_ufvk.encode(&network),
+            "derived USK's UFVK doesn't match the wallet's stored UFVK for this account — check \
+             the seed phrase and/or account index (this test assumes account 0)"
+        );
+
+        let (migration_plan, tip) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let target = tip + 1;
+
+        let state = {
+            let mut backend = Backend::new(&wallet, account, Some(usk), &mut store_conn);
+            let mut rng = OsRng;
+            engine::commit_preparation(&network, target, &mut backend, &migration_plan, &mut rng)
+                .expect(
+                    "commit_preparation (in-process signing — local only, no network/broadcast)",
+                )
+        };
+        println!("{} transaction(s) committed and signed", state.transactions().len());
+
+        let (fvk, spendable) = {
+            let backend = Backend::new(&wallet, account, None, &mut store_conn);
+            let fvk = backend.orchard_fvk().expect("fvk");
+            let spendable = backend.spendable_orchard_notes().expect("spendable");
+            (fvk, spendable)
+        };
+
+        let mut finalized = 0;
+        let mut transient = 0;
+        for tx in state.transactions() {
+            let anchor_height = match tx.anchor_boundary() {
+                Some(h) => Some(h),
+                None => Some(natural_anchor_height(&wallet).expect("natural anchor height")),
+            };
+            match crate::migration_finalize::finalize_transaction(
+                &mut wallet,
+                &fvk,
+                &spendable,
+                anchor_height,
+                tx.pczt(),
+            ) {
+                Ok(Some((_bytes, txid))) => {
+                    finalized += 1;
+                    println!(
+                        "id={:?} kind={:?} finalized txid={} (built+proven locally only — this \
+                         test never submits anything to the network)",
+                        tx.id(),
+                        tx.kind(),
+                        hex::encode(txid)
+                    );
+                }
+                Ok(None) => {
+                    transient += 1;
+                    println!(
+                        "id={:?} kind={:?} not yet finalizable (transient)",
+                        tx.id(),
+                        tx.kind()
+                    );
+                }
+                Err(e) => panic!("id={:?} kind={:?} FAILED: {e}", tx.id(), tx.kind()),
+            }
+        }
+        println!("{finalized} finalized, {transient} transient — nothing broadcast");
+    }
+
+    /// Regression test for the Keystone/external-signer note-split crash (confirmed live:
+    /// `extractBroadcastTxNative` failed with `OrchardParse(MissingAnchor)`) —
+    /// `storeSignedNoteSplitPcztNative` applied the external signature but never resolved the
+    /// split's deferred witness/anchor before returning the PCZT for extraction. This exercises
+    /// the same shape as that JNI function (`build_preparation_unsigned` -> sign the split
+    /// out-of-process, matching what handing a redacted PCZT to Keystone and getting it back
+    /// signed looks like -> `apply_signature` -> `finalize_note_split`) via its shared, JNI-free
+    /// `finalize_note_split` helper, then extracts the result exactly like
+    /// `extractBroadcastTxNative` does, to prove the crash is actually fixed end to end, not just
+    /// that `finalize_note_split` returns `Ok`.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB and MIGRATION_TEST_SEED_PHRASE"]
+    fn store_signed_note_split_resolves_anchor_before_extraction() {
+        let fixture = std::env::var("MIGRATION_TEST_WALLET_DB")
+            .map(std::path::PathBuf::from)
+            .expect("set MIGRATION_TEST_WALLET_DB");
+        let db_path = fresh_test_db_copy(&fixture);
+        let phrase = std::env::var("MIGRATION_TEST_SEED_PHRASE")
+            .expect("set MIGRATION_TEST_SEED_PHRASE (BIP-39 mnemonic, space-separated words)");
+        let network = Network::TestNetwork;
+        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = wallet
+            .get_account_ids()
+            .expect("list accounts")
+            .into_iter()
+            .next()
+            .expect("wallet has at least one account");
+
+        let mnemonic = bip0039::Mnemonic::<bip0039::English>::from_phrase(phrase.trim())
+            .expect("valid BIP-39 mnemonic");
+        let seed = mnemonic.to_seed("");
+        let usk = UnifiedSpendingKey::from_seed(&network, &seed, zip32::AccountId::ZERO)
+            .expect("derive USK from seed for account 0");
+
+        let (migration_plan, tip) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let target = tip + 1;
+
+        // Mirrors `createUnsignedNoteSplitPcztNative`: build unsigned, leaving every transaction
+        // (including the split) `AwaitingSignature` — nothing is signed by this call.
+        let (mut state, unsigned) = {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
+            let mut rng = OsRng;
+            engine::build_preparation_unsigned(&network, target, &mut backend, &migration_plan, &mut rng)
+                .expect("build_preparation_unsigned")
+        };
+        let split_id = state
+            .transactions()
+            .iter()
+            .find(|t| matches!(t.kind(), MigrationTxKind::Preparation { layer: 0, .. }))
+            .map(|t| t.id())
+            .expect("migration has a note-split preparation transaction");
+        let (_id, unsigned_split_bytes) = unsigned
+            .into_iter()
+            .map(|tx| tx.into_parts())
+            .find(|(id, _)| *id == split_id)
+            .expect("unsigned split pczt");
+
+        // Sign out-of-process, exactly as an external signer (Keystone) would: this produces a
+        // signed-but-unproven PCZT, still missing its witness/anchor — the same shape
+        // `storeSignedNoteSplitPcztNative` receives back from Kotlin after a real Keystone round
+        // trip.
+        let ask = orchard::keys::SpendAuthorizingKey::from(usk.orchard());
+        let unsigned_pczt =
+            pczt::Pczt::parse(&unsigned_split_bytes).expect("parse unsigned split pczt");
+        let signed_pczt = zcash_pool_migration_backend::build::sign_pczt(unsigned_pczt, &ask)
+            .expect("sign split pczt out-of-process");
+        let signed_bytes = signed_pczt.serialize().expect("serialize signed split pczt");
+
+        // Mirrors `storeSignedNoteSplitPcztNative`: apply the externally-obtained signature, then
+        // resolve anchor/witness and prove via the fixed `finalize_note_split` helper.
+        assert!(
+            state.apply_signature(split_id, signed_bytes),
+            "apply_signature should accept the freshly-signed split pczt"
+        );
+        let split_tx = state
+            .transactions()
+            .iter()
+            .find(|t| t.id() == split_id)
+            .expect("note-split preparation transaction");
+        let (proven_pczt, txid) =
+            finalize_note_split(&mut wallet, account, &mut store_conn, split_tx, split_tx.pczt())
+                .expect("finalize_note_split should resolve the anchor, not fail with MissingAnchor");
+
+        // Mirrors `extractBroadcastTxNative` exactly — this is what previously crashed with
+        // `OrchardParse(MissingAnchor)` on the un-finalized bytes.
+        let parsed = pczt::Pczt::parse(&proven_pczt).expect("parse proven split pczt");
+        let tx = pczt::roles::tx_extractor::TransactionExtractor::new(parsed)
+            .extract()
+            .expect("extract broadcast tx from finalized split pczt");
+        assert_eq!(*tx.txid().as_ref(), txid, "extracted txid should match finalize_note_split's");
+        println!(
+            "note-split finalized and extracted via the Keystone/external-signer path: txid={}",
+            hex::encode(txid)
+        );
+    }
+}
+
+/// Edge-case / state-machine integration tests against a real wallet DB copy. Unlike
+/// `live_wallet_tests`/`live_wallet_signing_tests` (which exercise the happy path), these probe
+/// what happens on re-entry, restart, and multi-account use — the moments a real app hits that a
+/// single linear test run never does. Pure `MigrationState` logic (`apply_signature`,
+/// `next_step`, `mark_broadcast`/`mark_mined`, terminal-status handling) is already unit-tested in
+/// `zcash_pool_migration_backend::state`, so it is not duplicated here; these tests are only for
+/// behavior that needs a real wallet DB, real accounts, or our own JNI-adapter code
+/// (`commit_or_reuse`, `Backend`) to observe.
+///
+/// Run with `--test-threads=1`: each test independently copies the (large, ~8.5MB) fixture file
+/// via `fresh_test_db_copy`, and running several of these copies concurrently (cargo's default
+/// parallel test execution) has been observed to occasionally corrupt one thread's read with a
+/// spurious `DatabaseCorrupt "database disk image is malformed"` — not a real bug in the code
+/// under test, confirmed by rerunning the same test alone. Serializing avoids it.
+#[cfg(test)]
+mod live_wallet_edge_case_tests {
+    use super::*;
+    use secrecy::SecretVec;
+    use zcash_client_backend::data_api::chain::ChainState;
+    use zcash_client_backend::data_api::{AccountBirthday, WalletWrite};
+    use zcash_primitives::block::BlockHash;
+
+    fn fixture_db_path() -> std::path::PathBuf {
+        std::env::var("MIGRATION_TEST_WALLET_DB")
+            .map(std::path::PathBuf::from)
+            .expect("set MIGRATION_TEST_WALLET_DB")
+    }
+
+    fn first_account(wallet: &Wallet) -> AccountUuid {
+        wallet
+            .get_account_ids()
+            .expect("list accounts")
+            .into_iter()
+            .next()
+            .expect("wallet has at least one account — restore/sync one first")
+    }
+
+    /// Creates a second, synthetic, permanently-unfunded account in `wallet` — not derived from
+    /// the real test seed, and never scanned for funds — purely to have a second `AccountUuid` in
+    /// the same wallet DB. `seed_byte` just needs to differ per call so two synthetic accounts in
+    /// one test don't collide with each other.
+    fn create_synthetic_account(wallet: &mut Wallet, seed_byte: u8, name: &str) -> AccountUuid {
+        let tip = wallet
+            .chain_height()
+            .expect("chain height")
+            .expect("wallet has a chain tip");
+        let birthday =
+            AccountBirthday::from_parts(ChainState::empty(tip, BlockHash([0; 32])), None);
+        let seed = SecretVec::new(vec![seed_byte; 32]);
+        let (account, _usk) = wallet
+            .create_account(name, &seed, &birthday, None)
+            .expect("create synthetic account");
+        account
+    }
+
+    fn sign_unsigned(
+        network: &Network,
+        target: BlockHeight,
+        backend: &mut Backend<Wallet>,
+        plan: &MigrationPlan,
+        rng: &mut OsRng,
+    ) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)> {
+        let (state, unsigned) = engine::build_preparation_unsigned(network, target, backend, plan, rng)
+            .map_err(|e| anyhow!("build_preparation_unsigned: {:?}", e))?;
+        Ok((state, unsigned.into_iter().map(|tx| tx.into_parts()).collect()))
+    }
+
+    /// Demonstrates the SINGLETON_ID cross-account collision directly (see
+    /// `project_core_migration_swap` memory / spec doc §6.3): `pool_migrations`/
+    /// `pool_migration_transactions` have no `account_id` column, and `Backend::get_migration`/
+    /// `replace_migration` (`migration_engine.rs`) pass straight through to the store without
+    /// filtering by `self.account` — confirmed directly in that impl, not assumed. This is a bug
+    /// in OUR OWN adapter, not just a documented upstream limitation: any JNI call for account B
+    /// (`migrationStateNative`, `commit_or_reuse`, ...) reads/writes account A's committed
+    /// migration whenever one exists in the same wallet DB.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn singleton_id_collision_between_accounts() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account_a = first_account(&wallet);
+        let account_b = create_synthetic_account(&mut wallet, 0x42, "edge-case-account-b");
+        assert_ne!(account_a, account_b);
+
+        // Plan + commit an (unsigned) migration for account A only — account B is never touched.
+        let (plan_a, tip) =
+            plan_for(&network, &wallet, account_a, &mut store_conn).expect("plan_for account_a");
+        let target = tip + 1;
+        {
+            let mut backend_a = Backend::new(&wallet, account_a, None, &mut store_conn);
+            let mut rng = OsRng;
+            engine::build_preparation_unsigned(&network, target, &mut backend_a, &plan_a, &mut rng)
+                .expect("commit account_a's migration");
+        }
+
+        // Asking for account B's migration state goes through the exact same code path
+        // (`migrationStateNative`/`commit_or_reuse` do this) — it must see nothing, since B has
+        // no migration of its own. Instead it leaks A's.
+        let backend_b = Backend::new(&wallet, account_b, None, &mut store_conn);
+        let leaked = backend_b
+            .get_migration()
+            .expect("read migration state for account_b");
+        match leaked {
+            Some(state) if !state.transactions().is_empty() => {
+                println!(
+                    "CONFIRMED BUG: account_b's Backend::get_migration() returned {} \
+                     transaction(s) that belong to account_a. pool_migrations has no \
+                     account_id column, and Backend::{{get,put}}_migration ignore \
+                     self.account — every account in a wallet DB shares one migration slot.",
+                    state.transactions().len()
+                );
+            }
+            Some(_) => panic!(
+                "unexpected: got a migration state for account_b with no transactions"
+            ),
+            None => panic!(
+                "SINGLETON_ID collision not reproduced — account_b correctly saw no migration. \
+                 If this starts failing, the collision may have been fixed; update \
+                 project_core_migration_swap memory and this test accordingly."
+            ),
+        }
+    }
+
+    /// `commit_or_reuse` (our own adapter, used by every commit-shaped JNI function) must REUSE
+    /// an already-committed migration on a second call for the same account/plan, not error and
+    /// not silently rebuild (which would orphan or double-sign the first commit's PCZTs). This is
+    /// the realistic re-entry case: the app returns to the migration review screen and the user
+    /// taps "commit" again (e.g. after a process restart before any signature was applied).
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn commit_or_reuse_returns_existing_state_without_recommitting() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        let (_plan, tip) = plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let target = tip + 1;
+
+        let (state1, unsigned1) = commit_or_reuse(
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+            target,
+            None,
+            sign_unsigned,
+        )
+        .expect("first commit_or_reuse call commits");
+        assert!(
+            !unsigned1.is_empty(),
+            "expected unsigned preparation/transfer PCZTs on first commit"
+        );
+
+        // Re-plan, as the app does whenever it re-renders the review screen — this must not
+        // itself disturb the already-committed migration.
+        plan_for(&network, &wallet, account, &mut store_conn).expect("re-plan after commit");
+
+        let (state2, unsigned2) = commit_or_reuse(
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+            target,
+            None,
+            sign_unsigned,
+        )
+        .expect("second commit_or_reuse call must reuse, not error");
+
+        assert_eq!(
+            state1.transactions().len(),
+            state2.transactions().len(),
+            "reused state must have the same transaction set"
+        );
+        assert_eq!(
+            unsigned1.len(),
+            unsigned2.len(),
+            "reuse must return the SAME already-awaiting-signature PCZTs, not rebuild new ones"
+        );
+        for (a, b) in state1.transactions().iter().zip(state2.transactions().iter()) {
+            assert_eq!(a.id(), b.id());
+            assert_eq!(
+                a.pczt(),
+                b.pczt(),
+                "reuse must not rebuild/re-sign a transaction — a rebuilt layer 0 would double-\
+                 spend the same wallet notes, and a rebuilt already-broadcast tx would be orphaned"
+            );
+        }
+    }
+
+    /// Calling the raw engine directly (bypassing our `commit_or_reuse` reuse guard) a second
+    /// time over an already-committed, non-terminal migration must fail with
+    /// `CommitError::MigrationInProgress` — this is the exact condition `commit_or_reuse` relies
+    /// on to decide "reuse instead of recommit", so it's worth pinning down directly rather than
+    /// only indirectly through that wrapper.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn raw_recommit_over_committed_migration_is_rejected() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        let (plan, tip) = plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let target = tip + 1;
+        {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
+            let mut rng = OsRng;
+            engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
+                .expect("first commit");
+        }
+
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
+        let mut rng = OsRng;
+        let result = engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng);
+        assert!(
+            matches!(result, Err(engine::CommitError::MigrationInProgress)),
+            "recommitting over a non-terminal migration must fail with MigrationInProgress, not \
+             silently rebuild: got {result:?}"
+        );
+    }
+
+    /// Simulates the app process being killed and restarted mid-migration: commit a migration,
+    /// drop every handle to the wallet/DB connections, then reopen fresh ones against the same
+    /// on-disk file (exactly what `MigrationRustBackend`'s JNI functions do on every call — no
+    /// persistent connection is kept between them) and confirm the committed state round-trips
+    /// intact and `next_step` still gives a sane answer.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn migration_state_persists_across_reopened_connection() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+
+        let committed_ids: Vec<MigrationTxId> = {
+            let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+            let account = first_account(&wallet);
+            let (plan, tip) =
+                plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+            let target = tip + 1;
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
+            let mut rng = OsRng;
+            let (state, _unsigned) =
+                engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
+                    .expect("commit");
+            state.transactions().iter().map(|t| t.id()).collect()
+            // wallet / store_conn / backend all drop here — simulates process death.
+        };
+
+        let (wallet2, mut store_conn2) = open_at(&db_path, network).expect("reopen wallet");
+        let account = first_account(&wallet2);
+        let backend2 = Backend::new(&wallet2, account, None, &mut store_conn2);
+        let reloaded = backend2
+            .get_migration()
+            .expect("read migration state")
+            .expect("migration state must persist across a fresh connection to the same DB file");
+        let reloaded_ids: Vec<MigrationTxId> =
+            reloaded.transactions().iter().map(|t| t.id()).collect();
+        assert_eq!(
+            committed_ids, reloaded_ids,
+            "reopening the DB connection must not lose or reorder committed migration transactions"
+        );
+
+        let tip2 = wallet2
+            .chain_height()
+            .expect("chain height")
+            .expect("tip");
+        let step = reloaded.next_step(tip2 + 1);
+        println!("next_step after simulated restart: {step:?}");
+    }
+
+    /// `plan_migration` is documented as pure/read-only ("nothing is built, signed, or
+    /// persisted") — confirm that holds even once a migration is already committed: re-planning
+    /// (e.g. the app re-rendering the review screen) must keep succeeding and must keep returning
+    /// the same funding notes, since nothing was broadcast and the wallet's spendable set hasn't
+    /// actually changed yet.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn plan_migration_is_read_only_after_commit() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        let (plan_before, _tip) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan before commit");
+        let target = target_height(&wallet).expect("target height");
+        {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn);
+            let mut rng = OsRng;
+            engine::build_preparation_unsigned(&network, target, &mut backend, &plan_before, &mut rng)
+                .expect("commit");
+        }
+
+        let (plan_after, _tip2) = plan_for(&network, &wallet, account, &mut store_conn)
+            .expect("plan_migration must remain callable after a migration is committed");
+
+        assert_eq!(
+            plan_before.funding_notes(),
+            plan_after.funding_notes(),
+            "nothing was broadcast, so the wallet's spendable set — and therefore the plan — \
+             must be unchanged"
+        );
+    }
+
+    /// An account with zero spendable Orchard notes must fail planning cleanly
+    /// (`MigrationError::NothingToMigrate`), not panic or return a degenerate empty-but-Ok plan —
+    /// this is the state every freshly created or already-fully-migrated account is in.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn planning_an_account_with_no_funds_errors_cleanly() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account_b = create_synthetic_account(&mut wallet, 0x43, "edge-case-empty-account");
+
+        let backend = Backend::new(&wallet, account_b, None, &mut store_conn);
+        let mut rng = OsRng;
+        let result = engine::plan_migration(&network, &backend, &mut rng);
+        assert!(
+            matches!(result, Err(engine::MigrationError::NothingToMigrate)),
+            "an account with zero spendable Orchard notes must fail cleanly with \
+             NothingToMigrate, not panic or return a bogus plan: got {result:?}"
+        );
     }
 }
