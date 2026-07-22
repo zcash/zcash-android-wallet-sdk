@@ -885,6 +885,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
+/// How many successive migration runs (see `engine::estimate_migration_runs`'s doc) the account's
+/// current Orchard balance would need, given the engine's per-run note cap. Purely a stateless
+/// preview — it has no memory of prior calls or rounds already committed, so callers must call this
+/// fresh every time they need it rather than caching the result across a multi-round campaign (see
+/// zashi-android's `docs/superpowers/specs/2026-07-22-keystone-multi-round-migration-continuation-design.md`).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_estimateMigrationRunCountNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jint {
+    let res = catch_unwind(&mut env, |env| {
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn);
+        let mut rng = OsRng;
+        let estimate = engine::estimate_migration_runs(&network, &backend, &mut rng)
+            .map_err(|e| anyhow!("Error estimating migration runs: {:?}", e))?;
+        Ok(estimate.run_count() as jint)
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_hasOverdueTransfersNative<
     'local,
