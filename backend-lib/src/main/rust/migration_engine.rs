@@ -29,7 +29,7 @@ use zcash_pool_migration_backend::engine::{
     MigrationBackend, MigrationCrypto, MigrationState, MigrationTxId, MigrationTxState,
     PoolMigrationRead, PoolMigrationWrite,
 };
-use zcash_pool_migration_sqlite::orchard_ironwood::PoolMigrations;
+use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
 
 type SpendableNote = (OrchardNote, Position, u64);
 
@@ -64,7 +64,7 @@ where
             wallet,
             account,
             usk,
-            store: PoolMigrations::new(conn),
+            store: PoolMigrations::for_account(conn, account),
         }
     }
 

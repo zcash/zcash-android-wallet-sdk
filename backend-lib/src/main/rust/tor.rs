@@ -91,7 +91,10 @@ impl TorRuntime {
     pub(crate) fn connect_to_lightwalletd(&self, endpoint: Uri) -> anyhow::Result<LwdConn> {
         let Self { runtime, client } = self.isolated_client();
 
-        let conn = runtime.block_on(async { client.connect_to_lightwalletd(endpoint).await })?;
+        // `allow_onion_services: false` preserves the pre-refactor behavior (librustzcash made
+        // onion-service reachability an explicit opt-in); the SDK has no .onion endpoint surface.
+        let conn =
+            runtime.block_on(async { client.connect_to_lightwalletd(endpoint, false).await })?;
 
         Ok(LwdConn {
             runtime,

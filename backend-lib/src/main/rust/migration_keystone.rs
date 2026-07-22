@@ -25,8 +25,93 @@ use ur_registry::traits::RegistryItem;
 use ur_registry::zcash::zcash_batch_sig_result::ZcashBatchSigResult;
 use ur_registry::zcash::zcash_sign_batch::ZcashSignBatch;
 
+/// Annotates every not-yet-signed Orchard/Ironwood spend action in an IO-finalized migration
+/// PCZT with the account's ZIP 32 derivation path, so an external signer (Keystone) can derive
+/// its own full viewing key and recognize which of its accounts a spend belongs to.
+///
+/// `zcash_pool_migration_backend`'s builders (`build_prep_tx`/`build_transfer_pczt`) never set
+/// this metadata — they only run the shared `Creator`/`IoFinalizer` plumbing, with no `Updater`
+/// step for spend derivation (unlike `zcash_client_backend::data_api::wallet::create_pczt_from_proposal`,
+/// which sets it for ordinary sends). Combined with [`build_sign_batch_qr_parts`]'s batch
+/// redaction correctly clearing the wire `spend_fvk` (the device is expected to derive its own),
+/// an un-annotated migration PCZT gives Keystone no way to identify the account at all, which
+/// fails on-device with "None of inputs belongs to the provided account".
+///
+/// A dummy padding spend that `IoFinalizer` already self-signed carries a `spend_auth_sig` at
+/// this point and is left alone (its throwaway key needs no derivation, and this crate's
+/// [`build_sign_batch_qr_parts`] clears its `spend_auth_sig` for the batch anyway); every action
+/// still awaiting a real signature — a real spend, or a wallet-controlled zero-value spend
+/// paired with a change output — gets the derivation.
+pub fn annotate_spend_zip32_derivation(
+    pczt_bytes: &[u8],
+    seed_fingerprint: [u8; 32],
+    coin_type: u32,
+    account_index: zip32::AccountId,
+) -> anyhow::Result<Vec<u8>> {
+    use pczt::roles::updater::Updater;
+
+    let derivation_path = [
+        zip32::ChildIndex::hardened(32).index(),
+        zip32::ChildIndex::hardened(coin_type).index(),
+        zip32::ChildIndex::hardened(u32::from(account_index)).index(),
+    ];
+
+    let pczt = pczt::parse(pczt_bytes).map_err(|e| anyhow::anyhow!("parse pczt: {e:?}"))?;
+    let updated = Updater::new(pczt)
+        .update_orchard_with(|mut updater| {
+            annotate_unsigned_actions(&mut updater, seed_fingerprint, &derivation_path)
+        })
+        .map_err(|e| anyhow::anyhow!("annotate orchard spend derivation: {e:?}"))?
+        .update_ironwood_with(|mut updater| {
+            annotate_unsigned_actions(&mut updater, seed_fingerprint, &derivation_path)
+        })
+        .map_err(|e| anyhow::anyhow!("annotate ironwood spend derivation: {e:?}"))?
+        .finish();
+
+    updated
+        .serialize()
+        .map_err(|e| anyhow::anyhow!("serialize pczt: {e:?}"))
+}
+
+fn annotate_unsigned_actions(
+    updater: &mut orchard::pczt::Updater<'_>,
+    seed_fingerprint: [u8; 32],
+    derivation_path: &[u32],
+) -> Result<(), orchard::pczt::UpdaterError> {
+    let unsigned_indices: Vec<usize> = updater
+        .bundle()
+        .actions()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| {
+            action.spend().spend_auth_sig().is_none().then_some(index)
+        })
+        .collect();
+    for index in unsigned_indices {
+        let derivation =
+            orchard::pczt::Zip32Derivation::parse(seed_fingerprint, derivation_path.to_vec())
+                .expect("valid ZIP 32 derivation");
+        updater.update_action_with(index, |mut action_updater| {
+            action_updater.set_spend_zip32_derivation(derivation);
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 /// Builds the animated multi-part QR frames for a Keystone batch-signing request covering the
 /// optional note-split PCZT and every schedule transfer's unsigned PCZT, in that order.
+///
+/// Every PCZT is passed through
+/// [`redact_pczt_for_batch_signer`](zcash_client_backend::data_api::wallet::redact_pczt_for_batch_signer)
+/// before being added to the request. The wallet's own IO-finalizer already puts `spend_auth_sig`
+/// on every dummy/wallet-controlled Orchard and Ironwood spend when the unsigned PCZT is built —
+/// but the Keystone batch-signing firmware rejects any batch request containing a pre-existing
+/// Orchard/Ironwood `spend_auth_sig` outright ("Invalid pczt, Zcash batch request must not
+/// contain Orchard spend authorization signatures"). Redacting clears those (plus the spend FVK,
+/// which the device derives itself) so only what the batch signer protocol expects reaches the
+/// wire; the caller's retained, unredacted PCZT bytes (`split_unsigned`/`transfer_unsigned`) are
+/// what [`apply_batch_signatures`] applies the returned signatures back onto.
 ///
 /// `request_id` is an opaque correlation token (e.g. a UUID's bytes) round-tripped by the device
 /// and checked in [`decode_sign_batch_part`] to reject a scan of an unrelated/stale response.
@@ -36,14 +121,18 @@ pub fn build_sign_batch_qr_parts(
     transfer_unsigned: &[Vec<u8>],
     max_fragment_len: usize,
 ) -> anyhow::Result<Vec<String>> {
+    use zcash_client_backend::data_api::wallet::redact_pczt_for_batch_signer;
+
     let mut pczts = Vec::with_capacity(transfer_unsigned.len() + 1);
     if let Some(split) = split_unsigned {
-        pczts.push(pczt::parse(split).map_err(|e| anyhow::anyhow!("parse split pczt: {e:?}"))?);
+        let parsed =
+            pczt::parse(split).map_err(|e| anyhow::anyhow!("parse split pczt: {e:?}"))?;
+        pczts.push(redact_pczt_for_batch_signer(&parsed));
     }
     for bytes in transfer_unsigned {
-        pczts.push(
-            pczt::parse(bytes).map_err(|e| anyhow::anyhow!("parse transfer pczt: {e:?}"))?,
-        );
+        let parsed =
+            pczt::parse(bytes).map_err(|e| anyhow::anyhow!("parse transfer pczt: {e:?}"))?;
+        pczts.push(redact_pczt_for_batch_signer(&parsed));
     }
 
     let request = BatchSignRequest::new(pczts);
@@ -86,6 +175,17 @@ pub struct DecodePartResult {
     /// The serialized `BatchSignResponse` bytes, once `complete` — feed into
     /// [`apply_batch_signatures`].
     pub data: Option<Vec<u8>>,
+    /// The signing device's raw `[major, minor, build]` firmware version, once `complete` — the
+    /// `zcash-batch-sig-result` envelope's own field 3 (see keystone-sdk-rust's
+    /// `ZcashBatchSigResult::get_firmware_version`), not anything recovered from the resulting
+    /// signed PCZT bytes. The batch response is signatures-only (no PCZT is echoed back — see
+    /// [`build_sign_batch_qr_parts`]'s doc comment), so this is the *only* place a batch-signed
+    /// migration can learn the device's firmware version; a PCZT-proprietary-field scan (the
+    /// mechanism the single-transaction Keystone sign flow's firmware stamp relies on) always
+    /// comes back empty here, since [`apply_batch_signatures`] reconstructs the "signed" PCZT from
+    /// the caller's own retained unsigned bytes plus these signatures, never from device-returned
+    /// PCZT bytes.
+    pub firmware_version: Option<[u8; 3]>,
 }
 
 /// Discards any in-flight multi-part scan session. Callers should invoke this on scan-screen
@@ -126,6 +226,7 @@ pub fn decode_sign_batch_part(
                     complete: false,
                     progress: progress as u32,
                     data: None,
+                    firmware_version: None,
                 });
             }
         }
@@ -152,6 +253,7 @@ pub fn decode_sign_batch_part(
         complete: false,
         progress: progress as u32,
         data: None,
+        firmware_version: None,
     })
 }
 
@@ -167,6 +269,7 @@ fn finish_decode(cbor: Vec<u8>, expected_request_id: &[u8]) -> anyhow::Result<De
         complete: true,
         progress: 100,
         data: Some(result.get_data().to_vec()),
+        firmware_version: Some(*result.get_firmware_version()),
     })
 }
 
@@ -228,4 +331,223 @@ fn apply_signatures_to_one(
         .finish()
         .serialize()
         .map_err(|e| anyhow::anyhow!("serialize signed pczt: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orchard::keys::{FullViewingKey, Scope, SpendingKey};
+    use orchard::value::NoteValue;
+    use pczt::roles::creator::Creator;
+    use pczt::roles::io_finalizer::IoFinalizer;
+    use rand::rngs::OsRng;
+    use shardtree::ShardTree;
+    use shardtree::store::memory::MemoryShardStore;
+    use ur_registry::zcash::zcash_sign_batch::ZcashSignBatch;
+    use zcash_note_encryption::try_note_decryption;
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder, PcztResult};
+    use zcash_primitives::transaction::fees::zip317;
+    use zcash_protocol::consensus::{BlockHeight, Network};
+    use zcash_protocol::memo::{Memo, MemoBytes};
+    use zcash_protocol::value::Zatoshis;
+
+    /// Builds a real, IO-finalized single-Orchard-pool PCZT (one spend, one output),
+    /// mirroring the shape the real migration pipeline hands to
+    /// [`build_sign_batch_qr_parts`]: since the transaction has fewer real actions than
+    /// Orchard's default padding minimum, the Orchard builder inserts a dummy padding
+    /// action, and `IoFinalizer` self-signs that dummy spend (see `pczt::roles::io_finalizer`'s
+    /// "dummy spends will have been signed" note) — producing exactly the kind of
+    /// pre-existing `spend_auth_sig` the Keystone batch firmware rejects.
+    fn build_single_pool_orchard_pczt() -> Vec<u8> {
+        let mut rng = OsRng;
+        let sk = SpendingKey::from_zip32_seed(&[11u8; 32], 1, zip32::AccountId::ZERO)
+            .expect("valid Orchard ZIP 32 spending key");
+        let fvk = FullViewingKey::from(&sk);
+        let ivk = fvk.to_ivk(Scope::Internal);
+        let ovk = fvk.to_ovk(Scope::Internal);
+        let recipient = fvk.address_at(0u32, Scope::Internal);
+
+        // Pretend we already received a note to spend.
+        let value = NoteValue::from_raw(1_000_000);
+        let note = {
+            let bundle_version = orchard::bundle::BundleVersion::orchard_v2();
+            let mut builder = orchard::builder::Builder::new(
+                orchard::builder::BundleType::DEFAULT,
+                bundle_version,
+                bundle_version.default_flags(),
+                orchard::Anchor::empty_tree(),
+            )
+            .expect("orchard builder");
+            builder
+                .add_output(None, recipient, value, Memo::Empty.encode().into_bytes())
+                .expect("add output");
+            let (bundle, meta) = builder
+                .build::<i64>(&mut rng)
+                .expect("build orchard bundle")
+                .expect("non-empty bundle");
+            let action = bundle
+                .actions()
+                .get(meta.output_action_index(0).expect("output action index"))
+                .expect("action present");
+            let domain = orchard::note_encryption::OrchardDomain::for_action(action);
+            let (note, _, _) =
+                try_note_decryption(&domain, &ivk.prepare(), action).expect("decrypt own output");
+            note
+        };
+
+        // Single-leaf tree for the spend's witness/anchor.
+        let (anchor, merkle_path) = {
+            let cmx: orchard::note::ExtractedNoteCommitment = note.commitment().into();
+            let leaf = orchard::tree::MerkleHashOrchard::from_cmx(&cmx);
+            let mut tree = ShardTree::<_, 32, 16>::new(
+                MemoryShardStore::<orchard::tree::MerkleHashOrchard, u32>::empty(),
+                100,
+            );
+            tree.append(leaf, incrementalmerkletree::Retention::Marked)
+                .expect("append leaf");
+            tree.checkpoint(9_999_999).expect("checkpoint");
+            let position = 0.into();
+            let merkle_path = tree
+                .witness_at_checkpoint_depth(position, 0)
+                .expect("witness lookup")
+                .expect("witness present");
+            let anchor = merkle_path.root(leaf);
+            (anchor.into(), merkle_path.into())
+        };
+
+        // Well past TestNetwork's NU5 (Orchard) activation, comfortably before NU6.
+        let target_height = BlockHeight::from_u32(1_900_000);
+        let mut builder: Builder<Network, ()> = Builder::new(
+            Network::TestNetwork,
+            target_height,
+            BuildConfig::Standard {
+                sapling_anchor: None,
+                orchard_anchor: Some(anchor),
+                ironwood_anchor: None,
+                orchard_bundle_type: orchard::builder::BundleType::DEFAULT,
+                ironwood_bundle_type: orchard::builder::BundleType::DEFAULT,
+            },
+        );
+        builder
+            .add_orchard_spend::<zip317::FeeRule>(fvk.clone(), note, merkle_path)
+            .expect("add spend");
+        builder
+            .add_orchard_output::<zip317::FeeRule>(
+                Some(ovk),
+                recipient,
+                // 1_000_000 in - 10_000 ZIP-317 fee (2 grace actions x 5_000 marginal fee).
+                Zatoshis::const_from_u64(990_000),
+                MemoBytes::empty(),
+            )
+            .expect("add output");
+
+        let PcztResult { pczt_parts, .. } = builder
+            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .expect("build_for_pczt");
+
+        let base = Creator::build_from_parts(pczt_parts).expect("creator");
+        let base = IoFinalizer::new(base).finalize_io().expect("io finalize");
+        base.serialize().expect("serialize")
+    }
+
+    #[test]
+    fn build_sign_batch_qr_parts_strips_preexisting_orchard_spend_auth_sig() {
+        let unsigned = build_single_pool_orchard_pczt();
+
+        // Sanity-check the premise: the IO-finalized PCZT already carries a dummy
+        // spend_auth_sig before redaction — this is what regressed without the fix.
+        let parsed = pczt::parse(&unsigned).expect("parse base pczt");
+        assert!(
+            parsed
+                .orchard()
+                .actions()
+                .iter()
+                .any(|action| action.spend().spend_auth_sig().is_some()),
+            "test setup must produce a pre-signed dummy Orchard spend",
+        );
+
+        let parts = build_sign_batch_qr_parts(
+            b"test-request-id".to_vec(),
+            Some(&unsigned),
+            &[],
+            // Large enough that the whole request fits in a single UR frame.
+            1_000_000,
+        )
+        .expect("build_sign_batch_qr_parts");
+        assert_eq!(parts.len(), 1, "expected a single QR frame");
+
+        // `ur::Encoder` always emits the indexed multi-part wire format, even for a
+        // single fragment, so decode via `ur::Decoder` rather than assuming
+        // `ur::ur::Kind::SinglePart`.
+        let mut decoder = ur::Decoder::default();
+        decoder
+            .receive(&parts[0].to_lowercase())
+            .expect("ur receive");
+        assert!(decoder.complete(), "single fragment should complete decoding");
+        let cbor = decoder
+            .message()
+            .expect("ur message")
+            .expect("decoder complete but no message");
+        let batch = ZcashSignBatch::try_from(cbor).expect("cbor-decode zcash-sign-batch");
+        let request =
+            BatchSignRequest::parse(batch.get_data()).expect("parse batch sign request");
+
+        assert_eq!(request.pczts().len(), 1);
+        for action in request.pczts()[0].orchard().actions() {
+            assert!(
+                action.spend().spend_auth_sig().is_none(),
+                "batch request must not contain a pre-existing Orchard spend_auth_sig",
+            );
+        }
+    }
+
+    #[test]
+    fn annotate_spend_zip32_derivation_sets_derivation_only_on_unsigned_actions() {
+        let unsigned = build_single_pool_orchard_pczt();
+        let base = pczt::parse(&unsigned).expect("parse base pczt");
+        // Sanity-check the premise: neither action carries a derivation path yet.
+        for action in base.orchard().actions() {
+            assert!(
+                !format!("{:?}", action.spend()).contains("zip32_derivation: Some"),
+                "test setup must start without any spend zip32_derivation set",
+            );
+        }
+
+        let seed_fingerprint = [42u8; 32];
+        let coin_type = 1; // testnet
+        let account_index = zip32::AccountId::ZERO;
+        let annotated = annotate_spend_zip32_derivation(
+            &unsigned,
+            seed_fingerprint,
+            coin_type,
+            account_index,
+        )
+        .expect("annotate_spend_zip32_derivation");
+
+        let parsed = pczt::parse(&annotated).expect("parse annotated pczt");
+        let actions = parsed.orchard().actions();
+        assert_eq!(actions.len(), base.orchard().actions().len());
+
+        let mut unsigned_count = 0;
+        let mut signed_count = 0;
+        for (base_action, action) in base.orchard().actions().iter().zip(actions.iter()) {
+            let has_derivation = format!("{:?}", action.spend()).contains("zip32_derivation: Some");
+            if base_action.spend().spend_auth_sig().is_some() {
+                // Already-signed (dummy) spends are left alone.
+                signed_count += 1;
+                assert!(
+                    !has_derivation,
+                    "an already-signed dummy spend must not get a derivation path",
+                );
+            } else {
+                unsigned_count += 1;
+                assert!(
+                    has_derivation,
+                    "a real, still-unsigned spend must get a derivation path",
+                );
+            }
+        }
+        assert_eq!(unsigned_count, 1, "expected exactly one real unsigned spend");
+        assert_eq!(signed_count, 1, "expected exactly one dummy signed spend");
+    }
 }

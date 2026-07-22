@@ -55,6 +55,16 @@ class MigrationRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
+    suspend fun estimateMigrationRunCount(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            estimateMigrationRunCountNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         networkId: Int,
@@ -442,6 +452,14 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun estimateMigrationRunCountNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
 
         @JvmStatic
         @Throws(RuntimeException::class)

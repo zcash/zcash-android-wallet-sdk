@@ -32,6 +32,12 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Boolean
 
+    suspend fun estimateMigrationRunCount(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int
+
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

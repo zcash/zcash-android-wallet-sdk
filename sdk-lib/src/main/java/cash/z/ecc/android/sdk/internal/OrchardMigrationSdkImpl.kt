@@ -186,6 +186,12 @@ internal class OrchardMigrationSdkImpl(
         migrationBackend.migrationProgress(dbDataPath, network, account)?.toPublic()
     }
 
+    override suspend fun estimateMigrationRunCount(): Int? = logged("estimateMigrationRunCount") {
+        val dbDataPath = dbDataPath()
+        val account = account ?: return@logged null
+        migrationBackend.estimateMigrationRunCount(dbDataPath, network, account)
+    }
+
     // ── Note splitting ───────────────────────────────────────────────────────
 
     override suspend fun isNoteSplitNeeded(): Boolean = logged("isNoteSplitNeeded") {
@@ -661,7 +667,12 @@ private fun MigrationSchedule.toJni(): JniMigrationSchedule =
     )
 
 private fun JniKeystoneBatchDecodeResult.toPublic(): KeystoneBatchDecodeResult =
-    KeystoneBatchDecodeResult(complete = complete, progress = progress, data = data)
+    KeystoneBatchDecodeResult(
+        complete = complete,
+        progress = progress,
+        data = data,
+        firmwareVersion = firmwareVersion,
+    )
 
 private fun JniKeystoneBatchSignedPczts.toPublic(): KeystoneBatchSignedPczts =
     KeystoneBatchSignedPczts(
