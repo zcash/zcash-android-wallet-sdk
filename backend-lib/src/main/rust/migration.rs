@@ -41,7 +41,7 @@ use zcash_client_backend::data_api::WalletRead;
 use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_sqlite::AccountUuid;
 use zcash_client_sqlite::util::SystemClock;
-use zcash_protocol::consensus::{BLOCKS_PER_HOUR, BlockHeight, Network};
+use zcash_protocol::consensus::{BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants};
 use zcash_protocol::value::Zatoshis;
 
 use zcash_pool_migration_backend::engine::{
@@ -1238,6 +1238,37 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
 // ----- External signer (Keystone hardware wallet) -----
 
+/// Fetches the account's ZIP 32 seed fingerprint and account index, required to annotate
+/// external-signer (Keystone) migration PCZTs with `spend_zip32_derivation` — see
+/// `migration_keystone::annotate_spend_zip32_derivation`'s doc comment for why this is needed.
+///
+/// Applied as a post-processing step on whatever unsigned PCZT bytes `commit_or_reuse` returns
+/// (freshly built, or reused from an already-committed migration) rather than inside the `sign`
+/// closure passed to it: `commit_or_reuse` only calls that closure on first commit, so annotating
+/// only there would silently skip already-committed migrations (e.g. ones committed before this
+/// annotation existed) on every later re-entry into the Keystone sign screen.
+fn account_zip32_derivation(
+    wallet: &Wallet,
+    account: AccountUuid,
+) -> anyhow::Result<([u8; 32], zip32::AccountId)> {
+    use zcash_client_backend::data_api::Account;
+
+    let account_info = wallet
+        .get_account(account)
+        .map_err(|e| anyhow!("account lookup failed: {}", e))?
+        .ok_or_else(|| anyhow!("Account not found"))?;
+    let derivation = account_info.source().key_derivation().ok_or_else(|| {
+        anyhow!(
+            "Account has no known ZIP 32 seed fingerprint/account index — cannot annotate \
+             migration PCZTs for external-signer batch signing"
+        )
+    })?;
+    Ok((
+        derivation.seed_fingerprint().to_bytes(),
+        derivation.account_index(),
+    ))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_createUnsignedNoteSplitPcztNative<
     'local,
@@ -1279,6 +1310,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .into_iter()
             .find(|(id, _)| *id == split_id)
             .ok_or_else(|| anyhow!("Migration plan has no note-split preparation transaction"))?;
+        let (seed_fingerprint, account_index) = account_zip32_derivation(&wallet, account)?;
+        let pczt_bytes = crate::migration_keystone::annotate_spend_zip32_derivation(
+            &pczt_bytes,
+            seed_fingerprint,
+            network.coin_type(),
+            account_index,
+        )
+        .map_err(|e| anyhow!("Error annotating note-split PCZT derivation: {:?}", e))?;
         Ok(crate::utils::rust_bytes_to_java(env, &pczt_bytes)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -1383,10 +1422,21 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
             .map(|t| t.id())
             .collect();
+        let (seed_fingerprint, account_index) = account_zip32_derivation(&wallet, account)?;
         let transfers: Vec<_> = unsigned
             .into_iter()
             .filter(|(id, _)| transfer_ids.contains(id))
-            .collect();
+            .map(|(id, pczt_bytes)| {
+                let pczt_bytes = crate::migration_keystone::annotate_spend_zip32_derivation(
+                    &pczt_bytes,
+                    seed_fingerprint,
+                    network.coin_type(),
+                    account_index,
+                )
+                .map_err(|e| anyhow!("Error annotating transfer PCZT derivation: {:?}", e))?;
+                Ok::<_, anyhow::Error>((id, pczt_bytes))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(crate::utils::rust_vec_to_java(
             env,
             transfers,
