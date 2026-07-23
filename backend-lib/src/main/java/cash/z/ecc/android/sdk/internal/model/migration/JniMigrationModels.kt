@@ -63,6 +63,33 @@ class JniMigrationSchedule(
 )
 
 /**
+ * Serves as cross layer (Kotlin, Rust) communication class. The live, persisted status of one
+ * committed transfer transaction — [id] is its real, stable `MigrationTxId` (same format/value as
+ * `JniTransferProposal.id`), NOT its pool-crossing/funding-note index. ZIP 318 deliberately shuffles
+ * crossing order away from the broadcast-height order the app displays transfers in, so [id] is the
+ * only key that reliably correlates back to a specific `MigrationPlan.transfers` entry (via that
+ * entry's own `id` field).
+ */
+@Keep
+class JniMigrationTransferState(
+    val id: String,
+    val isSent: Boolean,
+    val scheduledHeight: Long
+)
+
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class. The live schedule/status of every
+ * committed transfer transaction, read directly from the persisted migration store — unlike
+ * [JniMigrationSchedule] (a one-time proposal snapshot), this reflects whatever the store's
+ * `scheduled_height`/state columns hold right now, including any later reschedule.
+ */
+@Keep
+class JniMigrationTransferStates(
+    val transfers: Array<JniMigrationTransferState>,
+    val tipHeight: Long
+)
+
+/**
  * Serves as cross layer (Kotlin, Rust) communication class. One transfer's unsigned, proven (self-
  * funding transfers are the exception: not yet proven, per the sign-now/prove-later scheme) PCZT,
  * staged in the engine and awaiting an external signer (e.g. Keystone).

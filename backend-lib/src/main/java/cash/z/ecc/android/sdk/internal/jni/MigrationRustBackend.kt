@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPcz
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
@@ -235,15 +236,21 @@ class MigrationRustBackend private constructor() {
             ) ?: error("proposeMigrationTransfersFromSplit returned null")
         }
 
+    /**
+     * Proposes an ordinary send-max transaction sweeping all spendable Orchard funds into this
+     * account's own Ironwood receiver — bypasses the migration engine entirely (no `MigrationState`
+     * is read or written). Returns the proposal proto-encoded exactly like an ordinary send's
+     * `RustBackend.proposeTransfer`, for decoding via the same
+     * `Proposal.fromByteArray`/`ProposalUnsafe.parse` path.
+     */
     @Throws(RuntimeException::class)
-    suspend fun proposeImmediateMigrationTransfers(
+    suspend fun proposeImmediateSendMax(
         dbDataPath: String,
         networkId: Int,
         accountUuidBytes: ByteArray
-    ): JniMigrationSchedule =
+    ): ByteArray =
         withContext(SdkDispatchers.DATABASE_IO) {
-            proposeImmediateMigrationTransfersNative(dbDataPath, networkId, accountUuidBytes)
-                ?: error("proposeImmediateMigrationTransfers returned null")
+            proposeImmediateSendMaxNative(dbDataPath, networkId, accountUuidBytes)
         }
 
     @Suppress("LongParameterList")
@@ -287,6 +294,22 @@ class MigrationRustBackend private constructor() {
     ): JniPreparedTransfer? =
         withContext(SdkDispatchers.DATABASE_IO) {
             nextDueTransferNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * The live, persisted status (broadcast/mined vs. still pending, plus current
+     * `scheduled_height`) of every committed transfer transaction, read straight from the
+     * migration store — reflects any reschedule immediately, unlike the app's own cached plan.
+     * Returns `null` if there's no in-progress migration.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationTransferStates(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniMigrationTransferStates? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationTransferStatesNative(dbDataPath, networkId, accountUuidBytes)
         }
 
     @Throws(RuntimeException::class)
@@ -598,11 +621,11 @@ class MigrationRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun proposeImmediateMigrationTransfersNative(
+        private external fun proposeImmediateSendMaxNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray
-        ): JniMigrationSchedule?
+        ): ByteArray
 
         @JvmStatic
         @Suppress("LongParameterList")
@@ -635,6 +658,14 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): JniPreparedTransfer?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationTransferStatesNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniMigrationTransferStates?
 
         @JvmStatic
         @Throws(RuntimeException::class)
