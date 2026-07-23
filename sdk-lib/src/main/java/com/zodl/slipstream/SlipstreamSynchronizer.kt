@@ -690,9 +690,38 @@ class SlipstreamSynchronizer internal constructor(
             is Response.Failure -> false
         }
 
-    /** R24: on-demand only - the engine performs in-pass enhancement itself; this is the explicit, app-triggered path. */
-    override fun enhanceTransaction(txId: TransactionId) {
+    /**
+     * Launches [block] on [scope], guarded against escaping exceptions: a [CancellationException]
+     * is always rethrown (structured concurrency), any other exception is logged and forwarded to
+     * [SlipstreamEngine.onCriticalErrorHandler] instead of propagating out of [scope]'s
+     * [SupervisorJob] as an unhandled crash. [operation] is a short, human-readable name for the
+     * log message only.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun launchGuarded(
+        operation: String,
+        block: suspend () -> Unit
+    ) {
         scope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Twig.error(e) { "Slipstream $operation failed" }
+                engine.onCriticalErrorHandler?.invoke(e)
+            }
+        }
+    }
+
+    /**
+     * R24: on-demand only - the engine performs in-pass enhancement itself; this is the explicit,
+     * app-triggered path. A no-op once [close] has already run - post-close lifecycle calls are
+     * no-ops.
+     */
+    override fun enhanceTransaction(txId: TransactionId) {
+        if (closed.get()) return
+        launchGuarded("enhanceTransaction") {
             val serviceMode = sdkFlags ifTor ServiceMode.Group("enhance-${txId.txIdString()}")
             when (val response = walletClient.fetchTransaction(txId.value.byteArray, serviceMode)) {
                 is Response.Success -> {
@@ -707,9 +736,14 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
-    /** Pairs with [onForeground]'s [SlipstreamEngine.isRunning] guard: [SlipstreamEngine.stop] always clears it, so a following foreground sees an honest running/stopped state. */
+    /**
+     * Pairs with [onForeground]'s [SlipstreamEngine.isRunning] guard: [SlipstreamEngine.stop]
+     * always clears it, so a following foreground sees an honest running/stopped state. A no-op
+     * once [close] has already run - post-close lifecycle calls are no-ops.
+     */
     override fun onBackground() {
-        scope.launch {
+        if (closed.get()) return
+        launchGuarded("onBackground") {
             engine.stopPolling()
             engine.stop()
             lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
@@ -721,10 +755,12 @@ class SlipstreamSynchronizer internal constructor(
      * quiescence drain, so restarting an already-running engine on every foreground would churn
      * useful work instead of resuming it. [SlipstreamEngine.isRunning] guards against that - skip
      * the native restart when the engine is already live. [SlipstreamEngine.startPolling] stays
-     * unconditional; it is already an idempotent cancel-and-relaunch.
+     * unconditional; it is already an idempotent cancel-and-relaunch. A no-op once [close] has
+     * already run - post-close lifecycle calls are no-ops.
      */
     override fun onForeground() {
-        scope.launch {
+        if (closed.get()) return
+        launchGuarded("onForeground") {
             lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
             if (!engine.isRunning) {
                 engine.start(ufvk = null, birthday = startBirthday.value)
@@ -797,13 +833,32 @@ class SlipstreamSynchronizer internal constructor(
         if (closed.compareAndSet(false, true)) {
             val shutdownJob =
                 scope.launch {
-                    engine.stopPolling()
-                    engine.stop()
-                    engine.free()
-                    engine.shutdown()
-                    lazyTorClient?.dispose()
-                    walletClient.dispose()
-                    exchangeRateFetcher?.dispose()
+                    /**
+                     * Isolates each shutdown step from the others: a single step's failure is
+                     * logged but never skips the remaining steps, so a wedged native call can
+                     * never leave e.g. [walletClient] undisposed.
+                     */
+                    @Suppress("TooGenericExceptionCaught")
+                    suspend fun step(
+                        label: String,
+                        block: suspend () -> Unit
+                    ) {
+                        try {
+                            block()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Twig.error(e) { "Slipstream close step $label failed" }
+                        }
+                    }
+
+                    step("stopPolling") { engine.stopPolling() }
+                    step("stop") { engine.stop() }
+                    step("free") { engine.free() }
+                    step("shutdown") { engine.shutdown() }
+                    step("lazyTorClient.dispose") { lazyTorClient?.dispose() }
+                    step("walletClient.dispose") { walletClient.dispose() }
+                    step("exchangeRateFetcher.dispose") { exchangeRateFetcher?.dispose() }
                 }
             InstanceGuard.markShuttingDown(key, shutdownJob)
             shutdownJob.invokeOnCompletion {

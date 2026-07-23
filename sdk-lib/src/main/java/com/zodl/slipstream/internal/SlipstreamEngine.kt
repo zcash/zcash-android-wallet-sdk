@@ -1,6 +1,7 @@
 package com.zodl.slipstream.internal
 
 import cash.z.ecc.android.sdk.Synchronizer.Status
+import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -106,7 +107,10 @@ internal class SlipstreamEngine(
         ufvk: String?,
         birthday: Long
     ) = withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
-        check(handle != 0L) { "start before open" }
+        if (handle == 0L) {
+            Twig.warn { "Slipstream engine start skipped: handle already freed" }
+            return@withContext
+        }
         lastStartBirthday = birthday
         SlipstreamNative.start(handle, ufvk, birthday, torDir)
         running = true
