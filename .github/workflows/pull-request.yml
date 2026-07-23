@@ -146,6 +146,27 @@ jobs:
           name: Ktlint static analysis results
           path: ~/artifacts
 
+  static_analysis_rustfmt:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Install pinned Rust toolchain with rustfmt
+        timeout-minutes: 5
+        # Read the channel from rust-toolchain.toml so the check always uses the exact
+        # toolchain the code is formatted against (rustfmt output is toolchain-specific).
+        run: |
+          CHANNEL="$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)"
+          rustup toolchain install "${CHANNEL}" --profile minimal --component rustfmt
+      - name: Check Rust formatting
+        timeout-minutes: 2
+        working-directory: backend-lib
+        run: cargo fmt --all --check
+
   static_analysis_android_lint:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
