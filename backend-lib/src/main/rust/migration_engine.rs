@@ -59,13 +59,14 @@ where
         account: AccountUuid,
         usk: Option<UnifiedSpendingKey>,
         conn: &'a mut Connection,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, EngineError> {
+        Ok(Self {
             wallet,
             account,
             usk,
-            store: PoolMigrations::for_account(conn, account),
-        }
+            store: PoolMigrations::for_account(conn, account)
+                .map_err(|e| anyhow::anyhow!("opening pool-migration store failed: {e}"))?,
+        })
     }
 
     /// The account's spendable Orchard notes, exposed for `migration_finalize`'s witness lookup
