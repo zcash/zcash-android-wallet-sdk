@@ -339,6 +339,39 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
+     * Persists a rescheduled overdue transfer's new `scheduled_height` AND draws it a fresh
+     * `anchor_boundary` (the transaction's ORIGINAL anchor, drawn at commit time, can be far
+     * behind the current synced tip by the time it's rescheduled — proving would otherwise keep
+     * failing with AnchorNotFound regardless of how soon the new schedule says it's due). Targets
+     * the same earliest not-yet-broadcast/mined transfer [pendingTransferProposalNative] would
+     * return. Returns `false` if there's no pending transfer to reschedule.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun persistRescheduledTransfer(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        newScheduledHeight: Long
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            persistRescheduledTransferNative(dbDataPath, networkId, accountUuidBytes, newScheduledHeight)
+        }
+
+    /**
+     * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
+     * rather than a residual worth migrating in its own transfer — see
+     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`. A fixed protocol-level constant, not
+     * derived from any wallet/account state — still routed through `SdkDispatchers.DATABASE_IO`
+     * only for consistency with every other call in this class, not because it touches a
+     * database.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationDustThresholdZatoshi(): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationDustThresholdZatoshiNative()
+        }
+
+    /**
      * Lists every account's UUID in the wallet database, independent of any live `Synchronizer`.
      */
     @Throws(RuntimeException::class)
@@ -678,6 +711,10 @@ class MigrationRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun migrationDustThresholdZatoshiNative(): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun getAccountUuidsNative(
             dbDataPath: String,
             networkId: Int
@@ -690,6 +727,15 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): JniTransferProposal?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun persistRescheduledTransferNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            newScheduledHeight: Long
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)

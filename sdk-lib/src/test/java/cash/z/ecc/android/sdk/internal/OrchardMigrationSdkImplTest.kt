@@ -52,6 +52,84 @@ class OrchardMigrationSdkImplTest {
         }
 
     /**
+     * Pins down the exact bug this task fixes: `rescheduleOverdueTransfer()` used to compute
+     * `Clock.System.now().epochSeconds + RESCHEDULE_INTERVAL_SECONDS` (Unix epoch seconds) against
+     * `pending.expiryHeight` (a block height) — since a height is always astronomically smaller
+     * than a current epoch-seconds timestamp, `minOf(...)` always picked `expiryHeight - 1`
+     * regardless of the intended 6-hour delay. This test would have failed against that bug: with
+     * both operands correctly expressed as heights, the result must be `anchorHeight +
+     * (RESCHEDULE_INTERVAL_SECONDS / BLOCK_INTERVAL_SECONDS)`, far short of `expiryHeight - 1`.
+     * Also asserts the new schedule is actually PERSISTED (via `persistRescheduledTransfer`), not
+     * just returned as a locally-mutated copy — the second half of this task's fix.
+     */
+    @Test
+    fun `rescheduleOverdueTransfer computes heights only, not epoch seconds, and persists the new schedule`() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val pendingProposal =
+                JniTransferProposal(
+                    id = "7",
+                    amountZatoshi = 5_000_000L,
+                    anchorHeight = 3_000_000L,
+                    nextExecutableAfterHeight = 3_000_050L,
+                    expiryHeight = 3_010_000L
+                )
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    pendingTransferProposalResult = pendingProposal
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
+                )
+
+            val result = sdk.rescheduleOverdueTransfer()
+
+            // 6 hours / 75-second blocks = 288 blocks.
+            val expectedNextExecutableAfterHeight = 3_000_000L + (6 * 60 * 60L / 75L)
+            assertEquals(expectedNextExecutableAfterHeight, result.nextExecutableAfterHeight)
+            assertTrue(fakeBackend.persistRescheduledTransferCalled)
+            assertEquals(account, fakeBackend.lastPersistRescheduledTransferAccount)
+            assertEquals(expectedNextExecutableAfterHeight, fakeBackend.lastPersistedScheduledHeight)
+        }
+
+    /**
+     * `migrationDustThresholdZatoshi()` is a pure pass-through to the Rust-side
+     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` constant (100,000 zatoshi / 0.001 ZEC) — no account or
+     * database state involved. This just pins down that the value round-trips through the
+     * typesafe backend unchanged.
+     */
+    @Test
+    fun `migrationDustThresholdZatoshi returns the backend's constant value unchanged`() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    migrationDustThresholdZatoshiResult = 100_000L
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
+                )
+
+            val result = sdk.migrationDustThresholdZatoshi()
+
+            assertEquals(100_000L, result)
+        }
+
+    /**
      * A minimal, hand-encoded `cash.z.wallet.sdk.ffi.Proposal` protobuf message (see
      * `backend-lib/src/main/proto/proposal.proto`) — just field 2 (`feeRule`) set to `Zip317` (3),
      * with no steps. `ProposalUnsafe`'s init check only requires a non-default `feeRule`, and
@@ -84,10 +162,16 @@ class OrchardMigrationSdkImplTest {
 
     @Suppress("TooManyFunctions")
     private class FakeTypesafeMigrationBackend(
-        private val proposeImmediateSendMaxResult: ByteArray
+        private val proposeImmediateSendMaxResult: ByteArray = ByteArray(0),
+        private val pendingTransferProposalResult: JniTransferProposal? = null,
+        private val persistRescheduledTransferResult: Boolean = true,
+        private val migrationDustThresholdZatoshiResult: Long = 100_000L
     ) : TypesafeMigrationBackend {
         var proposeImmediateSendMaxCalled = false
         var lastAccount: AccountUuid? = null
+        var persistRescheduledTransferCalled = false
+        var lastPersistRescheduledTransferAccount: AccountUuid? = null
+        var lastPersistedScheduledHeight: Long? = null
 
         override suspend fun migrationState(
             dbDataPath: String,
@@ -242,7 +326,21 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
-        ): JniTransferProposal? = error("Unused")
+        ): JniTransferProposal? = pendingTransferProposalResult
+
+        override suspend fun persistRescheduledTransfer(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid,
+            newScheduledHeight: Long
+        ): Boolean {
+            persistRescheduledTransferCalled = true
+            lastPersistRescheduledTransferAccount = account
+            lastPersistedScheduledHeight = newScheduledHeight
+            return persistRescheduledTransferResult
+        }
+
+        override suspend fun migrationDustThresholdZatoshi(): Long = migrationDustThresholdZatoshiResult
 
         override suspend fun createUnsignedNoteSplitPczt(
             dbDataPath: String,

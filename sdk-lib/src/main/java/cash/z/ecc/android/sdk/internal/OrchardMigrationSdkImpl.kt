@@ -14,6 +14,7 @@ import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
 import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
+import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
@@ -438,22 +439,35 @@ internal class OrchardMigrationSdkImpl(
     }
 
     override suspend fun rescheduleOverdueTransfer(): TransferProposal = logged("rescheduleOverdueTransfer") {
-        // No Rust call backs the reschedule decision itself (see the interface doc) — but the
-        // pending transfer's own fields (amount/anchorHeight/expiryHeight) come from
+        // The pending transfer's own fields (amount/anchorHeight/expiryHeight) come from
         // pendingTransferProposal(), a dedicated MigrationContext accessor added specifically for
         // this: next_due_transfer() only returns an opaque, already-signed PreparedTransfer
-        // (id/txid/pcztBytes), not the proposal it was signed from.
+        // (id/txid/pcztBytes), not the proposal it was signed from. The new schedule is then
+        // persisted via persistRescheduledTransfer (see the interface doc) — it's not just a
+        // locally-mutated copy handed back to the caller.
         val dbDataPath = dbDataPath()
         val account = account ?: noAccountAvailable()
         val pending = migrationBackend.pendingTransferProposal(dbDataPath, network, account)?.toPublic()
             ?: error("OrchardMigrationSdk: no pending transfer to reschedule")
-        val nowSeconds = Clock.System.now().epochSeconds
+        // anchorHeight is the chain tip at read time (pendingTransferProposalNative's
+        // convention — NOT the transaction's real proving anchor), so it's the correct "now"
+        // reference for a height-only delay computation. Mixing this with Unix epoch seconds
+        // (the previous bug) always resolved to expiryHeight - 1 regardless of the intended
+        // 6-hour delay.
+        val tip = pending.anchorHeight
+        val rescheduleIntervalBlocks = RESCHEDULE_INTERVAL_SECONDS / (ZcashSdk.BLOCK_INTERVAL_MILLIS / 1000)
         // Target the same natural cadence the engine schedules by default; if that would land at
         // or past the transfer's own expiry, target just short of it instead — pushing past
         // expiry isn't a valid reschedule (hasInvalidTransfers/restartCurrentMigrationStep is the
         // recovery path once even that isn't possible).
-        val newNextExecutableAfterHeight =
-            minOf(nowSeconds + RESCHEDULE_INTERVAL_SECONDS, pending.expiryHeight - 1)
+        val newNextExecutableAfterHeight = minOf(tip + rescheduleIntervalBlocks, pending.expiryHeight - 1)
+        val persisted = migrationBackend.persistRescheduledTransfer(
+            dbDataPath,
+            network,
+            account,
+            newNextExecutableAfterHeight
+        )
+        check(persisted) { "OrchardMigrationSdk: failed to persist rescheduled transfer" }
         pending.copy(nextExecutableAfterHeight = newNextExecutableAfterHeight)
     }
 
@@ -480,6 +494,11 @@ internal class OrchardMigrationSdkImpl(
         }
 
     // ── Dust locking ─────────────────────────────────────────────────────────
+
+    override suspend fun migrationDustThresholdZatoshi(): Long =
+        logged("migrationDustThresholdZatoshi") {
+            migrationBackend.migrationDustThresholdZatoshi()
+        }
 
     override suspend fun lockRemainingOrchardBalance() = logged("lockRemainingOrchardBalance") {
         val dbDataPath = dbDataPath()

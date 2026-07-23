@@ -188,6 +188,24 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): JniTransferProposal?
 
+    /**
+     * Persists a rescheduled overdue transfer's new scheduled height and draws it a fresh
+     * proving anchor. Returns `false` if there's no pending transfer to reschedule.
+     */
+    suspend fun persistRescheduledTransfer(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        newScheduledHeight: Long
+    ): Boolean
+
+    /**
+     * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
+     * rather than a residual worth migrating in its own transfer. A fixed protocol-level
+     * constant, not derived from any wallet/account state.
+     */
+    suspend fun migrationDustThresholdZatoshi(): Long
+
     // ----- External signer (Keystone hardware wallet) -----
 
     suspend fun createUnsignedNoteSplitPczt(

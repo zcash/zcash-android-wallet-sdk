@@ -83,6 +83,14 @@ const JNI_KEYSTONE_BATCH_DECODE_RESULT: &str =
 const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniKeystoneBatchSignedPczts";
 
+/// The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
+/// rather than a residual worth migrating in its own (non-round-number, more identifiable)
+/// transfer — see `proposeMigrationTransfers`'s `includeResidual` doc comment in
+/// `MigrationSdk.kt` for the privacy/completeness trade-off this backs. 100,000 zatoshi = 0.001
+/// ZEC. A fixed protocol-level constant, not derived from wallet or account state, so it needs no
+/// database access to read.
+pub const MIGRATION_DUST_THRESHOLD_ZATOSHI: u64 = 100_000;
+
 pub(crate) type Wallet = zcash_client_sqlite::WalletDb<
     Connection,
     Network,
@@ -1803,16 +1811,32 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     state.transactions().iter().find(|t| t.id() == id).map(|t| (id, t))
                 }) {
                     Some((id, tx)) if matches!(tx.kind(), MigrationTxKind::Transfer { .. }) => {
+                        // Real amount: the funding note this transfer spends, minus the
+                        // preparation fee buffer it carries — the same subtraction
+                        // encode_migration_schedule does for a freshly-proposed schedule
+                        // (see that function's doc comment). `funding_notes()`/`note_split()`
+                        // are both indexed/keyed the same way regardless of whether `state`
+                        // came from a fresh MigrationPlan or, as here, persisted MigrationState.
+                        let crossing = tx
+                            .kind()
+                            .transfer_crossing()
+                            .expect("kind checked to be Transfer above");
+                        let funding_notes = state.funding_notes();
+                        let note_fee_buffer = state.note_split().note_fee_buffer();
+                        let amount = (funding_notes[crossing] - note_fee_buffer)
+                            .expect("every funding note is crossing + note_fee_buffer by construction");
+                        // anchorHeight = tip (a "now" reference for the Kotlin-side delay
+                        // calculation), NOT tx.anchor_boundary() — matches the same convention
+                        // encode_migration_schedule uses; the transaction's real proving anchor
+                        // is drawn/rewritten separately (see persistRescheduledTransferNative
+                        // below) and is not what Kotlin needs here.
                         encode_transfer_proposal(
                             env,
                             id,
-                            // Amount isn't retained on `MigrationTransaction` (only in the
-                            // original `MigrationPlan`) — 0 until the caller re-derives it from a
-                            // freshly re-planned schedule if it needs the real value here.
-                            Zatoshis::ZERO,
+                            amount,
                             tip,
-                            tip,
-                            tip,
+                            tx.scheduled_height(),
+                            tx.expiry_height(),
                         )?
                         .into_raw()
                     }
@@ -1823,6 +1847,191 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         })
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Persists a rescheduled overdue transfer's new `scheduled_height` and draws it a fresh
+/// `anchor_boundary` from the wallet's current natural anchor — see
+/// `debugRescheduleTransfersNative`'s doc comment for why a rescheduled transfer's ORIGINAL
+/// anchor (drawn relative to the tip at commit time) is not valid to keep once its schedule has
+/// moved: it can still be far behind the current synced tip, which would otherwise leave
+/// `is_prove_ready` failing indefinitely regardless of how soon the transfer is now due. Targets
+/// the earliest not-yet-broadcast/mined transfer — the same one `pendingTransferProposalNative`
+/// identifies. Returns `false` if there is no such transfer.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_persistRescheduledTransferNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    new_scheduled_height: jlong,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let new_anchor_boundary = u32::from(natural_anchor_height(&wallet)?);
+        let new_height = u32::try_from(new_scheduled_height)
+            .map_err(|_| anyhow!("new_scheduled_height out of u32 range"))?;
+
+        let migration_id: Option<i64> = store_conn
+            .query_row(
+                "SELECT m.id FROM orchard_ironwood_migrations m \
+                 JOIN accounts a ON a.id = m.account_id \
+                 WHERE a.uuid = ?1",
+                rusqlite::params![account.expose_uuid()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| anyhow!("Error reading migration row: {}", e))?;
+        let Some(migration_id) = migration_id else {
+            return Ok(false as jboolean);
+        };
+
+        let tx_id: Option<i64> = store_conn
+            .query_row(
+                "SELECT tx_id FROM orchard_ironwood_migration_transactions \
+                 WHERE migration_id = ?1 AND kind = 'transfer' \
+                   AND state NOT IN ('broadcast', 'mined') \
+                 ORDER BY scheduled_height ASC LIMIT 1",
+                rusqlite::params![migration_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| anyhow!("Error reading pending transfer: {}", e))?;
+        let Some(tx_id) = tx_id else {
+            return Ok(false as jboolean);
+        };
+
+        store_conn
+            .execute(
+                "UPDATE orchard_ironwood_migration_transactions \
+                 SET scheduled_height = ?1, anchor_boundary = ?2 \
+                 WHERE migration_id = ?3 AND tx_id = ?4",
+                rusqlite::params![new_height, new_anchor_boundary, migration_id, tx_id],
+            )
+            .map_err(|e| anyhow!("Error persisting rescheduled transfer: {}", e))?;
+        Ok(true as jboolean)
+    });
+    unwrap_exc_or(&mut env, res, false as jboolean)
+}
+
+#[cfg(test)]
+mod pending_transfer_proposal_tests {
+    use super::*;
+    use zcash_pool_migration_backend::engine::{MigrationStatus, MigrationTransaction};
+    use zcash_pool_migration_backend::note_splitting::NoteSplitPlan;
+    use zcash_pool_migration_backend::preparation::PreparationPlan;
+
+    /// Exercises the exact arithmetic `pendingTransferProposalNative`'s fixed body performs
+    /// (`funding_notes()[crossing] - note_fee_buffer`, `next_broadcastable()` -> the transaction's
+    /// real `scheduled_height`/`expiry_height`) against a synthetic, in-memory `MigrationState` —
+    /// no live wallet DB, no real proving, no JNI, so this always runs (not gated behind
+    /// `MIGRATION_TEST_WALLET_DB` like the live-wallet harness below). Pins down the exact bug
+    /// this task fixes: before the fix, the decoded amount was always `Zatoshis::ZERO` and
+    /// `nextExecutableAfterHeight`/`expiryHeight` were both hard-coded to the chain tip
+    /// regardless of the transaction's real schedule.
+    #[test]
+    fn pending_transfer_proposal_uses_real_amount_and_heights_not_tip_stub() {
+        let tip = BlockHeight::from_u32(3_000_000);
+        let target = tip + 1;
+
+        let note_fee_buffer = Zatoshis::const_from_u64(1_000);
+        let crossing_values_zat = [10_000_000u64, 25_000_000u64]; // more than one crossing
+        let total_migratable: u64 = crossing_values_zat.iter().sum();
+        let note_split = NoteSplitPlan::from_stored_parts(
+            crossing_values_zat.iter().map(|&v| Zatoshis::const_from_u64(v)).collect(),
+            note_fee_buffer,
+            None,
+            Zatoshis::ZERO,
+            Zatoshis::const_from_u64(total_migratable),
+            Zatoshis::const_from_u64(total_migratable),
+        )
+        .expect("valid note split");
+
+        // Two transfers, one per crossing. Only the first (index 0) is Proved and already due —
+        // the second stays Signed and further out, so `next_broadcastable` must pick the first,
+        // not conflate the two, and its real (non-tip) schedule must flow through untouched.
+        let scheduled_height_0 = tip - 5; // already due
+        let expiry_height_0 = tip + 20; // real, non-tip expiry
+        let tx0 = MigrationTransaction::from_parts(
+            MigrationTxId::new(0),
+            MigrationTxKind::Transfer { crossing: 0 },
+            Vec::new(),
+            Vec::new(),
+            scheduled_height_0,
+            expiry_height_0,
+            Some(tip - 50),
+            MigrationTxState::Proved,
+            None,
+        );
+        let tx1 = MigrationTransaction::from_parts(
+            MigrationTxId::new(1),
+            MigrationTxKind::Transfer { crossing: 1 },
+            Vec::new(),
+            Vec::new(),
+            tip + 500,
+            tip + 520,
+            Some(tip - 50),
+            MigrationTxState::Signed,
+            None,
+        );
+
+        let state = MigrationState::from_parts(
+            MigrationStatus::InProgress,
+            note_split,
+            PreparationPlan::from_parts(Vec::new(), Vec::new()),
+            vec![tx0, tx1],
+        );
+
+        // ----- Mirror pendingTransferProposalNative's fixed body exactly -----
+        let (id, tx) = state
+            .next_broadcastable(target)
+            .and_then(|id| state.transactions().iter().find(|t| t.id() == id).map(|t| (id, t)))
+            .expect("the first transfer is Proved and due; next_broadcastable must find it");
+        assert_eq!(
+            id,
+            MigrationTxId::new(0),
+            "must pick the due Proved transfer, not the still-Signed one"
+        );
+        assert!(matches!(tx.kind(), MigrationTxKind::Transfer { .. }));
+
+        let crossing = tx.kind().transfer_crossing().expect("kind checked to be Transfer above");
+        let funding_notes = state.funding_notes();
+        let note_fee_buffer = state.note_split().note_fee_buffer();
+        let amount = (funding_notes[crossing] - note_fee_buffer)
+            .expect("every funding note is crossing + note_fee_buffer by construction");
+
+        assert_eq!(
+            amount,
+            Zatoshis::const_from_u64(crossing_values_zat[0]),
+            "decoded amount must be the real funding-note-minus-fee-buffer value, not the \
+             pre-fix Zatoshis::ZERO stub"
+        );
+        assert_eq!(tx.scheduled_height(), scheduled_height_0);
+        assert_eq!(tx.expiry_height(), expiry_height_0);
+        assert!(
+            u32::from(tx.scheduled_height()) != u32::from(tip)
+                || u32::from(tx.expiry_height()) != u32::from(tip),
+            "regression guard: the pre-fix stub returned tip for BOTH scheduled and expiry \
+             height, indistinguishable from a real schedule that happened to land exactly on tip"
+        );
+    }
+}
+
+/// A pure constant read — [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] is a fixed protocol-level value,
+/// not derived from any wallet or account state, so unlike every other export in this file this
+/// needs no `db_data`/`network_id`/account argument and can't fail or panic (no `catch_unwind` /
+/// `unwrap_exc_or` needed).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationDustThresholdZatoshiNative<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _: JClass<'local>,
+) -> jlong {
+    MIGRATION_DUST_THRESHOLD_ZATOSHI as jlong
 }
 
 // ----- External signer (Keystone hardware wallet) -----

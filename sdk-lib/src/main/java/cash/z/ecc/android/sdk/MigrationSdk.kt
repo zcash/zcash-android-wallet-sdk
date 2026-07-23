@@ -604,18 +604,18 @@ interface OrchardMigrationSdk {
      * transfer itself is still validly signed (its note hasn't been spent, its anchor hasn't
      * expired) — only its window was missed — so this does not invalidate or re-sign anything.
      *
-     * Implementation note (Rust bridge, 2026-07-10): there is **no Rust-side call** for this —
-     * `MigrationContext` has no "reschedule" operation, because it doesn't need one. A pre-signed
-     * transfer is due-and-broadcastable for as long as `TransferProposal.expiryHeight` allows;
-     * `next_due_transfer()`/`executeNextPendingTransfer` will simply keep returning the *same*
-     * transfer on every call until it's either broadcast or its expiry passes. "Rescheduling" is
-     * therefore purely a local decision not to call [executeNextPendingTransfer] yet — the SDK
-     * persists nothing new, it only computes and returns a later target time (e.g. the next
-     * natural anchor-bucket boundary) for the app's WorkManager job. **The chosen time must still
-     * be before the transfer's `expiryHeight`** — pushing past it isn't a valid reschedule; that
-     * case is [hasInvalidTransfers]/[restartCurrentMigrationStep]'s job instead. (The previous
-     * revision of this doc said the SDK "persists the new schedule" — that described the mock's
-     * behavior, not the real bridge; callers relying on that persistence will need updating.)
+     * Implementation note (Rust bridge, updated 2026-07-24): computes the new target height from
+     * [pendingTransferProposal]'s fields (a height-only computation — see that call's own
+     * `anchorHeight` doc), then persists it via a dedicated `persistRescheduledTransfer` Rust
+     * call, which writes the transfer's new `scheduled_height` AND draws it a fresh
+     * `anchor_boundary` from the wallet's current natural anchor (the transfer's original anchor,
+     * drawn at commit time, can be far behind the current synced tip by the time it's
+     * rescheduled, which would otherwise leave proving failing indefinitely). This *does* persist
+     * — an earlier revision of this doc (2026-07-10) said the SDK "persists nothing new" because
+     * the Rust side had no such call yet; that gap was the root cause of `hasOverdueTransfers`
+     * never clearing after a reschedule, fixed alongside this doc update. **The chosen time must
+     * still be before the transfer's `expiryHeight`** — pushing past it isn't a valid reschedule;
+     * that case is [hasInvalidTransfers]/[restartCurrentMigrationStep]'s job instead.
      */
     suspend fun rescheduleOverdueTransfer(): TransferProposal
 
@@ -653,6 +653,16 @@ interface OrchardMigrationSdk {
     suspend fun getMigrationTransferStates(): MigrationTransferStates?
 
     // ── Dust locking ─────────────────────────────────────────────────────────
+
+    /**
+     * The zatoshi value below which a remaining post-migration Orchard balance counts as dust
+     * (as opposed to a residual too large to ignore) — e.g. for the Migration Complete screen's
+     * "is the leftover balance negligible" gate. 100,000 zatoshi (0.001 ZEC) as of this writing.
+     * A fixed protocol-level constant (`MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`), not
+     * derived from any wallet/account state — callers should still call this rather than hardcode
+     * the value, so the app and the Rust engine can't drift apart on what counts as dust.
+     */
+    suspend fun migrationDustThresholdZatoshi(): Long
 
     /**
      * Marks whatever Orchard balance remains after migration (dust below the migratable
