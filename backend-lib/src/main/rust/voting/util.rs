@@ -5,36 +5,41 @@ use super::*;
 const TEST_TREE_STATE_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
+// Voting notes are Ironwood/V3 notes, so these fixtures populate the
+// ironwood_tree field (not orchard_tree) that generateNoteWitnessesNative and
+// extractNcRootNative actually read.
 #[cfg(feature = "android-test-fixtures")]
-fn tree_state_fixture(orchard_tree: String) -> zcash_client_backend::proto::service::TreeState {
+fn tree_state_fixture(ironwood_tree: String) -> zcash_client_backend::proto::service::TreeState {
     zcash_client_backend::proto::service::TreeState {
         network: "test".to_string(),
         height: 1,
         hash: TEST_TREE_STATE_HASH.to_string(),
         time: 0,
         sapling_tree: String::new(),
-        orchard_tree,
-        ironwood_tree: String::new(),
+        orchard_tree: String::new(),
+        ironwood_tree,
     }
 }
 
 #[cfg(feature = "android-test-fixtures")]
-fn non_empty_orchard_tree_hex() -> anyhow::Result<String> {
+fn non_empty_ironwood_tree_hex() -> anyhow::Result<String> {
     use incrementalmerkletree::frontier::CommitmentTree;
     use orchard::tree::MerkleHashOrchard;
     use zcash_primitives::merkle_tree::write_commitment_tree;
 
+    // The Ironwood tree is Orchard-shaped (same depth and leaf hash), so this
+    // reuses the Orchard commitment-tree encoding to build a non-empty fixture.
     let mut tree =
         CommitmentTree::<MerkleHashOrchard, { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 }>::empty();
     let mut leaf_bytes = [0u8; PROTOCOL_FIELD_BYTES];
     leaf_bytes[0] = 1;
     let leaf = MerkleHashOrchard::from_bytes(&leaf_bytes).unwrap();
     tree.append(leaf)
-        .map_err(|_| anyhow!("append orchard commitment tree leaf"))?;
+        .map_err(|_| anyhow!("append ironwood commitment tree leaf"))?;
 
     let mut tree_bytes = vec![];
     write_commitment_tree(&tree, &mut tree_bytes)
-        .map_err(|e| anyhow!("write orchard commitment tree: {}", e))?;
+        .map_err(|e| anyhow!("write ironwood commitment tree: {}", e))?;
     Ok(hex::encode(tree_bytes))
 }
 
@@ -73,12 +78,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
 /// `hotkey_seed` on `network_id`.
 ///
 /// The ZIP-32 account index is intentionally fixed at 0 and is not exposed as a parameter.
-/// `voting::vote_commitment::sign_cast_vote` / `voting::vote_commitment::build_vote_commitment`
-/// in `zcash_voting` derive the hotkey spending key via
-/// `crate::zkp2::derive_spending_key`, which hardcodes `derive_spending_key_for_account(.., 0)`.
-/// Letting callers pass an arbitrary account here would allow delegation to be built against
-/// a hotkey the vote-construction path cannot subsequently sign for, so the API surface
-/// hides the constraint instead of leaving it as a runtime trap.
+/// zcash_voting's own hotkey derivation (`VotingHotkey::from_stored_secret`) hardcodes the
+/// same account 0 / address 0 pair for its stored-secret hotkeys. Letting callers pass an
+/// arbitrary account here would allow delegation to be built against a hotkey the vote
+/// construction path cannot subsequently sign for, so the API surface hides the constraint
+/// instead of leaving it as a runtime trap.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_deriveHotkeyRawAddressNative<
     'local,
@@ -137,10 +141,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
         let bytes = java_bytes(env, &tree_state_bytes, "treeStateBytes")?;
         let tree_state =
             TreeState::decode(bytes.as_slice()).map_err(|e| anyhow!("decode TreeState: {}", e))?;
-        let orchard_ct = tree_state
-            .orchard_tree()
-            .map_err(|e| anyhow!("parse orchard_tree: {}", e))?;
-        let nc_root = orchard_ct.root().to_bytes();
+        // Voting notes are Ironwood/V3 notes; nc_root is anchored to the
+        // Ironwood tree, not the (Orchard/V2) orchard_tree field.
+        let ironwood_ct = tree_state
+            .ironwood_tree()
+            .map_err(|e| anyhow!("parse ironwood_tree: {}", e))?;
+        let nc_root = ironwood_ct.root().to_bytes();
         Ok(env.byte_array_from_slice(&nc_root)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
@@ -244,7 +250,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_non
     let res = catch_unwind(&mut env, |env| {
         use prost::Message;
 
-        let tree_state = tree_state_fixture(non_empty_orchard_tree_hex()?);
+        let tree_state = tree_state_fixture(non_empty_ironwood_tree_hex()?);
         Ok(env
             .byte_array_from_slice(&tree_state.encode_to_vec())?
             .into_raw())

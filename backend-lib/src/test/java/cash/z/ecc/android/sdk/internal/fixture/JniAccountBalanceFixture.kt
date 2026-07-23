@@ -14,6 +14,9 @@ object JniAccountBalanceFixture {
     const val ORCHARD_VERIFIED_BALANCE: Long = 0L
     const val ORCHARD_CHANGE_PENDING: Long = 0L
     const val ORCHARD_VALUE_PENDING: Long = 0L
+    const val IRONWOOD_VERIFIED_BALANCE: Long = 0L
+    const val IRONWOOD_CHANGE_PENDING: Long = 0L
+    const val IRONWOOD_VALUE_PENDING: Long = 0L
     const val UNSHIELDED_BALANCE: Long = 0L
 
     @Suppress("LongParameterList")
@@ -25,6 +28,9 @@ object JniAccountBalanceFixture {
         orchardVerifiedBalance: Long = ORCHARD_VERIFIED_BALANCE,
         orchardChangePending: Long = ORCHARD_CHANGE_PENDING,
         orchardValuePending: Long = ORCHARD_VALUE_PENDING,
+        ironwoodVerifiedBalance: Long = IRONWOOD_VERIFIED_BALANCE,
+        ironwoodChangePending: Long = IRONWOOD_CHANGE_PENDING,
+        ironwoodValuePending: Long = IRONWOOD_VALUE_PENDING,
         unshieldedBalance: Long = UNSHIELDED_BALANCE,
     ) = JniAccountBalance(
         accountUuid = accountUuid,
@@ -34,6 +40,9 @@ object JniAccountBalanceFixture {
         orchardVerifiedBalance = orchardVerifiedBalance,
         orchardChangePending = orchardChangePending,
         orchardValuePending = orchardValuePending,
+        ironwoodVerifiedBalance = ironwoodVerifiedBalance,
+        ironwoodChangePending = ironwoodChangePending,
+        ironwoodValuePending = ironwoodValuePending,
         unshieldedBalance = unshieldedBalance,
     )
 }

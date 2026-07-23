@@ -108,7 +108,19 @@ mod migration_keystone;
 mod migration_plan_cache;
 mod tor;
 mod utils;
+#[cfg(feature = "chp-voting")]
 mod voting;
+
+/// Re-exports the Slipstream sync engine's JNI binding crate so its
+/// `Java_com_zodl_slipstream_*` `#[no_mangle]` exports are linked into this cdylib rather
+/// than being dropped as an unused dependency. `slipstream-jni` is a plain path dependency
+/// (see backend-lib/Cargo.toml); this crate's own code never calls into it directly, so
+/// without this reference the linker's symbol garbage collection would strip its exports and
+/// the merged library would carry only the RustBackend JNI surface. The extern crate name is
+/// `slipstream`, not `slipstream_jni` - `slipstream-jni`'s own `Cargo.toml` sets `[lib] name =
+/// "slipstream"`, and Cargo derives `--extern` names from the lib target's name, not the
+/// package name.
+pub use slipstream;
 
 #[cfg(debug_assertions)]
 fn print_debug_state() {
@@ -495,6 +507,37 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createAcc
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Marker prefix for an `import_account_ufvk` failure caused by
+/// [`SqliteClientError::CorruptedData`] cross-pool checkpoint-parity errors raised by
+/// `rewind_to_chain_state` (`zcash_client_sqlite::wallet::rewind_to_chain_state`), which are
+/// transient rather than genuine database corruption: parity across pools is restored the next
+/// time blocks are scanned. Mirrors `ImportAccountErrors` on the Kotlin side, which matches on
+/// this exact string via `isCheckpointsNotReady`.
+const IMPORT_CHECKPOINTS_NOT_READY_MARKER: &str = "ImportAccountCheckpointsNotReady";
+
+/// Maps an `import_account_ufvk` failure to the JNI-level error.
+///
+/// The cross-pool checkpoint-parity `CorruptedData` errors raised by `rewind_to_chain_state`
+/// are tagged with [`IMPORT_CHECKPOINTS_NOT_READY_MARKER`] so the Kotlin side can distinguish
+/// this transient, retryable condition from other, genuinely fatal, import failures. All other
+/// errors keep the legacy `"Error while initializing accounts: {}"` wrapping.
+fn map_import_account_error(e: SqliteClientError) -> anyhow::Error {
+    match &e {
+        SqliteClientError::CorruptedData(msg)
+            if msg.ends_with("should have the same checkpoints") =>
+        {
+            anyhow!(
+                "{}: the wallet's checkpoints are not yet in sync across shielded pools; this \
+                 can happen transiently on newly-imported or recently-upgraded wallets and \
+                 typically resolves once more blocks are scanned. Underlying error: {}",
+                IMPORT_CHECKPOINTS_NOT_READY_MARKER,
+                e
+            )
+        }
+        _ => anyhow!("Error while initializing accounts: {}", e),
+    }
+}
+
 /// Tells the wallet to track an account using a unified full viewing key.
 ///
 /// Returns details about the imported account, including the unique account identifier for
@@ -596,7 +639,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_importAcc
                 purpose,
                 key_source.as_ref().map(|s| s.as_ref()),
             )
-            .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
+            .map_err(map_import_account_error)?;
 
         Ok(encode_account(env, &network, account)?.into_raw())
     });
@@ -2544,20 +2587,46 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         let pczt = parse_pczt(env, pczt)?;
 
+        // The Orchard proving key must match the circuit governing the Orchard pool under the
+        // consensus branch this PCZT was created for; derive it from the PCZT's branch id before
+        // the PCZT is consumed by the prover. The Ironwood bundle always uses PostNu6_3.
+        let pczt_branch_id = BranchId::try_from(*pczt.global().consensus_branch_id())
+            .map_err(|_| anyhow!("PCZT has an invalid consensus branch id"))?;
+
         let mut prover = Prover::new(pczt);
 
         if prover.requires_orchard_proof() {
+            let orchard_circuit_version =
+                zcash_primitives::transaction::components::orchard::bundle_version_for_branch(
+                    pczt_branch_id,
+                    orchard::ValuePool::Orchard,
+                )
+                .ok_or_else(|| {
+                    anyhow!("PCZT's consensus branch does not support the Orchard pool")
+                })?
+                .circuit_version();
             // Process-wide cached proving key (`zcash_primitives`, adopted 2026-07-23) — building
-            // one is expensive, and this JNI entry point is called on every ordinary shielded send,
-            // not just migrations, so rebuilding it per call was wasted work on every proof.
+            // one is expensive, and this JNI entry point is called on every ordinary shielded
+            // send, not just migrations, so rebuilding it per call was wasted work on every
+            // proof. Still keyed on the branch-derived circuit version above, since this block
+            // also has to prove legacy (pre-Ironwood) Orchard PCZTs during the migration window.
             let pk = zcash_primitives::transaction::builder::cached_orchard_proving_key(
-                orchard::circuit::OrchardCircuitVersion::PostNu6_3,
+                orchard_circuit_version,
             );
             prover = prover
                 .create_orchard_proof(pk)
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
+
+        if prover.requires_ironwood_proof() {
+            prover = prover
+                .create_ironwood_proof(&orchard::circuit::ProvingKey::build(
+                    orchard::circuit::OrchardCircuitVersion::PostNu6_3,
+                ))
+                .map_err(|e| anyhow!("Failed to create Ironwood proof for PCZT: {:?}", e))?;
+        }
+        assert!(!prover.requires_ironwood_proof());
 
         if prover.requires_sapling_proofs() {
             let spend_params = path_from_jni(env, spend_params)?;
@@ -3884,4 +3953,53 @@ fn parse_http_headers(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_import_account_error_tags_checkpoint_parity_failures() {
+        for msg in [
+            "Sapling and Orchard should have the same checkpoints",
+            "Sapling and Ironwood should have the same checkpoints",
+        ] {
+            let mapped =
+                map_import_account_error(SqliteClientError::CorruptedData(msg.to_string()));
+            let mapped_msg = mapped.to_string();
+            assert!(
+                mapped_msg.starts_with(IMPORT_CHECKPOINTS_NOT_READY_MARKER),
+                "expected marker prefix for {msg:?}, got {mapped_msg:?}"
+            );
+            assert!(
+                mapped_msg.contains(msg),
+                "expected the original error message to be preserved for {msg:?}, got {mapped_msg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_import_account_error_passes_through_other_corrupted_data() {
+        let mapped = map_import_account_error(SqliteClientError::CorruptedData(
+            "some other database corruption".to_string(),
+        ));
+        let mapped_msg = mapped.to_string();
+        assert!(
+            !mapped_msg.starts_with(IMPORT_CHECKPOINTS_NOT_READY_MARKER),
+            "did not expect the marker prefix, got {mapped_msg:?}"
+        );
+        assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
+
+    #[test]
+    fn map_import_account_error_passes_through_non_corrupted_data_errors() {
+        let mapped = map_import_account_error(SqliteClientError::AccountUnknown);
+        let mapped_msg = mapped.to_string();
+        assert!(
+            !mapped_msg.starts_with(IMPORT_CHECKPOINTS_NOT_READY_MARKER),
+            "did not expect the marker prefix, got {mapped_msg:?}"
+        );
+        assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
 }

@@ -14,6 +14,7 @@ import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
+import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.migration.JniAttentionReason
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
@@ -528,7 +529,7 @@ internal class OrchardMigrationSdkImpl(
         endpoint: LightWalletEndpoint,
     ): TransactionSubmitResult {
         val torClient = if (useTor) torClientLazy.getInstance(Unit) else null
-        val client = WalletClientFactory(context, torClient).create(endpoint)
+        val client = WalletClientFactory(context, torClient?.let { resolved -> LazyTorClient { resolved } }).create(endpoint)
         return try {
             client.submitTransaction(
                 FirstClassByteArray(rawTx),

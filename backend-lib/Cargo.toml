@@ -11,9 +11,18 @@ edition = "2024"
 rust-version = "1.92"
 
 [features]
+# chp-voting (the shielded-voting JNI surface) is OFF by default for this testing cycle, even
+# though the zcash_voting 1.0 port has landed - re-enable it by adding `chp-voting` to the list
+# below. `android-test-fixtures` stays out of default too; it must never be enabled for
+# production native builds.
+default = []
 # Enables JNI helpers that are only used by Android instrumentation tests.
 # This feature must not be enabled for production native builds.
 android-test-fixtures = []
+# Enables the shielded-voting JNI surface (src/main/rust/voting.rs and its
+# `Java_..._VotingRustBackend_*` exports) and pulls in the optional `zcash_voting` dependency
+# below.
+chp-voting = ["dep:zcash_voting", "dep:pasta_curves", "dep:ff"]
 
 [dependencies]
 # Zcash dependencies
@@ -28,6 +37,15 @@ orchard = { version = "0.15", features = ["unstable-voting-circuits"] }
 zcash_pool_migration_backend = { version = "0.1.0", features = ["wallet"] }
 pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
+# zcash_transparent, zcash_address, zcash_client_backend, zcash_client_sqlite, zcash_primitives,
+# zcash_proofs and zcash_protocol are bumped to the minor line the convergence-pin librustzcash
+# checkout actually publishes (0.9/0.13/0.24.0-rc.1/0.22.0-rc.1/0.29/0.29/0.10 respectively) so
+# the [patch.crates-io] block below is actually used. A `[patch]` only replaces the resolved
+# crate when its version satisfies the requirement string declared here; a requirement that's
+# only compatible with the *published* generation the patch replaces makes cargo silently
+# ignore the patch for that crate and pull a second, unpatched copy from crates.io instead,
+# splitting the graph (identical failure mode already hit and documented by slipstream-jni's
+# own Cargo.toml for zcash_protocol).
 transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
 zcash_address = "0.13"
 zcash_client_backend = { version = "0.24.0-rc.1", features = [
@@ -102,24 +120,49 @@ xz2 = { version = "0.1", features = ["static"] }
 # on Orchard's unstable voting-circuits APIs, so the direct Orchard dependency is
 # pinned to the same version and enables the same feature. Revisit the exact pin
 # if the upstream voting crates relax their Orchard requirement.
-# The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
-# Its share-nullifier entry point forwards to
-# `zcash_voting::share_tracking::compute_share_nullifier`:
+# The Android JNI boundary for voting code is `src/main/rust/voting.rs`, compiled in only
+# behind the `chp-voting` feature (see [features] below). Its share-nullifier entry point
+# forwards to `zcash_voting::share::compute_nullifier`:
 # https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.11.0/zcash_voting/src/share_tracking.rs
 #
 # The transitive `voting-circuits` dependency contains the share-reveal circuit
 # and the Poseidon-based `share_nullifier_hash` implementation:
 # https://github.com/valargroup/voting-circuits/blob/v0.8.0/voting-circuits/src/share_reveal/circuit.rs
-# Default features stay disabled. The `client-pir` feature is needed for
-# delegation proof precompute and proof generation. The `client-tree-sync`
-# feature is needed for vote commitment tree sync and VAN witnesses.
-# Expected PIR/tree-sync networking transitives include `pir-client`, `pir-types`,
-# `valar-ypir`, `valar-spiral-rs`, `vote-commitment-tree-client`, and
-# `hyper-rustls`.
-zcash_voting = { version = "=0.11.0", default-features = false, features = [
-    "client-pir",
-    "client-tree-sync",
-] }
+#
+# Bumped 0.11.0 -> 1.0.0 for the merged-library build only: 0.11.0's `action.rs` calls
+# `pczt::Pczt::parse`/`extract_pczt_sighash` assuming the published pczt 0.7 signatures
+# (`&[u8] -> Result<...>`), but the convergence-pin checkout's pczt 0.7.0 (patched in via
+# [patch.crates-io] below, required by the slipstream-jni merge) changed those signatures
+# without a version bump; 1.0.0 compiles cleanly against it. 1.0.0 also folded every
+# previously-optional dependency (pir-client, pir-types, valar-ypir, valar-spiral-rs,
+# vote-commitment-tree(-client), voting-circuits) into unconditional deps - it has no `features`
+# table at all - so the former `client-pir`/`client-tree-sync` feature list and
+# `default-features = false` are dropped; those capabilities are unconditionally compiled in
+# now. Optional, gated by `chp-voting`: zcash_voting 1.0's API surface has not yet been fully
+# ported past its own rename-level drift, so a default build must not carry it. Revert
+# alongside the rest of the patch block once the librustzcash family's next real release lands.
+zcash_voting = { version = "=1.0.0", optional = true }
+# The delegation-submission signing recipe (voting/delegation.rs) derives the account
+# SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
+# orchard already carry transitively; pin to the versions already resolved for them
+# (see Cargo.lock) so this stays the same crate instance, not a second copy.
+pasta_curves = { version = "0.5", optional = true }
+ff = { version = "0.13", optional = true }
+
+# Slipstream sync engine's JNI binding crate, pulled in as a plain path dependency so its
+# `Java_com_zodl_slipstream_*` exports link into THIS cdylib instead of a separate
+# libslipstream.so. This is the merged-library shape iOS already has (one libzcashlc, one
+# bundled SQLite): backend-lib's own bundled rusqlite and the engine's must be the SAME
+# SQLite instance in the SAME process, or closing one connection drops the other's fcntl
+# locks out from under it (the dual-instance SIGBUS/disk-I/O hazard; see
+# docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md in this repo for the full
+# writeup). slipstream-jni builds as rlib + cdylib; Rust keeps `#[no_mangle]` exports from an
+# rlib dependency, so depending on it here is sufficient to carry its exports into our cdylib
+# (see the `pub use slipstream;` reference in src/main/rust/lib.rs that keeps the linker
+# from garbage-collecting it as an unused dependency). The crate is now vendored in-tree
+# alongside this manifest; only its own `slipstream-core` dependency still resolves
+# cross-repo, into the clean slipstream `main` checkout (see slipstream-jni/Cargo.toml).
+slipstream-jni = { path = "slipstream-jni" }
 
 # Keystone hardware-wallet batch signing for the Orchard migration flow.
 #
@@ -148,11 +191,16 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 ## The pool-migration store is now scoped per-account (`PoolMigrations::for_account`, see
 ## `migration_engine.rs`'s `Backend::new`) — the former singleton-per-pool cross-account collision
 ## (see `project_core_migration_swap` notes) is resolved by this pull, not just documented.
-## `zcash_pool_migration_backend::engine::MigrationProver` (prove_transfer/prove_preparation) is
-## new, additive, and NOT yet adopted here — our own `migration_finalize.rs` hand-rolled proving
-## stopgap still does the job and is a separate follow-up to retire (it needs mutable wallet
-## commitment-tree access our current `Backend<'a, W>` doesn't hold, not a drop-in swap).
-## `#2716` (note locking) is NOT merged yet as of this pull — nothing to adopt there.
+## `zcash_pool_migration_backend::engine::MigrationProver` (prove_transfer/prove_preparation) has
+## since been adopted (migration.rs), retiring the former `migration_finalize.rs` hand-rolled
+## proving stopgap. `#2716` (note locking) has also been adopted: `InputSource` selection methods
+## and `propose_transfer`/`propose_shielding` now take a `LockFilter<'_>` /
+## `Option<TxVersion>`/`Option<LockRequest>` — see lib.rs and migration_engine.rs.
+##
+## IMPORTANT: as of this pull, this repo's code now references librustzcash main APIs
+## (LockFilter, TxVersion, LockRequest — PR #2716 + 41 follow-up commits) beyond what the
+## convergence-pin checkout at 68603fa71a provides. The local librustzcash checkout needs to be
+## advanced to pick up #2716 before this crate will compile again.
 [patch.crates-io]
 zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
 zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
@@ -190,3 +238,10 @@ bip0039 = "0.12"
 name = "zcashwalletsdk"
 path = "src/main/rust/lib.rs"
 crate-type = ["staticlib", "cdylib"]
+
+# slipstream-jni is deliberately its own one-crate Cargo workspace (own [workspace] table);
+# Cargo auto-adopts path deps inside this directory as workspace members, which collides
+# with that nested root. Excluding it keeps it a plain out-of-workspace path dependency
+# (nested-workspace workaround, rust-lang/cargo#5042).
+[workspace]
+exclude = ["slipstream-jni"]

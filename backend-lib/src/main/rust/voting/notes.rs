@@ -40,11 +40,13 @@ fn validate_tree_state_bytes_for_round(
 
     let tree_state =
         TreeState::decode(tree_state_bytes).map_err(|e| anyhow!("decode TreeState: {}", e))?;
-    let orchard_ct = tree_state
-        .orchard_tree()
-        .map_err(|e| anyhow!("parse orchard_tree: {}", e))?;
-    let orchard_root = orchard_ct.root().to_bytes();
-    validate_cached_tree_state_for_round(&tree_state, &orchard_root[..], params)
+    // Voting notes are Ironwood/V3 notes; the round's nc_root is anchored to
+    // the Ironwood tree, not the (Orchard/V2) orchard_tree field.
+    let ironwood_ct = tree_state
+        .ironwood_tree()
+        .map_err(|e| anyhow!("parse ironwood_tree: {}", e))?;
+    let ironwood_root = ironwood_ct.root().to_bytes();
+    validate_cached_tree_state_for_round(&tree_state, &ironwood_root[..], params)
 }
 
 fn require_fully_scanned_to_snapshot(
@@ -68,14 +70,17 @@ fn require_fully_scanned_to_snapshot(
     Ok(())
 }
 
-type ReadOnlyWalletDb = zcash_client_sqlite::WalletDb<
+pub(super) type ReadOnlyWalletDb = zcash_client_sqlite::WalletDb<
     rusqlite::Connection,
     Network,
     zcash_client_sqlite::util::SystemClock,
     rand::rngs::OsRng,
 >;
 
-fn open_wallet_db_read_only(path: &str, network: Network) -> anyhow::Result<ReadOnlyWalletDb> {
+pub(super) fn open_wallet_db_read_only(
+    path: &str,
+    network: Network,
+) -> anyhow::Result<ReadOnlyWalletDb> {
     let conn =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| anyhow!("open wallet DB read-only: {}", e))?;
@@ -180,10 +185,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
                 .clone();
 
             // Upstream interprets "unspent" at the requested height: spends mined
-            // after the snapshot remain eligible for that snapshot.
+            // after the snapshot remain eligible for that snapshot. Voting notes
+            // are Ironwood/V3 notes, so this selects from the Ironwood pool.
             let notes = wallet_db
-                .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
-                .map_err(|e| anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e))?;
+                .get_unspent_ironwood_notes_at_historical_height(account_uuid, height)
+                .map_err(|e| anyhow!("get_unspent_ironwood_notes_at_historical_height: {}", e))?;
 
             notes
                 .iter()
@@ -210,12 +216,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
     notes: JObjectArray<'local>,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
-        use incrementalmerkletree::Position;
-        use orchard::tree::MerkleHashOrchard;
-        use prost::Message;
-        use zcash_client_backend::proto::service::TreeState;
-        use zcash_protocol::consensus::BlockHeight;
-
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let round_id = java_string_to_rust(env, &round_id)?;
@@ -225,77 +225,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
 
         let core_notes = java_note_info_array(env, &notes, "notes")?;
 
-        let conn = db.conn();
-        let wallet_id = db.wallet_id();
-        let bundle_notes =
-            select_bundle_notes(&conn, &round_id, &wallet_id, bundle_index, &core_notes)?;
-        let tree_state_bytes =
-            voting::storage::queries::load_tree_state(&conn, &round_id, &wallet_id)
-                .map_err(|e| anyhow!("load_tree_state: {}", e))?;
-        let params = voting::storage::queries::load_round_params(&conn, &round_id, &wallet_id)
-            .map_err(|e| anyhow!("load_round_params: {}", e))?;
-        drop(conn);
+        let bundle_notes = {
+            let conn = db.conn();
+            let wallet_id = db.wallet_id();
+            select_bundle_notes(&conn, &round_id, &wallet_id, bundle_index, &core_notes)?
+        };
 
-        let tree_state = TreeState::decode(tree_state_bytes.as_slice())
-            .map_err(|e| anyhow!("decode TreeState: {}", e))?;
-        let orchard_ct = tree_state
-            .orchard_tree()
-            .map_err(|e| anyhow!("parse orchard_tree: {}", e))?;
-        let frontier_root = orchard_ct.root();
-        let frontier_root_bytes = frontier_root.to_bytes();
-        validate_cached_tree_state_for_round(&tree_state, &frontier_root_bytes[..], &params)?;
-        let nonempty_frontier = orchard_ct
-            .to_frontier()
-            .take()
-            .ok_or_else(|| anyhow!("empty orchard frontier - no Orchard activity at snapshot"))?;
+        let wallet_db = open_wallet_db_read_only(&wallet_path, network)?;
+        // zcash_voting 1.0.0 owns tree-state loading, root validation, and
+        // Ironwood-pool witness generation for the round snapshot; this JNI
+        // entrypoint only selects the bundle's notes and persists the result.
+        let witnesses =
+            voting::witness::generate_note_witnesses(&db, &round_id, &bundle_notes, &wallet_db)
+                .map_err(|e| anyhow!("generate_note_witnesses: {}", e))?;
 
-        let height =
-            BlockHeight::from_u32(u32::try_from(params.snapshot_height).map_err(|_| {
-                anyhow!(
-                    "stored snapshot_height must be in range 0..=u32::MAX, got {}",
-                    params.snapshot_height
-                )
-            })?);
-
-        let positions = bundle_notes
-            .iter()
-            .map(|note| Position::from(note.position))
-            .collect::<Vec<_>>();
-
-        let mut wallet_db = open_wallet_db_read_only(&wallet_path, network)?;
-        // Keep shard roots, shard rows, and cap reads on one read-transaction snapshot.
-        let merkle_paths = wallet_db
-            .transactionally(|wallet_db| {
-                wallet_db
-                    .generate_orchard_witnesses_at_historical_height(
-                        &positions,
-                        nonempty_frontier,
-                        height,
-                    )
-                    .map_err(anyhow::Error::from)
-            })
-            .map_err(|e| anyhow!("generate_orchard_witnesses_at_historical_height: {}", e))?;
-
-        let root_bytes = frontier_root_bytes.to_vec();
-        let witnesses = merkle_paths
-            .into_iter()
-            .zip(bundle_notes.iter())
-            .map(|(path, note)| {
-                let auth_path = path
-                    .path_elems()
-                    .iter()
-                    .map(|hash: &MerkleHashOrchard| hash.to_bytes().to_vec())
-                    .collect();
-                WitnessData {
-                    note_commitment: note.commitment.clone(),
-                    position: note.position,
-                    root: root_bytes.clone(),
-                    auth_path,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        replace_bundle_witnesses(&db, &round_id, bundle_index, &witnesses)?;
+        db.replace_bundle_witnesses(&round_id, bundle_index, &witnesses)
+            .map_err(|e| anyhow!("replace_bundle_witnesses: {}", e))?;
 
         make_jni_witness_data_array(env, witnesses)
     });
@@ -318,21 +263,31 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
         let notes = java_note_info_array(env, &notes, "notes")?;
         let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        let (count, weight) = db
-            .setup_bundles(&round_id, &notes)
-            .map_err(|e| anyhow!("setup_bundles: {}", e))?;
-        if count != expected_count || weight != expected_weight {
-            // setup_bundles has already persisted the round's bundles. Treat a
-            // mismatch as an internal bug; callers must clear the round before retrying.
+        let layout = db
+            .ensure_bundles_with_skipped_suffix_with_policy(
+                &round_id,
+                &notes,
+                voting::BundlePolicy::default(),
+            )
+            .map_err(|e| anyhow!("ensure_bundles_with_skipped_suffix_with_policy: {}", e))?;
+        if layout.bundle_count != expected_count || layout.eligible_weight != expected_weight {
+            // ensure_bundles_with_skipped_suffix_with_policy has already persisted the
+            // round's bundles. Treat a mismatch as an internal bug; callers must clear
+            // the round before retrying.
             return Err(anyhow!(
                 "setup_bundles result mismatch after persisting bundles; call clearRound before retrying: db=({}, {}) chunk=({}, {})",
-                count,
-                weight,
+                layout.bundle_count,
+                layout.eligible_weight,
                 expected_count,
                 expected_weight
             ));
         }
-        make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
+        make_jni_bundle_setup_result(
+            env,
+            layout.bundle_count,
+            layout.eligible_weight,
+            &bundle_weights,
+        )
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
@@ -344,18 +299,19 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     db_handle: jlong,
-    round_id: JString<'local>,
-    seed: JByteArray<'local>,
+    stored_secret: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let seed = java_secret_bytes_at_least(env, &seed, "seed", PROTOCOL_FIELD_BYTES)?;
-        let round_id = java_string_to_rust(env, &round_id)?;
-        let hotkey = db
-            .generate_hotkey(seed.expose_secret())
-            .map_err(|e| anyhow!("generate_hotkey: {}", e))?;
-        update_round_phase_forward(&db, &round_id, RoundPhase::HotkeyGenerated)?;
+        let network = db.network;
+        let stored_secret = java_bytes(env, &stored_secret, "storedSecret")?;
+        let hotkey = if stored_secret.is_empty() {
+            voting::hotkey::generate_random_voting_hotkey(network)
+                .map_err(|e| anyhow!("generate_random_voting_hotkey: {}", e))?
+        } else {
+            voting::types::VotingHotkey::from_stored_secret(&stored_secret, network)
+                .map_err(|e| anyhow!("VotingHotkey::from_stored_secret: {}", e))?
+        };
         make_jni_voting_hotkey(env, hotkey)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
