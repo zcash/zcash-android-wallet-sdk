@@ -352,6 +352,73 @@ fn open_handle(
     })
 }
 
+/// [MOB-1455 fix] The lowest `anchor_boundary` height any account's still-pending Orchard→
+/// Ironwood migration transfer needs protected from Slipstream's ordinary checkpoint pruning,
+/// or `None` if nothing needs protecting. Fed into `EngineConfig::anchor_retention_height` at
+/// every session (re)start (`start_session`, below): without it, `zcash_client_backend`'s
+/// block-persistence path prunes commitment-tree checkpoints past `PRUNING_DEPTH` (100 blocks)
+/// unconditionally, including one a not-yet-proved migration transfer is anchored to (drawn once
+/// at scheduling time, ZIP 374) — so ordinary sync can silently prune the very checkpoint the
+/// SDK's `finalizeReadyTransfersNative` needs, potentially days later, to prove that transfer,
+/// failing with `commitment-tree query failed: Query(NotContained(..))`.
+///
+/// A transaction counts only if its `anchor_boundary` is set (`NULL` for a preparation
+/// transaction, which anchors to a freshly current tip at prove time instead of a boundary drawn
+/// in advance — see the SDK repo's `migration.rs::natural_anchor_height` doc comment) AND its
+/// `state` is not yet `broadcast`/`mined` (those no longer need their original anchor's
+/// checkpoint kept around). `status` excludes `complete`/`failed` migrations (terminal; nothing
+/// left to protect). See `zcash_client_sqlite::pool_migration::store`'s DDL builders
+/// (`create_migrations_sql`/`create_transactions_sql`) for the column set this mirrors.
+///
+/// ## Why raw SQL instead of calling into `backend-lib`'s typed `migration.rs`
+/// The obvious-looking alternative — calling `migration.rs`'s `Backend`/`PoolMigrationRead` API
+/// (typed `MigrationState`/`MigrationTxState`, no ad-hoc SQL) — is not just less convenient here,
+/// it is IMPOSSIBLE: `backend-lib`'s own `Cargo.toml` already depends on this crate
+/// (`slipstream-jni = { path = "slipstream-jni" }`, so `backend-lib` can re-export/link this
+/// crate's JNI symbols into one merged `libzcashlc.so` — see this crate's module doc). Adding a
+/// dependency in the other direction would make `slipstream-jni` depend on `backend-lib` depend
+/// on `slipstream-jni`: a cyclic package dependency, which Cargo rejects regardless of the two
+/// crates' separate `[workspace]` roots. Raw SQL also keeps this crate from having to link
+/// `zcash_pool_migration_backend`/`orchard` at all, which it otherwise has no reason to depend
+/// on.
+///
+/// Reads via `read_query::open_read_only` (the shared bundled-SQLite-instance path — see that
+/// module's doc comment for the dual-SQLite-instance/SIGBUS hazard it avoids), never a second,
+/// independent `rusqlite::Connection::open`.
+///
+/// Deliberately returns `anyhow::Result` rather than swallowing errors internally: this function
+/// has no JNI boundary of its own, so the CALLER (`start_session`) is responsible for treating
+/// any `Err` as "no retention floor" (log + fall back to `None`) — a wallet DB read glitch here
+/// must never block a sync session from starting. The overwhelmingly common case (no migration
+/// ever attempted in this wallet) resolves via the `Ok(None)` arm below (aggregate `MIN` over
+/// zero matching rows is SQL `NULL`, not a query error) or the "no such table" arm on a wallet
+/// that predates the migration schema entirely — neither should ever be logged as a failure.
+fn min_pending_migration_anchor_boundary(db_path: &str) -> anyhow::Result<Option<u32>> {
+    let conn = read_query::open_read_only(db_path)?;
+    let boundary = conn.query_row(
+        "SELECT MIN(t.anchor_boundary) \
+         FROM orchard_ironwood_migration_transactions t \
+         JOIN orchard_ironwood_migrations m ON m.id = t.migration_id \
+         WHERE m.status NOT IN ('complete', 'failed') \
+           AND t.state NOT IN ('broadcast', 'mined') \
+           AND t.anchor_boundary IS NOT NULL",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    );
+    match boundary {
+        Ok(Some(h)) => Ok(Some(
+            u32::try_from(h).map_err(|_| anyhow!("anchor_boundary {h} out of u32 range"))?,
+        )),
+        Ok(None) => Ok(None),
+        // A wallet that has never attempted a migration doesn't have these tables at all — not
+        // an error, just nothing to protect.
+        Err(rusqlite::Error::SqliteFailure(_, Some(ref msg))) if msg.contains("no such table") => {
+            Ok(None)
+        }
+        Err(e) => Err(anyhow!("reading pending migration anchor boundary: {e}")),
+    }
+}
+
 /// Spawns a sync session (initial pass → follow + mempool). Aborts any in-flight pass,
 /// performs the quiescence drains, then spawns `run_session` under the panic
 /// supervisor. Behavior matches the iOS/macOS reference wrapper.
@@ -393,8 +460,28 @@ fn start_session(
     // internal performance tuning keeps its production defaults (owned by the engine, not
     // exposed here). The v0.7-only config surface is intentionally NOT set — this is the
     // v0.6.0 host recipe.
-    let cfg = EngineConfig::new(h.network, h.wallet_db_path.clone(), h.endpoint.clone())
+    let mut cfg = EngineConfig::new(h.network, h.wallet_db_path.clone(), h.endpoint.clone())
         .scaled_for_device_memory(h.total_memory_bytes);
+
+    // [MOB-1455 fix] Protect the checkpoint(s) any not-yet-broadcast migration transfer is
+    // anchored to from this session's own checkpoint pruning — see
+    // `min_pending_migration_anchor_boundary`'s doc comment for the full rationale (including
+    // why this queries raw SQL instead of calling into backend-lib's migration.rs). A lookup
+    // failure must never block sync from starting: fall back to no retention floor (the
+    // pre-fix behavior) and log loudly enough to notice, since silently reverting to "no
+    // protection" is itself worth knowing about.
+    cfg.anchor_retention_height = h
+        .wallet_db_path
+        .to_str()
+        .ok_or_else(|| anyhow!("wallet_db_path is not valid UTF-8"))
+        .and_then(min_pending_migration_anchor_boundary)
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e,
+                "anchor-retention floor lookup failed — starting sync without one"
+            );
+            None
+        });
 
     // `ufvk` present = view-only import on the first pass (keyless — a UFVK is viewing
     // capability, never a spending key); absent = an account must already exist. The engine's
