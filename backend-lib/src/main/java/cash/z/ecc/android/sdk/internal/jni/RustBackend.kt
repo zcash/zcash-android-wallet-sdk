@@ -287,6 +287,8 @@ class RustBackend private constructor(
         saplingRoots: List<JniSubtreeRoot>,
         orchardStartIndex: Long,
         orchardRoots: List<JniSubtreeRoot>,
+        ironwoodStartIndex: Long,
+        ironwoodRoots: List<JniSubtreeRoot>,
     ) = withContext(SdkDispatchers.DATABASE_IO) {
         putSubtreeRoots(
             dataDbFile.absolutePath,
@@ -294,6 +296,8 @@ class RustBackend private constructor(
             saplingRoots.toTypedArray(),
             orchardStartIndex,
             orchardRoots.toTypedArray(),
+            ironwoodStartIndex,
+            ironwoodRoots.toTypedArray(),
             networkId = networkId
         )
     }
@@ -553,7 +557,7 @@ class RustBackend private constructor(
     companion object {
         internal val rustLibraryLoader = NativeLibraryLoader("zcashwalletsdk")
 
-        private val rustLogging: RustLogging = RustLogging.Off
+        private val rustLogging: RustLogging = RustLogging.Debug
 
         suspend fun loadLibrary() {
             rustLibraryLoader.load {
@@ -781,6 +785,8 @@ class RustBackend private constructor(
             saplingRoots: Array<JniSubtreeRoot>,
             orchardStartIndex: Long,
             orchardRoots: Array<JniSubtreeRoot>,
+            ironwoodStartIndex: Long,
+            ironwoodRoots: Array<JniSubtreeRoot>,
             networkId: Int
         )
 

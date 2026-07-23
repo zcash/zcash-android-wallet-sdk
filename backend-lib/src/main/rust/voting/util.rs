@@ -14,6 +14,7 @@ fn tree_state_fixture(orchard_tree: String) -> zcash_client_backend::proto::serv
         time: 0,
         sapling_tree: String::new(),
         orchard_tree,
+        ironwood_tree: String::new(),
     }
 }
 

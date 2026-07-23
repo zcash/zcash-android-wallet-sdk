@@ -17,12 +17,20 @@ android-test-fixtures = []
 
 [dependencies]
 # Zcash dependencies
-orchard = { version = "=0.14.0", features = ["unstable-voting-circuits"] }
-pczt = { version = "0.7", features = ["prover", "orchard", "sapling"] }
+# Ironwood (NU6.3): tracks the same git rev as [patch.crates-io] below directly, since its
+# version (0.15.0) can't satisfy crates-io requirements while pinned to a ZIP 374 branch rev.
+orchard = { version = "0.15", features = ["unstable-voting-circuits"] }
+# Orchard->Ironwood migration engine (core/upstream implementation) — path dependency on the local
+# librustzcash checkout (this crate isn't published to crates.io). Replaces the former hand-rolled
+# `zcash_pool_migration` crate. The SQLite persistence side (formerly the separate
+# `zcash_pool_migration_sqlite` crate) has since been folded into `zcash_client_sqlite::pool_migration`
+# (see that dependency's `[patch.crates-io]` entry below) — no separate dependency needed for it.
+zcash_pool_migration_backend = { version = "0.1.0", features = ["wallet"] }
+pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
-transparent = { package = "zcash_transparent", version = "0.8", default-features = false }
-zcash_address = "0.12"
-zcash_client_backend = { version = "0.23", features = [
+transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
+zcash_address = "0.13"
+zcash_client_backend = { version = "0.24.0-rc.1", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -30,14 +38,17 @@ zcash_client_backend = { version = "0.23", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.21", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
-zcash_primitives = "0.28"
-zcash_proofs = "0.28"
-zcash_protocol = "0.9"
+zcash_primitives = "0.29"
+zcash_proofs = "0.29"
+zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
+# Used by migration_finalize.rs to read `ShardTreeError`/`QueryError` variants when checking
+# note-witness availability at a migration transaction's anchor boundary.
+shardtree = "0.7"
 # Used by voting/notes.rs to construct historical Orchard witness positions.
 incrementalmerkletree = { version = "0.8", default-features = false }
 
@@ -110,16 +121,52 @@ zcash_voting = { version = "=0.11.0", default-features = false, features = [
     "client-tree-sync",
 ] }
 
-## Uncomment this to test librustzcash changes locally
-#[patch.crates-io]
-#pczt = { package = "pczt", path = '../../clones/librustzcash/pczt' }
-#transparent = { package = "zcash_transparent", path = '../../clones/librustzcash/zcash_protocol' }
-#zcash_address = { path = '../../clones/librustzcash/components/zcash_address' }
-#zcash_client_backend = { path = '../../clones/librustzcash/zcash_client_backend' }
-#zcash_client_sqlite = { path = '../../clones/librustzcash/zcash_client_sqlite' }
-#zcash_primitives = { path = '../../clones/librustzcash/zcash_primitives' }
-#zcash_proofs = { path = '../../clones/librustzcash/zcash_proofs' }
-#zcash_protocol = { path = '../../clones/librustzcash/zcash_protocol' }
+# Keystone hardware-wallet batch signing for the Orchard migration flow.
+#
+# The compiled `keystone-sdk-android` AAR this project's Kotlin layer otherwise depends on
+# (co.electriccoin.zcash ui-lib) is stale (last release Oct 2025) and has no batch-signing API —
+# only single-PCZT `generatePczt`/`parsePczt`. Batch signing for Zcash (firmware + these UR
+# envelope types) was added to the Keystone ecosystem within the last month, but hasn't reached a
+# new Android SDK release yet. `chainapsis/vizor-wallet` (a different Zcash wallet, run by the
+# same contributors behind the Keystone firmware/core PRs) bypasses the compiled AAR entirely by
+# depending on `keystone-sdk-rust`'s `ur-registry` crate and `ur-rs` directly from git — this
+# mirrors that exact, verified-working pattern instead of waiting on an Android SDK release.
+# The actual batching primitive is `pczt::roles::signer::batch` (see the `signer` feature above),
+# not Keystone-specific; these crates only provide the outer UR/QR envelope.
+ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
+ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
+
+## Local librustzcash checkout, on main-latest (tracks upstream origin/main directly — as of
+## 2026-07-22 this has absorbed Danny/core team's former feat/pool-migration-sqlite stack (PR
+## #2669), account-keying the pool-migration store (PR #2712 + FK fixup #2720), and proving the
+## transfer at schedule time plus anchor-retention/proving-key-cache follow-ups (PR #2710 +
+## #2728/#2729/#2730/#2734)) — needed for zcash_pool_migration_backend above and
+## zcash_client_sqlite::pool_migration below. orchard is patched to the exact rev main pins
+## (0.15.0 isn't on crates.io yet with ZIP 374 support), everything else is a local path for fast
+## iteration.
+##
+## The pool-migration store is now scoped per-account (`PoolMigrations::for_account`, see
+## `migration_engine.rs`'s `Backend::new`) — the former singleton-per-pool cross-account collision
+## (see `project_core_migration_swap` notes) is resolved by this pull, not just documented.
+## `zcash_pool_migration_backend::engine::MigrationProver` (prove_transfer/prove_preparation) is
+## new, additive, and NOT yet adopted here — our own `migration_finalize.rs` hand-rolled proving
+## stopgap still does the job and is a separate follow-up to retire (it needs mutable wallet
+## commitment-tree access our current `Backend<'a, W>` doesn't hold, not a drop-in swap).
+## `#2716` (note locking) is NOT merged yet as of this pull — nothing to adopt there.
+[patch.crates-io]
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zcash_pool_migration_backend = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
+equihash = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
 
 ## Uncomment this to test someone else's librustzcash changes in a branch
 #[patch.crates-io]
@@ -131,6 +178,13 @@ zcash_voting = { version = "=0.11.0", default-features = false, features = [
 #zcash_primitives = { git = "https://github.com/zcash/librustzcash", branch = "main" }
 #zcash_proofs = { git = "https://github.com/zcash/librustzcash", branch = "main" }
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", branch = "main" }
+
+[dev-dependencies]
+# Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
+# which needs a real UnifiedSpendingKey to exercise the in-process-signing path
+# (`commit_preparation`) against a real wallet DB fixture — the app itself never uses this crate
+# (Kotlin does the mnemonic-to-seed conversion, Rust always receives already-derived seed bytes).
+bip0039 = "0.12"
 
 [lib]
 name = "zcashwalletsdk"
