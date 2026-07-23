@@ -15,6 +15,7 @@ import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.UninitializedTorClientException
 import co.electriccoin.lightwallet.client.util.use
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -25,7 +26,7 @@ import kotlinx.coroutines.withContext
 @Suppress("TooManyFunctions")
 class CombinedWalletClientImpl private constructor(
     private val lightWalletClient: LightWalletClient,
-    private val torClient: TorClient?,
+    private val isolatedTorClient: LazyTorClient?,
     private val endpoint: LightWalletEndpoint,
 ) : CombinedWalletClient {
     private val cache = mutableMapOf<ServiceMode, PartialTorWalletClient>()
@@ -35,7 +36,7 @@ class CombinedWalletClientImpl private constructor(
     override suspend fun dispose() {
         semaphore.withLock {
             lightWalletClient.dispose()
-            torClient?.dispose()
+            isolatedTorClient?.dispose()
             cache.forEach { (_, client) -> client.dispose() }
             cache.clear()
         }
@@ -167,6 +168,11 @@ class CombinedWalletClientImpl private constructor(
             Response.Failure.OverTor(cause = e)
         }
 
+    /**
+     * Executes [block] against the client appropriate for [serviceMode] under [semaphore]. For
+     * [ServiceMode.Direct], the shared [lightWalletClient] is used directly. For Tor-mode requests, the
+     * Tor client is resolved lazily inside the Tor branches, backed by [LazyTorClient]'s cache.
+     */
     @Suppress("TooGenericExceptionCaught")
     private suspend inline fun <T> execute(
         serviceMode: ServiceMode,
@@ -179,7 +185,7 @@ class CombinedWalletClientImpl private constructor(
                 }
 
                 ServiceMode.UniqueTor -> {
-                    create().use { block(it) }
+                    createTorWalletClient().use { block(it) }
                 }
 
                 ServiceMode.DefaultTor,
@@ -198,14 +204,23 @@ class CombinedWalletClientImpl private constructor(
         withContext(Dispatchers.Default) { cache.remove(serviceMode) }
 
     private suspend fun getOrCreate(serviceMode: ServiceMode) =
-        withContext(Dispatchers.Default) { cache.getOrPut(serviceMode) { create() } }
+        withContext(Dispatchers.Default) { cache.getOrPut(serviceMode) { createTorWalletClient() } }
 
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun create(): PartialTorWalletClient {
-        if (torClient == null) throw UninitializedTorClientException(NullPointerException("torClient is null"))
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+    private suspend fun createTorWalletClient(): PartialTorWalletClient {
+        val tor =
+            try {
+                isolatedTorClient?.getOrCreate()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw UninitializedTorClientException(e)
+            } ?: throw UninitializedTorClientException(NullPointerException("torClient is null"))
 
         return try {
-            torClient.createWalletClient("https://${endpoint.host}:${endpoint.port}")
+            tor.createWalletClient("https://${endpoint.host}:${endpoint.port}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw UninitializedTorClientException(e)
         }
@@ -215,11 +230,11 @@ class CombinedWalletClientImpl private constructor(
         suspend fun new(
             endpoint: LightWalletEndpoint,
             lightWalletClient: LightWalletClient,
-            torClient: TorClient?
+            isolatedTorClient: LazyTorClient?
         ) = CombinedWalletClientImpl(
             endpoint = endpoint,
             lightWalletClient = lightWalletClient,
-            torClient = torClient
+            isolatedTorClient = isolatedTorClient
         )
     }
 }
