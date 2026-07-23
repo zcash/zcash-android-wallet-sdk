@@ -29,12 +29,13 @@ chp-voting = ["dep:zcash_voting", "dep:pasta_curves", "dep:ff"]
 # Ironwood (NU6.3): tracks the same git rev as [patch.crates-io] below directly, since its
 # version (0.15.0) can't satisfy crates-io requirements while pinned to a ZIP 374 branch rev.
 orchard = { version = "0.15.0", features = ["unstable-voting-circuits"] }
-# Orchard->Ironwood migration engine (core/upstream implementation) — path dependency on the local
-# librustzcash checkout (this crate isn't published to crates.io). Replaces the former hand-rolled
-# `zcash_pool_migration` crate. The SQLite persistence side (formerly the separate
-# `zcash_pool_migration_sqlite` crate) has since been folded into `zcash_client_sqlite::pool_migration`
-# (see that dependency's `[patch.crates-io]` entry below) — no separate dependency needed for it.
-zcash_pool_migration_backend = { path = "../../../../../librustzcash/zcash_pool_migration_backend", features = ["wallet"] }
+# Orchard->Ironwood migration engine (core/upstream implementation) — git dependency pinned to the
+# same librustzcash rev as the `[patch.crates-io]` block below (this crate isn't published to
+# crates.io). Replaces the former hand-rolled `zcash_pool_migration` crate. The SQLite persistence
+# side (formerly the separate `zcash_pool_migration_sqlite` crate) has since been folded into
+# `zcash_client_sqlite::pool_migration` (see that dependency's `[patch.crates-io]` entry below) —
+# no separate dependency needed for it.
+zcash_pool_migration_backend = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5", features = ["wallet"] }
 pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 # zcash_transparent, zcash_address, zcash_client_backend, zcash_client_sqlite, zcash_primitives,
@@ -179,54 +180,52 @@ slipstream-jni = { path = "slipstream-jni" }
 ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
-## Local librustzcash checkout, on main-latest (tracks upstream origin/main directly — as of
-## 2026-07-22 this has absorbed Danny/core team's former feat/pool-migration-sqlite stack (PR
-## #2669), account-keying the pool-migration store (PR #2712 + FK fixup #2720), and proving the
-## transfer at schedule time plus anchor-retention/proving-key-cache follow-ups (PR #2710 +
-## #2728/#2729/#2730/#2734)) — needed for zcash_pool_migration_backend above and
-## zcash_client_sqlite::pool_migration below. orchard is patched to the exact rev main pins
-## (0.15.0 isn't on crates.io yet with ZIP 374 support), everything else is a local path for fast
-## iteration.
+## librustzcash family patch — pinned to one explicit upstream git rev, mirrored verbatim across
+## THREE manifests: this file, slipstream-jni/Cargo.toml (backend-lib/slipstream-jni/Cargo.toml),
+## and the engine repo's root Cargo.toml (~/Developer/zcash/slipstream/Cargo.toml). Run
+## `./check-librustzcash-pin.sh` (this directory) after touching any of the three — it fails if
+## the librustzcash rev or the orchard rev disagree between this file and slipstream-jni's, or if
+## a `path = "…librustzcash` patch has crept back into either; it warns (non-fatal) if the sibling
+## engine checkout's rev has drifted from this one.
 ##
-## The pool-migration store is now scoped per-account (`PoolMigrations::for_account`, see
-## `migration_engine.rs`'s `Backend::new`) — the former singleton-per-pool cross-account collision
-## (see `project_core_migration_swap` notes) is resolved by this pull, not just documented.
+## Rev 4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5 (upstream zcash/librustzcash main, bumped
+## 2026-07-23 from beec9b595f — a single CI-workflow-only commit, no Rust changes) carries the
+## note-locking work (#2716: `InputSource` selection methods and
+## `propose_transfer`/`propose_shielding` now take a `LockFilter<'_>` /
+## `Option<TxVersion>`/`Option<LockRequest>` — see lib.rs and migration_engine.rs) plus the
+## pool-migration stack (#2669 feat/pool-migration-sqlite, #2712 + FK fixup #2720 account-keying
+## the pool-migration store, #2710 anchor-retention/proving-key-cache follow-ups
+## #2728/#2729/#2730/#2734) needed for zcash_pool_migration_backend above and
+## zcash_client_sqlite::pool_migration below. The pool-migration store is scoped per-account
+## (`PoolMigrations::for_account`, see `migration_engine.rs`'s `Backend::new`).
 ## `zcash_pool_migration_backend::engine::MigrationProver` (prove_transfer/prove_preparation) has
-## since been adopted (migration.rs), retiring the former `migration_finalize.rs` hand-rolled
-## proving stopgap. `#2716` (note locking) has also been adopted: `InputSource` selection methods
-## and `propose_transfer`/`propose_shielding` now take a `LockFilter<'_>` /
-## `Option<TxVersion>`/`Option<LockRequest>` — see lib.rs and migration_engine.rs.
+## been adopted (migration.rs), retiring the former `migration_finalize.rs` hand-rolled proving
+## stopgap.
 ##
-## IMPORTANT: as of this pull, this repo's code now references librustzcash main APIs
-## (LockFilter, TxVersion, LockRequest — PR #2716 + 41 follow-up commits) beyond what the
-## convergence-pin checkout at 68603fa71a provides. The local librustzcash checkout needs to be
-## advanced to pick up #2716 before this crate will compile again.
+## orchard stays patched to the exact rev the family pins (0.15.0 isn't on crates.io yet with
+## ZIP 374 support). zcash_voting stays a path dependency onto the zcash_voting fork's
+## ironwood-handoff-pin branch — its Cargo.toml is fork-local and carries uncommitted changes, so
+## it cannot be git-pinned like the rest of the family; it's only reachable behind the
+## default-off `chp-voting` feature (see [features] above).
+##
+## To try an unmerged librustzcash branch locally, do NOT edit this manifest — add a `[patch]`
+## override in a (gitignored) `.cargo/config.toml` instead; it layers on top of this block for
+## your local build only and can't accidentally get committed as a stray path/branch patch.
 [patch.crates-io]
-zcash_client_backend = { path = "../../../../../librustzcash/zcash_client_backend" }
-zcash_client_sqlite = { path = "../../../../../librustzcash/zcash_client_sqlite" }
-zcash_keys = { path = "../../../../../librustzcash/zcash_keys" }
-zcash_primitives = { path = "../../../../../librustzcash/zcash_primitives" }
-zcash_proofs = { path = "../../../../../librustzcash/zcash_proofs" }
-zcash_protocol = { path = "../../../../../librustzcash/components/zcash_protocol" }
-zcash_address = { path = "../../../../../librustzcash/components/zcash_address" }
-zcash_encoding = { path = "../../../../../librustzcash/components/zcash_encoding" }
-zcash_transparent = { path = "../../../../../librustzcash/zcash_transparent" }
-zip321 = { path = "../../../../../librustzcash/components/zip321" }
-pczt = { path = "../../../../../librustzcash/pczt" }
-equihash = { path = "../../../../../librustzcash/components/equihash" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+equihash = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
 zcash_voting = { path = "../../../../../zcash_voting/zcash_voting" }
 orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d1273226595773265313fc3f3428af16" }
-
-## Uncomment this to test someone else's librustzcash changes in a branch
-#[patch.crates-io]
-#pczt = { git = "https://github.com/zcash/librustzcash.git", branch = "main" }
-#transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_address = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_primitives = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_proofs = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_protocol = { git = "https://github.com/zcash/librustzcash", branch = "main" }
 
 [dev-dependencies]
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,

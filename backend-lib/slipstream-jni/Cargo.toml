@@ -100,61 +100,40 @@ strip = true
 opt-level = 3
 
 # ════════════════════════════════════════════════════════════════════════════════════════
-# [patch.crates-io] — mirrors the engine root's librustzcash-family patch set
+# [patch.crates-io] — mirrors the engine root's librustzcash-family patch set verbatim
 # ════════════════════════════════════════════════════════════════════════════════════════
 # `slipstream-core = { path = "../../../../../../slipstream/core" }` resolves core's
 # `workspace = true` deps against the engine root's `[workspace.dependencies]` regardless of
 # which workspace is doing the building (core is a member of that root workspace, not of this
-# one) — see the comment on the `slipstream-core` dependency above. The engine root currently
-# pins a "0.10-generation" librustzcash family (`zcash_protocol =0.10.0` etc.) made
-# self-consistent only via a `[patch.crates-io]` block that path-patches the whole family to a
-# sibling `../librustzcash` clone (branch `pool-migration-local`) for the in-progress
-# `zcash_pool_migration` crate (PR #2572). This crate's own direct deps on the PUBLISHED
-# `zcash_client_backend 0.23.0` / `zcash_client_sqlite 0.21.1` (see above) pull a
-# self-consistent "0.9-generation" instead — two incompatible copies of `zcash_protocol` in one
-# graph, which fails to typecheck (`SlipstreamNetwork` does not satisfy `WalletRead`'s
-# `Parameters` bound; full diagnosis in worklog 01-rust-build.md, "The blocker").
+# one) — see the comment on the `slipstream-core` dependency above. Because a `[patch]` only
+# applies from the workspace root being built, the engine root's `[patch.crates-io]` does not
+# apply here transitively and must be re-declared — this is a re-declaration, not a divergent
+# choice.
 #
-# [2026-07-16 resolution, Milan sign-off] Rather than keep this crate pinned to a published
-# generation `slipstream-core` no longer builds against, this block mirrors the engine root's
-# patch set verbatim. The paths below are re-based once more now that this crate is vendored
-# in the SDK repo at `backend-lib/slipstream-jni/` (a different repo from the engine root):
-# `../librustzcash/X` (engine root, one level below `~/Developer/zcash/`) →
-# `../../../../../../librustzcash/X` (six levels below `~/Developer/zcash/`) — the same shared
-# sibling checkout backend-lib's own `[patch.crates-io]` reaches five levels up from
-# `backend-lib/` (see that block's comment). Because a `[patch]` only applies from the
-# workspace root being built, the engine root's patch does not apply here transitively and
-# must be re-declared — this is a re-declaration, not a divergent choice. Whenever the engine
-# root's `[patch.crates-io]` changes, mirror the change here in the same commit — a drift is a
-# silent wrong-source build. Consequence: this crate no longer builds against crates.io
-# `zcash_client_backend`/`zcash_client_sqlite` at all (the direct-dep version strings above
-# are now only a minimum-version hint; the patch always wins) — it rides the same
-# `pool-migration-local` sibling-clone lineage the iOS engine root does. This couples local
-# Android dev builds to Lukas's in-progress fork rather than a stable published generation;
-# see `docs/slipstream/android/LOCAL_DEVIATIONS.md` items 8/9 for the full record of this
-# trade-off and worklog 01-rust-build.md for the resolution writeup. `zcash_pool_migration`
-# itself needs no patch entry here: it is a path dependency of the engine ROOT package only
-# (resolved relative to the root manifest, not this one) and `slipstream-core` does not
-# depend on it, so it never enters this crate's build graph.
+# This block, backend-lib's own `[patch.crates-io]` (one directory up), and the engine root's
+# `[patch.crates-io]` (~/Developer/zcash/slipstream/Cargo.toml) must all name the exact same
+# librustzcash rev and the exact same orchard rev — see `../check-librustzcash-pin.sh`, which
+# fails if this file and backend-lib's disagree on either rev, or if a `path = "…librustzcash`
+# patch has crept back into either, and warns (non-fatal) if the sibling engine checkout's rev
+# has drifted from this one. Whenever the engine root's `[patch.crates-io]` changes, mirror the
+# change here (and in backend-lib's own block) in the same commit — a drift is a silent
+# wrong-source build.
 #
-# The two vendored performance-fork lines below stay commented out, matching the engine
-# root's current state (IW-6 RE-RIDE, 2026-07-10): the workspace moved to orchard 0.15 /
-# zcash_note_encryption 0.4.1 straight from crates.io. Their paths are updated to match the
-# same six-levels-below-`~/Developer/zcash/` re-basing as the entries above, for consistency
-# should they ever be uncommented.
+# Consequence: this crate never builds against a plain crates.io release of any patched crate —
+# the direct-dep version strings above (`zcash_client_backend`/`zcash_client_sqlite` etc.) are
+# only a minimum-version hint; the patch below always wins.
 # ════════════════════════════════════════════════════════════════════════════════════════
 [patch.crates-io]
-# zcash_note_encryption = { path = "../../../../../../slipstream/vendor/zcash_note_encryption" }
-# orchard               = { path = "../../../../../../slipstream/vendor/orchard" }
-zcash_client_backend = { path = "../../../../../../librustzcash/zcash_client_backend" }
-zcash_client_sqlite = { path = "../../../../../../librustzcash/zcash_client_sqlite" }
-zcash_keys = { path = "../../../../../../librustzcash/zcash_keys" }
-zcash_primitives = { path = "../../../../../../librustzcash/zcash_primitives" }
-zcash_proofs = { path = "../../../../../../librustzcash/zcash_proofs" }
-zcash_protocol = { path = "../../../../../../librustzcash/components/zcash_protocol" }
-zcash_address = { path = "../../../../../../librustzcash/components/zcash_address" }
-zcash_encoding = { path = "../../../../../../librustzcash/components/zcash_encoding" }
-zcash_transparent = { path = "../../../../../../librustzcash/zcash_transparent" }
-zip321 = { path = "../../../../../../librustzcash/components/zip321" }
-pczt = { path = "../../../../../../librustzcash/pczt" }
-equihash = { path = "../../../../../../librustzcash/components/equihash" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+equihash = { git = "https://github.com/zcash/librustzcash", rev = "4b4e2633b28c2f18fdc42c741ad7c6d9f67ec6e5" }
+orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d1273226595773265313fc3f3428af16" }
