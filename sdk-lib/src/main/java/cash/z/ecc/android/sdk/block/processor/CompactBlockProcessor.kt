@@ -265,7 +265,7 @@ class CompactBlockProcessor internal constructor(
     suspend fun start() {
         val traceScope = TraceScope("CompactBlockProcessor.start")
 
-        val (saplingStartIndex, orchardStartIndex) = refreshWalletSummary()
+        val (saplingStartIndex, orchardStartIndex, ironwoodStartIndex) = refreshWalletSummary()
 
         updateBirthdayHeight()
 
@@ -282,7 +282,7 @@ class CompactBlockProcessor internal constructor(
 
         // Download note commitment tree data from lightwalletd to decide if we communicate with linear
         // or spend-before-sync node.
-        var subTreeRootResult = getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex)
+        var subTreeRootResult = getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex, ironwoodStartIndex)
         Twig.info { "Fetched SubTreeRoot result: $subTreeRootResult" }
 
         Twig.debug { "Setup verified. Processor starting..." }
@@ -316,6 +316,10 @@ class CompactBlockProcessor internal constructor(
                                             orchardSubtreeRootList =
                                                 (subTreeRootResult as GetSubtreeRootsResult.SpendBeforeSync)
                                                     .orchardSubtreeRootList,
+                                            ironwoodStartIndex = ironwoodStartIndex,
+                                            ironwoodSubtreeRootList =
+                                                (subTreeRootResult as GetSubtreeRootsResult.SpendBeforeSync)
+                                                    .ironwoodSubtreeRootList,
                                             lastValidHeight = lowerBoundHeight
                                         )
                                 ) {
@@ -353,7 +357,7 @@ class CompactBlockProcessor internal constructor(
                             GetSubtreeRootsResult.FailureConnection -> {
                                 // SubtreeRoot fetching retry
                                 subTreeRootResult =
-                                    getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex)
+                                    getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex, ironwoodStartIndex)
                                 BlockProcessingResult.Reconnecting
                             }
                         }
@@ -880,7 +884,7 @@ class CompactBlockProcessor internal constructor(
      *
      * @return the next subtree index to fetch.
      */
-    internal suspend fun refreshWalletSummary(): Pair<UInt, UInt> {
+    internal suspend fun refreshWalletSummary(): Triple<UInt, UInt, UInt> {
         when (val result = getWalletSummary(backend)) {
             is GetWalletSummaryResult.Success -> {
                 val scanProgress = result.walletSummary.scanProgress
@@ -889,9 +893,10 @@ class CompactBlockProcessor internal constructor(
                 setProgress(scanProgress, recoveryProgress)
                 setFullyScannedHeight(result.walletSummary.fullyScannedHeight)
                 updateAllBalances(result.walletSummary)
-                return Pair(
+                return Triple(
                     result.walletSummary.nextSaplingSubtreeIndex,
-                    result.walletSummary.nextOrchardSubtreeIndex
+                    result.walletSummary.nextOrchardSubtreeIndex,
+                    result.walletSummary.nextIronwoodSubtreeIndex
                 )
             }
 
@@ -899,7 +904,7 @@ class CompactBlockProcessor internal constructor(
                 // Do not report the progress and balances in case of any error, and
                 // tell the caller to fetch all subtree roots.
                 Twig.info { "Progress from rust: no progress information available, progress type: $result" }
-                return Pair(UInt.MIN_VALUE, UInt.MIN_VALUE)
+                return Triple(UInt.MIN_VALUE, UInt.MIN_VALUE, UInt.MIN_VALUE)
             }
         }
     }
@@ -1327,7 +1332,8 @@ class CompactBlockProcessor internal constructor(
     internal suspend fun getSubtreeRoots(
         downloader: CompactBlockDownloader,
         saplingStartIndex: UInt,
-        orchardStartIndex: UInt
+        orchardStartIndex: UInt,
+        ironwoodStartIndex: UInt
     ): GetSubtreeRootsResult {
         Twig.debug { "Fetching SubtreeRoots..." }
         val traceScope = TraceScope("CompactBlockProcessor.getSubtreeRoots")
@@ -1336,6 +1342,7 @@ class CompactBlockProcessor internal constructor(
 
         var saplingSubtreeRootList: List<SubtreeRoot> = emptyList()
         var orchardSubtreeRootList: List<SubtreeRoot> = emptyList()
+        var ironwoodSubtreeRootList: List<SubtreeRoot> = emptyList()
 
         retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
             downloader
@@ -1441,18 +1448,72 @@ class CompactBlockProcessor internal constructor(
                 }
         }
 
-        // Intentionally omitting [orchardSubtreeRootList], e.g., for Mainnet usage, we could check it, but on
-        // custom networks without NU5 activation, it wouldn't work. If the Orchard subtree roots are empty, it's
-        // technically still ok (as Orchard activates after Sapling, so on a network that doesn't have NU5
-        // activated, this would behave correctly). In contrast, if the Sapling subtree roots are empty, we
-        // cannot do SbS at all.
+        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
+            downloader
+                .getSubtreeRoots(
+                    startIndex = ironwoodStartIndex,
+                    shieldedProtocol = ShieldedProtocolEnum.IRONWOOD,
+                    maxEntries = UInt.MIN_VALUE,
+                    serviceMode = ServiceMode.Direct
+                ).onEach { response ->
+                    when (response) {
+                        is Response.Success -> {
+                            Twig.verbose {
+                                "Ironwood SubtreeRoot fetched successfully: its completingHeight is: ${
+                                    response.result
+                                        .completingBlockHeight
+                                }"
+                            }
+                        }
+
+                        is Response.Failure -> {
+                            val error =
+                                LightWalletException.GetSubtreeRootsException(
+                                    response.code,
+                                    response.description,
+                                    response.toThrowable()
+                                )
+                            if (response is Response.Failure.Server.Unavailable) {
+                                Twig.error {
+                                    "Fetching Ironwood SubtreeRoot failed due to server communication problem with" +
+                                        " failure: ${response.toThrowable()}"
+                                }
+                                result = GetSubtreeRootsResult.FailureConnection
+                            } else {
+                                Twig.error {
+                                    "Fetching Ironwood SubtreeRoot failed with failure: ${response.toThrowable()}"
+                                }
+                                result = GetSubtreeRootsResult.OtherFailure(error)
+                            }
+                            traceScope.end()
+                            throw error
+                        }
+                    }
+                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
+                .map { response ->
+                    response.result
+                }.toList()
+                .map {
+                    SubtreeRoot.new(it)
+                }.let {
+                    ironwoodSubtreeRootList = it
+                }
+        }
+
+        // Intentionally omitting [orchardSubtreeRootList]/[ironwoodSubtreeRootList], e.g., for Mainnet usage, we
+        // could check it, but on custom networks without NU5/NU6.3 activation, it wouldn't work. If the Orchard or
+        // Ironwood subtree roots are empty, it's technically still ok (both activate after Sapling, so on a network
+        // that doesn't have them activated yet, this would behave correctly). In contrast, if the Sapling subtree
+        // roots are empty, we cannot do SbS at all.
         if (saplingSubtreeRootList.isNotEmpty()) {
             result =
                 GetSubtreeRootsResult.SpendBeforeSync(
                     saplingStartIndex,
                     saplingSubtreeRootList,
                     orchardStartIndex,
-                    orchardSubtreeRootList
+                    orchardSubtreeRootList,
+                    ironwoodStartIndex,
+                    ironwoodSubtreeRootList
                 )
         }
 
@@ -1476,6 +1537,8 @@ class CompactBlockProcessor internal constructor(
         saplingSubtreeRootList: List<SubtreeRoot>,
         orchardStartIndex: UInt,
         orchardSubtreeRootList: List<SubtreeRoot>,
+        ironwoodStartIndex: UInt,
+        ironwoodSubtreeRootList: List<SubtreeRoot>,
         lastValidHeight: BlockHeight
     ): PutSaplingSubtreeRootsResult =
         runCatching {
@@ -1484,11 +1547,13 @@ class CompactBlockProcessor internal constructor(
                 saplingRoots = saplingSubtreeRootList,
                 orchardStartIndex = orchardStartIndex,
                 orchardRoots = orchardSubtreeRootList,
+                ironwoodStartIndex = ironwoodStartIndex,
+                ironwoodRoots = ironwoodSubtreeRootList,
             )
         }.onSuccess {
             Twig.info {
-                "Subtree roots put successfully with saplingStartIndex: $saplingStartIndex and " +
-                    "orchardStartIndex: $orchardStartIndex"
+                "Subtree roots put successfully with saplingStartIndex: $saplingStartIndex, " +
+                    "orchardStartIndex: $orchardStartIndex and ironwoodStartIndex: $ironwoodStartIndex"
             }
         }.onFailure {
             Twig.error { "Sapling subtree roots put failed with: $it" }

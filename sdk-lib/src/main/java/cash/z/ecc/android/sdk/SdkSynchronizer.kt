@@ -545,6 +545,7 @@ class SdkSynchronizer private constructor(
                     ZcashProtocol.TRANSPARENT -> TransactionPool.TRANSPARENT
                     ZcashProtocol.SAPLING -> TransactionPool.SAPLING
                     ZcashProtocol.ORCHARD -> TransactionPool.ORCHARD
+                    ZcashProtocol.IRONWOOD -> TransactionPool.IRONWOOD
                 }
             )
         }
