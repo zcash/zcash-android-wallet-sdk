@@ -103,7 +103,6 @@ use crate::utils::{
 mod eip681;
 mod migration;
 mod migration_engine;
-mod migration_finalize;
 mod migration_keystone;
 mod migration_plan_cache;
 mod tor;
@@ -2529,8 +2528,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
         let mut prover = Prover::new(pczt);
 
         if prover.requires_orchard_proof() {
+            // Process-wide cached proving key (`zcash_primitives`, adopted 2026-07-23) — building
+            // one is expensive, and this JNI entry point is called on every ordinary shielded send,
+            // not just migrations, so rebuilding it per call was wasted work on every proof.
+            let pk = zcash_primitives::transaction::builder::cached_orchard_proving_key(
+                orchard::circuit::OrchardCircuitVersion::PostNu6_3,
+            );
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::PostNu6_3))
+                .create_orchard_proof(pk)
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());

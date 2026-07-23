@@ -72,12 +72,6 @@ where
         })
     }
 
-    /// The account's spendable Orchard notes, exposed for `migration_finalize`'s witness lookup
-    /// (matches by nullifier, computed against the account's FVK).
-    pub(crate) fn spendable_orchard_notes(&self) -> Result<Vec<SpendableNote>, EngineError> {
-        self.spendable_orchard()
-    }
-
     fn selection_target(&self) -> Result<TargetHeight, EngineError> {
         let tip = self
             .wallet

@@ -16,11 +16,11 @@
 //!    proving time, not planning time) — `JniTransferProposal.anchorHeight` is populated with the
 //!    schedule's `broadcast_height()` as a placeholder so the Kotlin type doesn't need to change;
 //!    it no longer carries a real commitment-tree anchor value. Callers must not treat it as one.
-//! 2. `finalizeReadyTransfersNative` and `nextDueTransferNative` prove transactions at broadcast
-//!    time (ZIP 374) via `migration_finalize.rs`, hand-ported from our old crate's
-//!    `backend::finalize_self_funding_transfer`/`prove_pczt` (see that module's doc comment) since
-//!    the new engine defers this to the consumer instead of doing it internally. Stopgap until
-//!    core (`zcash_pool_migration_backend`) grows an equivalent built-in helper.
+//! 2. `finalizeReadyTransfersNative` and `nextDueTransferNative` prove transactions ahead of
+//!    broadcast (ZIP 374) via `try_prove` (see its doc comment), which wraps
+//!    `zcash_pool_migration_backend`'s own `WalletMigrationProver`/`engine::prove_transfer`/
+//!    `prove_preparation` — adopted 2026-07-23, replacing this file's former hand-ported
+//!    `migration_finalize.rs` stopgap (removed) now that core provides the equivalent built-in.
 //! 3. The commit functions (`signNoteSplitNative`, `signAndStoreMigrationScheduleNative`,
 //!    `createUnsignedNoteSplitPcztNative`, `createUnsignedTransferPcztsNative`) ignore the
 //!    Kotlin-supplied schedule arrays and instead sign the plan cached by the most recent
@@ -47,8 +47,9 @@ use zcash_protocol::value::Zatoshis;
 
 use zcash_pool_migration_backend::engine::{
     self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTxId, MigrationTxKind,
-    MigrationTxState, PoolMigrationRead, PoolMigrationWrite,
+    MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
 };
+use zcash_pool_migration_backend::wallet::{WalletMigrationProver, WalletProveError};
 
 use crate::migration_engine::Backend;
 use crate::utils::{catch_unwind, exception::unwrap_exc_or};
@@ -127,7 +128,7 @@ fn target_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
 /// sends use, via `get_target_and_anchor_heights`) — NOT just "chain tip minus one", which isn't
 /// necessarily checkpointed (confirmed live: `root_at_checkpoint_id` returned `None` for a raw
 /// `tip - 1` guess). Used as the anchor for preparation transactions, whose `anchor_boundary()` is
-/// `None` (see `migration_finalize::finalize_transaction`'s doc comment).
+/// `None` (see `try_prove`'s doc comment).
 fn natural_anchor_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
     wallet
         .get_target_and_anchor_heights(std::num::NonZeroU32::MIN)
@@ -589,54 +590,117 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// Resolves the note split's deferred witness/anchor and proves it, shared by both signing paths
-/// (`signNoteSplitNative`'s in-process signing and `storeSignedNoteSplitPcztNative`'s Keystone
-/// external-signer path) — without this, `extractBroadcastTxNative` fails with
-/// `OrchardParse(MissingAnchor)` on the un-finalized PCZT (confirmed live: the Keystone path
-/// originally skipped this step entirely and returned the merely-signed-but-unproven bytes
-/// straight to Kotlin for extraction).
+/// Whether transaction `tx` is ready to PROVE at `target_height` (`chain_tip + 1`) — a local copy
+/// of `zcash_pool_migration_backend::state`'s private `MigrationState::prove_ready`, using only its
+/// public surface (`deps_mined`, `anchor_boundary`, `scheduled_height`). Duplicated rather than
+/// relying on `MigrationState::next_provable` because that returns only the SINGLE next-ready
+/// transaction — looping it would re-return the same id forever on a transient witness/anchor
+/// failure (see `try_prove`'s doc comment), whereas our JNI contract proves every ready transaction
+/// in one call.
+fn is_prove_ready(state: &MigrationState, tx: &engine::MigrationTransaction, target_height: BlockHeight) -> bool {
+    if !state.deps_mined(tx.depends_on()) {
+        return false;
+    }
+    match tx.anchor_boundary() {
+        Some(boundary) => u32::from(boundary) + 1 < u32::from(target_height),
+        None => tx.scheduled_height() <= target_height,
+    }
+}
+
+/// Attempts to prove one `Signed` migration transaction in place within `state` — installing its
+/// deferred Orchard anchor and spend witness(es) (ZIP 374) and running the prover, via
+/// `zcash_pool_migration_backend`'s own `WalletMigrationProver` (the core-team-maintained
+/// replacement for this crate's former hand-ported `migration_finalize` stopgap; see that module's
+/// removal and `docs` for context). A transfer proves against its own persisted `anchor_boundary`
+/// (read internally by `engine::prove_transfer`); a preparation transaction carries no drawn
+/// boundary and proves against the wallet's current natural anchor instead, matching
+/// `zcash_pool_migration_backend`'s own `prove_chain_sim.rs` integration test.
 ///
-/// The split is a preparation transaction: `anchor_boundary()` is `None` for these (they wait on
-/// their dependencies rather than a drawn ZIP 318 boundary — see
-/// `migration_finalize::finalize_transaction`'s doc comment), but it still has a deferred witness
-/// to resolve like any other ZIP 374 transaction, just against the wallet's current natural
-/// anchor instead of a scheduled one (confirmed live: the split's spend is redacted just like a
-/// transfer's).
+/// Returns `Ok(true)` if proved (`state` now has this transaction `Proved`, with the proven PCZT
+/// replacing the stored one), `Ok(false)` if its witness/anchor isn't resolvable yet — the funding
+/// note hasn't been observed as spendable yet, or its checkpoint hasn't been reached or was pruned
+/// (`WalletProveError::UnknownSpentNote`/`AnchorNotFound`/`WitnessNotFound`) — this is the ordinary
+/// transient "not ready yet" condition, not a failure, matching the old stopgap's `Ok(None)`
+/// contract. Any other error is propagated.
+fn try_prove(
+    wallet: &mut Wallet,
+    account: AccountUuid,
+    fvk: orchard::keys::FullViewingKey,
+    state: &mut MigrationState,
+    id: MigrationTxId,
+    kind: MigrationTxKind,
+) -> anyhow::Result<bool> {
+    let anchor = match kind {
+        MigrationTxKind::Transfer { .. } => None,
+        MigrationTxKind::Preparation { .. } => Some(natural_anchor_height(wallet)?),
+    };
+    let mut prover = WalletMigrationProver::new(wallet, account, fvk);
+    let result = match anchor {
+        None => engine::prove_transfer(&mut prover, state, id),
+        Some(anchor) => engine::prove_preparation(&mut prover, state, id, anchor),
+    };
+    match result {
+        Ok(()) => Ok(true),
+        Err(ProveError::Prover(
+            WalletProveError::UnknownSpentNote(_)
+            | WalletProveError::AnchorNotFound(_)
+            | WalletProveError::WitnessNotFound(_),
+        )) => Ok(false),
+        Err(e) => Err(anyhow!("Error proving migration transaction {:?}: {}", id, e)),
+    }
+}
+
+/// Proves the note split (the layer-0 preparation transaction) via `try_prove`, persists the
+/// resulting `Proved` state, and extracts the now-complete transaction's bytes and txid — shared by
+/// both signing paths (`signNoteSplitNative`'s in-process signing and
+/// `storeSignedNoteSplitPcztNative`'s Keystone external-signer path). Without proving,
+/// `extractBroadcastTxNative` fails with `OrchardParse(MissingAnchor)` on the merely-signed PCZT
+/// (confirmed live: the Keystone path originally skipped this step entirely).
 fn finalize_note_split(
     wallet: &mut Wallet,
     account: AccountUuid,
     store_conn: &mut Connection,
-    split_tx: &engine::MigrationTransaction,
-    split_pczt: &[u8],
+    state: &mut MigrationState,
+    id: MigrationTxId,
 ) -> anyhow::Result<(Vec<u8>, [u8; 32])> {
-    let (fvk, spendable) = {
+    let fvk = {
         let backend = Backend::new(wallet, account, None, store_conn)?;
-        let fvk = backend
+        backend
             .orchard_fvk()
-            .map_err(|e| anyhow!("Error reading account FVK: {:?}", e))?;
-        let spendable = backend
-            .spendable_orchard_notes()
-            .map_err(|e| anyhow!("Error reading spendable notes: {:?}", e))?;
-        (fvk, spendable)
+            .map_err(|e| anyhow!("Error reading account FVK: {:?}", e))?
     };
-    let anchor_height = match split_tx.anchor_boundary() {
-        Some(h) => Some(h),
-        None => Some(natural_anchor_height(wallet)?),
-    };
-    let (proven_pczt, txid) = crate::migration_finalize::finalize_transaction(
-        wallet,
-        &fvk,
-        &spendable,
-        anchor_height,
-        split_pczt,
+    let kind = state
+        .transactions()
+        .iter()
+        .find(|t| t.id() == id)
+        .map(|t| t.kind())
+        .ok_or_else(|| anyhow!("Note-split transaction not found in migration state"))?;
+    let proved = try_prove(wallet, account, fvk, state, id, kind)
+        .map_err(|e| anyhow!("Error finalizing note split: {}", e))?;
+    if !proved {
+        return Err(anyhow!(
+            "Note-split transaction is not yet finalizable — its funding note isn't witnessable yet"
+        ));
+    }
+    {
+        let mut backend = Backend::new(wallet, account, None, store_conn)?;
+        backend
+            .replace_migration(state)
+            .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
+    }
+    let tx = state
+        .transactions()
+        .iter()
+        .find(|t| t.id() == id)
+        .expect("just proved above");
+    let bytes = tx.pczt().to_vec();
+    let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
+        pczt::Pczt::parse(&bytes).map_err(|e| anyhow!("parse proven note-split pczt: {:?}", e))?,
     )
-    .map_err(|e| anyhow!("Error finalizing note split: {}", e))?
-    .ok_or_else(|| {
-        anyhow!("Note-split transaction is not yet finalizable — its funding note isn't witnessable yet")
-    })?;
-    crate::migration_finalize::put_proven(store_conn, split_tx.id(), &proven_pczt, &txid)
-        .map_err(|e| anyhow!("Error caching proven pczt: {}", e))?;
-    Ok((proven_pczt, txid))
+    .extract()
+    .map_err(|e| anyhow!("extract proven note-split tx: {:?}", e))?;
+    let txid: [u8; 32] = *extracted.txid().as_ref();
+    Ok((bytes, txid))
 }
 
 /// In-process signing (software key, not Keystone) of the note split, as its own standalone,
@@ -653,9 +717,10 @@ fn finalize_note_split(
 /// `MigrationWorker`'s normal `finalizeReadyTransfersNative`/`nextDueTransferNative` loop to pick up
 /// later, once they're actually due.
 ///
-/// The split is a preparation transaction spending an already-witnessed wallet note directly, so
-/// per `migration_finalize::finalize_transaction`'s doc comment it has no deferred witness to
-/// resolve (`anchor_boundary() == None`) — it should already be complete right after commit.
+/// The split is a preparation transaction: even though it spends an already-witnessed wallet note
+/// directly, ZIP 374 still defers its Orchard anchor/witness to proving time like any other
+/// migration transaction (see `try_prove`'s doc comment) — `finalize_note_split` resolves that
+/// against the wallet's current natural anchor.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_signNoteSplitNative<
     'local,
@@ -671,12 +736,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let (network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
-        crate::migration_finalize::init_proven_cache(&store_conn)
-            .map_err(|e| anyhow!("Error initializing proven-pczt cache: {}", e))?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let usk = crate::decode_usk(env, usk)?;
         let target = target_height(&wallet)?;
-        let (state, _unsigned) = commit_or_reuse(
+        let (mut state, _unsigned) = commit_or_reuse(
             &network,
             &wallet,
             account,
@@ -689,15 +752,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 Ok((state, Vec::new()))
             },
         )?;
-        let split_tx = state
+        let split_id = state
             .transactions()
             .iter()
             .find(|t| matches!(t.kind(), MigrationTxKind::Preparation { layer: 0, .. }))
+            .map(|t| t.id())
             .ok_or_else(|| anyhow!("Migration has no note-split preparation transaction"))?;
         let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, split_tx, split_tx.pczt())?;
+            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
-        let id = encode_transfer_id(env, split_tx.id())?;
+        let id = encode_transfer_id(env, split_id)?;
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_obj = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
@@ -1047,18 +1111,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// Advances every due, signed transaction's proving (ZIP 374: installs its real anchor + witness
-/// via the `pczt` `Updater` role, runs the `Prover`, finalizes spends — see
-/// `migration_finalize::finalize_transaction`, ported from `librustzcash` branch
-/// `feature/orchard_migration`'s `backend::finalize_self_funding_transfer`/`prove_pczt`, historical
-/// reference only, not merged). Proven bytes are cached in `migration_proven_cache` (this file's
-/// own side table — the engine's own persistence never stores anything past the original signed
-/// PCZT) for `nextDueTransferNative` to pick up. Idempotent: already-cached transactions are
-/// skipped; returns the count of transactions newly proven this call, 0 (not an error) if nothing
-/// was ready — matches the old function's documented contract.
-///
-/// TODO: this is a stopgap so the SDK can be exercised against the new engine before core
-/// (`zcash_pool_migration_backend`) grows an equivalent built-in helper — prefer that when it
-/// lands, over this hand-ported copy (see `migration_finalize.rs`'s module doc).
+/// via the `pczt` `Updater` role and runs the `Prover`, via `try_prove` — see its doc comment).
+/// Proving moves each ready transaction `Signed -> Proved` directly in the persisted
+/// `MigrationState` (no separate side table — the engine's own persistence now tracks proven bytes
+/// as part of the transaction itself, replacing this file's former hand-rolled
+/// `migration_proven_cache`). Idempotent: only `Signed` transactions are candidates, so an
+/// already-proven one is naturally skipped on a later call. Returns the count of transactions newly
+/// proven this call, 0 (not an error) if nothing was ready.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_finalizeReadyTransfersNative<
     'local,
@@ -1071,12 +1130,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
         let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
-        crate::migration_finalize::init_proven_cache(&store_conn)
-            .map_err(|e| anyhow!("Error initializing proven-pczt cache: {}", e))?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let tip = target_height(&wallet)? - 1;
+        let target = target_height(&wallet)?;
 
-        let (state, fvk, spendable) = {
+        let (mut state, fvk) = {
             let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
             let Some(state) = backend
                 .get_migration()
@@ -1090,46 +1147,32 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             let fvk = backend
                 .orchard_fvk()
                 .map_err(|e| anyhow!("Error reading account FVK: {:?}", e))?;
-            let spendable = backend
-                .spendable_orchard_notes()
-                .map_err(|e| anyhow!("Error reading spendable notes: {:?}", e))?;
-            (state, fvk, spendable)
+            (state, fvk)
         };
 
+        // Collect ready ids/kinds up front (not while iterating `state.transactions()`) since
+        // `try_prove` needs `&mut state` — see `is_prove_ready`'s doc comment for why this doesn't
+        // just loop `MigrationState::next_provable`.
+        let ready: Vec<(MigrationTxId, MigrationTxKind)> = state
+            .transactions()
+            .iter()
+            .filter(|t| matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(&state, t, target))
+            .map(|t| (t.id(), t.kind()))
+            .collect();
+
         let mut finalized_count = 0;
-        for tx in state.transactions() {
-            if !matches!(tx.state(), MigrationTxState::Signed) {
-                continue;
-            }
-            if tx.scheduled_height() > tip || !state.deps_mined(tx.depends_on()) {
-                continue;
-            }
-            if crate::migration_finalize::get_proven(&store_conn, tx.id())
-                .map_err(|e| anyhow!("Error reading proven-pczt cache: {}", e))?
-                .is_some()
+        for (id, kind) in ready {
+            if try_prove(&mut wallet, account, fvk.clone(), &mut state, id, kind)
+                .map_err(|e| anyhow!("Error proving transfer {:?}: {}", id, e))?
             {
-                continue;
-            }
-            // Preparation transactions have no drawn `anchor_boundary` — fall back to the
-            // wallet's current natural anchor for their deferred witness (see `signNoteSplitNative`
-            // for the full explanation).
-            let anchor_height = match tx.anchor_boundary() {
-                Some(h) => Some(h),
-                None => Some(natural_anchor_height(&wallet)?),
-            };
-            if let Some((proven_pczt, txid)) = crate::migration_finalize::finalize_transaction(
-                &mut wallet,
-                &fvk,
-                &spendable,
-                anchor_height,
-                tx.pczt(),
-            )
-            .map_err(|e| anyhow!("Error finalizing transfer {:?}: {}", tx.id(), e))?
-            {
-                crate::migration_finalize::put_proven(&store_conn, tx.id(), &proven_pczt, &txid)
-                    .map_err(|e| anyhow!("Error caching proven pczt: {}", e))?;
                 finalized_count += 1;
             }
+        }
+        if finalized_count > 0 {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            backend
+                .replace_migration(&state)
+                .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
         }
         Ok(finalized_count)
     });
@@ -1166,34 +1209,41 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .iter()
             .filter(|t| {
                 matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                    && matches!(t.state(), MigrationTxState::Signed)
+                    && matches!(t.state(), MigrationTxState::Proved)
                     && t.scheduled_height() <= tip
                     && state.deps_mined(t.depends_on())
             })
             .collect();
         due.sort_by_key(|t| t.scheduled_height());
 
-        for tx in due {
-            if let Some((proven_pczt, txid)) = crate::migration_finalize::get_proven(&store_conn, tx.id())
-                .map_err(|e| anyhow!("Error reading proven-pczt cache: {}", e))?
-            {
-                let id = encode_transfer_id(env, tx.id())?;
-                let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
-                let pczt_obj = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
-                return Ok(env
-                    .new_object(
-                        JNI_PREPARED_TRANSFER,
-                        "(Ljava/lang/String;[B[B)V",
-                        &[
-                            JValue::Object(&id),
-                            JValue::Object(&txid_obj),
-                            JValue::Object(&pczt_obj),
-                        ],
-                    )?
-                    .into_raw());
-            }
-        }
-        Ok(ptr::null_mut())
+        let Some(tx) = due.into_iter().next() else {
+            return Ok(ptr::null_mut());
+        };
+        // `Proved` carries the fully witnessed/anchored/proven PCZT bytes (installed by
+        // `finalizeReadyTransfersNative`'s `try_prove`) — extract the txid directly from them, no
+        // separate cache lookup needed.
+        let bytes = tx.pczt();
+        let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
+            pczt::Pczt::parse(bytes).map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
+        )
+        .extract()
+        .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
+        let txid: [u8; 32] = *extracted.txid().as_ref();
+
+        let id = encode_transfer_id(env, tx.id())?;
+        let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
+        let pczt_obj = crate::utils::rust_bytes_to_java(env, bytes)?;
+        Ok(env
+            .new_object(
+                JNI_PREPARED_TRANSFER,
+                "(Ljava/lang/String;[B[B)V",
+                &[
+                    JValue::Object(&id),
+                    JValue::Object(&txid_obj),
+                    JValue::Object(&pczt_obj),
+                ],
+            )?
+            .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -1397,8 +1447,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
-        crate::migration_finalize::init_proven_cache(&store_conn)
-            .map_err(|e| anyhow!("Error initializing proven-pczt cache: {}", e))?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let signed_pczt_bytes = crate::utils::java_bytes_to_rust(env, &signed_pczt)?;
         let mut state = {
@@ -1423,16 +1471,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 .replace_migration(&state)
                 .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
         }
-        let split_tx = state
-            .transactions()
-            .iter()
-            .find(|t| t.id() == split_id)
-            .ok_or_else(|| anyhow!("Migration has no note-split preparation transaction"))?;
         // Resolve the deferred witness/anchor and prove before extraction — without this,
         // `extractBroadcastTxNative` fails with `OrchardParse(MissingAnchor)` on the
         // merely-signed-but-unproven bytes just applied above (confirmed live).
         let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, split_tx, split_tx.pczt())?;
+            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
         let id = encode_transfer_id(env, split_id)?;
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -1795,108 +1838,20 @@ mod live_wallet_tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires MIGRATION_TEST_WALLET_DB pointing at a copy of a real wallet DB"]
-    fn build_and_finalize_all_unsigned() {
-        let fixture = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
-        let db_path = fresh_test_db_copy(&fixture);
-        let network = Network::TestNetwork;
-        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
-        let account = first_account(&wallet);
-
-        let (migration_plan, tip) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
-        let target = tip + 1;
-
-        let (fvk, spendable) = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn).expect("account exists for migration store");
-            let fvk = backend.orchard_fvk().expect("account has an Orchard FVK");
-            let spendable = backend
-                .spendable_orchard_notes()
-                .expect("read spendable notes");
-            (fvk, spendable)
-        };
-
-        let (state, unsigned) = {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn).expect("account exists for migration store");
-            let mut rng = OsRng;
-            engine::build_preparation_unsigned(
-                &network,
-                target,
-                &mut backend,
-                &migration_plan,
-                &mut rng,
-            )
-            .expect("build_preparation_unsigned")
-        };
-        println!("{} unsigned transaction(s) built", unsigned.len());
-
-        // These PCZTs are deliberately UNSIGNED (this is the external/hardware-signer path —
-        // `build_preparation_unsigned`, not `commit_preparation`), so `finalize_transaction` can
-        // never actually extract a broadcastable transaction from one: extraction always needs a
-        // valid spend-authorization signature, whether or not the transaction had a deferred
-        // witness to resolve first (see `migration_finalize.rs`'s two extract() call sites). What
-        // this test actually exercises is the witness/anchor RESOLUTION logic up to that point —
-        // the real bug surface here historically (see this crate's git history for the multi-
-        // witness and anchor-fallback fixes this test caught). A transaction reaching extraction
-        // and failing on the missing signature is therefore an EXPECTED outcome, not a failure;
-        // any other error still fails the test. The fully-signed end-to-end path (where
-        // extraction actually succeeds) is covered separately by
-        // `live_wallet_signing_tests::commit_and_finalize_with_real_signing`.
-        let mut finalized = 0;
-        let mut transient = 0;
-        let mut ready_but_unsigned = 0;
-        for tx in unsigned {
-            let (id, pczt_bytes) = tx.into_parts();
-            let committed_tx = state
-                .transactions()
-                .iter()
-                .find(|t| t.id() == id)
-                .expect("built tx must appear in committed state");
-            let anchor_height = match committed_tx.anchor_boundary() {
-                Some(h) => Some(h),
-                None => Some(natural_anchor_height(&wallet).expect("natural anchor height")),
-            };
-            match crate::migration_finalize::finalize_transaction(
-                &mut wallet,
-                &fvk,
-                &spendable,
-                anchor_height,
-                &pczt_bytes,
-            ) {
-                Ok(Some((_bytes, txid))) => {
-                    finalized += 1;
-                    println!(
-                        "id={id:?} kind={:?} finalized txid={}",
-                        committed_tx.kind(),
-                        hex::encode(txid)
-                    );
-                }
-                Ok(None) => {
-                    transient += 1;
-                    println!(
-                        "id={id:?} kind={:?} not yet finalizable (transient — funding note not \
-                         observed, or not witnessable at anchor_height {anchor_height:?} yet)",
-                        committed_tx.kind(),
-                    );
-                }
-                Err(e) if e.to_string().contains("MissingSpendAuthSig") => {
-                    ready_but_unsigned += 1;
-                    println!(
-                        "id={id:?} kind={:?} witness/anchor resolution succeeded — extraction \
-                         correctly stopped only on the missing signature (expected: this PCZT is \
-                         deliberately unsigned)",
-                        committed_tx.kind(),
-                    );
-                }
-                Err(e) => panic!("id={id:?} kind={:?} FAILED: {e}", committed_tx.kind()),
-            }
-        }
-        println!(
-            "{finalized} finalized, {transient} transient (not yet ready), \
-             {ready_but_unsigned} ready-but-deliberately-unsigned"
-        );
-    }
+    // `build_and_finalize_all_unsigned` (tested `build_preparation_unsigned`'s deliberately-UNSIGNED
+    // PCZTs against our old hand-rolled `migration_finalize::finalize_transaction`, which didn't
+    // care whether a PCZT was signed — it just resolved the witness/anchor and let extraction fail
+    // on the missing signature) was REMOVED when this crate adopted
+    // `zcash_pool_migration_backend`'s own `WalletMigrationProver`/`engine::prove_transfer`/
+    // `prove_preparation` (see `try_prove`'s doc comment). Those require the transaction to be
+    // `MigrationTxState::Signed` (`ProveError::NotReady` otherwise) — an UNSIGNED transaction from
+    // `build_preparation_unsigned` is `AwaitingSignature`, so it is correctly rejected before ever
+    // reaching witness/anchor resolution, not after (a stricter, better safety property than our old
+    // stopgap had, but one this test's exact premise can no longer exercise). The witness/anchor
+    // resolution logic this test covered now lives in `WalletMigrationProver` (core-team-owned,
+    // exercised by its own `zcash_pool_migration_backend/tests/prove_chain_sim.rs`); our own
+    // `commit_and_finalize_with_real_signing` below still covers the full real-signing → prove path
+    // end to end against our wallet adapter.
 }
 
 /// Full-loop test (plan → in-process sign/commit → finalize) exercising real signing via
@@ -1954,7 +1909,7 @@ mod live_wallet_signing_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
 
-        let state = {
+        let mut state = {
             let mut backend = Backend::new(&wallet, account, Some(usk), &mut store_conn).expect("account exists for migration store");
             let mut rng = OsRng;
             engine::commit_preparation(&network, target, &mut backend, &migration_plan, &mut rng)
@@ -1964,46 +1919,29 @@ mod live_wallet_signing_tests {
         };
         println!("{} transaction(s) committed and signed", state.transactions().len());
 
-        let (fvk, spendable) = {
+        let fvk = {
             let backend = Backend::new(&wallet, account, None, &mut store_conn).expect("account exists for migration store");
-            let fvk = backend.orchard_fvk().expect("fvk");
-            let spendable = backend.spendable_orchard_notes().expect("spendable");
-            (fvk, spendable)
+            backend.orchard_fvk().expect("fvk")
         };
 
+        let ids_and_kinds: Vec<(MigrationTxId, MigrationTxKind)> =
+            state.transactions().iter().map(|t| (t.id(), t.kind())).collect();
         let mut finalized = 0;
         let mut transient = 0;
-        for tx in state.transactions() {
-            let anchor_height = match tx.anchor_boundary() {
-                Some(h) => Some(h),
-                None => Some(natural_anchor_height(&wallet).expect("natural anchor height")),
-            };
-            match crate::migration_finalize::finalize_transaction(
-                &mut wallet,
-                &fvk,
-                &spendable,
-                anchor_height,
-                tx.pczt(),
-            ) {
-                Ok(Some((_bytes, txid))) => {
+        for (id, kind) in ids_and_kinds {
+            match try_prove(&mut wallet, account, fvk.clone(), &mut state, id, kind) {
+                Ok(true) => {
                     finalized += 1;
                     println!(
-                        "id={:?} kind={:?} finalized txid={} (built+proven locally only — this \
+                        "id={id:?} kind={kind:?} finalized (built+proven locally only — this \
                          test never submits anything to the network)",
-                        tx.id(),
-                        tx.kind(),
-                        hex::encode(txid)
                     );
                 }
-                Ok(None) => {
+                Ok(false) => {
                     transient += 1;
-                    println!(
-                        "id={:?} kind={:?} not yet finalizable (transient)",
-                        tx.id(),
-                        tx.kind()
-                    );
+                    println!("id={id:?} kind={kind:?} not yet finalizable (transient)");
                 }
-                Err(e) => panic!("id={:?} kind={:?} FAILED: {e}", tx.id(), tx.kind()),
+                Err(e) => panic!("id={id:?} kind={kind:?} FAILED: {e}"),
             }
         }
         println!("{finalized} finalized, {transient} transient — nothing broadcast");
@@ -2084,13 +2022,8 @@ mod live_wallet_signing_tests {
             state.apply_signature(split_id, signed_bytes),
             "apply_signature should accept the freshly-signed split pczt"
         );
-        let split_tx = state
-            .transactions()
-            .iter()
-            .find(|t| t.id() == split_id)
-            .expect("note-split preparation transaction");
         let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, split_tx, split_tx.pczt())
+            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)
                 .expect("finalize_note_split should resolve the anchor, not fail with MissingAnchor");
 
         // Mirrors `extractBroadcastTxNative` exactly — this is what previously crashed with
