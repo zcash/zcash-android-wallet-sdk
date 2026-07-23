@@ -134,12 +134,6 @@ internal interface TypesafeMigrationBackend {
         usk: ByteArray
     )
 
-    suspend fun isSyncRequiredBeforeNextTransfer(
-        dbDataPath: String,
-        network: ZcashNetwork,
-        account: AccountUuid
-    ): Boolean
-
     suspend fun finalizeReadyTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

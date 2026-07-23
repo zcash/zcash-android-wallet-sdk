@@ -368,12 +368,6 @@ internal class OrchardMigrationSdkImpl(
 
     // ── Background execution ─────────────────────────────────────────────────
 
-    override suspend fun isSyncRequiredBeforeNextTransfer(): Boolean = logged("isSyncRequiredBeforeNextTransfer") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged false
-        migrationBackend.isSyncRequiredBeforeNextTransfer(dbDataPath, network, account)
-    }
-
     override suspend fun finalizeReadyTransfers(): Int = logged("finalizeReadyTransfers") {
         val dbDataPath = dbDataPath()
         val account = account ?: return@logged 0
