@@ -72,6 +72,10 @@ const JNI_TRANSFER_PROPOSAL: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniTransferProposal";
 const JNI_MIGRATION_SCHEDULE: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniMigrationSchedule";
+const JNI_MIGRATION_TRANSFER_STATE: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniMigrationTransferState";
+const JNI_MIGRATION_TRANSFER_STATES: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniMigrationTransferStates";
 const JNI_UNSIGNED_TRANSFER_PCZT: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniUnsignedTransferPczt";
 const JNI_KEYSTONE_BATCH_DECODE_RESULT: &str =
@@ -100,6 +104,83 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     // call, see `lib.rs`), not by this crate — no separate init call needed here.
     ensure_migration_schema_current(&store_conn)?;
     Ok((wallet, store_conn))
+}
+
+/// The lowest `anchor_boundary` height still needed by any account's migration transactions that
+/// have not yet reached `Broadcast`/`Mined` — i.e. still need proving or broadcasting — across
+/// every account in the wallet at `db_path`.
+///
+/// This is the typed reference implementation of the anchor-retention floor fed into
+/// `EngineConfig::anchor_retention_height` at every Slipstream sync-session (re)start — see
+/// `backend-lib/slipstream-jni/src/lib.rs`'s `min_pending_migration_anchor_boundary` and
+/// `start_session` for the actual wired call site and the full pruning-bug rationale
+/// (`zcash_client_backend`'s block-persistence path otherwise prunes a checkpoint out from under
+/// a not-yet-proved migration transfer, ZIP 374, failing with `Query(NotContained(..))`).
+///
+/// `slipstream-jni` does NOT call this function directly: `backend-lib`'s own `Cargo.toml`
+/// already depends on `slipstream-jni` (`slipstream-jni = { path = "slipstream-jni" }`, to merge
+/// its JNI exports into one `libzcashlc.so`), so the reverse edge needed to call from
+/// `slipstream-jni` into this crate would be a cyclic package dependency — impossible regardless
+/// of the two crates' separate `[workspace]` roots. `slipstream-jni` instead runs an equivalent
+/// raw SQL query directly against `orchard_ironwood_migrations`/
+/// `orchard_ironwood_migration_transactions` (see that function's doc comment). This function is
+/// kept anyway as the typed, `PoolMigrationRead`-based reference this crate can unit-test against
+/// a real wallet DB (`live_wallet_edge_case_tests`-style, gated on `MIGRATION_TEST_WALLET_DB`) to
+/// verify the raw-SQL mirror stays correct, and as the natural call site if this crate ever grows
+/// its own direct consumer of the value (e.g. a debug JNI export). Hence `#[allow(dead_code)]`
+/// below: nothing in this crate's non-test code calls it today.
+///
+/// Preparation transactions are excluded (`anchor_boundary() == None`): they anchor to a freshly
+/// current tip at prove time (see `natural_anchor_height`'s doc comment), not a boundary drawn in
+/// advance, so they never need retroactive protection.
+///
+/// Returns `Ok(None)` if there's no in-progress migration in any account, or every transaction
+/// needing a boundary has already broadcast/mined.
+///
+/// Deliberately kept as a plain `anyhow::Result` (matching every other function in this file, e.g.
+/// `plan_for`), rather than swallowing errors internally: this function has no JNI boundary of its
+/// own to report through, so any caller is responsible for treating an `Err` as "no retention
+/// floor" — logging and falling back to `None` — since a wallet DB read glitch here must never
+/// block sync from starting (see the `slipstream-jni` call site for that fallback in practice).
+#[allow(dead_code)]
+pub(crate) fn min_pending_anchor_boundary(
+    db_path: &std::path::Path,
+    network: Network,
+) -> anyhow::Result<Option<u32>> {
+    let (wallet, mut store_conn) = open_at(db_path, network)?;
+    let account_ids = wallet
+        .get_account_ids()
+        .map_err(|e| anyhow!("Error listing account ids: {}", e))?;
+
+    let mut min_height: Option<BlockHeight> = None;
+    for account in account_ids {
+        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let Some(state) = backend.get_migration().map_err(|e| {
+            anyhow!(
+                "Error reading migration state for account {:?}: {:?}",
+                account,
+                e
+            )
+        })?
+        else {
+            continue;
+        };
+        if state.is_terminal() {
+            continue;
+        }
+        for tx in state.transactions() {
+            if matches!(
+                tx.state(),
+                MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
+            ) {
+                continue;
+            }
+            if let Some(boundary) = tx.anchor_boundary() {
+                min_height = Some(min_height.map_or(boundary, |existing| existing.min(boundary)));
+            }
+        }
+    }
+    Ok(min_height.map(u32::from))
 }
 
 /// Self-heals `orchard_ironwood_migration_transactions` against a wallet created between two
@@ -1364,6 +1445,86 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// The live, persisted status of every committed transfer transaction — reads straight from the
+/// migration store's current `scheduled_height`/state columns, so it reflects any reschedule
+/// (production `rescheduleOverdueTransfer()` or the debug-only `debugRescheduleTransfersNative`)
+/// immediately, unlike the app's own `MigrationPlanRepository` cache (populated once, at
+/// propose/commit time, and only ever updated by whichever caller remembers to write through it).
+/// Returns `null` if there's no in-progress migration.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationTransferStatesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let tip = target_height(&wallet)? - 1;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let Some(state) = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+        else {
+            return Ok(ptr::null_mut());
+        };
+
+        // Keyed by the transfer's real, stable MigrationTxId — NOT `transfer_crossing()` (the
+        // funding-note/crossing index). The app's displayed "Transfer N" position comes from
+        // sorting the ORIGINAL proposal by broadcast_height (see `encode_migration_schedule`),
+        // while the engine assigns real tx ids in crossing/schedule() order at commit time —
+        // ZIP 318 deliberately shuffles those two orderings apart, so they permanently disagree.
+        // The app now carries this same id on its cached `MigrationTransfer.id` (see
+        // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
+        let transfers: Vec<(MigrationTxId, bool, BlockHeight)> = state
+            .transactions()
+            .iter()
+            .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
+            .map(|t| {
+                let is_sent = matches!(
+                    t.state(),
+                    MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
+                );
+                (t.id(), is_sent, t.scheduled_height())
+            })
+            .collect();
+
+        let jtransfers = crate::utils::rust_vec_to_java(
+            env,
+            transfers,
+            JNI_MIGRATION_TRANSFER_STATE,
+            |env, (id, is_sent, scheduled_height)| {
+                let id = encode_transfer_id(env, id)?;
+                env.new_object(
+                    JNI_MIGRATION_TRANSFER_STATE,
+                    "(Ljava/lang/String;ZJ)V",
+                    &[
+                        JValue::Object(&id),
+                        JValue::Bool(is_sent as jboolean),
+                        JValue::Long(i64::from(u32::from(scheduled_height))),
+                    ],
+                )
+            },
+        )?;
+
+        Ok(env
+            .new_object(
+                JNI_MIGRATION_TRANSFER_STATES,
+                format!("([L{JNI_MIGRATION_TRANSFER_STATE};J)V"),
+                &[
+                    JValue::Object(&jtransfers),
+                    JValue::Long(i64::from(u32::from(tip))),
+                ],
+            )?
+            .into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_restartCurrentMigrationStepNative<
     'local,
@@ -1520,20 +1681,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// scheduling`'s module doc: this is a deliberate anti-correlation choice, not a technical
 /// requirement). Not exposed to production users.
 ///
-/// Only `scheduled_height` (which gates BROADCAST — see `next_broadcastable`) is touched; nothing
-/// about proving, anchors, or dependency-mining is bypassed:
-/// - A transfer's `anchor_boundary` (drawn at commit time) is left exactly as the engine chose it.
-///   It settles (becomes provable) on its own once the chain tip passes it by one block — that
-///   boundary is already a historical, already-mined block when drawn, so this is normally within
-///   about one block regardless of this override, not something this function needs to touch.
+/// Both `scheduled_height` (which gates BROADCAST — see `next_broadcastable`) AND `anchor_boundary`
+/// (which gates PROVING — see `is_prove_ready`) are rewritten; dependency-mining is not touched or
+/// bypassed:
+/// - A transfer's `anchor_boundary`, as originally drawn at commit time
+///   (`scheduling::draw_anchor_boundary`), is a boundary in the past relative to the chain tip
+///   *at commit time* — normally already passed by the time the transfer's (much later,
+///   ZIP-318-delayed) `scheduled_height` arrives. This override exists precisely because
+///   `debugRescheduleTransfers` moves `scheduled_height` to now, while the original
+///   `anchor_boundary` stays wherever it was drawn — confirmed live: the original boundary can
+///   still be ~70-1800 blocks AHEAD of the current synced tip, since it was never meant to be
+///   reached this soon. Left alone, `is_prove_ready` (`boundary + 1 < target_height`) would keep
+///   failing regardless of how close `scheduled_height` is. So every rescheduled transfer's
+///   `anchor_boundary` is also rewritten, to `natural_anchor_height` — the SAME anchor ordinary
+///   non-migration sends use (guaranteed checkpointed/witnessed). NOT a full `BOUNDARY_MODULUS`
+///   bucket back like `draw_anchor_boundary` draws in production (that bucketing is a privacy
+///   measure, irrelevant here, and lands outside the checkpoint retention window — confirmed live
+///   via `AnchorNotFound`), and NOT a hand-picked "tip minus N" guess either (also not guaranteed
+///   checkpointed — see `natural_anchor_height`'s own doc comment) — so proving can proceed as
+///   soon as `finalizeReadyTransfers` next runs.
 /// - Transfers do NOT depend on each other (confirmed directly: `MigrationTransaction::depends_on`
 ///   for a `Transfer` never lists another transfer's id, only the single preparation transaction
 ///   that minted its own funding note, if any) — so every transfer can be staggered independently;
 ///   there is no need to wait for transfer N to broadcast before N+1 becomes due.
 /// - A transfer whose funding note comes from an actual note-split (preparation) transaction still
 ///   genuinely cannot broadcast until that preparation transaction is MINED (`deps_mined`) — this
-///   function does not and cannot bypass that; it only affects how soon a transfer becomes due
-///   once its real dependencies are satisfied.
+///   function does not and cannot bypass that; it only affects how soon a transfer becomes due and
+///   provable once its real dependencies are satisfied.
 ///
 /// Every not-yet-broadcast/mined TRANSFER (preparation transactions are left alone) is
 /// rescheduled to `tip + FIRST_DELAY_BLOCKS + i * STRIDE_BLOCKS`, in `i` = the transfers' existing
@@ -1561,6 +1735,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
+        // The wallet's real, currently-witnessable anchor — NOT a hand-picked "tip minus N" guess.
+        // A full BOUNDARY_MODULUS (144-block) bucket back, like the real engine's
+        // draw_anchor_boundary draws, falls outside the checkpoint/witness retention window
+        // (confirmed live: AnchorNotFound at tip-256); a smaller ad-hoc offset (tip-5) isn't
+        // guaranteed checkpointed either — natural_anchor_height's own doc comment warns about
+        // this exact class of mistake ("NOT just chain tip minus one, which isn't necessarily
+        // checkpointed"). This is the same anchor ordinary non-migration sends use, so it's
+        // guaranteed available.
+        let debug_anchor_boundary = u32::from(natural_anchor_height(&wallet)?);
 
         let migration_id: Option<i64> = store_conn
             .query_row(
@@ -1593,11 +1776,28 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
         for (i, tx_id) in tx_ids.iter().enumerate() {
             let new_height = u32::from(target) + FIRST_DELAY_BLOCKS + (i as u32) * STRIDE_BLOCKS;
+            // `is_prove_ready` (`finalizeReadyTransfers`) gates purely on `anchor_boundary`, NOT on
+            // `scheduled_height` — so rewriting every transfer's anchor here would make ALL of them
+            // prove-ready in the same `finalizeReadyTransfers` call (confirmed live: 12 real Halo2
+            // proofs run back-to-back under one MIGRATION_DB_ACCESS_MUTEX hold, ~4-5 minutes,
+            // starving a concurrent "Send Now" tap the whole time — not a hang, just an unrealistic
+            // proving batch this debug tool itself created). Only the earliest-due transfer (i==0,
+            // this loop's existing scheduled_height-ascending order) gets a valid anchor; the rest
+            // keep their original, still-in-the-future one, matching production's natural
+            // one-becomes-ready-at-a-time shape. Re-invoke this debug action once this transfer
+            // broadcasts to unlock the next one.
+            let anchor_boundary = if i == 0 {
+                Some(debug_anchor_boundary)
+            } else {
+                None
+            };
             store_conn
                 .execute(
                     "UPDATE orchard_ironwood_migration_transactions \
-                     SET scheduled_height = ?1 WHERE migration_id = ?2 AND tx_id = ?3",
-                    rusqlite::params![new_height, migration_id, tx_id],
+                     SET scheduled_height = ?1, \
+                         anchor_boundary = COALESCE(?2, anchor_boundary) \
+                     WHERE migration_id = ?3 AND tx_id = ?4",
+                    rusqlite::params![new_height, anchor_boundary, migration_id, tx_id],
                 )
                 .map_err(|e| anyhow!("Error rescheduling transfer {tx_id}: {}", e))?;
         }
