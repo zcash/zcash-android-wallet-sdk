@@ -49,10 +49,15 @@ import kotlin.time.Duration
  * - [submitNoteSplit] / [signAndStoreMigrationSchedule] gained a `usk: UnifiedSpendingKey`
  *   parameter — sdk-lib never stores/derives a spending key itself (see
  *   [Synchronizer.createProposedTransactions]), and the Rust calls they wrap require one.
- * - [getMigrationState] / [getMigrationProgress] / [isNoteSplitNeeded] /
- *   [isSyncRequiredBeforeNextTransfer] / [hasOverdueTransfers] / [hasInvalidTransfers] became
- *   `suspend` — each opens a `MigrationContext` against the wallet's SQLite database, unlike the
- *   mock's free in-memory answers.
+ * - [getMigrationState] / [getMigrationProgress] / [isNoteSplitNeeded] / [hasOverdueTransfers] /
+ *   [hasInvalidTransfers] became `suspend` — each opens a `MigrationContext` against the wallet's
+ *   SQLite database, unlike the mock's free in-memory answers.
+ *
+ * Reconciled 2026-07-23 removing a dead gate: `isSyncRequiredBeforeNextTransfer()` — a real Rust
+ * JNI call that always returned `false` — was deleted entirely. It was never a working check to
+ * begin with; [isSyncBlocked]'s `next_broadcastable`-driven overdue detection already provides the
+ * genuine ZIP 318 sync/broadcast decoupling in both directions (see that method's doc), so nothing
+ * replaces the deleted method — there was no real gap to fill.
  */
 
 // ─── Supporting types ─────────────────────────────────────────────────────────
@@ -247,11 +252,17 @@ interface OrchardMigrationSdk {
      * that removes the need for manual polling.
      *
      * Implementation note (Rust bridge, 2026-07-15): this and the other state-query methods below
-     * (`getMigrationProgress`, `isNoteSplitNeeded`, `isSyncRequiredBeforeNextTransfer`,
-     * `hasOverdueTransfers`, `hasInvalidTransfers`) are `suspend` — not the synchronous calls their
-     * original signatures implied — because the real implementation opens a `MigrationContext`
-     * against the wallet's SQLite database on every call. The mock's answers were free (in-memory
-     * state), so the original interface didn't need `suspend` here; the real bridge does.
+     * (`getMigrationProgress`, `isNoteSplitNeeded`, `hasOverdueTransfers`, `hasInvalidTransfers`)
+     * are `suspend` — not the synchronous calls their original signatures implied — because the
+     * real implementation opens a `MigrationContext` against the wallet's SQLite database on every
+     * call. The mock's answers were free (in-memory state), so the original interface didn't need
+     * `suspend` here; the real bridge does.
+     *
+     * Implementation note (2026-07-23): `isSyncRequiredBeforeNextTransfer()` used to be listed
+     * alongside these — it was removed as dead code (a Rust JNI call that always returned `false`,
+     * with no other logic behind it). [isSyncBlocked]'s `next_broadcastable`-driven overdue check
+     * already provides the real ZIP 318 sync/broadcast decoupling; there was nothing this method
+     * contributed that isn't already covered there.
      */
     suspend fun getMigrationState(): MigrationState
 
@@ -463,17 +474,6 @@ interface OrchardMigrationSdk {
     // ── Background execution ─────────────────────────────────────────────────
 
     /**
-     * Returns true if a sync is needed before the next transfer can be executed.
-     * Happens when the previous transfer produced change back to Orchard — that
-     * change must be confirmed and synced before it can be spent.
-     *
-     * WorkManager task should check this before calling executeNextPendingTransfer().
-     * If true, task should exit and trigger a separate sync (not in the same session —
-     * sync and broadcast must be decoupled in time).
-     */
-    suspend fun isSyncRequiredBeforeNextTransfer(): Boolean
-
-    /**
      * Completes every pre-signed transfer that is awaiting a proof (its funding note — a
      * not-yet-mined note-split output — was not yet witnessed at signing time) and whose funding
      * note has since become witnessed: attaches the note's real witness and anchor, runs the
@@ -485,10 +485,12 @@ interface OrchardMigrationSdk {
      * not a failure. Callers do not need to guard calls to this with [isNoteSplitNeeded] or any
      * other state check first.
      *
-     * WorkManager task should call this before [isSyncRequiredBeforeNextTransfer] /
-     * [executeNextPendingTransfer] on every run, so a funding note that became witnessed since the
-     * last run gets finalized to broadcastable in the same session that might then immediately
-     * find and broadcast it.
+     * WorkManager task should call this before [executeNextPendingTransfer] on every run, so a
+     * funding note that became witnessed since the last run gets finalized to broadcastable in the
+     * same session that might then immediately find and broadcast it. There is no separate
+     * pre-transfer sync gate to check first — [isSyncBlocked]'s `next_broadcastable`-driven overdue
+     * check (see that method's doc) already keeps sync and broadcast decoupled in both directions,
+     * so this task's three-step sequence runs unconditionally.
      *
      * Implementation note (Rust bridge, 2026-07-18): backed by
      * `MigrationContext::finalize_ready_transfers`, added alongside the sign-now/prove-later
