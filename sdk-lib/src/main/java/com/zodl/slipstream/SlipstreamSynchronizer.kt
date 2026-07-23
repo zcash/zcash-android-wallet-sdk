@@ -998,7 +998,7 @@ class SlipstreamSynchronizer internal constructor(
             }
             if (shouldCreateAccount(hasSetup = setup != null, accountsAreEmpty = backend.getAccounts().isEmpty())) {
                 val accountSetup = requireNotNull(setup)
-                runCatching {
+                runCatchingCancellable {
                     backend.createAccount(
                         accountName = accountSetup.accountName,
                         keySource = accountSetup.keySource,
