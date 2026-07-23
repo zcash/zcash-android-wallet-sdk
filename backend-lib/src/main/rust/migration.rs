@@ -912,6 +912,45 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ())
 }
 
+/// Reconciles mined-ness against the wallet's own transaction history before returning migration
+/// state, so `InProgress`/`Complete` derivation reflects broadcast truth instead of staying stuck at
+/// whatever `mark_broadcast` last recorded. The engine's own contract intentionally leaves mining
+/// detection to the caller (`state.rs` module doc: "the state machine's only job is to ORDER the
+/// broadcasts") — this is that caller-side reconciliation, run at read time rather than a background
+/// job, matching the iOS SDK's own `derive_state` reconciliation approach.
+fn read_reconciled(
+    wallet: &Wallet,
+    backend: &mut Backend<Wallet>,
+) -> anyhow::Result<Option<MigrationState>> {
+    let mut state = match backend
+        .get_migration()
+        .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+    {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let mut newly_mined = Vec::new();
+    for tx in state.transactions() {
+        if let MigrationTxState::Broadcast { txid } = tx.state() {
+            if let Some(height) = wallet
+                .get_tx_height(txid)
+                .map_err(|e| anyhow!("Error reading tx height for {:?}: {:?}", txid, e))?
+            {
+                newly_mined.push((tx.id(), height));
+            }
+        }
+    }
+    if !newly_mined.is_empty() {
+        for (id, height) in newly_mined {
+            state.mark_mined(id, height);
+        }
+        backend
+            .replace_migration(&state)
+            .map_err(|e| anyhow!("Error persisting reconciled migration state: {:?}", e))?;
+    }
+    Ok(Some(state))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationStateNative<
     'local,
@@ -926,10 +965,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let persisted = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(derive_migration_state(env, &wallet, account, persisted, tip)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -949,10 +986,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let persisted = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
                 let transactions = state.transactions();
@@ -1051,10 +1086,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let persisted = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
                 if state.next_broadcastable(tip).is_some() {
@@ -1082,10 +1115,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let persisted = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) => match state.status() {
                 engine::MigrationStatus::Failed => JNI_TRUE,
@@ -1271,11 +1302,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let Some(state) = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
-        else {
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let Some(state) = read_reconciled(&wallet, &mut backend)? else {
             return Ok(ptr::null_mut());
         };
 
@@ -1595,10 +1623,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let persisted = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
                 match state.next_broadcastable(tip).and_then(|id| {
@@ -2376,6 +2402,7 @@ mod live_wallet_edge_case_tests {
     use zcash_client_backend::data_api::chain::ChainState;
     use zcash_client_backend::data_api::{AccountBirthday, WalletWrite};
     use zcash_primitives::block::BlockHash;
+    use zcash_protocol::TxId;
 
     fn fixture_db_path() -> std::path::PathBuf {
         std::env::var("MIGRATION_TEST_WALLET_DB")
@@ -2390,6 +2417,24 @@ mod live_wallet_edge_case_tests {
             .into_iter()
             .next()
             .expect("wallet has at least one account — restore/sync one first")
+    }
+
+    /// Finds a real, already-mined transaction's txid in the fixture wallet DB, so a test can
+    /// simulate `WalletRead::get_tx_height` returning `Some(_)` for a migration transaction
+    /// without actually broadcasting anything and waiting for it to mine. `Wallet` (`WalletDb`)
+    /// keeps its own `rusqlite::Connection` private, so this queries the wallet's
+    /// `transactions` table directly through the migration store's own second connection to the
+    /// same on-disk file — the same raw-query pattern `debugRescheduleTransfersNative` already
+    /// uses against this DB.
+    fn a_mined_txid_in_fixture(store_conn: &Connection) -> TxId {
+        let txid_bytes: [u8; 32] = store_conn
+            .query_row(
+                "SELECT txid FROM transactions WHERE mined_height IS NOT NULL LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("fixture wallet DB has at least one mined transaction");
+        TxId::from_bytes(txid_bytes)
     }
 
     /// Creates a second, synthetic, permanently-unfunded account in `wallet` — not derived from
@@ -2483,6 +2528,91 @@ mod live_wallet_edge_case_tests {
                  project_core_migration_swap memory and this test accordingly."
             ),
         }
+    }
+
+    /// `mark_mined` (`MigrationState::mark_mined`) is never called anywhere in this file's JNI
+    /// glue, so `InProgress`/`Complete` derivation never actually advanced past whatever
+    /// `mark_broadcast` last recorded — confirmed directly, not assumed (see
+    /// `recordTransferResultNative`'s own comment on this). `read_reconciled` is the fix: it
+    /// checks every `Broadcast` transaction against the wallet's own transaction history at read
+    /// time and promotes it to `Mined` (persisting the promotion) whenever the wallet already
+    /// knows a mined height for it.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn mark_mined_reconciles_on_read() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        // Commit a migration, then manually drive one of its transactions to `Broadcast` using a
+        // real, already-mined txid from the fixture wallet DB — `mark_broadcast`/`mark_mined` set
+        // state unconditionally (no prior-state precondition, confirmed in
+        // `zcash_pool_migration_backend::state`), so an `AwaitingSignature` transaction from
+        // `build_preparation_unsigned` works fine here without needing real signing.
+        let (plan, tip) = plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let target = tip + 1;
+        let mut state = {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+                .expect("account exists for migration store");
+            let mut rng = OsRng;
+            let (state, _unsigned) =
+                engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
+                    .expect("commit migration");
+            state
+        };
+        let some_tx_id = state.transactions()[0].id();
+        let mined_txid = a_mined_txid_in_fixture(&store_conn);
+        state.mark_broadcast(some_tx_id, mined_txid);
+
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            .expect("account exists for migration store");
+        backend
+            .replace_migration(&state)
+            .expect("persist manually-advanced state");
+
+        // Before reconciliation, a raw read still shows Broadcast, not Mined.
+        let raw = backend
+            .get_migration()
+            .expect("read migration state")
+            .expect("migration state committed");
+        assert!(matches!(
+            raw.transactions()
+                .iter()
+                .find(|t| t.id() == some_tx_id)
+                .unwrap()
+                .state(),
+            MigrationTxState::Broadcast { .. }
+        ));
+
+        // read_reconciled() should promote it to Mined without any explicit mark_mined call here.
+        let reconciled = read_reconciled(&wallet, &mut backend)
+            .expect("read_reconciled")
+            .expect("migration state committed");
+        let reconciled_tx = reconciled
+            .transactions()
+            .iter()
+            .find(|t| t.id() == some_tx_id)
+            .unwrap();
+        assert!(matches!(
+            reconciled_tx.state(),
+            MigrationTxState::Mined { .. }
+        ));
+
+        // And the reconciliation persisted: a fresh raw read now also shows Mined.
+        let raw_again = backend
+            .get_migration()
+            .expect("read migration state")
+            .expect("migration state committed");
+        assert!(matches!(
+            raw_again
+                .transactions()
+                .iter()
+                .find(|t| t.id() == some_tx_id)
+                .unwrap()
+                .state(),
+            MigrationTxState::Mined { .. }
+        ));
     }
 
     /// `commit_or_reuse` (our own adapter, used by every commit-shaped JNI function) must REUSE
