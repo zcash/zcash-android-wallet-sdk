@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPcz
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
@@ -120,11 +121,17 @@ internal interface TypesafeMigrationBackend {
         feeZatoshi: Long
     ): JniMigrationSchedule
 
-    suspend fun proposeImmediateMigrationTransfers(
+    /**
+     * Proposes an ordinary send-max transaction sweeping all spendable Orchard funds into this
+     * account's own Ironwood receiver — bypasses the migration engine entirely. Returns the raw
+     * proposal proto bytes, encoded exactly like an ordinary send's proposal, for decoding via
+     * `cash.z.ecc.android.sdk.model.Proposal.fromByteArray`.
+     */
+    suspend fun proposeImmediateSendMax(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
-    ): JniMigrationSchedule
+    ): ByteArray
 
     suspend fun signAndStoreMigrationSchedule(
         dbDataPath: String,
@@ -152,6 +159,16 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid,
         includeResidual: Boolean
     ): JniMigrationSchedule
+
+    /**
+     * The live, persisted status of every committed transfer transaction, or `null` if there's
+     * no in-progress migration. See [JniMigrationTransferStates].
+     */
+    suspend fun migrationTransferStates(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): JniMigrationTransferStates?
 
     /**
      * Lists every account's UUID in the wallet database, independent of any live `Synchronizer`.

@@ -7,6 +7,8 @@ import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
+import cash.z.ecc.android.sdk.MigrationTransferState
+import cash.z.ecc.android.sdk.MigrationTransferStates
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
@@ -21,6 +23,8 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPcz
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferState
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
@@ -28,6 +32,7 @@ import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferen
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
@@ -347,10 +352,10 @@ internal class OrchardMigrationSdkImpl(
             ).toPublic()
         }
 
-    override suspend fun proposeImmediateMigration(): MigrationSchedule = logged("proposeImmediateMigration") {
+    override suspend fun proposeImmediateMigration(): Proposal = logged("proposeImmediateMigration") {
         val dbDataPath = dbDataPath()
         val account = account ?: noAccountAvailable()
-        migrationBackend.proposeImmediateMigrationTransfers(dbDataPath, network, account).toPublic()
+        Proposal.fromByteArray(migrationBackend.proposeImmediateSendMax(dbDataPath, network, account))
     }
 
     override suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey) =
@@ -464,6 +469,13 @@ internal class OrchardMigrationSdkImpl(
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend.restartCurrentMigrationStep(dbDataPath, network, account, includeResidual).toPublic()
+        }
+
+    override suspend fun getMigrationTransferStates(): MigrationTransferStates? =
+        logged("getMigrationTransferStates") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.migrationTransferStates(dbDataPath, network, account)?.toPublic()
         }
 
     // ── Dust locking ─────────────────────────────────────────────────────────
@@ -661,6 +673,19 @@ private fun JniMigrationSchedule.toPublic(): MigrationSchedule =
     MigrationSchedule(
         transfers = transfers.map { it.toPublic() },
         estimatedDurationHours = estimatedDurationHours,
+    )
+
+private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
+    MigrationTransferState(
+        id = id,
+        isSent = isSent,
+        scheduledHeight = scheduledHeight,
+    )
+
+private fun JniMigrationTransferStates.toPublic(): MigrationTransferStates =
+    MigrationTransferStates(
+        transfers = transfers.map { it.toPublic() },
+        tipHeight = tipHeight,
     )
 
 private fun TransferProposal.toJni(): JniTransferProposal =

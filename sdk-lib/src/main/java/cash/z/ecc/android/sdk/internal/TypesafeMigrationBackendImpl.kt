@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPcz
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
@@ -140,12 +141,11 @@ internal class TypesafeMigrationBackendImpl(
             feeZatoshi
         )
 
-    override suspend fun proposeImmediateMigrationTransfers(
+    override suspend fun proposeImmediateSendMax(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
-    ): JniMigrationSchedule =
-        rustBackend().proposeImmediateMigrationTransfers(dbDataPath, network.id, account.value)
+    ): ByteArray = rustBackend().proposeImmediateSendMax(dbDataPath, network.id, account.value)
 
     override suspend fun signAndStoreMigrationSchedule(
         dbDataPath: String,
@@ -174,6 +174,12 @@ internal class TypesafeMigrationBackendImpl(
         includeResidual: Boolean
     ): JniMigrationSchedule =
         rustBackend().restartCurrentMigrationStep(dbDataPath, network.id, account.value, includeResidual)
+
+    override suspend fun migrationTransferStates(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): JniMigrationTransferStates? = rustBackend().migrationTransferStates(dbDataPath, network.id, account.value)
 
     override suspend fun getAccountUuids(
         dbDataPath: String,

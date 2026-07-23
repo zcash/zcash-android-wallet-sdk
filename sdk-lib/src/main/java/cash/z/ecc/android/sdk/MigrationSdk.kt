@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk
 
+import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.flow.Flow
 import kotlin.time.Duration
@@ -154,6 +155,30 @@ data class KeystoneBatchDecodeResult(
 data class KeystoneBatchSignedPczts(
     val splitSignedPczt: ByteArray?,
     val transferSignedPczts: List<ByteArray>
+)
+
+/**
+ * The live, persisted status of one committed transfer transaction — [id] matches
+ * [TransferProposal.id] (the real, stable `MigrationTxId`), NOT its position in
+ * [MigrationSchedule.transfers]: the engine assigns real transfer ids in its own funding-note/
+ * crossing order, while array position there is sorted by broadcast height — ZIP 318 deliberately
+ * shuffles those two orderings apart, so a caller must correlate by [id], never by array index.
+ */
+data class MigrationTransferState(
+    val id: String,
+    val isSent: Boolean,
+    val scheduledHeight: Long
+)
+
+/**
+ * The live schedule/status of every committed transfer transaction, read straight from the
+ * persisted migration store — see [OrchardMigrationSdk.getMigrationTransferStates].
+ * [tipHeight] is the wallet's current tip at the time of the read, for converting
+ * [MigrationTransferState.scheduledHeight] into a wall-clock estimate.
+ */
+data class MigrationTransferStates(
+    val transfers: List<MigrationTransferState>,
+    val tipHeight: Long
 )
 
 /**
@@ -438,17 +463,22 @@ interface OrchardMigrationSdk {
     suspend fun proposeMigrationTransfersFromSplit(splitProposal: NoteSplitProposal): MigrationSchedule
 
     /**
-     * Proposes a single, unsplit, full-balance migration transfer for immediate broadcast —
-     * no privacy-preserving multi-transfer split. The returned [MigrationSchedule] always
-     * contains exactly one [TransferProposal] whose [TransferProposal.nextExecutableAfterHeight]
-     * is immediately executable, so the caller broadcasts it right away via
-     * [executeNextPendingTransfer] after [signAndStoreMigrationSchedule] — no WorkManager /
-     * BGTaskScheduler background scheduling is needed for this path.
+     * Proposes an ordinary send-max transaction sweeping all spendable Orchard funds into this
+     * account's own Ironwood receiver — bypassing the migration engine entirely. Call only when
+     * state is ReadyToPropose, as an alternative to [proposeMigrationTransfers] for users who
+     * explicitly opt out of the privacy-preserving schedule.
      *
-     * Call only when state is ReadyToPropose, as an alternative to [proposeMigrationTransfers]
-     * for users who explicitly opt out of the privacy-preserving schedule.
+     * Unlike [proposeMigrationTransfers]/[proposeMigrationTransfersFromSplit], the result is never
+     * persisted as migration state (no `MigrationState` row is read or written): sign and submit
+     * it exactly like an ordinary send (see the app's `SubmitProposalUseCase`/proposal repository
+     * machinery), not through [signAndStoreMigrationSchedule].
+     *
+     * Implementation note (Rust bridge, 2026-07-23): backed by
+     * `migration_engine::propose_immediate_send_max`, proto-encoded exactly like an ordinary
+     * send's proposal (`RustBackend.proposeTransfer`'s encoding) rather than a migration-specific
+     * type — this replaces the old, engine-routed `MigrationSchedule`-returning version.
      */
-    suspend fun proposeImmediateMigration(): MigrationSchedule
+    suspend fun proposeImmediateMigration(): Proposal
 
     /**
      * User has confirmed the schedule. SDK signs all transactions and stores them
@@ -614,6 +644,14 @@ interface OrchardMigrationSdk {
      */
     suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationSchedule
 
+    /**
+     * The live, persisted status of every committed transfer transaction — reflects any
+     * reschedule (production [rescheduleOverdueTransfer], or the debug-only
+     * [debugRescheduleTransfers]) immediately, unlike an app-side cache populated once at
+     * propose/commit time. Returns `null` if there's no in-progress migration.
+     */
+    suspend fun getMigrationTransferStates(): MigrationTransferStates?
+
     // ── Dust locking ─────────────────────────────────────────────────────────
 
     /**
@@ -643,11 +681,14 @@ interface OrchardMigrationSdk {
     /**
      * DEBUG ONLY: reschedules every not-yet-broadcast transfer in this account's migration to
      * become due in quick succession (first ~2.5 min out, then ~5 min apart), instead of ZIP
-     * 318's normal privacy-motivated schedule (mean ~3h between transfers). Only the persisted
-     * `scheduled_height` (which gates broadcast eligibility) is touched — proving, anchors, and
-     * any real mining dependency a transfer has are unaffected, since transfers never depend on
-     * each other (only, at most, on the single preparation transaction that minted their own
-     * funding note). Not for production use.
+     * 318's normal privacy-motivated schedule (mean ~3h between transfers). Both the persisted
+     * `scheduled_height` (broadcast eligibility) and `anchor_boundary` (proving eligibility) are
+     * rewritten — the original `anchor_boundary` is drawn relative to the chain tip at commit
+     * time and can still be far in the *future* of the current synced tip, which would otherwise
+     * leave every rescheduled transfer stuck un-provable regardless of how soon it's due. Any real
+     * mining dependency a transfer has is unaffected, since transfers never depend on each other
+     * (only, at most, on the single preparation transaction that minted their own funding note).
+     * Not for production use.
      *
      * @return the number of transfer rows actually rescheduled (0 if there's no in-progress
      * migration, or every transfer is already broadcast/mined) — surface this to whoever is
