@@ -636,12 +636,30 @@ class SdkSynchronizer private constructor(
      * Only puts an already-created Tor client to sleep; there's no reason to force lazy Tor runtime
      * creation just to immediately mark it dormant.
      */
+    @Suppress("TooGenericExceptionCaught")
     override fun onBackground() {
-        coroutineScope.launch { lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) } }
+        coroutineScope.launch {
+            try {
+                lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Twig.warn(e) { "Tor dormant-mode switch skipped during shutdown" }
+            }
+        }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     override fun onForeground() {
-        coroutineScope.launch { lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.NORMAL) } }
+        coroutineScope.launch {
+            try {
+                lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Twig.warn(e) { "Tor dormant-mode switch skipped during shutdown" }
+            }
+        }
     }
 
     //
@@ -683,6 +701,8 @@ class SdkSynchronizer private constructor(
             val isolatedTor =
                 try {
                     lazyTorClient.getOrCreate().isolatedTorClient()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     throw TorInitializationErrorException(e)
                 }

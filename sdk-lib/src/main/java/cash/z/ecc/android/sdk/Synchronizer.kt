@@ -56,6 +56,7 @@ import cash.z.ecc.android.sdk.type.AddressType
 import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
+import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -1024,48 +1025,54 @@ interface Synchronizer {
                         preferenceProvider to pendingSubmitPlanStore
                     }
 
-                val (saplingParamTool, backend) = backendDeferred.await()
-                val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend)
-                val blockStore =
-                    DefaultSynchronizerFactory
-                        .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)
-
                 /**
-                 * Downloader wraps the concurrently-built walletClient; built once and reused by both
-                 * the (rarely used) init-state network fetch and the processor.
+                 * [walletClient] is hoisted so the `catch` blocks below can dispose it (and
+                 * [lazyTorClient]) on any failure from here on, since ownership only transfers to
+                 * the returned [SdkSynchronizer] once construction succeeds - on any earlier
+                 * failure there would be nobody left to dispose them via `close()`. One narrow
+                 * edge case is accepted as-is: if [walletClientDeferred] completes concurrently
+                 * but a failure elsewhere means this function never reaches its `await()` below,
+                 * that already-built client is never observed here and leaks undisposed.
                  */
-                val downloaderDeferred =
-                    async(Dispatchers.Default) {
-                        DefaultSynchronizerFactory.defaultDownloader(walletClientDeferred.await(), blockStore)
-                    }
-
-                val initializationState =
-                    resolveWalletInitializationState(
-                        downloaderProvider = { downloaderDeferred.await() },
-                        fallbackTreeState = checkpointDeferred.await().treeState(),
-                        sdkFlags = sdkFlags,
-                        walletInitMode = walletInitMode
-                    )
-
-                val repository =
-                    DefaultSynchronizerFactory.defaultDerivedDataRepository(
-                        context = applicationContext,
-                        rustBackend = backend,
-                        databaseFile = coordinator.dataDbFile(zcashNetwork, alias),
-                        treeState = initializationState.treeState,
-                        recoverUntil = initializationState.recoverUntil,
-                        setup = setup,
-                    )
-
-                val encoder = DefaultSynchronizerFactory.defaultEncoder(backend, saplingParamFetcher, repository)
-
-                /**
-                 * From here on, [walletClient] is disposed on failure since ownership only transfers to the
-                 * returned [SdkSynchronizer] once construction succeeds; on any earlier failure there would be
-                 * nobody left to dispose it via `close()`.
-                 */
-                val walletClient = walletClientDeferred.await()
+                var walletClient: CombinedWalletClient? = null
                 try {
+                    val (saplingParamTool, backend) = backendDeferred.await()
+                    val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend)
+                    val blockStore =
+                        DefaultSynchronizerFactory
+                            .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)
+
+                    /**
+                     * Downloader wraps the concurrently-built walletClient; built once and reused by both
+                     * the (rarely used) init-state network fetch and the processor.
+                     */
+                    val downloaderDeferred =
+                        async(Dispatchers.Default) {
+                            DefaultSynchronizerFactory.defaultDownloader(walletClientDeferred.await(), blockStore)
+                        }
+
+                    val initializationState =
+                        resolveWalletInitializationState(
+                            downloaderProvider = { downloaderDeferred.await() },
+                            fallbackTreeState = checkpointDeferred.await().treeState(),
+                            sdkFlags = sdkFlags,
+                            walletInitMode = walletInitMode
+                        )
+
+                    val repository =
+                        DefaultSynchronizerFactory.defaultDerivedDataRepository(
+                            context = applicationContext,
+                            rustBackend = backend,
+                            databaseFile = coordinator.dataDbFile(zcashNetwork, alias),
+                            treeState = initializationState.treeState,
+                            recoverUntil = initializationState.recoverUntil,
+                            setup = setup,
+                        )
+
+                    val encoder = DefaultSynchronizerFactory.defaultEncoder(backend, saplingParamFetcher, repository)
+
+                    walletClient = walletClientDeferred.await()
+
                     val downloader = downloaderDeferred.await()
                     val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
                     val (preferenceProvider, pendingSubmitPlanStore) = prefsDeferred.await()
@@ -1113,10 +1120,12 @@ interface Synchronizer {
                         sdkFlags = sdkFlags
                     )
                 } catch (e: CancellationException) {
-                    walletClient.dispose()
+                    walletClient?.dispose()
+                    lazyTorClient?.dispose()
                     throw e
                 } catch (e: Exception) {
-                    walletClient.dispose()
+                    walletClient?.dispose()
+                    lazyTorClient?.dispose()
                     throw e
                 }
             }
