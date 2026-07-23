@@ -482,6 +482,21 @@ internal class OrchardMigrationSdkImpl(
         Unit
     }
 
+    // ── Debug ─────────────────────────────────────────────────────────────────
+
+    override suspend fun clearMigration() = logged("clearMigration") {
+        val dbDataPath = dbDataPath()
+        val account = account ?: noAccountAvailable()
+        migrationBackend.clearMigration(dbDataPath, network, account)
+        Unit
+    }
+
+    override suspend fun debugRescheduleTransfers(): Int = logged("debugRescheduleTransfers") {
+        val dbDataPath = dbDataPath()
+        val account = account ?: noAccountAvailable()
+        migrationBackend.debugRescheduleTransfers(dbDataPath, network, account)
+    }
+
     private suspend fun isSyncBlockedNow(preferenceProvider: PreferenceProvider): Boolean {
         val dbDataPath = dbDataPath()
         // Same mutex as logged() — this poll must never read the wallet DB at the same moment a
