@@ -34,6 +34,7 @@ use jni::{
     objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
+use prost::Message;
 use rand::rngs::OsRng;
 use rusqlite::{Connection, OptionalExtension};
 use std::ptr;
@@ -78,7 +79,7 @@ const JNI_KEYSTONE_BATCH_DECODE_RESULT: &str =
 const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniKeystoneBatchSignedPczts";
 
-type Wallet = zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, OsRng>;
+pub(crate) type Wallet = zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, OsRng>;
 
 /// Opens a fresh wallet-read connection plus a second, independent connection for the migration
 /// store (same on-disk file — SQLite supports multiple connections to one file; mirrors the old
@@ -622,8 +623,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// IMMEDIATE mode's proposal entry point. Unlike `proposeMigrationTransfersNative` (which plans
+/// the AUTOMATIC-mode, shuffled N-transfer engine plan via `zcash_pool_migration_backend`), this
+/// bypasses the engine entirely: it builds an ordinary send-max proposal sweeping every spendable
+/// Orchard note into the account's own Ironwood receiver
+/// (`migration_engine::propose_immediate_send_max`). Nothing here reads or writes the persisted
+/// `MigrationState` — there is no plan to cache, commit, or reconcile, so this call has no
+/// interaction with `proposeMigrationTransfersNative`/`commit*`/`finalize*`'s shared state at all.
+///
+/// Returns the proposal encoded exactly like `RustBackend.proposeTransfer` encodes an ordinary
+/// send (`proto::proposal::Proposal::from_standard_proposal(..).encode_to_vec()`), so the Kotlin
+/// side can decode it with the same `Proposal.parseFrom` path an ordinary send already uses —
+/// deliberately not a new, migration-specific encoding.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_proposeImmediateMigrationTransfersNative<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_proposeImmediateSendMaxNative<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -631,10 +644,19 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-) -> jobject {
+) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let (migration_plan, tip) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(encode_migration_schedule(env, &migration_plan, tip)?.into_raw())
+        let (network, mut wallet, _store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let proposal =
+            crate::migration_engine::propose_immediate_send_max(&network, &mut wallet, account)?;
+        Ok(crate::utils::rust_bytes_to_java(
+            env,
+            zcash_client_backend::proto::proposal::Proposal::from_standard_proposal(&proposal)
+                .encode_to_vec()
+                .as_ref(),
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -2246,6 +2268,59 @@ mod live_wallet_signing_tests {
             }
         }
         println!("{finalized} finalized, {transient} transient — nothing broadcast");
+    }
+
+    /// Proves IMMEDIATE mode's proposal is an ordinary send-max, not the shuffled N-transfer
+    /// engine plan AUTOMATIC mode commits: a single step, drawing only Orchard-pool inputs (no
+    /// transparent, no Sapling). Read-only (a proposal, never committed/signed), so — unlike
+    /// `commit_and_finalize_with_real_signing` above — this needs no `MIGRATION_TEST_SEED_PHRASE`
+    /// and never touches persisted `MigrationState`.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn immediate_send_max_sweeps_orchard_only_single_tx() {
+        let fixture = std::env::var("MIGRATION_TEST_WALLET_DB")
+            .map(std::path::PathBuf::from)
+            .expect("set MIGRATION_TEST_WALLET_DB");
+        let db_path = fresh_test_db_copy(&fixture);
+        let network = Network::TestNetwork;
+        let (mut wallet, _store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = wallet
+            .get_account_ids()
+            .expect("list accounts")
+            .into_iter()
+            .next()
+            .expect("wallet has at least one account — restore/sync one first");
+
+        let proposal =
+            crate::migration_engine::propose_immediate_send_max(&network, &mut wallet, account)
+                .expect("propose_immediate_send_max");
+
+        // Single step, single transaction — the whole point of send-max vs. the N-transfer
+        // engine plan.
+        assert_eq!(proposal.steps().len(), 1);
+        let step = &proposal.steps().head;
+
+        // Every input drawn is Orchard-pool: no transparent inputs swept at all, ...
+        assert!(
+            step.transparent_inputs().is_empty(),
+            "send-max sweep must not include transparent inputs: {:?}",
+            step.transparent_inputs()
+        );
+        // ... and every shielded input is specifically Orchard (no Sapling swept).
+        let shielded = step
+            .shielded_inputs()
+            .expect("send-max sweep should draw on shielded (Orchard) inputs");
+        for note in shielded.notes() {
+            assert_eq!(
+                note.note().pool(),
+                ShieldedPool::Orchard,
+                "send-max sweep must be Orchard-only, found a note in another pool"
+            );
+        }
+        println!(
+            "immediate send-max proposal: 1 step, {} shielded input(s), all Orchard",
+            shielded.notes().len()
+        );
     }
 
     /// Regression test for the Keystone/external-signer note-split crash (confirmed live:

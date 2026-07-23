@@ -12,18 +12,25 @@
 //! one, and `zcash_pool_migration_backend::engine::build_preparation_unsigned` never calls it (only
 //! `commit_preparation`'s in-process-signing path does).
 
+use std::convert::Infallible;
+
 use rusqlite::Connection;
 
 use incrementalmerkletree::Position;
-use orchard::keys::{FullViewingKey, SpendAuthorizingKey};
+use orchard::keys::{FullViewingKey, Scope, SpendAuthorizingKey};
 use orchard::note::Note as OrchardNote;
+use zcash_client_backend::address::Receiver;
+use zcash_client_backend::data_api::MaxSpendMode;
 use zcash_client_backend::data_api::wallet::TargetHeight;
 use zcash_client_backend::data_api::wallet::input_selection::{LockFilter, LockedInputPolicy};
+use zcash_client_backend::data_api::wallet::{ConfirmationsPolicy, propose_send_max_transfer};
 use zcash_client_backend::data_api::{Account, InputSource, WalletRead};
+use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::keys::UnifiedSpendingKey;
+use zcash_client_backend::proposal::Proposal;
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::ShieldedPool;
-use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 
 use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
@@ -31,6 +38,8 @@ use zcash_pool_migration_backend::engine::{
     MigrationBackend, MigrationCrypto, MigrationState, MigrationTxId, MigrationTxState,
     PoolMigrationRead, PoolMigrationWrite,
 };
+
+use crate::migration::Wallet;
 
 type SpendableNote = (OrchardNote, Position, u64);
 
@@ -220,4 +229,58 @@ where
             .update_transaction(id, state)
             .map_err(|e| anyhow::anyhow!("updating migration transaction failed: {e:?}"))
     }
+}
+
+/// Builds an ordinary send-max proposal sweeping every spendable Orchard note into the account's
+/// own Ironwood receiver — bypassing `zcash_pool_migration_backend` entirely. Unlike AUTOMATIC
+/// mode's `plan_migration`/`commit_preparation`/`commit_or_reuse` path, this function never reads
+/// or writes the persisted `MigrationState`: there is nothing to reconcile, no `is_immediate`
+/// flag, no consumed-run bookkeeping, because the engine's `InProgress`/`Complete` derivation
+/// (which only ever looks at `PoolMigrationRead::get_migration`) is simply never invoked for an
+/// immediate run. IMMEDIATE is a synchronous, foreground, user-driven send — behaviorally
+/// identical to an ordinary send once this proposal exists; the caller is expected to build/sign/
+/// submit it exactly like any other `propose_transfer` result (see `migration.rs`'s
+/// `proposeImmediateSendMaxNative`, which encodes the returned `Proposal` with the same
+/// `proto::proposal::Proposal::from_standard_proposal` path an ordinary send already uses).
+///
+/// The destination is the account's own internal Ironwood receiver. Ironwood shares the Orchard
+/// receiver encoding end to end (confirmed in `zcash_keys::address::Address::can_receive_as`:
+/// `PoolType::Shielded(ShieldedPool::Orchard | ShieldedPool::Ironwood)` both match an Orchard
+/// receiver) — there is no separate "Ironwood address" type, so deriving
+/// `orchard_fvk.address_at(0u32, Scope::Internal)` and wrapping it as `Receiver::Orchard` before
+/// encoding to a `ZcashAddress` is both correct and exactly how
+/// `zcash_pool_migration_backend::build::build_transfer_pczt` derives a migration transfer's own
+/// crossing destination (its `recipient = orchard_fvk.address_at(0u32, Scope::Internal)`) — this
+/// reuses that same derivation, not a second one.
+pub fn propose_immediate_send_max(
+    params: &Network,
+    wallet: &mut Wallet,
+    account: AccountUuid,
+) -> anyhow::Result<Proposal<StandardFeeRule, <Wallet as InputSource>::NoteRef>> {
+    let orchard_fvk = wallet
+        .get_account(account)
+        .map_err(|e| anyhow::anyhow!("account lookup failed: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("unknown account"))?
+        .ufvk()
+        .and_then(|ufvk| ufvk.orchard())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("account has no Orchard full viewing key"))?;
+
+    let ironwood_receiver = orchard_fvk.address_at(0u32, Scope::Internal);
+    let recipient = Receiver::Orchard(ironwood_receiver).to_zcash_address(params.network_type());
+
+    propose_send_max_transfer::<_, _, _, Infallible>(
+        wallet,
+        params,
+        account,
+        &[ShieldedPool::Orchard],
+        &StandardFeeRule::Zip317,
+        recipient,
+        None, // no memo
+        MaxSpendMode::MaxSpendable,
+        ConfirmationsPolicy::default(),
+        &LockedInputPolicy::Exclude,
+        None, // no note locking for the immediate sweep itself
+    )
+    .map_err(|e| anyhow::anyhow!("Error proposing immediate send-max: {:?}", e))
 }
