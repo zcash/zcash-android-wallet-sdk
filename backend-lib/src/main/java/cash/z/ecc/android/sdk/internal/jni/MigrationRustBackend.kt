@@ -339,6 +339,25 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
+     * Persists a rescheduled overdue transfer's new `scheduled_height` AND draws it a fresh
+     * `anchor_boundary` (the transaction's ORIGINAL anchor, drawn at commit time, can be far
+     * behind the current synced tip by the time it's rescheduled — proving would otherwise keep
+     * failing with AnchorNotFound regardless of how soon the new schedule says it's due). Targets
+     * the same earliest not-yet-broadcast/mined transfer [pendingTransferProposalNative] would
+     * return. Returns `false` if there's no pending transfer to reschedule.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun persistRescheduledTransfer(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        newScheduledHeight: Long
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            persistRescheduledTransferNative(dbDataPath, networkId, accountUuidBytes, newScheduledHeight)
+        }
+
+    /**
      * Lists every account's UUID in the wallet database, independent of any live `Synchronizer`.
      */
     @Throws(RuntimeException::class)
@@ -690,6 +709,15 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): JniTransferProposal?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun persistRescheduledTransferNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            newScheduledHeight: Long
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)

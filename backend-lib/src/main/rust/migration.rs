@@ -1841,6 +1841,74 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Persists a rescheduled overdue transfer's new `scheduled_height` and draws it a fresh
+/// `anchor_boundary` from the wallet's current natural anchor — see
+/// `debugRescheduleTransfersNative`'s doc comment for why a rescheduled transfer's ORIGINAL
+/// anchor (drawn relative to the tip at commit time) is not valid to keep once its schedule has
+/// moved: it can still be far behind the current synced tip, which would otherwise leave
+/// `is_prove_ready` failing indefinitely regardless of how soon the transfer is now due. Targets
+/// the earliest not-yet-broadcast/mined transfer — the same one `pendingTransferProposalNative`
+/// identifies. Returns `false` if there is no such transfer.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_persistRescheduledTransferNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    new_scheduled_height: jlong,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let new_anchor_boundary = u32::from(natural_anchor_height(&wallet)?);
+        let new_height = u32::try_from(new_scheduled_height)
+            .map_err(|_| anyhow!("new_scheduled_height out of u32 range"))?;
+
+        let migration_id: Option<i64> = store_conn
+            .query_row(
+                "SELECT m.id FROM orchard_ironwood_migrations m \
+                 JOIN accounts a ON a.id = m.account_id \
+                 WHERE a.uuid = ?1",
+                rusqlite::params![account.expose_uuid()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| anyhow!("Error reading migration row: {}", e))?;
+        let Some(migration_id) = migration_id else {
+            return Ok(false as jboolean);
+        };
+
+        let tx_id: Option<i64> = store_conn
+            .query_row(
+                "SELECT tx_id FROM orchard_ironwood_migration_transactions \
+                 WHERE migration_id = ?1 AND kind = 'transfer' \
+                   AND state NOT IN ('broadcast', 'mined') \
+                 ORDER BY scheduled_height ASC LIMIT 1",
+                rusqlite::params![migration_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| anyhow!("Error reading pending transfer: {}", e))?;
+        let Some(tx_id) = tx_id else {
+            return Ok(false as jboolean);
+        };
+
+        store_conn
+            .execute(
+                "UPDATE orchard_ironwood_migration_transactions \
+                 SET scheduled_height = ?1, anchor_boundary = ?2 \
+                 WHERE migration_id = ?3 AND tx_id = ?4",
+                rusqlite::params![new_height, new_anchor_boundary, migration_id, tx_id],
+            )
+            .map_err(|e| anyhow!("Error persisting rescheduled transfer: {}", e))?;
+        Ok(true as jboolean)
+    });
+    unwrap_exc_or(&mut env, res, false as jboolean)
+}
+
 #[cfg(test)]
 mod pending_transfer_proposal_tests {
     use super::*;

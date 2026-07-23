@@ -14,6 +14,7 @@ import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
 import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
+import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
@@ -447,13 +448,25 @@ internal class OrchardMigrationSdkImpl(
         val account = account ?: noAccountAvailable()
         val pending = migrationBackend.pendingTransferProposal(dbDataPath, network, account)?.toPublic()
             ?: error("OrchardMigrationSdk: no pending transfer to reschedule")
-        val nowSeconds = Clock.System.now().epochSeconds
+        // anchorHeight is the chain tip at read time (pendingTransferProposalNative's
+        // convention — NOT the transaction's real proving anchor), so it's the correct "now"
+        // reference for a height-only delay computation. Mixing this with Unix epoch seconds
+        // (the previous bug) always resolved to expiryHeight - 1 regardless of the intended
+        // 6-hour delay.
+        val tip = pending.anchorHeight
+        val rescheduleIntervalBlocks = RESCHEDULE_INTERVAL_SECONDS / (ZcashSdk.BLOCK_INTERVAL_MILLIS / 1000)
         // Target the same natural cadence the engine schedules by default; if that would land at
         // or past the transfer's own expiry, target just short of it instead — pushing past
         // expiry isn't a valid reschedule (hasInvalidTransfers/restartCurrentMigrationStep is the
         // recovery path once even that isn't possible).
-        val newNextExecutableAfterHeight =
-            minOf(nowSeconds + RESCHEDULE_INTERVAL_SECONDS, pending.expiryHeight - 1)
+        val newNextExecutableAfterHeight = minOf(tip + rescheduleIntervalBlocks, pending.expiryHeight - 1)
+        val persisted = migrationBackend.persistRescheduledTransfer(
+            dbDataPath,
+            network,
+            account,
+            newNextExecutableAfterHeight
+        )
+        check(persisted) { "OrchardMigrationSdk: failed to persist rescheduled transfer" }
         pending.copy(nextExecutableAfterHeight = newNextExecutableAfterHeight)
     }
 

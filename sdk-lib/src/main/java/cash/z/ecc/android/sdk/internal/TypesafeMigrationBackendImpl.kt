@@ -193,6 +193,13 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): JniTransferProposal? = rustBackend().pendingTransferProposal(dbDataPath, network.id, account.value)
 
+    override suspend fun persistRescheduledTransfer(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        newScheduledHeight: Long
+    ): Boolean = rustBackend().persistRescheduledTransfer(dbDataPath, network.id, account.value, newScheduledHeight)
+
     override suspend fun createUnsignedNoteSplitPczt(
         dbDataPath: String,
         network: ZcashNetwork,

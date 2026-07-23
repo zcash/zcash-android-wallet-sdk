@@ -188,6 +188,17 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): JniTransferProposal?
 
+    /**
+     * Persists a rescheduled overdue transfer's new scheduled height and draws it a fresh
+     * proving anchor. Returns `false` if there's no pending transfer to reschedule.
+     */
+    suspend fun persistRescheduledTransfer(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        newScheduledHeight: Long
+    ): Boolean
+
     // ----- External signer (Keystone hardware wallet) -----
 
     suspend fun createUnsignedNoteSplitPczt(
