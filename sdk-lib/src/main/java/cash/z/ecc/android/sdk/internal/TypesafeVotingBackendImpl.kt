@@ -4,6 +4,8 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.JNI_DELEGATION_PUBLIC_INPUT_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_GOVERNANCE_NULLIFIER_COUNT
+import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_RAW_ADDRESS_BYTES_SIZE
+import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_PROTOCOL_FIELD_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_SPEND_AUTH_SIG_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_VAN_WITNESS_PATH_DEPTH
@@ -12,6 +14,7 @@ import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniCommittedVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
@@ -22,6 +25,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareDelegationRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
 import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
@@ -48,9 +52,9 @@ internal class TypesafeVotingBackendImpl(
     ): ByteArray =
         rustBackend().computeShareNullifier(voteCommitment, shareIndex, blind)
 
-    override suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb =
+    override suspend fun openVotingDb(dbPath: String, walletId: String, networkId: Int): TypesafeVotingDb =
         TypesafeVotingDbImpl(
-            rustBackend().openVotingDb(dbPath, walletId)
+            rustBackend().openVotingDb(dbPath, walletId, networkId)
         )
 
     override suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): JniBundleSetupResult =
@@ -59,8 +63,18 @@ internal class TypesafeVotingBackendImpl(
     override suspend fun warmProvingCaches() =
         rustBackend().warmProvingCaches()
 
-    override suspend fun decomposeWeight(weight: Long): List<Long> =
-        rustBackend().decomposeWeight(weight).asList()
+    override suspend fun scheduledShareSubmitAt(
+        nowSeconds: Long,
+        ceremonyStartSeconds: Long,
+        voteEndTimeSeconds: Long,
+        singleShare: Boolean
+    ): Long =
+        rustBackend().scheduledShareSubmitAt(
+            nowSeconds,
+            ceremonyStartSeconds,
+            voteEndTimeSeconds,
+            singleShare
+        )
 
     override suspend fun buildSharePayloads(
         commitment: JniVoteCommitmentResult,
@@ -85,24 +99,6 @@ internal class TypesafeVotingBackendImpl(
             }.onEach { payload ->
                 payload.requireValid()
             }.asList()
-    }
-
-    override suspend fun signCastVote(
-        hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int,
-        commitment: JniVoteCommitmentResult
-    ): ByteArray {
-        commitment.requireValid()
-        return rustBackend()
-            .signCastVote(
-                hotkeySeed,
-                networkId,
-                accountIndex,
-                commitment
-            ).also { sig ->
-                sig.requireByteArraySize("voteAuthSig", JNI_SPEND_AUTH_SIG_BYTES_SIZE)
-            }
     }
 
     override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
@@ -154,13 +150,18 @@ internal interface VotingBackendBridge {
         blind: ByteArray
     ): ByteArray
 
-    suspend fun openVotingDb(dbPath: String, walletId: String): VotingDbBackend
+    suspend fun openVotingDb(dbPath: String, walletId: String, networkId: Int): VotingDbBackend
 
     suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult
 
     suspend fun warmProvingCaches()
 
-    suspend fun decomposeWeight(weight: Long): LongArray
+    suspend fun scheduledShareSubmitAt(
+        nowSeconds: Long,
+        ceremonyStartSeconds: Long,
+        voteEndTimeSeconds: Long,
+        singleShare: Boolean
+    ): Long
 
     suspend fun buildSharePayloads(
         commitment: JniVoteCommitmentResult,
@@ -169,13 +170,6 @@ internal interface VotingBackendBridge {
         vcTreePosition: Long,
         singleShareMode: Boolean
     ): Array<JniSharePayload>
-
-    suspend fun signCastVote(
-        hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int,
-        commitment: JniVoteCommitmentResult
-    ): ByteArray
 
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
@@ -213,8 +207,8 @@ private class RustVotingBackendBridge(
     ): ByteArray =
         rustBackend.computeShareNullifier(voteCommitment, shareIndex, blind)
 
-    override suspend fun openVotingDb(dbPath: String, walletId: String): VotingDbBackend =
-        RustVotingDbBackend(rustBackend.openVotingDb(dbPath, walletId))
+    override suspend fun openVotingDb(dbPath: String, walletId: String, networkId: Int): VotingDbBackend =
+        RustVotingDbBackend(rustBackend.openVotingDb(dbPath, walletId, networkId))
 
     override suspend fun computeBundleSetup(notes: List<JniNoteInfo>): JniBundleSetupResult =
         rustBackend.computeBundleSetup(notes)
@@ -222,8 +216,18 @@ private class RustVotingBackendBridge(
     override suspend fun warmProvingCaches() =
         rustBackend.warmProvingCaches()
 
-    override suspend fun decomposeWeight(weight: Long): LongArray =
-        rustBackend.decomposeWeight(weight)
+    override suspend fun scheduledShareSubmitAt(
+        nowSeconds: Long,
+        ceremonyStartSeconds: Long,
+        voteEndTimeSeconds: Long,
+        singleShare: Boolean
+    ): Long =
+        rustBackend.scheduledShareSubmitAt(
+            nowSeconds,
+            ceremonyStartSeconds,
+            voteEndTimeSeconds,
+            singleShare
+        )
 
     override suspend fun buildSharePayloads(
         commitment: JniVoteCommitmentResult,
@@ -239,14 +243,6 @@ private class RustVotingBackendBridge(
             vcTreePosition,
             singleShareMode
         )
-
-    override suspend fun signCastVote(
-        hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int,
-        commitment: JniVoteCommitmentResult
-    ): ByteArray =
-        rustBackend.signCastVote(hotkeySeed, networkId, accountIndex, commitment)
 
     override suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray =
         rustBackend.extractOrchardFvkFromUfvk(ufvk, networkId)
@@ -314,17 +310,13 @@ internal interface VotingDbBackend {
         notes: List<JniNoteInfo>
     ): JniBundleSetupResult
 
-    suspend fun generateHotkey(
-        roundId: String,
-        seed: ByteArray
-    ): JniVotingHotkey
+    suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey
 
     suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
         fvkBytes: ByteArray,
-        hotkeyRawAddress: ByteArray,
-        networkId: Int,
+        hotkeySecret: ByteArray,
         accountIndex: Int,
         notes: List<JniNoteInfo>,
         seedFingerprint: ByteArray,
@@ -339,7 +331,7 @@ internal interface VotingDbBackend {
         accountIndex: Int,
         notes: List<JniNoteInfo>,
         walletSeed: ByteArray,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String
     ): JniGovernancePczt
@@ -355,7 +347,6 @@ internal interface VotingDbBackend {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult
 
@@ -363,18 +354,23 @@ internal interface VotingDbBackend {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<JniNoteInfo>,
-        hotkeyRawAddress: ByteArray,
+        fvkBytes: ByteArray,
+        hotkeySecret: ByteArray,
+        seedFingerprint: ByteArray,
+        accountIndex: Int,
+        roundName: String,
         proofProgress: VotingProofProgressCallback?
     ): JniDelegationProofResult
 
     suspend fun getDelegationSubmission(
         roundId: String,
         bundleIndex: Int,
-        senderSeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        walletDbPath: String,
+        accountUuid: String,
+        hotkeySecret: ByteArray,
+        roundName: String,
+        senderSeed: ByteArray
     ): JniDelegationSubmissionResult
 
     suspend fun getDelegationSubmissionWithKeystoneSig(
@@ -411,16 +407,14 @@ internal interface VotingDbBackend {
     suspend fun buildVoteCommitment(
         roundId: String,
         bundleIndex: Int,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         proposalId: Int,
         choice: Int,
         numOptions: Int,
         witness: JniVanWitness,
-        networkId: Int,
-        accountIndex: Int,
         singleShare: Boolean,
         proofProgress: VotingProofProgressCallback?
-    ): JniVoteCommitmentResult
+    ): JniVoteCommitResult
 
     suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String)
 
@@ -441,19 +435,24 @@ internal interface VotingDbBackend {
         proposalId: Int
     ): String?
 
-    suspend fun storeCommitmentBundle(
-        roundId: String,
-        bundleIndex: Int,
-        proposalId: Int,
-        commitment: JniVoteCommitmentResult,
-        vcTreePosition: Long
-    )
-
     suspend fun getCommitmentBundle(
         roundId: String,
         bundleIndex: Int,
         proposalId: Int
     ): JniCommitmentBundleRecord?
+
+    suspend fun recordVcPosition(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        vcTreePosition: Long
+    )
+
+    suspend fun recoverCommittedVote(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): JniCommittedVoteRecord
 
     suspend fun clearRecoveryState(roundId: String)
 
@@ -537,17 +536,14 @@ private class RustVotingDbBackend(
         notes: List<JniNoteInfo>
     ): JniBundleSetupResult = votingDb.setupBundles(roundId, notes)
 
-    override suspend fun generateHotkey(
-        roundId: String,
-        seed: ByteArray
-    ): JniVotingHotkey = votingDb.generateHotkey(roundId, seed)
+    override suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey =
+        votingDb.generateHotkey(storedSecret)
 
     override suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
         fvkBytes: ByteArray,
-        hotkeyRawAddress: ByteArray,
-        networkId: Int,
+        hotkeySecret: ByteArray,
         accountIndex: Int,
         notes: List<JniNoteInfo>,
         seedFingerprint: ByteArray,
@@ -557,8 +553,7 @@ private class RustVotingDbBackend(
             roundId,
             bundleIndex,
             fvkBytes,
-            hotkeyRawAddress,
-            networkId,
+            hotkeySecret,
             accountIndex,
             notes,
             seedFingerprint,
@@ -573,7 +568,7 @@ private class RustVotingDbBackend(
         accountIndex: Int,
         notes: List<JniNoteInfo>,
         walletSeed: ByteArray,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String
     ): JniGovernancePczt =
@@ -585,7 +580,7 @@ private class RustVotingDbBackend(
             accountIndex,
             notes,
             walletSeed,
-            hotkeySeed,
+            hotkeySecret,
             seedFingerprint,
             roundName
         )
@@ -601,14 +596,12 @@ private class RustVotingDbBackend(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
             roundId,
             bundleIndex,
             pirServerUrl,
-            networkId,
             notes
         )
 
@@ -616,34 +609,44 @@ private class RustVotingDbBackend(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<JniNoteInfo>,
-        hotkeyRawAddress: ByteArray,
+        fvkBytes: ByteArray,
+        hotkeySecret: ByteArray,
+        seedFingerprint: ByteArray,
+        accountIndex: Int,
+        roundName: String,
         proofProgress: VotingProofProgressCallback?
     ): JniDelegationProofResult =
         votingDb.buildAndProveDelegation(
             roundId,
             bundleIndex,
             pirServerUrl,
-            networkId,
             notes,
-            hotkeyRawAddress,
+            fvkBytes,
+            hotkeySecret,
+            seedFingerprint,
+            accountIndex,
+            roundName,
             proofProgress
         )
 
     override suspend fun getDelegationSubmission(
         roundId: String,
         bundleIndex: Int,
-        senderSeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        walletDbPath: String,
+        accountUuid: String,
+        hotkeySecret: ByteArray,
+        roundName: String,
+        senderSeed: ByteArray
     ): JniDelegationSubmissionResult =
         votingDb.getDelegationSubmission(
             roundId,
             bundleIndex,
-            senderSeed,
-            networkId,
-            accountIndex
+            walletDbPath,
+            accountUuid,
+            hotkeySecret,
+            roundName,
+            senderSeed
         )
 
     override suspend fun getDelegationSubmissionWithKeystoneSig(
@@ -699,26 +702,22 @@ private class RustVotingDbBackend(
     override suspend fun buildVoteCommitment(
         roundId: String,
         bundleIndex: Int,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         proposalId: Int,
         choice: Int,
         numOptions: Int,
         witness: JniVanWitness,
-        networkId: Int,
-        accountIndex: Int,
         singleShare: Boolean,
         proofProgress: VotingProofProgressCallback?
-    ): JniVoteCommitmentResult =
+    ): JniVoteCommitResult =
         votingDb.buildVoteCommitment(
             roundId,
             bundleIndex,
-            hotkeySeed,
+            hotkeySecret,
             proposalId,
             choice,
             numOptions,
             witness,
-            networkId,
-            accountIndex,
             singleShare,
             proofProgress
         )
@@ -746,26 +745,26 @@ private class RustVotingDbBackend(
     ): String? =
         votingDb.getVoteTxHash(roundId, bundleIndex, proposalId)
 
-    override suspend fun storeCommitmentBundle(
-        roundId: String,
-        bundleIndex: Int,
-        proposalId: Int,
-        commitment: JniVoteCommitmentResult,
-        vcTreePosition: Long
-    ) = votingDb.storeCommitmentBundle(
-        roundId,
-        bundleIndex,
-        proposalId,
-        commitment,
-        vcTreePosition
-    )
-
     override suspend fun getCommitmentBundle(
         roundId: String,
         bundleIndex: Int,
         proposalId: Int
     ): JniCommitmentBundleRecord? =
         votingDb.getCommitmentBundle(roundId, bundleIndex, proposalId)
+
+    override suspend fun recordVcPosition(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        vcTreePosition: Long
+    ) = votingDb.recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)
+
+    override suspend fun recoverCommittedVote(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): JniCommittedVoteRecord =
+        votingDb.recoverCommittedVote(roundId, bundleIndex, proposalId)
 
     override suspend fun clearRecoveryState(roundId: String) =
         votingDb.clearRecoveryState(roundId)
@@ -858,18 +857,16 @@ internal class TypesafeVotingDbImpl(
     ): JniBundleSetupResult =
         votingDb.setupBundles(roundId, notes.toJniNoteInfos())
 
-    override suspend fun generateHotkey(
-        roundId: String,
-        seed: ByteArray
-    ): JniVotingHotkey =
-        votingDb.generateHotkey(roundId, seed)
+    override suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey =
+        votingDb.generateHotkey(storedSecret).also { hotkey ->
+            hotkey.requireValid()
+        }
 
     override suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
         fvkBytes: ByteArray,
-        hotkeyRawAddress: ByteArray,
-        networkId: Int,
+        hotkeySecret: ByteArray,
         accountIndex: Int,
         notes: List<VotingNoteInfo>,
         seedFingerprint: ByteArray,
@@ -880,8 +877,7 @@ internal class TypesafeVotingDbImpl(
                 roundId,
                 bundleIndex,
                 fvkBytes,
-                hotkeyRawAddress,
-                networkId,
+                hotkeySecret,
                 accountIndex,
                 notes.toJniNoteInfos(),
                 seedFingerprint,
@@ -896,7 +892,7 @@ internal class TypesafeVotingDbImpl(
         accountIndex: Int,
         notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String
     ): GovernancePcztResult =
@@ -909,7 +905,7 @@ internal class TypesafeVotingDbImpl(
                 accountIndex,
                 notes.toJniNoteInfos(),
                 walletSeed,
-                hotkeySeed,
+                hotkeySecret,
                 seedFingerprint,
                 roundName
             ).toGovernancePcztResult()
@@ -925,7 +921,6 @@ internal class TypesafeVotingDbImpl(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult =
         votingDb
@@ -933,7 +928,6 @@ internal class TypesafeVotingDbImpl(
                 roundId,
                 bundleIndex,
                 pirServerUrl,
-                networkId,
                 notes.toJniNoteInfos()
             ).toDelegationPirPrecomputeResult()
 
@@ -941,9 +935,12 @@ internal class TypesafeVotingDbImpl(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<VotingNoteInfo>,
-        hotkeyRawAddress: ByteArray,
+        fvkBytes: ByteArray,
+        hotkeySecret: ByteArray,
+        seedFingerprint: ByteArray,
+        accountIndex: Int,
+        roundName: String,
         proofProgress: ((Double) -> Unit)?
     ): DelegationProofResult =
         votingDb
@@ -951,26 +948,33 @@ internal class TypesafeVotingDbImpl(
                 roundId,
                 bundleIndex,
                 pirServerUrl,
-                networkId,
                 notes.toJniNoteInfos(),
-                hotkeyRawAddress,
+                fvkBytes,
+                hotkeySecret,
+                seedFingerprint,
+                accountIndex,
+                roundName,
                 proofProgress?.asVotingProgressCallback()
             ).toDelegationProofResult()
 
     override suspend fun getDelegationSubmission(
         roundId: String,
         bundleIndex: Int,
-        senderSeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        walletDbPath: String,
+        accountUuid: String,
+        hotkeySecret: ByteArray,
+        roundName: String,
+        senderSeed: ByteArray
     ): DelegationSubmissionResult =
         votingDb
             .getDelegationSubmission(
                 roundId,
                 bundleIndex,
-                senderSeed,
-                networkId,
-                accountIndex
+                walletDbPath,
+                accountUuid,
+                hotkeySecret,
+                roundName,
+                senderSeed
             ).toDelegationSubmissionResult()
 
     override suspend fun getDelegationSubmissionWithKeystoneSig(
@@ -1032,27 +1036,23 @@ internal class TypesafeVotingDbImpl(
     override suspend fun buildVoteCommitment(
         roundId: String,
         bundleIndex: Int,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         proposalId: Int,
         choice: Int,
         numOptions: Int,
         witness: JniVanWitness,
-        networkId: Int,
-        accountIndex: Int,
         singleShare: Boolean,
         proofProgress: ((Double) -> Unit)?
-    ): JniVoteCommitmentResult =
+    ): JniVoteCommitResult =
         votingDb
             .buildVoteCommitment(
                 roundId,
                 bundleIndex,
-                hotkeySeed,
+                hotkeySecret,
                 proposalId,
                 choice,
                 numOptions,
                 witness,
-                networkId,
-                accountIndex,
                 singleShare,
                 proofProgress?.asVotingProgressCallback()
             ).also { commitment ->
@@ -1085,26 +1085,6 @@ internal class TypesafeVotingDbImpl(
     ): VotingTxHashLookup =
         votingDb.getVoteTxHash(roundId, bundleIndex, proposalId).toVotingTxHashLookup()
 
-    override suspend fun storeCommitmentBundle(
-        roundId: String,
-        bundleIndex: Int,
-        proposalId: Int,
-        commitment: JniVoteCommitmentResult,
-        vcTreePosition: Long
-    ) {
-        commitment.requireValid()
-        require(commitment.bundleIndex == bundleIndex) {
-            "commitment bundleIndex ${commitment.bundleIndex} does not match bundleIndex $bundleIndex"
-        }
-        votingDb.storeCommitmentBundle(
-            roundId,
-            bundleIndex,
-            proposalId,
-            commitment,
-            vcTreePosition
-        )
-    }
-
     override suspend fun getCommitmentBundle(
         roundId: String,
         bundleIndex: Int,
@@ -1113,6 +1093,22 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .getCommitmentBundle(roundId, bundleIndex, proposalId)
             ?.toCommitmentBundleRecord()
+
+    override suspend fun recordVcPosition(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        vcTreePosition: Long
+    ) = votingDb.recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)
+
+    override suspend fun recoverCommittedVote(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): CommittedVoteRecord =
+        votingDb
+            .recoverCommittedVote(roundId, bundleIndex, proposalId)
+            .toCommittedVoteRecord()
 
     override suspend fun clearRecoveryState(roundId: String) =
         votingDb.clearRecoveryState(roundId)
@@ -1252,6 +1248,14 @@ private fun JniCommitmentBundleRecord.toCommitmentBundleRecord(): CommitmentBund
     )
 }
 
+private fun JniCommittedVoteRecord.toCommittedVoteRecord(): CommittedVoteRecord {
+    commit.requireValid()
+    return CommittedVoteRecord(
+        commit = commit,
+        vcTreePosition = vcTreePosition
+    )
+}
+
 private fun JniShareDelegationRecord.toShareDelegationRecord(): ShareDelegationRecord {
     nullifier.requireByteArraySize("nullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     return ShareDelegationRecord(
@@ -1305,6 +1309,30 @@ private fun JniSharePayload.requireValid() {
     shareComms.requireByteArrayCount("shareComms", JNI_VOTE_SHARE_COUNT)
     shareComms.requireEachByteArraySize("shareComms", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     primaryBlind.requireByteArraySize("primaryBlind", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+}
+
+private fun JniVotingHotkey.requireValid() {
+    storedSecret.requireByteArraySize("storedSecret", JNI_HOTKEY_STORED_SECRET_BYTES_SIZE)
+    rawAddress.requireByteArraySize("rawAddress", JNI_HOTKEY_RAW_ADDRESS_BYTES_SIZE)
+}
+
+private fun JniVoteCommitResult.requireValid() {
+    vanNullifier.requireByteArraySize("vanNullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    voteAuthorityNoteNew.requireByteArraySize("voteAuthorityNoteNew", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    voteCommitment.requireByteArraySize("voteCommitment", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    require(bundleIndex >= 0) { "bundleIndex must be non-negative, got $bundleIndex" }
+    proof.requireByteArrayNotEmpty("proof")
+    encShares.requireCount("encShares", JNI_VOTE_SHARE_COUNT)
+    encShares.forEachIndexed { index, share -> share.requireValid("encShares[$index]") }
+    sharesHash.requireByteArraySize("sharesHash", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    shareComms.requireByteArrayCount("shareComms", JNI_VOTE_SHARE_COUNT)
+    shareComms.requireEachByteArraySize("shareComms", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    rVpk.requireByteArraySize("rVpk", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+    voteAuthSig.requireByteArraySize("voteAuthSig", JNI_SPEND_AUTH_SIG_BYTES_SIZE)
+    require(sharePayloads.size == 1 || sharePayloads.size == JNI_VOTE_SHARE_COUNT) {
+        "sharePayloads must contain 1 or $JNI_VOTE_SHARE_COUNT entries, got ${sharePayloads.size}"
+    }
+    sharePayloads.forEach { payload -> payload.requireValid() }
 }
 
 private fun ((Double) -> Unit).asVotingProgressCallback() =

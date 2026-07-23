@@ -9,7 +9,9 @@ struct JniProgressReporter {
     callback: GlobalRef,
 }
 
-impl ProofProgressReporter for JniProgressReporter {
+// zcash_voting 1.0.0 (merged-library patch) renamed this trait from `ProofProgressReporter`
+// to `ProgressReporter`; the single `on_progress(&self, progress: f64)` method is unchanged.
+impl ProgressReporter for JniProgressReporter {
     fn on_progress(&self, progress: f64) {
         // zcash_voting 0.5.9 calls this at coarse milestones outside the spawned
         // Halo2 proving closure. Attach on each callback so the bridge remains
@@ -34,7 +36,7 @@ impl ProofProgressReporter for JniProgressReporter {
 pub(super) fn progress_reporter_from_callback(
     env: &mut JNIEnv<'_>,
     callback: &JObject<'_>,
-) -> anyhow::Result<Box<dyn ProofProgressReporter>> {
+) -> anyhow::Result<Box<dyn ProgressReporter>> {
     if callback.is_null() {
         Ok(Box::new(NoopProgressReporter))
     } else {

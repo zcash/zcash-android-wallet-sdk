@@ -288,6 +288,23 @@ sealed class InitializeException(
             cause
         )
 
+    /**
+     * Thrown when [ImportAccountException] would otherwise be thrown, but the underlying
+     * failure is a transient cross-pool checkpoint-parity mismatch rather than genuine wallet
+     * database corruption. This can happen on a newly-imported or recently-upgraded wallet
+     * before enough blocks have been scanned to restore checkpoint parity across shielded
+     * pools. Callers should treat this as retryable: retrying the import once the wallet has
+     * synced further is expected to succeed.
+     */
+    class ImportAccountCheckpointsNotReadyException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to import new account based on UFVK because its checkpoints are not yet " +
+                "in sync across shielded pools. This is usually transient and resolves once " +
+                "more blocks are scanned; retry the import later. Cause: ${cause?.message}",
+            cause
+        )
+
     class AlreadyInitializedException(
         cause: Throwable,
         dbPath: String

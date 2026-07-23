@@ -73,8 +73,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
         let tx_hash = java_string_to_rust(env, &tx_hash)?;
-        db.store_vote_tx_hash(&round_id, bundle_index, proposal_id, &tx_hash)
-            .map_err(|e| anyhow!("store_vote_tx_hash: {e}"))?;
+        // zcash_voting 1.0.0 folded the old store-then-mark-submitted split into
+        // one atomic hash+submitted recorder.
+        db.record_vote_submission(&round_id, bundle_index, proposal_id, &tx_hash)
+            .map_err(|e| anyhow!("record_vote_submission: {e}"))?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -94,12 +96,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_mar
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        db.mark_vote_submitted(
-            &java_string_to_rust(env, &round_id)?,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            jint_to_u32(proposal_id, "proposal_id")?,
-        )
-        .map_err(|e| anyhow!("mark_vote_submitted: {e}"))?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+
+        // mark_vote_submitted now takes the tx_hash itself (it is the idempotent,
+        // conflict-checked half of record_vote_submission); recover it from the
+        // hash storeVoteTxHashNative already recorded for this vote.
+        let tx_hash = db
+            .get_vote_tx_hash(&round_id, bundle_index, proposal_id)
+            .map_err(|e| anyhow!("get_vote_tx_hash: {e}"))?
+            .ok_or_else(|| {
+                anyhow!(
+                    "no vote tx_hash recorded for round={round_id}, bundle={bundle_index}, proposal={proposal_id}; call store_vote_tx_hash first"
+                )
+            })?;
+        db.mark_vote_submitted(&round_id, bundle_index, proposal_id, &tx_hash)
+            .map_err(|e| anyhow!("mark_vote_submitted: {e}"))?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -157,71 +170,6 @@ fn is_query_returned_no_rows(error: &impl std::fmt::Display) -> bool {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeCommitmentBundleNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    proposal_id: jint,
-    commitment: JObject<'local>,
-    vc_tree_position: jlong,
-) -> jboolean {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let round_id = java_string_to_rust(env, &round_id)?;
-        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
-        let vc_tree_position = jlong_to_u64(vc_tree_position, "vc_tree_position")?;
-        let commitment = java_vote_commitment_bundle(env, &commitment)?;
-        require_commitment_matches_key(&commitment, &round_id, bundle_index, proposal_id)?;
-        let commitment = StoredVoteCommitmentBundle::try_from(commitment)?.to_storage_json()?;
-        db.store_commitment_bundle(
-            &round_id,
-            bundle_index,
-            proposal_id,
-            &commitment,
-            vc_tree_position,
-        )
-        .map_err(|e| anyhow!("store_commitment_bundle: {e}"))?;
-        Ok(JNI_TRUE)
-    });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
-}
-
-/// Requires the commitment payload identity to match the recovery storage key.
-/// Rejects mismatched round or proposal data before it can be persisted.
-fn require_commitment_matches_key(
-    commitment: &JavaVoteCommitmentBundle,
-    round_id: &str,
-    bundle_index: u32,
-    proposal_id: u32,
-) -> anyhow::Result<()> {
-    if commitment.bundle.vote_round_id != round_id {
-        return Err(anyhow!(
-            "commitment voteRoundId {} does not match roundId {round_id}",
-            commitment.bundle.vote_round_id
-        ));
-    }
-    if commitment.bundle.proposal_id != proposal_id {
-        return Err(anyhow!(
-            "commitment proposalId {} does not match proposalId {proposal_id}",
-            commitment.bundle.proposal_id
-        ));
-    }
-    if commitment.bundle_index != bundle_index {
-        return Err(anyhow!(
-            "commitment bundleIndex {} does not match bundleIndex {bundle_index}",
-            commitment.bundle_index
-        ));
-    }
-    Ok(())
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getCommitmentBundleNative<
     'local,
 >(
@@ -235,23 +183,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let record = optional_recovery_lookup(
             db.get_commitment_bundle(
                 &java_string_to_rust(env, &round_id)?,
-                jint_to_u32(bundle_index, "bundle_index")?,
+                bundle_index,
                 jint_to_u32(proposal_id, "proposal_id")?,
             ),
             "get_commitment_bundle",
         )?;
         match record {
-            Some((commitment, vc_tree_position)) => {
-                let commitment = StoredVoteCommitmentBundle::from_storage_json(&commitment)?;
-                make_jni_commitment_bundle_record(
-                    env,
-                    commitment,
-                    jint_to_u32(bundle_index, "bundle_index")?,
-                    vc_tree_position,
-                )
+            Some((commitment_bundle_json, vc_tree_position)) => {
+                // zcash_voting 1.0.0 persists this JSON in its own VoteRecoveryBundle
+                // format (crate::vote::parse_recovery), not this SDK's old hand-rolled
+                // hex-string format.
+                let bundle = voting::vote::parse_recovery(&commitment_bundle_json)
+                    .map_err(|e| anyhow!("parse_recovery: {}", e))?;
+                make_jni_commitment_bundle_record(env, bundle, bundle_index, vc_tree_position)
             }
             None => Ok(JObject::null().into_raw()),
         }
@@ -279,6 +227,79 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_cle
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordVcPositionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+    vc_tree_position: jlong,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+        let vc_tree_position = jlong_to_u64(vc_tree_position, "vc_tree_position")?;
+
+        let committed =
+            voting::vote::CommittedVote::recover(&db, &round_id, bundle_index, proposal_id)
+                .map_err(|e| anyhow!("CommittedVote::recover: {}", e))?;
+        committed
+            .record_vc_position(&db, vc_tree_position)
+            .map_err(|e| anyhow!("record_vc_position: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recoverCommittedVoteNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+
+        let committed =
+            voting::vote::CommittedVote::recover(&db, &round_id, bundle_index, proposal_id)
+                .map_err(|e| anyhow!("CommittedVote::recover: {}", e))?;
+        let signed = committed
+            .signed_commitment(&db)
+            .map_err(|e| anyhow!("signed_commitment: {}", e))?;
+        let recoverable = voting::recovery::recoverable_commitment_bundle(
+            &db,
+            &round_id,
+            bundle_index,
+            proposal_id,
+        )
+        .map_err(|e| anyhow!("recoverable_commitment_bundle: {}", e))?
+        .ok_or_else(|| {
+            anyhow!(
+                "no recoverable vote commitment tree position for round={round_id}, bundle={bundle_index}, proposal={proposal_id}"
+            )
+        })?;
+
+        make_jni_committed_vote_record(env, signed, bundle_index, recoverable.vc_tree_position)
+    });
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordShareDelegationNative<
     'local,
 >(
@@ -296,17 +317,32 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_rec
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+        let share_index =
+            require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?;
         let sent_to_urls = java_string_array(env, &sent_to_urls, "sentToUrls")?;
-        db.record_share_delegation(
-            &java_string_to_rust(env, &round_id)?,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            jint_to_u32(proposal_id, "proposal_id")?,
-            require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?,
+        let submit_at = jlong_to_u64(submit_at, "submit_at")?;
+
+        // share::record derives and persists the authoritative nullifier from the
+        // vote's own recovery state; the caller-supplied nullifier here is only
+        // shape-validated (when present) and is never itself stored.
+        let nullifier = java_bytes(env, &nullifier, "nullifier")?;
+        if !nullifier.is_empty() {
+            require_len(nullifier, "nullifier", SHARE_NULLIFIER_BYTES)?;
+        }
+
+        voting::share::record(
+            &db,
+            &round_id,
+            bundle_index,
+            proposal_id,
+            share_index,
             &sent_to_urls,
-            &java_bytes_exact(env, &nullifier, "nullifier", SHARE_NULLIFIER_BYTES)?,
-            jlong_to_u64(submit_at, "submit_at")?,
+            submit_at,
         )
-        .map_err(|e| anyhow!("record_share_delegation: {e}"))?;
+        .map_err(|e| anyhow!("share::record: {e}"))?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -481,52 +517,5 @@ mod tests {
         let error = result.unwrap_err().to_string();
         assert!(error.contains("get_vote_tx_hash"));
         assert!(error.contains("database is locked"));
-    }
-
-    #[test]
-    fn commitment_store_key_must_match_payload() {
-        let commitment = commitment_bundle("round-1", 7);
-
-        require_commitment_matches_key(&commitment, "round-1", 1, 7).unwrap();
-        assert!(
-            require_commitment_matches_key(&commitment, "round-2", 1, 7)
-                .unwrap_err()
-                .to_string()
-                .contains("voteRoundId")
-        );
-        assert!(
-            require_commitment_matches_key(&commitment, "round-1", 1, 8)
-                .unwrap_err()
-                .to_string()
-                .contains("proposalId")
-        );
-        assert!(
-            require_commitment_matches_key(&commitment, "round-1", 2, 7)
-                .unwrap_err()
-                .to_string()
-                .contains("bundleIndex")
-        );
-    }
-
-    fn commitment_bundle(round_id: &str, proposal_id: u32) -> JavaVoteCommitmentBundle {
-        JavaVoteCommitmentBundle {
-            bundle_index: 1,
-            enc_shares: vec![],
-            bundle: VoteCommitmentBundle {
-                van_nullifier: vec![1; PROTOCOL_FIELD_BYTES],
-                vote_authority_note_new: vec![2; PROTOCOL_FIELD_BYTES],
-                vote_commitment: vec![3; PROTOCOL_FIELD_BYTES],
-                proposal_id,
-                proof: vec![4; PROTOCOL_FIELD_BYTES],
-                enc_shares: vec![],
-                anchor_height: 5,
-                vote_round_id: round_id.to_string(),
-                shares_hash: vec![6; PROTOCOL_FIELD_BYTES],
-                share_blinds: vec![vec![7; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
-                share_comms: vec![vec![8; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
-                r_vpk_bytes: vec![9; PROTOCOL_FIELD_BYTES],
-                alpha_v: vec![10; PROTOCOL_FIELD_BYTES],
-            },
-        }
     }
 }

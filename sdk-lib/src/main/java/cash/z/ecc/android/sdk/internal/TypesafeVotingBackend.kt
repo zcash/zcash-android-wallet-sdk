@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
 import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
@@ -14,7 +15,7 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal interface TypesafeVotingBackend {
-    suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb
+    suspend fun openVotingDb(dbPath: String, walletId: String, networkId: Int): TypesafeVotingDb
 
     suspend fun computeShareNullifier(
         voteCommitment: ByteArray,
@@ -26,7 +27,17 @@ internal interface TypesafeVotingBackend {
 
     suspend fun warmProvingCaches()
 
-    suspend fun decomposeWeight(weight: Long): List<Long>
+    /**
+     * Computes when a delegated helper share should submit, honoring the ceremony's
+     * last-moment buffer window. A passthrough to the Rust backend, which sources its own
+     * entropy. Returns unix seconds; `0` means "submit immediately".
+     */
+    suspend fun scheduledShareSubmitAt(
+        nowSeconds: Long,
+        ceremonyStartSeconds: Long,
+        voteEndTimeSeconds: Long,
+        singleShare: Boolean
+    ): Long
 
     suspend fun buildSharePayloads(
         commitment: JniVoteCommitmentResult,
@@ -35,13 +46,6 @@ internal interface TypesafeVotingBackend {
         vcTreePosition: Long,
         singleShareMode: Boolean = false
     ): List<JniSharePayload>
-
-    suspend fun signCastVote(
-        hotkeySeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int,
-        commitment: JniVoteCommitmentResult
-    ): ByteArray
 
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
@@ -109,16 +113,20 @@ internal interface TypesafeVotingDb {
         notes: List<VotingNoteInfo>
     ): JniBundleSetupResult
 
+    /**
+     * Mints or reconstructs a voting hotkey.
+     *
+     * An empty [storedSecret] mints a fresh, app-owned random hotkey; a previously persisted
+     * [JniVotingHotkey.storedSecret] deterministically reconstructs the same hotkey. This call
+     * is not scoped to a round.
+     */
     // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
-    suspend fun generateHotkey(
-        roundId: String,
-        seed: ByteArray
-    ): JniVotingHotkey
+    suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey
 
     /**
      * Builds a governance PCZT for hardware-wallet flows.
      *
-     * This explicit form trusts [fvkBytes] and [hotkeyRawAddress] as caller-derived Keystone input.
+     * This explicit form trusts [fvkBytes] and [hotkeySecret] as caller-derived Keystone input.
      * It does not validate a wallet seed against [fvkBytes]. Software-wallet callers that have the
      * wallet seed should use [buildGovernancePcztFromSeed] to retain that invariant.
      */
@@ -126,8 +134,7 @@ internal interface TypesafeVotingDb {
         roundId: String,
         bundleIndex: Int,
         fvkBytes: ByteArray,
-        hotkeyRawAddress: ByteArray,
-        networkId: Int,
+        hotkeySecret: ByteArray,
         accountIndex: Int,
         notes: List<VotingNoteInfo>,
         seedFingerprint: ByteArray,
@@ -138,7 +145,7 @@ internal interface TypesafeVotingDb {
      * Builds a governance PCZT for software-wallet flows.
      *
      * This path derives the Orchard FVK from [walletSeed] and rejects calls where it does not match
-     * [ufvk]. It also derives the hotkey raw address from [hotkeySeed] using the fixed hotkey
+     * [ufvk]. It also reconstructs the hotkey from [hotkeySecret] using the fixed hotkey
      * account index expected by the vote-signing path.
      */
     suspend fun buildGovernancePcztFromSeed(
@@ -149,7 +156,7 @@ internal interface TypesafeVotingDb {
         accountIndex: Int,
         notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String
     ): GovernancePcztResult
@@ -165,7 +172,6 @@ internal interface TypesafeVotingDb {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult
 
@@ -173,18 +179,30 @@ internal interface TypesafeVotingDb {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
         notes: List<VotingNoteInfo>,
-        hotkeyRawAddress: ByteArray,
+        fvkBytes: ByteArray,
+        hotkeySecret: ByteArray,
+        seedFingerprint: ByteArray,
+        accountIndex: Int,
+        roundName: String,
         proofProgress: ((Double) -> Unit)? = null
     ): DelegationProofResult
 
+    /**
+     * Reconstructs the delegation signing keys from wallet state at [walletDbPath] and returns
+     * a spend-authorization-signed delegation submission.
+     *
+     * [hotkeySecret] and [roundName] must match those originally used to build this bundle's
+     * governance PCZT.
+     */
     suspend fun getDelegationSubmission(
         roundId: String,
         bundleIndex: Int,
-        senderSeed: ByteArray,
-        networkId: Int,
-        accountIndex: Int
+        walletDbPath: String,
+        accountUuid: String,
+        hotkeySecret: ByteArray,
+        roundName: String,
+        senderSeed: ByteArray
     ): DelegationSubmissionResult
 
     suspend fun getDelegationSubmissionWithKeystoneSig(
@@ -221,16 +239,14 @@ internal interface TypesafeVotingDb {
     suspend fun buildVoteCommitment(
         roundId: String,
         bundleIndex: Int,
-        hotkeySeed: ByteArray,
+        hotkeySecret: ByteArray,
         proposalId: Int,
         choice: Int,
         numOptions: Int,
         witness: JniVanWitness,
-        networkId: Int,
-        accountIndex: Int,
         singleShare: Boolean = false,
         proofProgress: ((Double) -> Unit)? = null
-    ): JniVoteCommitmentResult
+    ): JniVoteCommitResult
 
     suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String)
 
@@ -251,19 +267,32 @@ internal interface TypesafeVotingDb {
         proposalId: Int
     ): VotingTxHashLookup
 
-    suspend fun storeCommitmentBundle(
-        roundId: String,
-        bundleIndex: Int,
-        proposalId: Int,
-        commitment: JniVoteCommitmentResult,
-        vcTreePosition: Long
-    )
-
     suspend fun getCommitmentBundle(
         roundId: String,
         bundleIndex: Int,
         proposalId: Int
     ): CommitmentBundleRecord?
+
+    /**
+     * Records the confirmed vote-commitment-tree position for an already-committed vote, once
+     * its cast-vote transaction has been mined.
+     */
+    suspend fun recordVcPosition(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        vcTreePosition: Long
+    )
+
+    /**
+     * Recovers the signed `vote::commit` result for an already-committed vote, together with
+     * its confirmed vote-commitment-tree position recorded by [recordVcPosition].
+     */
+    suspend fun recoverCommittedVote(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): CommittedVoteRecord
 
     suspend fun clearRecoveryState(roundId: String)
 
@@ -463,6 +492,11 @@ internal sealed interface VotingTxHashLookup {
 
 internal data class CommitmentBundleRecord(
     val commitment: JniVoteCommitmentResult,
+    val vcTreePosition: Long
+)
+
+internal data class CommittedVoteRecord(
+    val commit: JniVoteCommitResult,
     val vcTreePosition: Long
 )
 
