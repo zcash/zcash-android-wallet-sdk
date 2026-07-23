@@ -18,6 +18,7 @@ use orchard::keys::{FullViewingKey, SpendAuthorizingKey};
 use orchard::note::Note as OrchardNote;
 use incrementalmerkletree::Position;
 use zcash_client_backend::data_api::wallet::TargetHeight;
+use zcash_client_backend::data_api::wallet::input_selection::{LockFilter, LockedInputPolicy};
 use zcash_client_backend::data_api::{Account, InputSource, WalletRead};
 use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_sqlite::AccountUuid;
@@ -86,9 +87,18 @@ where
     /// `WalletMigration`'s own ordering contract, which the engine relies on).
     fn spendable_orchard(&self) -> Result<Vec<SpendableNote>, EngineError> {
         let target = self.selection_target()?;
+        // Exclude notes locked by another in-flight proposal (e.g. a concurrent foreground send)
+        // rather than ignoring locks — migration actually spends these notes, so racing a locked
+        // one would double-spend against whatever proposal is holding it.
         let received = self
             .wallet
-            .select_unspent_notes(self.account, &[ShieldedPool::Orchard], target, &[])
+            .select_unspent_notes(
+                self.account,
+                &[ShieldedPool::Orchard],
+                target,
+                &[],
+                LockFilter::Policy(&LockedInputPolicy::Exclude),
+            )
             .map_err(|e| anyhow::anyhow!("selecting spendable Orchard notes failed: {e}"))?;
         let mut notes: Vec<SpendableNote> = received
             .orchard()

@@ -51,7 +51,7 @@ use zcash_client_backend::{
         wallet::{
             self, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
-            input_selection::{GreedyInputSelector, SpendPolicy}, propose_shielding, propose_transfer,
+            input_selection::{GreedyInputSelector, LockFilter, SpendPolicy}, propose_shielding, propose_transfer,
         },
     },
     encoding::AddressCodec,
@@ -1124,6 +1124,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
                 target,
                 wallet::ConfirmationsPolicy::MIN,
                 CoinbaseFilter::AllTransparentOutputs,
+                // Balance display, not a spend selection — show the true total regardless of any
+                // lock another in-flight proposal might hold, matching pre-locking behavior.
+                LockFilter::Unfiltered,
             )
             .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))?
             .iter()
@@ -2131,6 +2134,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
             None,
+            None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
 
@@ -2193,6 +2197,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             request,
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
+            None,
             None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
@@ -2329,6 +2334,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             account_uuid,
             confirmations_policy,
             CoinbaseFilter::AllTransparentOutputs,
+            None,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
