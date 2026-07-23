@@ -52,6 +52,18 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Int = rustBackend().lockRemainingOrchardBalance(dbDataPath, network.id, account.value)
 
+    override suspend fun clearMigration(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int = rustBackend().clearMigration(dbDataPath, network.id, account.value)
+
+    override suspend fun debugRescheduleTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int = rustBackend().debugRescheduleTransfers(dbDataPath, network.id, account.value)
+
     override suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

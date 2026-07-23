@@ -35,7 +35,7 @@ use jni::{
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use rand::rngs::OsRng;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::ptr;
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
@@ -97,7 +97,51 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     // The pool-migration tables are created by `zcash_client_sqlite`'s own schema migrations
     // (`orchard_ironwood_migration_tables`, run as part of the wallet's normal `init_wallet_db`
     // call, see `lib.rs`), not by this crate — no separate init call needed here.
+    ensure_migration_schema_current(&store_conn)?;
     Ok((wallet, store_conn))
+}
+
+/// Self-heals `orchard_ironwood_migration_transactions` against a wallet created between two
+/// pre-release librustzcash schema revisions.
+///
+/// `orchard_ironwood_migration_tables`'s migration has repeatedly grown its DDL IN PLACE, under
+/// the SAME never-changing `MIGRATION_ID` (account-keying, commit `ff15da7c8f`; this table's
+/// `lock_owner` column, commit `fcf4ceb3b1`) — this is librustzcash's stated, deliberate policy
+/// while the feature is unreleased ("these tables have not been part of a public release... a
+/// developer database must be recreated", `ff15da7c8f`'s commit message), not an oversight. Since
+/// `schemerz` never re-runs a migration whose id it already recorded as applied, and the DDL is
+/// `CREATE TABLE IF NOT EXISTS` (a no-op on an existing table), a wallet that already ran this
+/// migration under an OLDER shape keeps that older shape forever and crashes with "no such
+/// column" the moment newer code queries the missing one (confirmed live twice now: `account_id`,
+/// then `lock_owner`).
+///
+/// Rather than requiring a full wallet wipe on every such churn, patch the one column difference
+/// we've hit directly: idempotent (checks before altering), and a no-op if the table doesn't
+/// exist yet (a wallet that has never attempted a migration) or already has the column.
+fn ensure_migration_schema_current(conn: &Connection) -> anyhow::Result<()> {
+    let table_exists: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orchard_ironwood_migration_transactions'")
+        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?
+        .exists([])
+        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?;
+    if !table_exists {
+        return Ok(());
+    }
+    let has_lock_owner: bool = conn
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('orchard_ironwood_migration_transactions') \
+             WHERE name = 'lock_owner'",
+        )
+        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?
+        .exists([])
+        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?;
+    if !has_lock_owner {
+        conn.execute_batch(
+            "ALTER TABLE orchard_ironwood_migration_transactions ADD COLUMN lock_owner BLOB",
+        )
+        .map_err(|e| anyhow!("Error patching migration schema (lock_owner): {}", e))?;
+    }
+    Ok(())
 }
 
 fn open(
@@ -650,11 +694,16 @@ fn try_prove(
     };
     match result {
         Ok(()) => Ok(true),
-        Err(ProveError::Prover(
-            WalletProveError::UnknownSpentNote(_)
-            | WalletProveError::AnchorNotFound(_)
-            | WalletProveError::WitnessNotFound(_),
-        )) => Ok(false),
+        Err(ProveError::Prover(reason @ WalletProveError::UnknownSpentNote(_)))
+        | Err(ProveError::Prover(reason @ WalletProveError::AnchorNotFound(_)))
+        | Err(ProveError::Prover(reason @ WalletProveError::WitnessNotFound(_))) => {
+            tracing::debug!(
+                "MIGRATION_DIAG try_prove: {:?} not yet provable (transient): {:?}",
+                id,
+                reason
+            );
+            Ok(false)
+        }
         Err(e) => Err(anyhow!(
             "Error proving migration transaction {:?}: {}",
             id,
@@ -1174,6 +1223,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             })
             .map(|t| (t.id(), t.kind()))
             .collect();
+        tracing::debug!(
+            "MIGRATION_DIAG finalizeReadyTransfers: target={:?}, {} Signed transaction(s) total, \
+             {} prove-ready this call",
+            target,
+            state
+                .transactions()
+                .iter()
+                .filter(|t| matches!(t.state(), MigrationTxState::Signed))
+                .count(),
+            ready.len(),
+        );
 
         let mut finalized_count = 0;
         for (id, kind) in ready {
@@ -1230,6 +1290,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             })
             .collect();
         due.sort_by_key(|t| t.scheduled_height());
+        tracing::debug!(
+            "MIGRATION_DIAG nextDueTransfer: tip={:?}, {} transfer(s) total, states={:?}, {} due now",
+            tip,
+            state
+                .transactions()
+                .iter()
+                .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
+                .count(),
+            state
+                .transactions()
+                .iter()
+                .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
+                .map(|t| (t.id(), t.state(), t.scheduled_height()))
+                .collect::<Vec<_>>(),
+            due.len(),
+        );
 
         let Some(tx) = due.into_iter().next() else {
             return Ok(ptr::null_mut());
@@ -1375,6 +1451,134 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         )
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// DEBUG ONLY: wipes this account's in-progress migration entirely (every preparation and
+/// transfer transaction, signed or not, proved or not, broadcast or not), so the next
+/// propose/commit call starts completely fresh — for manual testing, not exposed to production
+/// users. Deletes the account's single row in `orchard_ironwood_migrations`; every child table
+/// (`_transactions`, `_crossing_values`, `_prep_inputs`/`_prep_outputs`, `_transaction_deps`)
+/// cascades via its own `ON DELETE CASCADE` foreign key — no separate cleanup needed. Distinct
+/// from `restartCurrentMigrationStepNative`, which recovers a RequiresAttention migration by
+/// re-planning the remaining balance, not wiping it.
+///
+/// Returns the number of migration rows deleted (0 or 1 — the table enforces at most one
+/// in-progress migration per account).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_clearMigrationNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jint {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, _wallet, store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let deleted = store_conn
+            .execute(
+                "DELETE FROM orchard_ironwood_migrations \
+                 WHERE account_id = (SELECT id FROM accounts WHERE uuid = ?1)",
+                rusqlite::params![account.expose_uuid()],
+            )
+            .map_err(|e| anyhow!("Error clearing migration: {}", e))?;
+        Ok(deleted as jint)
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
+/// DEBUG ONLY: overrides this account's persisted migration schedule so its transfers become due
+/// in quick succession, for manually testing real broadcast execution without waiting out ZIP
+/// 318's privacy-motivated delay (mean ~3h between transfers — see `zcash_pool_migration_backend::
+/// scheduling`'s module doc: this is a deliberate anti-correlation choice, not a technical
+/// requirement). Not exposed to production users.
+///
+/// Only `scheduled_height` (which gates BROADCAST — see `next_broadcastable`) is touched; nothing
+/// about proving, anchors, or dependency-mining is bypassed:
+/// - A transfer's `anchor_boundary` (drawn at commit time) is left exactly as the engine chose it.
+///   It settles (becomes provable) on its own once the chain tip passes it by one block — that
+///   boundary is already a historical, already-mined block when drawn, so this is normally within
+///   about one block regardless of this override, not something this function needs to touch.
+/// - Transfers do NOT depend on each other (confirmed directly: `MigrationTransaction::depends_on`
+///   for a `Transfer` never lists another transfer's id, only the single preparation transaction
+///   that minted its own funding note, if any) — so every transfer can be staggered independently;
+///   there is no need to wait for transfer N to broadcast before N+1 becomes due.
+/// - A transfer whose funding note comes from an actual note-split (preparation) transaction still
+///   genuinely cannot broadcast until that preparation transaction is MINED (`deps_mined`) — this
+///   function does not and cannot bypass that; it only affects how soon a transfer becomes due
+///   once its real dependencies are satisfied.
+///
+/// Every not-yet-broadcast/mined TRANSFER (preparation transactions are left alone) is
+/// rescheduled to `tip + FIRST_DELAY_BLOCKS + i * STRIDE_BLOCKS`, in `i` = the transfers' existing
+/// relative order (by their current `scheduled_height`, so the engine's own ZIP 318 shuffle order
+/// is preserved even though the absolute heights are now compressed) — the first becomes due in
+/// about `FIRST_DELAY_BLOCKS * 75s`, each subsequent one `STRIDE_BLOCKS * 75s` after that.
+///
+/// Returns the number of transfers rescheduled.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_debugRescheduleTransfersNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jint {
+    // ~2.5 min to the first transfer, ~5 min between each subsequent one, at the ~75s/block
+    // testnet/mainnet target spacing.
+    const FIRST_DELAY_BLOCKS: u32 = 2;
+    const STRIDE_BLOCKS: u32 = 4;
+
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let target = target_height(&wallet)?;
+
+        let migration_id: Option<i64> = store_conn
+            .query_row(
+                "SELECT m.id FROM orchard_ironwood_migrations m \
+                 JOIN accounts a ON a.id = m.account_id \
+                 WHERE a.uuid = ?1",
+                rusqlite::params![account.expose_uuid()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| anyhow!("Error reading migration row: {}", e))?;
+        let Some(migration_id) = migration_id else {
+            return Ok(0);
+        };
+
+        let tx_ids: Vec<i64> = {
+            let mut stmt = store_conn
+                .prepare(
+                    "SELECT tx_id FROM orchard_ironwood_migration_transactions \
+                     WHERE migration_id = ?1 AND kind = 'transfer' \
+                       AND state NOT IN ('broadcast', 'mined') \
+                     ORDER BY scheduled_height ASC",
+                )
+                .map_err(|e| anyhow!("Error preparing transfer query: {}", e))?;
+            stmt.query_map(rusqlite::params![migration_id], |row| row.get(0))
+                .map_err(|e| anyhow!("Error reading pending transfers: {}", e))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| anyhow!("Error reading pending transfers: {}", e))?
+        };
+
+        for (i, tx_id) in tx_ids.iter().enumerate() {
+            let new_height = u32::from(target) + FIRST_DELAY_BLOCKS + (i as u32) * STRIDE_BLOCKS;
+            store_conn
+                .execute(
+                    "UPDATE orchard_ironwood_migration_transactions \
+                     SET scheduled_height = ?1 WHERE migration_id = ?2 AND tx_id = ?3",
+                    rusqlite::params![new_height, migration_id, tx_id],
+                )
+                .map_err(|e| anyhow!("Error rescheduling transfer {tx_id}: {}", e))?;
+        }
+        Ok(tx_ids.len() as jint)
+    });
+    unwrap_exc_or(&mut env, res, 0)
 }
 
 #[unsafe(no_mangle)]

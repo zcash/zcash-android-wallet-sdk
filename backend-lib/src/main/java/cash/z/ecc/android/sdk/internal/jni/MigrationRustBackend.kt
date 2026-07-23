@@ -79,6 +79,37 @@ class MigrationRustBackend private constructor() {
             lockRemainingOrchardBalanceNative(dbDataPath, networkId, accountUuidBytes)
         }
 
+    /**
+     * DEBUG ONLY: wipes this account's in-progress migration entirely, so the next propose/commit
+     * call starts completely fresh. Not exposed to production users. Returns the number of
+     * migration rows deleted (0 or 1).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun clearMigration(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            clearMigrationNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * DEBUG ONLY: reschedules every not-yet-broadcast transfer in this account's migration to
+     * become due in quick succession (first ~2.5 min out, then ~5 min apart), for manually testing
+     * real broadcast execution without waiting out ZIP 318's privacy delay. Not exposed to
+     * production users. Returns the number of transfers rescheduled.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun debugRescheduleTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            debugRescheduleTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
@@ -479,6 +510,22 @@ class MigrationRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun lockRemainingOrchardBalanceNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun clearMigrationNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun debugRescheduleTransfersNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray

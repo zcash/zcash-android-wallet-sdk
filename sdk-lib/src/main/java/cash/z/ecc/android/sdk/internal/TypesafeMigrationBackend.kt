@@ -44,6 +44,18 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Int
 
+    suspend fun clearMigration(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int
+
+    suspend fun debugRescheduleTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int
+
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

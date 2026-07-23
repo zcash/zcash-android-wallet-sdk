@@ -627,6 +627,32 @@ interface OrchardMigrationSdk {
      */
     suspend fun lockRemainingOrchardBalance()
 
+    // ── Debug ─────────────────────────────────────────────────────────────────
+
+    /**
+     * DEBUG ONLY: wipes this account's in-progress migration entirely (every preparation and
+     * transfer transaction, regardless of state), so the next propose/commit call starts
+     * completely fresh. Not for production use — exists purely as a debug-settings testing aid
+     * (e.g. re-running a migration proposal with a shorter test schedule without waiting out or
+     * resuming the previous one).
+     */
+    suspend fun clearMigration()
+
+    /**
+     * DEBUG ONLY: reschedules every not-yet-broadcast transfer in this account's migration to
+     * become due in quick succession (first ~2.5 min out, then ~5 min apart), instead of ZIP
+     * 318's normal privacy-motivated schedule (mean ~3h between transfers). Only the persisted
+     * `scheduled_height` (which gates broadcast eligibility) is touched — proving, anchors, and
+     * any real mining dependency a transfer has are unaffected, since transfers never depend on
+     * each other (only, at most, on the single preparation transaction that minted their own
+     * funding note). Not for production use.
+     *
+     * @return the number of transfer rows actually rescheduled (0 if there's no in-progress
+     * migration, or every transfer is already broadcast/mined) — surface this to whoever is
+     * testing with it, since a silent 0 looks identical to a successful reschedule otherwise.
+     */
+    suspend fun debugRescheduleTransfers(): Int
+
     companion object {
         /**
          * Constructs the real, Rust-backed [OrchardMigrationSdk].
