@@ -19,6 +19,12 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_UUID_BYTES_SIZE
  * @param orchardValuePending The value in the account of all remaining received Orchard
  *        notes that either do not have sufficient confirmations to be spendable, or for
  *        which witnesses cannot yet be constructed without additional scanning.
+ * @param ironwoodVerifiedBalance The verified account balance in the Ironwood pool.
+ * @param ironwoodChangePending The value in the account of Ironwood change notes that do
+ *        not yet have sufficient confirmations to be spendable.
+ * @param ironwoodValuePending The value in the account of all remaining received Ironwood
+ *        notes that either do not have sufficient confirmations to be spendable, or for
+ *        which witnesses cannot yet be constructed without additional scanning.
  * @param unshieldedBalance The total account balance in the transparent pool,
  *        including unconfirmed funds, that must be shielded before use.
  * @throws IllegalArgumentException if the values are inconsistent.
@@ -33,6 +39,9 @@ class JniAccountBalance(
     val orchardVerifiedBalance: Long,
     val orchardChangePending: Long,
     val orchardValuePending: Long,
+    val ironwoodVerifiedBalance: Long,
+    val ironwoodChangePending: Long,
+    val ironwoodValuePending: Long,
     val unshieldedBalance: Long,
 ) {
     init {
@@ -56,6 +65,15 @@ class JniAccountBalance(
         }
         require(orchardValuePending >= MIN_INCLUSIVE) {
             "Orchard value pending $orchardValuePending must by equal or above $MIN_INCLUSIVE"
+        }
+        require(ironwoodVerifiedBalance >= MIN_INCLUSIVE) {
+            "Ironwood verified balance $ironwoodVerifiedBalance must by equal or above $MIN_INCLUSIVE"
+        }
+        require(ironwoodChangePending >= MIN_INCLUSIVE) {
+            "Ironwood change pending $ironwoodChangePending must by equal or above $MIN_INCLUSIVE"
+        }
+        require(ironwoodValuePending >= MIN_INCLUSIVE) {
+            "Ironwood value pending $ironwoodValuePending must by equal or above $MIN_INCLUSIVE"
         }
         require(unshieldedBalance >= MIN_INCLUSIVE) {
             "Unshielded balance $unshieldedBalance must by equal or above $MIN_INCLUSIVE"

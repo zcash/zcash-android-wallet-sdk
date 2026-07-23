@@ -15,6 +15,7 @@ option swift_prefix = "";
 message ChainMetadata {
     uint32 saplingCommitmentTreeSize = 1; // the size of the Sapling note commitment tree as of the end of this block
     uint32 orchardCommitmentTreeSize = 2; // the size of the Orchard note commitment tree as of the end of this block
+    uint32 ironwoodCommitmentTreeSize = 3; // the size of the Ironwood note commitment tree as of the end of this block
 }
 
 // CompactBlock is a packaging of ONLY the data from a block that's needed to:
@@ -52,6 +53,10 @@ message CompactTx {
     repeated CompactSaplingSpend spends = 4;
     repeated CompactSaplingOutput outputs = 5;
     repeated CompactOrchardAction actions = 6;
+    // Ironwood (NU6.3) actions. Ironwood is Orchard note-version V3, so these reuse the
+    // CompactOrchardAction shape but ride a separate stream. Field number 9 matches lightwalletd;
+    // fields 7-8 (transparent vin/vout) are intentionally unused here.
+    repeated CompactOrchardAction ironwoodActions = 9;
 }
 
 // CompactSaplingSpend is a Sapling Spend Description as described in 7.3 of the Zcash

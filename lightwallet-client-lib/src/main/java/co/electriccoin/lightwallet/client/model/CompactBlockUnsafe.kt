@@ -17,6 +17,10 @@ class CompactBlockUnsafe(
     val time: Int,
     val saplingOutputsCount: UInt,
     val orchardOutputsCount: UInt,
+    // Temporary diagnostic field (IRONWOOD_DIAG) — added to confirm whether the connected
+    // lightwalletd server actually populates CompactTx.ironwoodActions yet. Safe to remove once
+    // that's confirmed one way or the other.
+    val ironwoodOutputsCount: UInt,
     val compactBlockBytes: ByteArray
 ) {
     companion object {
@@ -28,6 +32,7 @@ class CompactBlockUnsafe(
                 time = compactBlock.time,
                 saplingOutputsCount = outputCounts.saplingOutputsCount,
                 orchardOutputsCount = outputCounts.orchardActionsCount,
+                ironwoodOutputsCount = outputCounts.ironwoodActionsCount,
                 compactBlockBytes = compactBlock.toByteArray()
             )
         }
@@ -35,18 +40,21 @@ class CompactBlockUnsafe(
         private fun getOutputsCounts(vtxList: List<CompactFormats.CompactTx>): CompactBlockOutputsCounts {
             var outputsCount: UInt = 0u
             var actionsCount: UInt = 0u
+            var ironwoodActionsCount: UInt = 0u
 
             vtxList.forEach { compactTx ->
                 outputsCount += compactTx.outputsCount.toUInt()
                 actionsCount += compactTx.actionsCount.toUInt()
+                ironwoodActionsCount += compactTx.ironwoodActionsCount.toUInt()
             }
 
-            return CompactBlockOutputsCounts(outputsCount, actionsCount)
+            return CompactBlockOutputsCounts(outputsCount, actionsCount, ironwoodActionsCount)
         }
     }
 
     data class CompactBlockOutputsCounts(
         val saplingOutputsCount: UInt,
-        val orchardActionsCount: UInt
+        val orchardActionsCount: UInt,
+        val ironwoodActionsCount: UInt
     )
 }

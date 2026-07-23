@@ -38,6 +38,8 @@ class FakeRustBackend(
         saplingRoots: List<JniSubtreeRoot>,
         orchardStartIndex: Long,
         orchardRoots: List<JniSubtreeRoot>,
+        ironwoodStartIndex: Long,
+        ironwoodRoots: List<JniSubtreeRoot>,
     ) {
         error("Intentionally not implemented yet.")
     }
