@@ -398,18 +398,9 @@ fn start_session(
 
     // `ufvk` present = view-only import on the first pass (keyless — a UFVK is viewing
     // capability, never a spending key); absent = an account must already exist. The engine's
-    // session API (api-review-fixes lineage) takes a bootstrap *list* of parsed
-    // (UFVK, birthday) pairs — empty = nothing to import; this host passes zero or one.
-    let accounts = match ufvk {
-        Some(s) => {
-            let key = zcash_client_backend::keys::UnifiedFullViewingKey::decode(&h.network, &s)
-                .map_err(|e| anyhow!("invalid ufvk: {e}"))?;
-            let birthday = u32::try_from(birthday)
-                .map_err(|_| anyhow!("birthday out of range: {birthday}"))?;
-            vec![(key, zcash_protocol::consensus::BlockHeight::from(birthday))]
-        }
-        None => Vec::new(),
-    };
+    // session API (main / locking-family-compat lineage) takes a single optional raw
+    // (ufvk-string, birthday) pair; the engine parses it internally.
+    let account: Option<(String, u64)> = ufvk.map(|s| (s, birthday));
 
     // Engine-owned Tor. On Android `dangerously_trust_everyone` MUST be `false`
     // (the JNI binding contract §3.0 delta #2 / §11 — the iOS C layer sets it via
@@ -421,7 +412,7 @@ fn start_session(
 
     let session_config = SessionConfig {
         engine: cfg,
-        accounts,
+        account,
         tor,
     };
     let reporter = SessionReporter {
