@@ -38,6 +38,12 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Int
 
+    suspend fun lockRemainingOrchardBalance(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Int
+
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

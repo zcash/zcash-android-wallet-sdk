@@ -474,8 +474,12 @@ internal class OrchardMigrationSdkImpl(
 
     // ── Dust locking ─────────────────────────────────────────────────────────
 
-    // TODO: no-op stub — real unspendable-note tracking on the Rust side is not implemented yet.
-    override suspend fun lockRemainingOrchardBalance() = logged("lockRemainingOrchardBalance") { }
+    override suspend fun lockRemainingOrchardBalance() = logged("lockRemainingOrchardBalance") {
+        val dbDataPath = dbDataPath()
+        val account = account ?: noAccountAvailable()
+        migrationBackend.lockRemainingOrchardBalance(dbDataPath, network, account)
+        Unit
+    }
 
     private suspend fun isSyncBlockedNow(preferenceProvider: PreferenceProvider): Boolean {
         val dbDataPath = dbDataPath()

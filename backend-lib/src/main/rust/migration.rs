@@ -38,12 +38,15 @@ use rand::rngs::OsRng;
 use rusqlite::Connection;
 use std::ptr;
 
-use zcash_client_backend::data_api::WalletRead;
+use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
+use zcash_client_backend::data_api::{InputSource, WalletRead, WalletWrite};
 use zcash_client_backend::keys::UnifiedSpendingKey;
+use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_protocol::consensus::{BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants};
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::{PoolType, ShieldedPool};
 
 use zcash_pool_migration_backend::engine::{
     self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTxId, MigrationTxKind,
@@ -1264,6 +1267,67 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         Ok(encode_migration_schedule(env, &migration_plan, tip)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// A fixed, well-known lock owner for the "Lock balance" dust-lock feature
+/// (`MigrationSdk.lockRemainingOrchardBalance`) — not a per-proposal lock, so a stable constant
+/// (not `LockOwner::random`) lets re-invoking the feature re-extend the same lock idempotently
+/// (see `WalletWrite::lock_outputs`'s doc comment on same-owner re-locking) and would let a future
+/// "undo" flow release it via this same token.
+const DUST_LOCK_OWNER: LockOwner = LockOwner::new(*b"zashi-migration-dust-lock-owner!");
+
+/// Locks whatever Orchard balance remains spendable for this account (dust below the migratable
+/// threshold, or a residual the user opted out of migrating) so ordinary note selection — sends,
+/// shielding, and any future migration round — excludes it by default (`LockFilter::Policy`
+/// applied at every real selection call site in this crate and `lib.rs`), per
+/// `MigrationSdk.lockRemainingOrchardBalance`'s contract. The lock has no natural expiry for this
+/// use (it should stay locked indefinitely, unlike a proposal's transient lock), so it's set to
+/// the maximum representable height.
+///
+/// Returns the number of notes locked (0 if there was nothing left to lock).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_lockRemainingOrchardBalanceNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jint {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, mut wallet, _store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let target = target_height(&wallet)?;
+
+        // Unfiltered: this must see (and re-lock) notes this same call already locked on a prior
+        // invocation, not just ones nothing has locked yet — same-owner re-locking is what makes
+        // repeated taps of "Lock balance" idempotent.
+        let received = wallet
+            .select_unspent_notes(
+                account,
+                &[ShieldedPool::Orchard],
+                target.into(),
+                &[],
+                LockFilter::Unfiltered,
+            )
+            .map_err(|e| anyhow!("Error reading remaining Orchard balance: {}", e))?;
+
+        let outputs: Vec<OutputRef> = received
+            .orchard()
+            .iter()
+            .map(|rn| OutputRef::new(*rn.txid(), PoolType::ORCHARD, u32::from(rn.output_index())))
+            .collect();
+        if outputs.is_empty() {
+            return Ok(0);
+        }
+
+        let locked = wallet
+            .lock_outputs(&outputs, DUST_LOCK_OWNER, BlockHeight::from(u32::MAX))
+            .map_err(|e| anyhow!("Error locking remaining Orchard balance: {:?}", e))?;
+        Ok(locked as jint)
+    });
+    unwrap_exc_or(&mut env, res, 0)
 }
 
 /// Lists every account's UUID (16 raw bytes each) in the wallet database, independent of any

@@ -619,9 +619,11 @@ interface OrchardMigrationSdk {
      * threshold, or an opted-out residual) as unspendable, so it can't later be swept into a
      * transaction that reveals its specific — and therefore identifying — amount.
      *
-     * Stub: not yet backed by real Rust-side unspendable-note tracking. Exists purely as a
-     * wiring point for the app's "Lock balance" UI flow; the real implementation (persisting
-     * the lock, and having note selection actually respect it) is still to be done.
+     * Backed by `zcash_client_backend`'s note-locking (`WalletWrite::lock_outputs`, librustzcash
+     * PR #2716): the remaining spendable Orchard notes for this account are locked under a fixed,
+     * well-known owner token with no practical expiry, so ordinary note selection (sends,
+     * shielding, any future migration round) excludes them by default. Calling this again is
+     * idempotent (same-owner re-locking just extends the existing lock).
      */
     suspend fun lockRemainingOrchardBalance()
 

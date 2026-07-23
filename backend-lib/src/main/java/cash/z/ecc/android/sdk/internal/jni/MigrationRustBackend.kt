@@ -64,6 +64,21 @@ class MigrationRustBackend private constructor() {
             estimateMigrationRunCountNative(dbDataPath, networkId, accountUuidBytes)
         }
 
+    /**
+     * Locks whatever Orchard balance remains spendable for this account (dust below the
+     * migratable threshold, or a residual the user opted out of migrating) so ordinary note
+     * selection excludes it going forward. Returns the number of notes locked.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun lockRemainingOrchardBalance(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            lockRemainingOrchardBalanceNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
@@ -456,6 +471,14 @@ class MigrationRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun estimateMigrationRunCountNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun lockRemainingOrchardBalanceNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray
