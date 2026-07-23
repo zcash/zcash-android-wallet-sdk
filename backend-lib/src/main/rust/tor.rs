@@ -91,10 +91,20 @@ impl TorRuntime {
     pub(crate) fn connect_to_lightwalletd(&self, endpoint: Uri) -> anyhow::Result<LwdConn> {
         let Self { runtime, client } = self.isolated_client();
 
-        // `allow_onion_services: false` preserves the pre-refactor behavior (librustzcash made
-        // onion-service reachability an explicit opt-in); the SDK has no .onion endpoint surface.
-        let conn =
-            runtime.block_on(async { client.connect_to_lightwalletd(endpoint, false).await })?;
+        // `allow_onion_services` used to be inferred internally by `zcash_client_backend` from
+        // the endpoint host; it's now an explicit caller decision (upstream commit 6721534b76),
+        // so re-derive the same `.onion` check here to keep supporting custom onion lightwalletd
+        // servers without changing this method's signature.
+        let allow_onion_services = endpoint
+            .host()
+            .map(|h| h.ends_with(".onion"))
+            .unwrap_or(false);
+
+        let conn = runtime.block_on(async {
+            client
+                .connect_to_lightwalletd(endpoint, allow_onion_services)
+                .await
+        })?;
 
         Ok(LwdConn {
             runtime,
