@@ -43,7 +43,7 @@ use zcash_client_sqlite::util::SystemClock;
 use zcash_protocol::consensus::Network;
 use zcash_protocol::value::ZatBalance;
 
-use crate::JniSlipstreamHandle;
+use super::JniSlipstreamHandle;
 
 const JNI_POOL_BALANCE: &str = "com/zodl/slipstream/model/SlipstreamPoolBalance";
 const JNI_ACCOUNT_BALANCE: &str = "com/zodl/slipstream/model/SlipstreamAccountBalance";
@@ -95,7 +95,10 @@ pub(crate) fn wallet_summary_object<'local>(
     // recovery-balance REPLACEMENT below is NOT cached — it re-reads the cheap view on every
     // call, so a recovering host sees the per-tick climb.
     let cached: Option<SummaryCacheEntry> = {
-        let guard = handle.summary_cache.lock().unwrap_or_else(|p| p.into_inner());
+        let guard = handle
+            .summary_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         guard.as_ref().map(|e| SummaryCacheEntry {
             captured_at: e.captured_at,
             ranges_completed: e.ranges_completed,
@@ -107,16 +110,23 @@ pub(crate) fn wallet_summary_object<'local>(
     let summary = match cached {
         None => {
             // First call on this handle: walk synchronously and prime the cache.
-            let walked =
-                walk_summary(db_path, network, trusted, untrusted, allow_zero_conf_shielding)?;
+            let walked = walk_summary(
+                db_path,
+                network,
+                trusted,
+                untrusted,
+                allow_zero_conf_shielding,
+            )?;
             if let Some(ref s) = walked {
-                *handle.summary_cache.lock().unwrap_or_else(|p| p.into_inner()) =
-                    Some(SummaryCacheEntry {
-                        captured_at: Instant::now(),
-                        ranges_completed: snap.ranges_completed,
-                        state: snap.state,
-                        summary: s.clone(),
-                    });
+                *handle
+                    .summary_cache
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(SummaryCacheEntry {
+                    captured_at: Instant::now(),
+                    ranges_completed: snap.ranges_completed,
+                    state: snap.state,
+                    summary: s.clone(),
+                });
             }
             match walked {
                 Some(s) => s,
@@ -204,7 +214,14 @@ pub(crate) fn wallet_summary_object<'local>(
             // FORWARD FIELD (§9.2): ironwood pool is null at v0.6.0. When built from an
             // ironwood engine tag, replace `&JObject::null()` with a `SlipstreamPoolBalance`
             // constructed from `balance.ironwood_balance()` (spendable/change/pending).
-            account_balance(env, uuid_bytes, &sapling, &orchard, &JObject::null(), unshielded)?
+            account_balance(
+                env,
+                uuid_bytes,
+                &sapling,
+                &orchard,
+                &JObject::null(),
+                unshielded,
+            )?
         };
         env.set_object_array_element(&acc_array, i as i32, &obj)?;
     }
@@ -258,7 +275,9 @@ fn build_policy(
         Ok(ConfirmationsPolicy::default())
     } else {
         let t = NonZeroU32::new(trusted).ok_or_else(|| {
-            anyhow!("trustedConfirmations must be nonzero unless both confirmations are zero (defaults)")
+            anyhow!(
+                "trustedConfirmations must be nonzero unless both confirmations are zero (defaults)"
+            )
         })?;
         let u = NonZeroU32::new(untrusted)
             .ok_or_else(|| anyhow!("untrustedConfirmations must be nonzero"))?;
@@ -357,7 +376,8 @@ fn scan_progress<'local>(
 fn read_recovery_nets(
     db_path: &std::path::Path,
 ) -> anyhow::Result<std::collections::HashMap<[u8; 16], i64>> {
-    let conn = rusqlite::Connection::open(db_path).map_err(|e| anyhow!("recovery balance open: {e}"))?;
+    let conn =
+        rusqlite::Connection::open(db_path).map_err(|e| anyhow!("recovery balance open: {e}"))?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| anyhow!("recovery balance busy_timeout: {e}"))?;
     let mut nets: std::collections::HashMap<[u8; 16], i64> = std::collections::HashMap::new();
@@ -371,8 +391,12 @@ fn read_recovery_nets(
         .next()
         .map_err(|e| anyhow!("recovery balance row: {e}"))?
     {
-        let uuid: Vec<u8> = row.get(0).map_err(|e| anyhow!("recovery balance uuid: {e}"))?;
-        let net: i64 = row.get(1).map_err(|e| anyhow!("recovery balance net: {e}"))?;
+        let uuid: Vec<u8> = row
+            .get(0)
+            .map_err(|e| anyhow!("recovery balance uuid: {e}"))?;
+        let net: i64 = row
+            .get(1)
+            .map_err(|e| anyhow!("recovery balance net: {e}"))?;
         if let Ok(uuid16) = <[u8; 16]>::try_from(uuid.as_slice()) {
             nets.insert(uuid16, net);
         }

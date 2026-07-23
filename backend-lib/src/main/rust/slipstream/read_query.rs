@@ -91,9 +91,9 @@ pub(crate) fn read_query(
                         .map_err(|e| anyhow!("readQuery column {i} is not valid UTF-8: {e}"))?
                         .to_string(),
                 ),
-                rusqlite::types::ValueRef::Blob(b) => serde_json::Value::String(
-                    b.iter().map(|byte| format!("{byte:02x}")).collect(),
-                ),
+                rusqlite::types::ValueRef::Blob(b) => {
+                    serde_json::Value::String(b.iter().map(|byte| format!("{byte:02x}")).collect())
+                }
             };
             cols.push(value);
         }

@@ -125,12 +125,16 @@ cargo {
         "x86_64" to minSdkVersion,
     )
     profile = "release"
-    extraCargoBuildArguments =
+    extraCargoBuildArguments = run {
+        // The Slipstream sync-engine JNI surface is now a Cargo feature (previously it was an
+        // always-linked path dependency); the shipped native library must enable it so its
+        // `Java_com_zodl_slipstream_*` exports remain in libzcashwalletsdk.so.
+        val features = mutableListOf("slipstream")
         if (enableAndroidTestNativeFixtures) {
-            listOf("--features", "android-test-fixtures")
-        } else {
-            emptyList()
+            features.add("android-test-fixtures")
         }
+        listOf("--features", features.joinToString(","))
+    }
     prebuiltToolchains = true
     // To force the compiler to use the given page size
     // See the new Android 16 KB page size requirement for more details:

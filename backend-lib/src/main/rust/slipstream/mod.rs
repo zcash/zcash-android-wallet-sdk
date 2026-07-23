@@ -56,9 +56,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
+use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jint, jlong, jobject, jstring};
-use jni::JNIEnv;
 use prost::Message;
 use tokio::runtime::Builder;
 use tokio::task::AbortHandle;
@@ -70,7 +70,11 @@ use slipstream_core::ffi_handle::{
     FfiSlipstreamEvent, SlipstreamHandle as CoreHandle, SyncState, spawn_supervised,
 };
 use slipstream_core::session::{SessionConfig, SessionReporter, TorSessionConfig, run_session};
-use slipstream_core::{EngineConfig, Endpoint, Network, ProgressArc};
+use slipstream_core::{Endpoint, EngineConfig, Network, ProgressArc};
+
+// The engine's `SessionConfig` now takes pre-parsed accounts; parse the host UFVK encoding here.
+use zcash_client_backend::keys::UnifiedFullViewingKey;
+use zcash_protocol::consensus::BlockHeight;
 
 // ── JNI class descriptors + constructor signatures (normative; the JNI binding contract §4.2) ──
 // Constructor arg ORDER is part of the contract; it must match the `@Keep data class`
@@ -231,10 +235,8 @@ impl JniSlipstreamHandle {
 /// `ptr` must be a value returned by `open` that has not been passed to `free`. The Kotlin
 /// single-dispatcher rule (the JNI binding contract §5) makes concurrent use impossible.
 unsafe fn handle_from_jlong<'a>(ptr: jlong) -> anyhow::Result<&'a mut JniSlipstreamHandle> {
-    unsafe {
-        std::ptr::with_exposed_provenance_mut::<JniSlipstreamHandle>(ptr as usize).as_mut()
-    }
-    .ok_or_else(|| anyhow!("slipstream handle is null"))
+    unsafe { std::ptr::with_exposed_provenance_mut::<JniSlipstreamHandle>(ptr as usize).as_mut() }
+        .ok_or_else(|| anyhow!("slipstream handle is null"))
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -251,7 +253,9 @@ fn join_aborted_task(task: &AbortHandle) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !task.is_finished() {
         if Instant::now() >= deadline {
-            tracing::warn!("slipstream stop/start: aborted pass still unwinding after 10 s — proceeding");
+            tracing::warn!(
+                "slipstream stop/start: aborted pass still unwinding after 10 s — proceeding"
+            );
             return false;
         }
         thread::sleep(Duration::from_millis(10));
@@ -398,9 +402,17 @@ fn start_session(
 
     // `ufvk` present = view-only import on the first pass (keyless — a UFVK is viewing
     // capability, never a spending key); absent = an account must already exist. The engine's
-    // session API (main / locking-family-compat lineage) takes a single optional raw
-    // (ufvk-string, birthday) pair; the engine parses it internally.
-    let account: Option<(String, u64)> = ufvk.map(|s| (s, birthday));
+    // session API takes a list of pre-parsed `(UnifiedFullViewingKey, birthday)` accounts to
+    // bootstrap on the initial pass (empty = import nothing); the host encoding is parsed here
+    // rather than inside the engine.
+    let accounts: Vec<(UnifiedFullViewingKey, BlockHeight)> = match ufvk {
+        Some(s) => {
+            let ufvk = UnifiedFullViewingKey::decode(&h.network, &s)
+                .map_err(|e| anyhow!("Invalid UFVK for Slipstream session import: {e}"))?;
+            vec![(ufvk, BlockHeight::from(birthday as u32))]
+        }
+        None => Vec::new(),
+    };
 
     // Engine-owned Tor. On Android `dangerously_trust_everyone` MUST be `false`
     // (the JNI binding contract §3.0 delta #2 / §11 — the iOS C layer sets it via
@@ -412,7 +424,7 @@ fn start_session(
 
     let session_config = SessionConfig {
         engine: cfg,
-        account,
+        accounts,
         tor,
     };
     let reporter = SessionReporter {
@@ -659,7 +671,10 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_drainEvents<'local>(
             let obj = env.new_object(
                 JNI_EVENT,
                 EVENT_CTOR,
-                &[JValue::Int(i32::from(ev.tag)), JValue::Long(ev.value as i64)],
+                &[
+                    JValue::Int(i32::from(ev.tag)),
+                    JValue::Long(ev.value as i64),
+                ],
             )?;
             env.set_object_array_element(&arr, i as jint, &obj)?;
         }
@@ -683,8 +698,8 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_walletSummary<'local
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let h = unsafe { handle_from_jlong(handle) }?;
-        let trusted =
-            u32::try_from(trusted_confirmations).map_err(|_| anyhow!("trustedConfirmations out of range"))?;
+        let trusted = u32::try_from(trusted_confirmations)
+            .map_err(|_| anyhow!("trustedConfirmations out of range"))?;
         let untrusted = u32::try_from(untrusted_confirmations)
             .map_err(|_| anyhow!("untrustedConfirmations out of range"))?;
         summary::wallet_summary_object(env, h, trusted, untrusted, allow_zero_conf_shielding != 0)
@@ -790,7 +805,10 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_restoreAnchor<'local
         let obj = env.new_object(
             JNI_RESTORE_ANCHOR,
             RESTORE_ANCHOR_CTOR,
-            &[JValue::Long(anchor.height as i64), JValue::Object(&treestate_obj)],
+            &[
+                JValue::Long(anchor.height as i64),
+                JValue::Object(&treestate_obj),
+            ],
         )?;
         Ok(obj.into_raw())
     });
@@ -849,9 +867,9 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_free<'local>(
     let res = catch_unwind(&mut env, |_env| {
         if handle != 0 {
             let mut boxed = unsafe {
-                Box::from_raw(std::ptr::with_exposed_provenance_mut::<JniSlipstreamHandle>(
-                    handle as usize,
-                ))
+                Box::from_raw(
+                    std::ptr::with_exposed_provenance_mut::<JniSlipstreamHandle>(handle as usize),
+                )
             };
             if let Some(task) = boxed.inner.task.take() {
                 task.abort();

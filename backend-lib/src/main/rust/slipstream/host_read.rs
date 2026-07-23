@@ -14,14 +14,14 @@
 
 use anyhow::anyhow;
 
+use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint, jlong, jobject, jobjectArray};
-use jni::JNIEnv;
 
 use rusqlite::{OptionalExtension, Row};
 
-use crate::read_query;
-use crate::{catch_unwind, java_string_to_rust, unwrap_exc_or};
+use super::read_query;
+use super::{catch_unwind, java_string_to_rust, unwrap_exc_or};
 
 // JNI class descriptors + constructor signatures for the 4 new host-read models (the JNI
 // binding contract §4.2). Ctor arg ORDER matches the `@Keep data class` declarations exactly.
@@ -30,8 +30,7 @@ const JNI_RAW_TX: &str = "com/zodl/slipstream/model/SlipstreamRawTransaction";
 const JNI_TX_OUTPUT_ROW: &str = "com/zodl/slipstream/model/SlipstreamTxOutputRow";
 const JNI_RESUBMISSION_ROW: &str = "com/zodl/slipstream/model/SlipstreamResubmissionRow";
 
-const TX_ROW_CTOR: &str =
-    "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;ZIIILjava/lang/Long;ZLjava/lang/Long;)V";
+const TX_ROW_CTOR: &str = "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;ZIIILjava/lang/Long;ZLjava/lang/Long;)V";
 const RAW_TX_CTOR: &str = "([BJ)V";
 const TX_OUTPUT_ROW_CTOR: &str = "([BIILjava/lang/String;[B)V";
 const RESUBMISSION_ROW_CTOR: &str = "([B[B)V";
@@ -102,7 +101,10 @@ impl TxOutputRow {
 
 /// Boxes an optional `i64` as `java/lang/Long`, or `JObject::null()` for `None` — the
 /// nullable-scalar idiom for row fields with no primitive "absent" sentinel (SQL NULL).
-fn boxed_long<'local>(env: &mut JNIEnv<'local>, value: Option<i64>) -> anyhow::Result<JObject<'local>> {
+fn boxed_long<'local>(
+    env: &mut JNIEnv<'local>,
+    value: Option<i64>,
+) -> anyhow::Result<JObject<'local>> {
     match value {
         Some(v) => Ok(env.new_object("java/lang/Long", "(J)V", &[JValue::Long(v)])?),
         None => Ok(JObject::null()),
@@ -110,7 +112,10 @@ fn boxed_long<'local>(env: &mut JNIEnv<'local>, value: Option<i64>) -> anyhow::R
 }
 
 /// `Option<&[u8]> -> [B` or `null`.
-fn optional_bytes<'local>(env: &mut JNIEnv<'local>, value: &Option<Vec<u8>>) -> anyhow::Result<JObject<'local>> {
+fn optional_bytes<'local>(
+    env: &mut JNIEnv<'local>,
+    value: &Option<Vec<u8>>,
+) -> anyhow::Result<JObject<'local>> {
     match value {
         Some(bytes) => Ok(env.byte_array_from_slice(bytes)?.into()),
         None => Ok(JObject::null()),
@@ -118,7 +123,10 @@ fn optional_bytes<'local>(env: &mut JNIEnv<'local>, value: &Option<Vec<u8>>) -> 
 }
 
 /// `Option<&str> -> java/lang/String` or `null`.
-fn optional_string<'local>(env: &mut JNIEnv<'local>, value: &Option<String>) -> anyhow::Result<JObject<'local>> {
+fn optional_string<'local>(
+    env: &mut JNIEnv<'local>,
+    value: &Option<String>,
+) -> anyhow::Result<JObject<'local>> {
     match value {
         Some(s) => Ok(env.new_string(s)?.into()),
         None => Ok(JObject::null()),
@@ -158,7 +166,10 @@ fn tx_row_object<'local>(env: &mut JNIEnv<'local>, row: &TxRow) -> anyhow::Resul
     )?)
 }
 
-fn tx_output_row_object<'local>(env: &mut JNIEnv<'local>, row: &TxOutputRow) -> anyhow::Result<JObject<'local>> {
+fn tx_output_row_object<'local>(
+    env: &mut JNIEnv<'local>,
+    row: &TxOutputRow,
+) -> anyhow::Result<JObject<'local>> {
     let tx_id = env.byte_array_from_slice(&row.tx_id)?;
     let to_address = optional_string(env, &row.to_address)?;
     let to_account_uuid = optional_bytes(env, &row.to_account_uuid)?;
@@ -345,7 +356,8 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listTransactionOutpu
         drop(stmt);
         drop(conn);
 
-        let arr = env.new_object_array(buffered.len() as jint, JNI_TX_OUTPUT_ROW, JObject::null())?;
+        let arr =
+            env.new_object_array(buffered.len() as jint, JNI_TX_OUTPUT_ROW, JObject::null())?;
         for (i, row) in buffered.into_iter().enumerate() {
             env.with_local_frame(8, |env| -> anyhow::Result<()> {
                 let obj = tx_output_row_object(env, &row)?;
@@ -438,7 +450,11 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listResubmissionCand
         drop(stmt);
         drop(conn);
 
-        let arr = env.new_object_array(buffered.len() as jint, JNI_RESUBMISSION_ROW, JObject::null())?;
+        let arr = env.new_object_array(
+            buffered.len() as jint,
+            JNI_RESUBMISSION_ROW,
+            JObject::null(),
+        )?;
         for (i, (tx_id, raw)) in buffered.into_iter().enumerate() {
             env.with_local_frame(8, |env| -> anyhow::Result<()> {
                 let tx_id_arr = env.byte_array_from_slice(&tx_id)?;
