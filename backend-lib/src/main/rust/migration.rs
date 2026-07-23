@@ -1168,31 +1168,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_isSyncRequiredBeforeNextTransferNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_data: JString<'local>,
-    network_id: jint,
-    account_uuid: JByteArray<'local>,
-) -> jboolean {
-    // ZIP 318's sync/broadcast decoupling MUST is enforced app-side (`MigrationWorker.kt`'s
-    // `isSyncRequiredBeforeNextTransfer()` check, unaffected by this rewire — see spec doc §6.8),
-    // not by the migration engine itself in either the old or new crate. This function's own
-    // contract (does the engine think a sync is due before the next transfer) has no direct
-    // equivalent surfaced by the new engine's public API; conservatively return false (no
-    // additional engine-side gate) since the app-side check already covers the ZIP 318
-    // requirement independently.
-    let res = catch_unwind(&mut env, |env| {
-        let _ = open(env, db_data, network_id)?;
-        let _ = crate::account_id_from_jni(env, account_uuid)?;
-        Ok(JNI_FALSE)
-    });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
-}
-
 /// Advances every due, signed transaction's proving (ZIP 374: installs its real anchor + witness
 /// via the `pczt` `Updater` role and runs the `Prover`, via `try_prove` — see its doc comment).
 /// Proving moves each ready transaction `Signed -> Proved` directly in the persisted

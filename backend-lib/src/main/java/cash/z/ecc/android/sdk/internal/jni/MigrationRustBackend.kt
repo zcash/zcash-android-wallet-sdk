@@ -270,16 +270,6 @@ class MigrationRustBackend private constructor() {
     }
 
     @Throws(RuntimeException::class)
-    suspend fun isSyncRequiredBeforeNextTransfer(
-        dbDataPath: String,
-        networkId: Int,
-        accountUuidBytes: ByteArray
-    ): Boolean =
-        withContext(SdkDispatchers.DATABASE_IO) {
-            isSyncRequiredBeforeNextTransferNative(dbDataPath, networkId, accountUuidBytes)
-        }
-
-    @Throws(RuntimeException::class)
     suspend fun finalizeReadyTransfers(
         dbDataPath: String,
         networkId: Int,
@@ -629,14 +619,6 @@ class MigrationRustBackend private constructor() {
             estimatedDurationHours: Int,
             usk: ByteArray
         )
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun isSyncRequiredBeforeNextTransferNative(
-            dbDataPath: String,
-            networkId: Int,
-            accountUuidBytes: ByteArray
-        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)
