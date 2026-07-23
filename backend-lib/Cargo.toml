@@ -179,15 +179,28 @@ slipstream-jni = { path = "slipstream-jni" }
 ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
-## Local librustzcash checkout, on main-latest (tracks upstream origin/main directly — this has
-## absorbed Danny/core team's former feat/pool-migration-sqlite stack, PR #2669) — needed for
-## zcash_pool_migration_backend above and zcash_client_sqlite::pool_migration below. orchard is
-## patched to the exact rev main pins (0.15.0 isn't on crates.io yet with ZIP 374 support),
-## everything else is a local path for fast iteration.
+## Local librustzcash checkout, on main-latest (tracks upstream origin/main directly — as of
+## 2026-07-22 this has absorbed Danny/core team's former feat/pool-migration-sqlite stack (PR
+## #2669), account-keying the pool-migration store (PR #2712 + FK fixup #2720), and proving the
+## transfer at schedule time plus anchor-retention/proving-key-cache follow-ups (PR #2710 +
+## #2728/#2729/#2730/#2734)) — needed for zcash_pool_migration_backend above and
+## zcash_client_sqlite::pool_migration below. orchard is patched to the exact rev main pins
+## (0.15.0 isn't on crates.io yet with ZIP 374 support), everything else is a local path for fast
+## iteration.
 ##
-## NOTE: Michal's PR #2712 / MOB-1455 (account-keyed pool-migration store) has since landed on
-## main — `migration_engine.rs` constructs the store via `PoolMigrations::for_account`, so the
-## former singleton-per-pool gap is closed.
+## The pool-migration store is now scoped per-account (`PoolMigrations::for_account`, see
+## `migration_engine.rs`'s `Backend::new`) — the former singleton-per-pool cross-account collision
+## (see `project_core_migration_swap` notes) is resolved by this pull, not just documented.
+## `zcash_pool_migration_backend::engine::MigrationProver` (prove_transfer/prove_preparation) has
+## since been adopted (migration.rs), retiring the former `migration_finalize.rs` hand-rolled
+## proving stopgap. `#2716` (note locking) has also been adopted: `InputSource` selection methods
+## and `propose_transfer`/`propose_shielding` now take a `LockFilter<'_>` /
+## `Option<TxVersion>`/`Option<LockRequest>` — see lib.rs and migration_engine.rs.
+##
+## IMPORTANT: as of this pull, this repo's code now references librustzcash main APIs
+## (LockFilter, TxVersion, LockRequest — PR #2716 + 41 follow-up commits) beyond what the
+## convergence-pin checkout at 68603fa71a provides. The local librustzcash checkout needs to be
+## advanced to pick up #2716 before this crate will compile again.
 [patch.crates-io]
 zcash_client_backend = { path = "../../../../../librustzcash/zcash_client_backend" }
 zcash_client_sqlite = { path = "../../../../../librustzcash/zcash_client_sqlite" }

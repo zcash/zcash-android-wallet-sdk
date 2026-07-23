@@ -51,7 +51,7 @@ use zcash_client_backend::{
         wallet::{
             self, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
-            input_selection::{GreedyInputSelector, SpendPolicy}, propose_shielding, propose_transfer,
+            input_selection::{GreedyInputSelector, LockFilter, SpendPolicy}, propose_shielding, propose_transfer,
         },
     },
     encoding::AddressCodec,
@@ -103,7 +103,6 @@ use crate::utils::{
 mod eip681;
 mod migration;
 mod migration_engine;
-mod migration_finalize;
 mod migration_keystone;
 mod migration_plan_cache;
 mod tor;
@@ -1168,6 +1167,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
                 target,
                 wallet::ConfirmationsPolicy::MIN,
                 CoinbaseFilter::AllTransparentOutputs,
+                // Balance display, not a spend selection — show the true total regardless of any
+                // lock another in-flight proposal might hold, matching pre-locking behavior.
+                LockFilter::Unfiltered,
             )
             .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))?
             .iter()
@@ -2175,6 +2177,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
             None,
+            None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
 
@@ -2237,6 +2240,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             request,
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
+            None,
             None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
@@ -2373,6 +2377,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             account_uuid,
             confirmations_policy,
             CoinbaseFilter::AllTransparentOutputs,
+            None,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
@@ -2587,10 +2592,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
                     anyhow!("PCZT's consensus branch does not support the Orchard pool")
                 })?
                 .circuit_version();
+            // Process-wide cached proving key (`zcash_primitives`, adopted 2026-07-23) — building
+            // one is expensive, and this JNI entry point is called on every ordinary shielded
+            // send, not just migrations, so rebuilding it per call was wasted work on every
+            // proof. Still keyed on the branch-derived circuit version above, since this block
+            // also has to prove legacy (pre-Ironwood) Orchard PCZTs during the migration window.
+            let pk = zcash_primitives::transaction::builder::cached_orchard_proving_key(
+                orchard_circuit_version,
+            );
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build(
-                    orchard_circuit_version,
-                ))
+                .create_orchard_proof(pk)
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
