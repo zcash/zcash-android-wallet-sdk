@@ -403,3 +403,26 @@ fn read_recovery_nets(
     }
     Ok(nets)
 }
+
+// Hermetic host tests (no JVM, no database, no new dependencies) for `build_policy`'s pure
+// validation logic.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_policy_both_zero_uses_the_zip_315_defaults() {
+        let policy = build_policy(0, 0, true).expect("both-zero must succeed with defaults");
+        assert_eq!(policy, ConfirmationsPolicy::default());
+    }
+
+    #[test]
+    fn build_policy_trusted_zero_untrusted_nonzero_is_an_error() {
+        assert!(build_policy(0, 5, true).is_err());
+    }
+
+    #[test]
+    fn build_policy_trusted_above_untrusted_is_an_error() {
+        assert!(build_policy(10, 3, true).is_err());
+    }
+}
