@@ -12,13 +12,18 @@ import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
 
 /**
- * Owns `allTransactions` (R18) and backs `getTransactions(accountUuid)` (R23) - the coroutine shape
- * `SDK_ADAPTER_PLAN.md` section 2.1 specifies: a `MutableStateFlow<List<TransactionOverview>>`,
- * re-set ONLY on [SlipstreamEngine.requeryTicks] (the section 3.2/5.4 re-query rule), full-list
- * replace, never diffed. Applies the section 3.1 visibility filter via
- * [SlipstreamTransactionReader.queryVisible] (the filter itself lives in `host_read.rs`'s
- * `list_transactions_sql`, moved from the Kotlin `VisibleTransactionsQuery` this reader used to
- * build).
+ * Owns `allTransactions` (R18) and backs `getTransactions(accountUuid)` (R23).
+ *
+ * Deliberately deviates from `SDK_ADAPTER_PLAN.md` section 2.1's literal shape - a
+ * `MutableStateFlow<List<TransactionOverview>>`, re-set ONLY on [SlipstreamEngine.requeryTicks]
+ * and shared hot across every collector. What's actually implemented is a COLD
+ * `requeryTicks.onStart { emit(Unit) }.mapLatest { queryVisible }.flowOn(Dispatchers.Default)`
+ * chain: each collector re-runs its own query on the section 3.2/5.4 re-query rule rather than
+ * observing one shared re-set value, and there is no state held between requery ticks - full-list
+ * replace, never diffed, is still true, just per-collector rather than per-controller. Applies the
+ * section 3.1 visibility filter via [SlipstreamTransactionReader.queryVisible] (the filter itself
+ * lives in `host_read.rs`'s `list_transactions_sql`, moved from the Kotlin `VisibleTransactionsQuery`
+ * this reader used to build).
  */
 internal class TransactionsController(
     private val reader: SlipstreamTransactionReader,

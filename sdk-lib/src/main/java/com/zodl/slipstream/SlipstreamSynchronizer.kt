@@ -19,6 +19,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.Files
 import cash.z.ecc.android.sdk.internal.ImportAccountErrors
+import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackendImpl
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.getNoBackupFilesDirSuspend
@@ -76,6 +77,7 @@ import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import com.zodl.slipstream.internal.db.TransactionsController
 import com.zodl.slipstream.internal.newestBundledCheckpointHeight
 import com.zodl.slipstream.internal.resolveIntent
+import com.zodl.slipstream.internal.runCatchingCancellable
 import com.zodl.slipstream.internal.shouldCreateAccount
 import com.zodl.slipstream.internal.spend.ResubmissionTicker
 import com.zodl.slipstream.internal.spend.SaplingParams
@@ -91,6 +93,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
@@ -148,6 +151,7 @@ class SlipstreamSynchronizer internal constructor(
     private val walletClient: CombinedWalletClient,
     private val walletClientFactory: WalletClientFactory,
     private val defaultEndpoint: LightWalletEndpoint,
+    private val engineTorDir: String?,
     private val lazyTorClient: LazyTorClient?,
     private val exchangeRateFetcher: UsdExchangeRateFetcher?,
     private val sdkFlags: SdkFlags,
@@ -230,7 +234,7 @@ class SlipstreamSynchronizer internal constructor(
     override val broadcaster: Broadcaster get() = broadcasterImpl
 
     override val accountsFlow: Flow<List<Account>?> =
-        accountsBus.onStart { emit(Unit) }.map { runCatching { getAccounts() }.getOrNull() }
+        accountsBus.onStart { emit(Unit) }.map { getAccounts() }
 
     /** R62-R64: forwarded straight to the engine, which owns the tick and the error-episode state (Phase 4 T10). */
     override var onCriticalErrorHandler: ((Throwable?) -> Boolean)?
@@ -273,7 +277,28 @@ class SlipstreamSynchronizer internal constructor(
         engine.startPolling()
     }
 
-    override suspend fun getAccounts(): List<Account> = backend.getAccounts().map(Account::new)
+    override suspend fun getAccounts(): List<Account> =
+        runCatchingCancellable { backend.getAccounts().map(Account::new) }
+            .onFailure { Twig.error(it) { "Get wallet accounts failed." } }
+            .getOrElse { throw InitializeException.GetAccountsException(it) }
+
+    /**
+     * The keyless engine restart every stop-then-restart call site below runs from a
+     * [NonCancellable] context, so the engine always comes back up even when the caller itself
+     * was cancelled; a restart failure is logged rather than thrown, so it can never mask
+     * whatever outcome the caller was already returning or throwing. [operation] is a short,
+     * human-readable name for the log message only (e.g. "account import", "rewind").
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun restartEngineAfter(operation: String) {
+        withContext(NonCancellable) {
+            try {
+                engine.start(ufvk = null, birthday = startBirthday.value)
+            } catch (e: Exception) {
+                Twig.error(e) { "Slipstream engine restart after $operation failed" }
+            }
+        }
+    }
 
     /**
      * Sequence: `restoreAnchor(intent = 1)` for `recoverUntil` (network-only, engine stays live)
@@ -300,7 +325,7 @@ class SlipstreamSynchronizer internal constructor(
                     intent = 1,
                     birthdayHeight = (setup.birthday?.value) ?: fallbackCheckpoint,
                     fallbackCheckpointHeight = fallbackCheckpoint,
-                    torDir = null
+                    torDir = engineTorDir
                 )
             }
         val recoverUntil = anchor.height
@@ -339,7 +364,7 @@ class SlipstreamSynchronizer internal constructor(
                     InitializeException.ImportAccountException(e)
                 }
             } finally {
-                engine.start(ufvk = null, birthday = startBirthday.value)
+                restartEngineAfter("account import")
             }
         accountsBus.tryEmit(Unit)
         return Account.new(jniAccount)
@@ -368,7 +393,7 @@ class SlipstreamSynchronizer internal constructor(
         }
 
     private suspend fun wrapGetAddress(block: suspend () -> String): String =
-        runCatching { block() }.getOrElse { throw RustLayerException.GetAddressException(it) }
+        runCatchingCancellable { block() }.getOrElse { throw RustLayerException.GetAddressException(it) }
 
     override fun refreshExchangeRateUsd() {
         scope.launch { refreshExchangeRateTrigger.emit(Unit) }
@@ -402,19 +427,19 @@ class SlipstreamSynchronizer internal constructor(
         accountUuid: AccountUuid,
         proposal: Proposal
     ): Pczt =
-        runCatching { spendService.createPcztFromProposal(accountUuid, proposal) }
+        runCatchingCancellable { spendService.createPcztFromProposal(accountUuid, proposal) }
             .getOrElse { throw PcztException.CreatePcztFromProposalException(it.message, it) }
 
     override suspend fun redactPcztForSigner(pczt: Pczt): Pczt =
-        runCatching { spendService.redactPcztForSigner(pczt) }
+        runCatchingCancellable { spendService.redactPcztForSigner(pczt) }
             .getOrElse { throw PcztException.RedactPcztForSignerException(it.message, it) }
 
     override suspend fun pcztRequiresSaplingProofs(pczt: Pczt): Boolean =
-        runCatching { spendService.pcztRequiresSaplingProofs(pczt) }
+        runCatchingCancellable { spendService.pcztRequiresSaplingProofs(pczt) }
             .getOrElse { throw PcztException.PcztRequiresSaplingProofsException(it.message, it) }
 
     override suspend fun addProofsToPczt(pczt: Pczt): Pczt =
-        runCatching { spendService.addProofsToPczt(pczt) }
+        runCatchingCancellable { spendService.addProofsToPczt(pczt) }
             .getOrElse { throw PcztException.AddProofsToPcztException(it.message, it) }
 
     override suspend fun createTransactionFromPczt(
@@ -432,7 +457,7 @@ class SlipstreamSynchronizer internal constructor(
 
     /** R49: composition of R45-R48 in their exact order, `AddressType.Invalid` on failure (ports `SdkSynchronizer.kt`'s `validateAddress`). */
     override suspend fun validateAddress(address: String): AddressType =
-        runCatching {
+        runCatchingCancellable {
             when {
                 isValidShieldedAddr(address) -> Shielded
                 isValidTransparentAddr(address) -> Transparent
@@ -450,14 +475,18 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun validateConsensusBranch(): ConsensusMatchType {
         val serviceMode = sdkFlags ifTor ServiceMode.Group("SlipstreamSynchronizer.validateConsensusBranch")
         val serverBranchId =
-            runCatching { (walletClient.getServerInfo(serviceMode) as? Response.Success)?.result?.consensusBranchId }.getOrNull()
+            runCatchingCancellable {
+                (walletClient.getServerInfo(serviceMode) as? Response.Success)?.result?.consensusBranchId
+            }.getOrNull()
         val currentChainTip =
             when (val response = walletClient.getLatestBlockHeight(serviceMode)) {
-                is Response.Success -> runCatching { BlockHeight.new(response.result.value) }.getOrNull()
+                is Response.Success -> runCatchingCancellable { BlockHeight.new(response.result.value) }.getOrNull()
                 is Response.Failure -> null
             }
         val sdkBranchId =
-            currentChainTip?.let { tip -> runCatching { backend.getBranchIdForHeight(tip.value) }.getOrNull() }
+            currentChainTip?.let { tip ->
+                runCatchingCancellable { backend.getBranchIdForHeight(tip.value) }.getOrNull()
+            }
 
         return ConsensusMatchType(
             sdkBranch = sdkBranchId?.let(ConsensusBranchId::fromId),
@@ -487,7 +516,7 @@ class SlipstreamSynchronizer internal constructor(
                 )
             }
             val remoteSaplingActivation =
-                runCatching { BlockHeight.new(remoteInfo.saplingActivationHeightUnsafe.value) }.getOrElse {
+                runCatchingCancellable { BlockHeight.new(remoteInfo.saplingActivationHeightUnsafe.value) }.getOrElse {
                     return ServerValidation.InValid(
                         it
                     )
@@ -502,7 +531,7 @@ class SlipstreamSynchronizer internal constructor(
             }
             val currentChainTip =
                 when (val response = client.getLatestBlockHeight(serviceMode)) {
-                    is Response.Success -> runCatching { BlockHeight.new(response.result.value) }.getOrElse {
+                    is Response.Success -> runCatchingCancellable { BlockHeight.new(response.result.value) }.getOrElse {
                         return ServerValidation.InValid(
                             it
                         )
@@ -511,7 +540,7 @@ class SlipstreamSynchronizer internal constructor(
                     is Response.Failure -> return ServerValidation.InValid(response.toThrowable())
                 }
             val sdkBranchId =
-                runCatching { "%x".format(Locale.ROOT, backend.getBranchIdForHeight(currentChainTip.value)) }
+                runCatchingCancellable { "%x".format(Locale.ROOT, backend.getBranchIdForHeight(currentChainTip.value)) }
                     .getOrElse { return ServerValidation.InValid(it) }
             return if (remoteInfo.consensusBranchId.equals(sdkBranchId, ignoreCase = true)) {
                 ServerValidation.Valid
@@ -531,7 +560,7 @@ class SlipstreamSynchronizer internal constructor(
         account: Account,
         since: BlockHeight
     ): Int? =
-        runCatching {
+        runCatchingCancellable {
             var count = 0
             val tAddresses = backend.listTransparentReceivers(account.accountUuid.value)
             walletClient
@@ -555,17 +584,25 @@ class SlipstreamSynchronizer internal constructor(
             count
         }.getOrNull()
 
-    /** The `engine.start(ufvk = null, ...)` restart below is keyless (`FFI_JNI_CONTRACT.md` section 3.5) - legal only because provisioning guarantees an account row already exists by the time any restart runs. */
+    /**
+     * The `engine.start(ufvk = null, ...)` restart below is keyless (`FFI_JNI_CONTRACT.md` section
+     * 3.5) - legal only because provisioning guarantees an account row already exists by the time
+     * any restart runs. Restarted from a [NonCancellable] `finally` so the engine always comes back
+     * up - even under cancellation - and a restart failure is logged rather than masking the
+     * original rewind outcome.
+     */
     override suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight? {
         engine.stop()
-        val result = rewindRetrying(height)
-        engine.start(ufvk = null, birthday = startBirthday.value)
-        return result
+        return try {
+            rewindRetrying(height)
+        } finally {
+            restartEngineAfter("rewind")
+        }
     }
 
     private suspend fun rewindRetrying(height: BlockHeight): BlockHeight? {
         val result =
-            runCatching { backend.rewindToHeight(height.value) }
+            runCatchingCancellable { backend.rewindToHeight(height.value) }
                 .getOrElse { return null }
         return when (result) {
             is JniRewindResult.Success -> BlockHeight.new(result.height)
@@ -577,8 +614,11 @@ class SlipstreamSynchronizer internal constructor(
     /** Same `ufvk = null` keyless-restart contract as [rewindToNearestHeight] (`FFI_JNI_CONTRACT.md` section 3.5). */
     override suspend fun rewindToHeight(height: BlockHeight) {
         engine.stop()
-        backend.rewindToHeight(height.value)
-        engine.start(ufvk = null, birthday = startBirthday.value)
+        try {
+            backend.rewindToHeight(height.value)
+        } finally {
+            restartEngineAfter("rewind")
+        }
     }
 
     override fun getMemos(transactionOverview: TransactionOverview): Flow<String> =
@@ -589,7 +629,7 @@ class SlipstreamSynchronizer internal constructor(
                     emit("")
                 } else {
                     val memo =
-                        runCatching {
+                        runCatchingCancellable {
                             backend.getMemoAsUtf8(
                                 transactionOverview.txId.value.byteArray,
                                 output.poolCode,
@@ -693,12 +733,15 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit): HttpClient {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
         val client = lazyTorClient
             ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
         val isolatedTor = try {
             client.getOrCreate().isolatedTorClient()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw TorInitializationErrorException(e)
         }
@@ -721,8 +764,12 @@ class SlipstreamSynchronizer internal constructor(
      */
     override suspend fun deleteAccount(accountUuid: AccountUuid): Boolean {
         engine.stop()
-        val deleted = backend.deleteAccount(accountUuid.value)
-        engine.start(ufvk = null, birthday = startBirthday.value)
+        val deleted =
+            try {
+                backend.deleteAccount(accountUuid.value)
+            } finally {
+                restartEngineAfter("account deletion")
+            }
         engine.notifyTxChange()
         accountsBus.tryEmit(Unit)
         return deleted
@@ -753,6 +800,7 @@ class SlipstreamSynchronizer internal constructor(
                     engine.stopPolling()
                     engine.stop()
                     engine.free()
+                    engine.shutdown()
                     lazyTorClient?.dispose()
                     walletClient.dispose()
                     exchangeRateFetcher?.dispose()
@@ -1056,6 +1104,7 @@ class SlipstreamSynchronizer internal constructor(
                 walletClient = walletClient,
                 walletClientFactory = walletClientFactory,
                 defaultEndpoint = lightWalletEndpoint,
+                engineTorDir = engineTorDir,
                 lazyTorClient = lazyTorClient,
                 exchangeRateFetcher = exchangeRateFetcher,
                 sdkFlags = sdkFlags,

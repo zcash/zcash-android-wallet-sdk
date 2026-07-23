@@ -54,13 +54,17 @@ internal object SlipstreamNative {
     }
 
     @JvmStatic
+    @Throws(RuntimeException::class)
     private external fun initOnLoad(logLevel: String)
 
     /** Build stamp: "slipstream-android <aar-version> (engine <tag>)". */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun version(): String
 
+    /** `open` (`HOSTING.md` section 4 row 1): allocates the handle. Returns the handle as a `jlong`. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun open(
         dbPath: String,
         serverHost: String,
@@ -70,7 +74,9 @@ internal object SlipstreamNative {
         totalMemoryBytes: Long
     ): Long
 
+    /** `start` (`HOSTING.md` section 4 row 2): `ufvk` null = keyless, non-null = view-only import on the first pass. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun start(
         handle: Long,
         ufvk: String?,
@@ -78,16 +84,27 @@ internal object SlipstreamNative {
         torDir: String?
     ): Boolean
 
+    /** `stop`: cancels the sync task and performs the bounded join + writer-drain. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun stop(handle: Long): Boolean
 
+    /** `snapshot` (`HOSTING.md` section 5): the poll read - cheap, non-blocking, call every tick. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun snapshot(handle: Long): SlipstreamSnapshot
 
+    /** `drainEvents`: atomically drains the 64-slot event ring - MUST be called every tick even if ignored. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun drainEvents(handle: Long): Array<SlipstreamEvent>
 
+    /**
+     * `walletSummary` (`HOSTING.md` section 7.2): the phase-resolving balance read, or `null`
+     * for "no balance data yet".
+     */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun walletSummary(
         handle: Long,
         trustedConfirmations: Int,
@@ -95,10 +112,14 @@ internal object SlipstreamNative {
         allowZeroConfShielding: Boolean
     ): SlipstreamWalletSummary?
 
+    /** `notifyTxChange`: host poke after the host stored a just-broadcast transaction. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun notifyTxChange(handle: Long): Boolean
 
+    /** `restoreAnchor` (`HOSTING.md` section 8): handle-less wallet-provisioning facts for `intent` restore/new. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun restoreAnchor(
         serverHost: String,
         serverPort: Int,
@@ -110,11 +131,14 @@ internal object SlipstreamNative {
         torDir: String?
     ): SlipstreamRestoreAnchor
 
+    /** `free`: cancels everything and drops the runtime; the handle is dangling after this returns. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun free(handle: Long)
 
     /** First of 5 typed host-read exports; production visible-transactions read, optionally account-scoped. Not part of [CONTRACT_VERSION]. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun listTransactions(
         dbPath: String,
         isRecovering: Boolean,
@@ -123,6 +147,7 @@ internal object SlipstreamNative {
 
     /** `getTransactionRaw`: raw bytes + expiry height for one txid, or `null` if not stored. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun getTransactionRaw(
         dbPath: String,
         txid: ByteArray
@@ -130,6 +155,7 @@ internal object SlipstreamNative {
 
     /** `listTransactionOutputs`: non-change outputs for one txid, or - when [txid] is `null` - every account's. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun listTransactionOutputs(
         dbPath: String,
         txid: ByteArray?
@@ -137,6 +163,7 @@ internal object SlipstreamNative {
 
     /** `findTransactionsByMemo`: txids whose memo contains [substring] (case-insensitive; wildcarding is native-side). */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun findTransactionsByMemo(
         dbPath: String,
         substring: String
@@ -144,6 +171,7 @@ internal object SlipstreamNative {
 
     /** `listResubmissionCandidates`: unmined, unexpired, outgoing transactions as of [chainTip]. */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun listResubmissionCandidates(
         dbPath: String,
         chainTip: Long
@@ -157,6 +185,7 @@ internal object SlipstreamNative {
      * Returns the rows as a JSON array of arrays, or `null` on error.
      */
     @JvmStatic
+    @Throws(RuntimeException::class)
     external fun readQuery(
         dbPath: String,
         sql: String,

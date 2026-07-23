@@ -9,8 +9,10 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.SlipstreamNative
 import com.zodl.slipstream.SlipstreamSyncException
 import com.zodl.slipstream.model.SlipstreamSnapshot
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -33,7 +35,7 @@ internal class SlipstreamEngine(
     private val networkId: Int,
     /** Engine-owned Tor state directory - NEVER the SDK's own `TorClient` dir (DECISIONS.md D7). */
     private val torDir: String?,
-    /** Synchronizer-owned; cancelled in the synchronizer's `close()`. */
+    /** Engine-owned; cancelled via [shutdown], invoked from the synchronizer's `close()`. */
     private val scope: CoroutineScope
 ) {
     private var handle: Long = 0L
@@ -67,7 +69,7 @@ internal class SlipstreamEngine(
      * Fires once per tick, after every engine-owned state update - the only per-heartbeat signal
      * available to host logic that needs a cadence rather than a state change (e.g. the T8
      * resubmission tick, which needs "every 150 ticks" and cannot be built on a `StateFlow`, since
-     * `StateFlow` suppresses unchanged values). Exceptions are caught by the same `runCatching` as
+     * `StateFlow` suppresses unchanged values). Exceptions are caught by the same try/catch as
      * the rest of [tick] (see [startPolling]).
      */
     var onTick: (suspend (SlipstreamSnapshot) -> Unit)? = null
@@ -129,13 +131,25 @@ internal class SlipstreamEngine(
             if (handle != 0L) SlipstreamNative.notifyTxChange(handle)
         }
 
-    /** A tick crash never kills the loop; [onCriticalErrorHandler] is offered the exception instead of a silent swallow. */
+    /**
+     * A tick crash never kills the loop; [onCriticalErrorHandler] is offered the exception instead
+     * of a silent swallow. Cancellation is never reported as critical - it exits the loop instead,
+     * exactly like any other coroutine cancellation.
+     */
+    @Suppress("TooGenericExceptionCaught")
     fun startPolling() {
+        if (handle == 0L) return
         pollJob?.cancel()
         pollJob =
             scope.launch(SlipstreamDispatchers.SLIPSTREAM_IO) {
                 while (isActive) {
-                    runCatching { tick() }.onFailure { onCriticalErrorHandler?.invoke(it) }
+                    try {
+                        tick()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        onCriticalErrorHandler?.invoke(e)
+                    }
                     delay(POLL_INTERVAL_MS.milliseconds)
                 }
             }
@@ -144,6 +158,15 @@ internal class SlipstreamEngine(
     fun stopPolling() {
         pollJob?.cancel()
         pollJob = null
+    }
+
+    /**
+     * Stops the poll loop and cancels [scope] - the engine's own, not the synchronizer's. Called
+     * once, from the synchronizer's `close()`.
+     */
+    fun shutdown() {
+        stopPolling()
+        scope.cancel()
     }
 
     /** Runs ON [SlipstreamDispatchers.SLIPSTREAM_IO]. One tick, `KOTLIN_ROSETTA.md` section 2.2 order. */
