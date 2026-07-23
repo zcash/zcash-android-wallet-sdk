@@ -200,6 +200,8 @@ internal class TypesafeMigrationBackendImpl(
         newScheduledHeight: Long
     ): Boolean = rustBackend().persistRescheduledTransfer(dbDataPath, network.id, account.value, newScheduledHeight)
 
+    override suspend fun migrationDustThresholdZatoshi(): Long = rustBackend().migrationDustThresholdZatoshi()
+
     override suspend fun createUnsignedNoteSplitPczt(
         dbDataPath: String,
         network: ZcashNetwork,

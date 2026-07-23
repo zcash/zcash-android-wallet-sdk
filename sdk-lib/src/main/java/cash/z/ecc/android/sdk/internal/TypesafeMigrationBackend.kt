@@ -199,6 +199,13 @@ internal interface TypesafeMigrationBackend {
         newScheduledHeight: Long
     ): Boolean
 
+    /**
+     * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
+     * rather than a residual worth migrating in its own transfer. A fixed protocol-level
+     * constant, not derived from any wallet/account state.
+     */
+    suspend fun migrationDustThresholdZatoshi(): Long
+
     // ----- External signer (Keystone hardware wallet) -----
 
     suspend fun createUnsignedNoteSplitPczt(

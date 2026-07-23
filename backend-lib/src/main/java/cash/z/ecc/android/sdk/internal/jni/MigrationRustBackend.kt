@@ -358,6 +358,20 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
+     * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
+     * rather than a residual worth migrating in its own transfer — see
+     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`. A fixed protocol-level constant, not
+     * derived from any wallet/account state — still routed through `SdkDispatchers.DATABASE_IO`
+     * only for consistency with every other call in this class, not because it touches a
+     * database.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationDustThresholdZatoshi(): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationDustThresholdZatoshiNative()
+        }
+
+    /**
      * Lists every account's UUID in the wallet database, independent of any live `Synchronizer`.
      */
     @Throws(RuntimeException::class)
@@ -694,6 +708,10 @@ class MigrationRustBackend private constructor() {
             accountUuidBytes: ByteArray,
             includeResidual: Boolean
         ): JniMigrationSchedule?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationDustThresholdZatoshiNative(): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)

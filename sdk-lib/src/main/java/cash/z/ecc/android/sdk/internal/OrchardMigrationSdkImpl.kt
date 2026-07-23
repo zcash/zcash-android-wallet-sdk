@@ -439,11 +439,12 @@ internal class OrchardMigrationSdkImpl(
     }
 
     override suspend fun rescheduleOverdueTransfer(): TransferProposal = logged("rescheduleOverdueTransfer") {
-        // No Rust call backs the reschedule decision itself (see the interface doc) — but the
-        // pending transfer's own fields (amount/anchorHeight/expiryHeight) come from
+        // The pending transfer's own fields (amount/anchorHeight/expiryHeight) come from
         // pendingTransferProposal(), a dedicated MigrationContext accessor added specifically for
         // this: next_due_transfer() only returns an opaque, already-signed PreparedTransfer
-        // (id/txid/pcztBytes), not the proposal it was signed from.
+        // (id/txid/pcztBytes), not the proposal it was signed from. The new schedule is then
+        // persisted via persistRescheduledTransfer (see the interface doc) — it's not just a
+        // locally-mutated copy handed back to the caller.
         val dbDataPath = dbDataPath()
         val account = account ?: noAccountAvailable()
         val pending = migrationBackend.pendingTransferProposal(dbDataPath, network, account)?.toPublic()
@@ -493,6 +494,11 @@ internal class OrchardMigrationSdkImpl(
         }
 
     // ── Dust locking ─────────────────────────────────────────────────────────
+
+    override suspend fun migrationDustThresholdZatoshi(): Long =
+        logged("migrationDustThresholdZatoshi") {
+            migrationBackend.migrationDustThresholdZatoshi()
+        }
 
     override suspend fun lockRemainingOrchardBalance() = logged("lockRemainingOrchardBalance") {
         val dbDataPath = dbDataPath()

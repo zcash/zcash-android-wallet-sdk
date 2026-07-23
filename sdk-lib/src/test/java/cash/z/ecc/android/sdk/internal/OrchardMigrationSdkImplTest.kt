@@ -100,6 +100,36 @@ class OrchardMigrationSdkImplTest {
         }
 
     /**
+     * `migrationDustThresholdZatoshi()` is a pure pass-through to the Rust-side
+     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` constant (100,000 zatoshi / 0.001 ZEC) — no account or
+     * database state involved. This just pins down that the value round-trips through the
+     * typesafe backend unchanged.
+     */
+    @Test
+    fun `migrationDustThresholdZatoshi returns the backend's constant value unchanged`() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    migrationDustThresholdZatoshiResult = 100_000L
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
+                )
+
+            val result = sdk.migrationDustThresholdZatoshi()
+
+            assertEquals(100_000L, result)
+        }
+
+    /**
      * A minimal, hand-encoded `cash.z.wallet.sdk.ffi.Proposal` protobuf message (see
      * `backend-lib/src/main/proto/proposal.proto`) — just field 2 (`feeRule`) set to `Zip317` (3),
      * with no steps. `ProposalUnsafe`'s init check only requires a non-default `feeRule`, and
@@ -134,7 +164,8 @@ class OrchardMigrationSdkImplTest {
     private class FakeTypesafeMigrationBackend(
         private val proposeImmediateSendMaxResult: ByteArray = ByteArray(0),
         private val pendingTransferProposalResult: JniTransferProposal? = null,
-        private val persistRescheduledTransferResult: Boolean = true
+        private val persistRescheduledTransferResult: Boolean = true,
+        private val migrationDustThresholdZatoshiResult: Long = 100_000L
     ) : TypesafeMigrationBackend {
         var proposeImmediateSendMaxCalled = false
         var lastAccount: AccountUuid? = null
@@ -308,6 +339,8 @@ class OrchardMigrationSdkImplTest {
             lastPersistedScheduledHeight = newScheduledHeight
             return persistRescheduledTransferResult
         }
+
+        override suspend fun migrationDustThresholdZatoshi(): Long = migrationDustThresholdZatoshiResult
 
         override suspend fun createUnsignedNoteSplitPczt(
             dbDataPath: String,

@@ -83,6 +83,14 @@ const JNI_KEYSTONE_BATCH_DECODE_RESULT: &str =
 const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniKeystoneBatchSignedPczts";
 
+/// The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
+/// rather than a residual worth migrating in its own (non-round-number, more identifiable)
+/// transfer — see `proposeMigrationTransfers`'s `includeResidual` doc comment in
+/// `MigrationSdk.kt` for the privacy/completeness trade-off this backs. 100,000 zatoshi = 0.001
+/// ZEC. A fixed protocol-level constant, not derived from wallet or account state, so it needs no
+/// database access to read.
+pub const MIGRATION_DUST_THRESHOLD_ZATOSHI: u64 = 100_000;
+
 pub(crate) type Wallet = zcash_client_sqlite::WalletDb<
     Connection,
     Network,
@@ -2010,6 +2018,20 @@ mod pending_transfer_proposal_tests {
              height, indistinguishable from a real schedule that happened to land exactly on tip"
         );
     }
+}
+
+/// A pure constant read — [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] is a fixed protocol-level value,
+/// not derived from any wallet or account state, so unlike every other export in this file this
+/// needs no `db_data`/`network_id`/account argument and can't fail or panic (no `catch_unwind` /
+/// `unwrap_exc_or` needed).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationDustThresholdZatoshiNative<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _: JClass<'local>,
+) -> jlong {
+    MIGRATION_DUST_THRESHOLD_ZATOSHI as jlong
 }
 
 // ----- External signer (Keystone hardware wallet) -----
