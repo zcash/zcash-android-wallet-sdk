@@ -54,18 +54,22 @@ where
     <W as WalletRead>::Error: std::error::Error + Send + Sync + 'static,
     <W as InputSource>::Error: std::error::Error + Send + Sync + 'static,
 {
+    /// Fails if `account` has no row in the wallet's `accounts` table (the store is now scoped to
+    /// the account row, not a per-wallet singleton — see `PoolMigrations::for_account`).
     pub fn new(
         wallet: &'a W,
         account: AccountUuid,
         usk: Option<UnifiedSpendingKey>,
         conn: &'a mut Connection,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, EngineError> {
+        let store = PoolMigrations::for_account(conn, account)
+            .map_err(|e| anyhow::anyhow!("opening pool-migration store failed: {e:?}"))?;
+        Ok(Self {
             wallet,
             account,
             usk,
-            store: PoolMigrations::new(conn),
-        }
+            store,
+        })
     }
 
     /// The account's spendable Orchard notes, exposed for `migration_finalize`'s witness lookup

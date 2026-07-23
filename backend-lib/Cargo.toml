@@ -136,16 +136,23 @@ zcash_voting = { version = "=0.11.0", default-features = false, features = [
 ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
-## Local librustzcash checkout, on main-latest (tracks upstream origin/main directly — this has
-## absorbed Danny/core team's former feat/pool-migration-sqlite stack, PR #2669) — needed for
-## zcash_pool_migration_backend above and zcash_client_sqlite::pool_migration below. orchard is
-## patched to the exact rev main pins (0.15.0 isn't on crates.io yet with ZIP 374 support),
-## everything else is a local path for fast iteration.
+## Local librustzcash checkout, on main-latest (tracks upstream origin/main directly — as of
+## 2026-07-22 this has absorbed Danny/core team's former feat/pool-migration-sqlite stack (PR
+## #2669), account-keying the pool-migration store (PR #2712 + FK fixup #2720), and proving the
+## transfer at schedule time plus anchor-retention/proving-key-cache follow-ups (PR #2710 +
+## #2728/#2729/#2730/#2734)) — needed for zcash_pool_migration_backend above and
+## zcash_client_sqlite::pool_migration below. orchard is patched to the exact rev main pins
+## (0.15.0 isn't on crates.io yet with ZIP 374 support), everything else is a local path for fast
+## iteration.
 ##
-## NOTE: the pool-migration store on main is still singleton-per-pool, NOT account-keyed (see
-## Michal's PR #2712 / MOB-1455 for that follow-up) — `Backend::get_migration`/`replace_migration`
-## in `migration_engine.rs` therefore don't filter by account either; this is a known, tracked gap
-## (see `project_core_migration_swap` notes), not something this checkout swap introduced.
+## The pool-migration store is now scoped per-account (`PoolMigrations::for_account`, see
+## `migration_engine.rs`'s `Backend::new`) — the former singleton-per-pool cross-account collision
+## (see `project_core_migration_swap` notes) is resolved by this pull, not just documented.
+## `zcash_pool_migration_backend::engine::MigrationProver` (prove_transfer/prove_preparation) is
+## new, additive, and NOT yet adopted here — our own `migration_finalize.rs` hand-rolled proving
+## stopgap still does the job and is a separate follow-up to retire (it needs mutable wallet
+## commitment-tree access our current `Backend<'a, W>` doesn't hold, not a drop-in swap).
+## `#2716` (note locking) is NOT merged yet as of this pull — nothing to adopt there.
 [patch.crates-io]
 pczt = { package = "pczt", path = '../../librustzcash/pczt' }
 transparent = { package = "zcash_transparent", path = '../../librustzcash/zcash_transparent' }
