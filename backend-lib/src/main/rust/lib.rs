@@ -1,7 +1,9 @@
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 
 use anyhow::anyhow;
 use bitflags::bitflags;
+use rand::rngs::OsRng;
 use tracing::debug;
 
 use zcash_client_backend::{
@@ -11,12 +13,13 @@ use zcash_client_backend::{
     keys::{ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest},
     tor::DormantMode,
 };
+use zcash_client_sqlite::{WalletDb, util::SystemClock};
 use zcash_protocol::{
     ShieldedPool,
     consensus::{
         BlockHeight, Network,
         Network::{MainNetwork, TestNetwork},
-        NetworkType,
+        NetworkType, Parameters,
     },
     memo::MemoBytes,
     value::Zatoshis,
@@ -34,6 +37,14 @@ fn print_debug_state() {
 #[cfg(not(debug_assertions))]
 fn print_debug_state() {
     debug!("Release enabled (congrats, this is NOT a debug build).");
+}
+
+fn wallet_db<P: Parameters>(
+    path: PathBuf,
+    params: P,
+) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, OsRng>> {
+    WalletDb::for_path(path, params, SystemClock, OsRng)
+        .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
 }
 
 bitflags! {

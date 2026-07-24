@@ -7,7 +7,10 @@
 //! The boundary rule is whether a symbol *speaks JNI*, not whether it is an
 //! export: anything whose signature mentions [`JNIEnv`], a `J*` / `j*` type, a
 //! Java class descriptor, or `env.new_object` belongs here. Everything
-//! expressible in plain Rust types stays in the logic module.
+//! expressible in plain Rust types stays in the logic module. Where a helper
+//! mixed both, it was split rather than moved wholesale: [`wallet_db`] decodes
+//! a [`JString`] path here and then calls the pure [`crate::wallet_db`] to do
+//! the real work.
 //!
 //! Marshalling lives beside the exports it serves. What is defined in this
 //! file is only what more than one submodule needs; anything used by a single
@@ -48,13 +51,13 @@ pub(crate) mod eip681;
 pub(crate) mod tor;
 pub(crate) mod wallet;
 
+/// Opens the wallet database at the [`JString`] path.
 fn wallet_db<P: Parameters>(
     env: &mut JNIEnv,
     params: P,
     db_data: JString,
 ) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, OsRng>> {
-    WalletDb::for_path(path_from_jni(env, db_data)?, params, SystemClock, OsRng)
-        .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
+    crate::wallet_db(path_from_jni(env, db_data)?, params)
 }
 
 fn block_db(env: &mut JNIEnv, fsblockdb_root: JString) -> anyhow::Result<FsBlockDb> {
