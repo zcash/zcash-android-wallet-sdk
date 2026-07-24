@@ -288,7 +288,9 @@ internal class TypesafeBackendImpl(
         saplingStartIndex: UInt,
         saplingRoots: List<SubtreeRoot>,
         orchardStartIndex: UInt,
-        orchardRoots: List<SubtreeRoot>
+        orchardRoots: List<SubtreeRoot>,
+        ironwoodStartIndex: UInt,
+        ironwoodRoots: List<SubtreeRoot>
     ) = backend.putSubtreeRoots(
         saplingStartIndex = saplingStartIndex.toLong(),
         saplingRoots =
@@ -301,6 +303,14 @@ internal class TypesafeBackendImpl(
         orchardStartIndex = orchardStartIndex.toLong(),
         orchardRoots =
             orchardRoots.map {
+                JniSubtreeRoot.new(
+                    rootHash = it.rootHash,
+                    completingBlockHeight = it.completingBlockHeight.value
+                )
+            },
+        ironwoodStartIndex = ironwoodStartIndex.toLong(),
+        ironwoodRoots =
+            ironwoodRoots.map {
                 JniSubtreeRoot.new(
                     rootHash = it.rootHash,
                     completingBlockHeight = it.completingBlockHeight.value

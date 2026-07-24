@@ -195,11 +195,14 @@ internal interface TypesafeBackend {
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
+    @Suppress("LongParameterList")
     suspend fun putSubtreeRoots(
         saplingStartIndex: UInt,
         saplingRoots: List<SubtreeRoot>,
         orchardStartIndex: UInt,
         orchardRoots: List<SubtreeRoot>,
+        ironwoodStartIndex: UInt,
+        ironwoodRoots: List<SubtreeRoot>,
     )
 
     /**
