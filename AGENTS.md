@@ -13,7 +13,7 @@ jobs that are runnable on a dev machine:
 
 ```bash
 ./scripts/ci-local.sh fast     # detekt + ktlint (~30s) -- run this first
-./scripts/ci-local.sh quick    # fast + rust + unit tests (~5m)
+./scripts/ci-local.sh quick    # fast + unit tests (~5m)
 ./scripts/ci-local.sh full     # everything, including androidTest (~15-30m)
 
 # Or a single stage when iterating:
@@ -26,9 +26,6 @@ jobs that are runnable on a dev machine:
 `quick` is what actually compiles the Kotlin: `fast` only runs static
 analysis, so it will pass on code that does not compile. Run at least `quick`
 after any change to a Kotlin source file.
-
-The `rust` stage runs `cargo test` against `backend-lib`. The first invocation
-builds around 640 crates and is slow; later runs are incremental.
 
 ### Environment requirements
 
@@ -49,6 +46,7 @@ builds around 640 crates and is slow; later runs are incremental.
 
   Android Studio's bundled runtime works too, if you prefer not to install a
   second JDK: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
+
 - **Android SDK** at `$ANDROID_HOME` or `~/Library/Android/sdk`.
 - For the `androidtest` stage on Apple Silicon, the `aosp` SDK-36 Pixel 2
   system image is downloaded on first run (~1.5 GB).
@@ -64,13 +62,13 @@ builds around 640 crates and is slow; later runs are incremental.
 
 ### When to run which stage
 
-| Change | Minimum stages |
-|---|---|
-| Style / rename / doc | `fast` |
-| Logic or refactor | `quick` |
-| Rust-only change under `backend-lib/src/main/rust` | `fast` then `rust` |
-| New public API, new module, JNI/Rust boundary | `full` |
-| Demo-app only | `fast` then `demoapp` |
+| Change                                             | Minimum stages        |
+| -------------------------------------------------- | --------------------- |
+| Style / rename / doc                               | `fast`                |
+| Logic or refactor                                  | `quick`               |
+| Rust-only change under `backend-lib/src/main/rust` | `fast` then `rust`    |
+| New public API, new module, JNI/Rust boundary      | `full`                |
+| Demo-app only                                      | `fast` then `demoapp` |
 
 ### Historical note
 
@@ -142,8 +140,8 @@ all the way to the Rust backend before failing.
   `TypesafeBackendImpl` at the JNI boundary (e.g. `setup.ufvk.encoding`).
   That is the existing pattern — keep it there and nowhere else.
 - This does not conflict with the "soft validation for `Jni*` classes" note
-  below: that note covers data flowing *out of* Rust into `Jni*` holders;
-  this section covers caller input flowing *toward* Rust.
+  below: that note covers data flowing _out of_ Rust into `Jni*` holders;
+  this section covers caller input flowing _toward_ Rust.
 
 ### Key material in errors and logs (MUST)
 
@@ -267,12 +265,12 @@ All of it is under
 query anywhere else is a mistake; adding one that names a table is a mistake
 wherever it is.
 
-| File | Reads | Status |
-|---|---|---|
-| `AllTransactionView.kt` | `v_transactions` | view, fine |
-| `TxOutputsView.kt` | `v_tx_outputs` | view, fine |
-| `BlockTable.kt` | `blocks` | **table, pre-existing exception** |
-| `TransactionTable.kt` | `transactions` | **table, pre-existing exception** |
+| File                    | Reads            | Status                            |
+| ----------------------- | ---------------- | --------------------------------- |
+| `AllTransactionView.kt` | `v_transactions` | view, fine                        |
+| `TxOutputsView.kt`      | `v_tx_outputs`   | view, fine                        |
+| `BlockTable.kt`         | `blocks`         | **table, pre-existing exception** |
+| `TransactionTable.kt`   | `transactions`   | **table, pre-existing exception** |
 
 `DerivedDataDb.kt` and `DbDerivedDataRepository.kt` are wiring and open no
 entities of their own.
@@ -293,9 +291,10 @@ FFI call rather than a third table reader.
   ```
 
   Note this only proves the Rust compiles. A JNI signature mismatch between
-  Rust and Kotlin is a *runtime* crash, not a compile error on either side,
+  Rust and Kotlin is a _runtime_ crash, not a compile error on either side,
   so a Rust-only change that touches a `Java_*` export or an
   `env.new_object` type signature still needs `./scripts/ci-local.sh quick`.
+
 - Detekt and ktlint are strict; treat their output as blocking. `detektAll`
   catches `MaxLineLength`, `ReturnCount`, `LongParameterList`, and similar
   issues that won't be apparent from a plain `./gradlew build`. Configs live
