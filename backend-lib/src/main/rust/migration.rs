@@ -1754,7 +1754,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// rescheduled to `tip + FIRST_DELAY_BLOCKS + i * STRIDE_BLOCKS`, in `i` = the transfers' existing
 /// relative order (by their current `scheduled_height`, so the engine's own ZIP 318 shuffle order
 /// is preserved even though the absolute heights are now compressed) — the first becomes due in
-/// about `FIRST_DELAY_BLOCKS * 75s`, each subsequent one `STRIDE_BLOCKS * 75s` after that.
+/// about `FIRST_DELAY_BLOCKS * 75s`, each subsequent one `STRIDE_BLOCKS * 75s` after that. The
+/// stride is intentionally tight (one block) so all transfers stay within a handful of blocks of
+/// the current tip and remain reachable on a slow testnet; the per-broadcast pace is still gated
+/// by the 10-minute privacy sync buffer regardless, so tightening the heights doesn't collapse the
+/// broadcast spacing.
 ///
 /// Returns the number of transfers rescheduled.
 #[unsafe(no_mangle)]
@@ -1767,10 +1771,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     network_id: jint,
     account_uuid: JByteArray<'local>,
 ) -> jint {
-    // ~2.5 min to the first transfer, ~5 min between each subsequent one, at the ~75s/block
-    // testnet/mainnet target spacing.
-    const FIRST_DELAY_BLOCKS: u32 = 2;
-    const STRIDE_BLOCKS: u32 = 4;
+    // Packed one block apart starting at tip+1 (~75s to the first, ~75s between each) so all N
+    // transfers land within N blocks of the tip instead of spanning N*STRIDE. A wider stride
+    // (previously 2 + i*4) pushed the last of a dozen transfers ~46 blocks / ~1h out — on a slow
+    // or momentarily-stalled testnet those far heights are never reached, so the run never
+    // finishes. Kept at tip+1 (not tip) deliberately: the first transfer stays a block in the
+    // future so the background sync-advance path (MigrationWorker's WAIT_AND_RETRY → sync burst →
+    // becomes due) is still exercised, rather than being immediately overdue.
+    const FIRST_DELAY_BLOCKS: u32 = 1;
+    const STRIDE_BLOCKS: u32 = 1;
 
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, store_conn) = open(env, db_data, network_id)?;
