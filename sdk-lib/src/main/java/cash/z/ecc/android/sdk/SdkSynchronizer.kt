@@ -662,6 +662,13 @@ class SdkSynchronizer private constructor(
         }
     }
 
+    // Migration sync-pause is only wired for the Slipstream engine; the legacy processor path
+    // is never active in this app (isSlipstreamEnabled = true). Kept as a no-op so the
+    // CloseableSynchronizer contract stays total.
+    override fun pause() = Unit
+
+    override fun resume() = Unit
+
     //
     // Storage APIs
     //

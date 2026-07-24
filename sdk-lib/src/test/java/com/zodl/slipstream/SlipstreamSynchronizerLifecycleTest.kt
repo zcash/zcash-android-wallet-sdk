@@ -44,6 +44,7 @@ import org.mockito.Mockito.`when`
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -335,6 +336,80 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    @Test
+    fun pause_stops_polling_without_tearing_the_engine_down() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            synchronizer.pause()
+
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).stopPolling()
+                verify(engine, after(SETTLE_MS).never()).stop()
+                verify(engine, after(SETTLE_MS).never()).free()
+                verify(engine, after(SETTLE_MS).never()).shutdown()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun resume_restarts_polling() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            synchronizer.pause()
+            clearInvocations(engine)
+
+            synchronizer.resume()
+
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun status_reports_synced_while_paused_then_reverts_after_resume() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.SYNCING)
+        val key = newKey()
+        // Override the default SYNCED stub so we can prove the wrap, not the stub.
+        val synchronizer = buildSynchronizer(engine = engine, key = key, engineStatusOverride = engineStatus)
+        try {
+            runBlocking {
+                assertEquals(Synchronizer.Status.SYNCING, synchronizer.status.first())
+                synchronizer.pause()
+                assertEquals(Synchronizer.Status.SYNCED, synchronizer.status.first())
+                synchronizer.resume()
+                assertEquals(Synchronizer.Status.SYNCING, synchronizer.status.first())
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun on_foreground_while_paused_does_not_restart_polling() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+            synchronizer.pause()
+            clearInvocations(engine)
+
+            synchronizer.onForeground()
+
+            runBlocking { verify(engine, after(SETTLE_MS).never()).startPolling() }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
     private fun newKey() = SlipstreamKey(ZcashNetwork.Testnet, "alias_${System.nanoTime()}")
 
     /**
@@ -350,9 +425,10 @@ class SlipstreamSynchronizerLifecycleTest {
         walletClient: CombinedWalletClient = mock(CombinedWalletClient::class.java),
         transactionsController: TransactionsController = mock(TransactionsController::class.java),
         key: SlipstreamKey = newKey(),
-        startBirthday: BlockHeight = BlockHeight.new(STARTING_BIRTHDAY_VALUE)
+        startBirthday: BlockHeight = BlockHeight.new(STARTING_BIRTHDAY_VALUE),
+        engineStatusOverride: MutableStateFlow<Synchronizer.Status>? = null
     ): SlipstreamSynchronizer {
-        `when`(engine.status).thenReturn(MutableStateFlow(Synchronizer.Status.SYNCED))
+        `when`(engine.status).thenReturn(engineStatusOverride ?: MutableStateFlow(Synchronizer.Status.SYNCED))
         `when`(engine.progress).thenReturn(MutableStateFlow(PercentDecimal.ZERO_PERCENT))
         `when`(engine.areFundsSpendable).thenReturn(MutableStateFlow(false))
         `when`(engine.networkHeight).thenReturn(MutableStateFlow<BlockHeight?>(null))

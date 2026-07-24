@@ -99,6 +99,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
@@ -173,7 +175,13 @@ class SlipstreamSynchronizer internal constructor(
     /** R13's double-free guard - Kotlin has no deinit, so `close()` must be safely re-entrant. */
     private val closed = AtomicBoolean(false)
 
-    override val status: Flow<Synchronizer.Status> = engine.status
+    /** True while a migration sync-block is pausing this synchronizer (see [pause]/[resume]). */
+    private val migrationPaused = MutableStateFlow(false)
+
+    override val status: Flow<Synchronizer.Status> =
+        combine(engine.status, migrationPaused) { status, paused ->
+            if (paused) Synchronizer.Status.SYNCED else status
+        }
     override val progress: Flow<PercentDecimal> = engine.progress
     override val areFundsSpendable: Flow<Boolean> = engine.areFundsSpendable
     override val networkHeight = engine.networkHeight
@@ -750,13 +758,26 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    override fun pause() {
+        if (closed.get()) return
+        migrationPaused.value = true
+        launchGuarded("pause") { engine.stopPolling() }
+    }
+
+    override fun resume() {
+        if (closed.get()) return
+        migrationPaused.value = false
+        launchGuarded("resume") { engine.startPolling() }
+    }
+
     /**
      * [SlipstreamEngine.start] unconditionally aborts any in-flight pass and reruns its bounded
      * quiescence drain, so restarting an already-running engine on every foreground would churn
      * useful work instead of resuming it. [SlipstreamEngine.isRunning] guards against that - skip
      * the native restart when the engine is already live. [SlipstreamEngine.startPolling] stays
-     * unconditional; it is already an idempotent cancel-and-relaunch. A no-op once [close] has
-     * already run - post-close lifecycle calls are no-ops.
+     * unconditional; it is already an idempotent cancel-and-relaunch, but is skipped while paused
+     * so a foreground event does not undo an in-flight migration sync-block. A no-op once [close]
+     * has already run - post-close lifecycle calls are no-ops.
      */
     override fun onForeground() {
         if (closed.get()) return
@@ -765,7 +786,9 @@ class SlipstreamSynchronizer internal constructor(
             if (!engine.isRunning) {
                 engine.start(ufvk = null, birthday = startBirthday.value)
             }
-            engine.startPolling()
+            if (!migrationPaused.value) {
+                engine.startPolling()
+            }
         }
     }
 

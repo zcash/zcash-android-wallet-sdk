@@ -1232,7 +1232,18 @@ sealed class WalletInitMode {
 
 interface CloseableSynchronizer :
     Synchronizer,
-    Closeable
+    Closeable {
+    /**
+     * Pauses block-scanning without tearing the synchronizer down: the engine's poll loop stops
+     * (no new network sync — used to decorrelate wallet sync from a migration broadcast) but the
+     * instance and all its StateFlows (status, balances, heights) stay alive and readable. While
+     * paused, [status] reports [Synchronizer.Status.SYNCED]. Idempotent.
+     */
+    fun pause()
+
+    /** Resumes block-scanning after [pause]. Idempotent. */
+    fun resume()
+}
 
 /**
  * Validate that the alias doesn't contain malicious characters by enforcing simple rules which
