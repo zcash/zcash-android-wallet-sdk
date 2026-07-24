@@ -11,7 +11,8 @@ internal data class WalletSummary(
     val scanProgress: ScanProgress,
     val recoveryProgress: RecoveryProgress?,
     val nextSaplingSubtreeIndex: UInt,
-    val nextOrchardSubtreeIndex: UInt
+    val nextOrchardSubtreeIndex: UInt,
+    val nextIronwoodSubtreeIndex: UInt
 ) {
     companion object {
         fun new(jni: JniWalletSummary): WalletSummary =
@@ -26,7 +27,8 @@ internal data class WalletSummary(
                 scanProgress = ScanProgress.new(jni),
                 recoveryProgress = RecoveryProgress.new(jni),
                 nextSaplingSubtreeIndex = jni.nextSaplingSubtreeIndex.toUInt(),
-                nextOrchardSubtreeIndex = jni.nextOrchardSubtreeIndex.toUInt()
+                nextOrchardSubtreeIndex = jni.nextOrchardSubtreeIndex.toUInt(),
+                nextIronwoodSubtreeIndex = jni.nextIronwoodSubtreeIndex.toUInt()
             )
     }
 }
