@@ -32,10 +32,9 @@ use zcash_primitives::transaction::Transaction;
 use zcash_protocol::consensus::{BlockHeight, BranchId, Parameters};
 
 use crate::utils::{self, catch_unwind, exception::unwrap_exc_or};
-use crate::{
-    account_id_from_jni, encode_transaction, parse_network, parse_optional_height,
-    parse_tor_dormant_mode, parse_txid, path_from_jni, wallet_db,
-};
+use crate::{parse_network, parse_optional_height, parse_tor_dormant_mode};
+
+use super::{account_id_from_jni, parse_txid, path_from_jni, wallet_db};
 
 /// Creates a Tor runtime
 #[unsafe(no_mangle)]
@@ -786,4 +785,17 @@ fn parse_http_headers(
             )
         })
         .collect()
+}
+
+fn encode_transaction<'a>(
+    env: &mut JNIEnv<'a>,
+    height: u64,
+    txid_bytes: Vec<u8>,
+) -> jni::errors::Result<JObject<'a>> {
+    let java_byte_array = env.byte_array_from_slice(&txid_bytes)?;
+    env.new_object(
+        "cash/z/ecc/android/sdk/internal/model/JniTransaction",
+        "(J[B)V",
+        &[JValue::Long(height as jlong), (&java_byte_array).into()],
+    )
 }

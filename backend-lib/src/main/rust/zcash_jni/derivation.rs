@@ -18,10 +18,10 @@ use zcash_client_backend::keys::{Era, UnifiedAddressRequest, UnifiedSpendingKey}
 use zcash_protocol::consensus::{NetworkConstants, Parameters};
 use zip32::{ChainCode, ChildIndex, DiversifierIndex, registered::PathElement};
 
+use crate::parse_network;
 use crate::utils::{self, catch_unwind, exception::unwrap_exc_or};
-use crate::{
-    decode_usk, parse_network, parse_ufvk, secret_from_jni, zip32_account_index_from_jlong,
-};
+
+use super::{decode_usk, parse_ufvk, secret_from_jni, zip32_account_index_from_jlong};
 
 /// Derives and returns a unified spending key from the given seed for the given account ID.
 ///
