@@ -39,7 +39,8 @@ use jni::{
 };
 use prost::Message;
 use rand::rngs::OsRng;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
+use std::collections::HashMap;
 use std::ptr;
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
@@ -53,8 +54,8 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{PoolType, ShieldedPool};
 
 use zcash_pool_migration_backend::engine::{
-    self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTxId, MigrationTxKind,
-    MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
+    self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction, MigrationTxId,
+    MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
 };
 use zcash_pool_migration_backend::wallet::{WalletMigrationProver, WalletProveError};
 
@@ -1758,7 +1759,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     const STRIDE_BLOCKS: u32 = 1;
 
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         // The wallet's real, currently-witnessable anchor — NOT a hand-picked "tip minus N" guess.
@@ -1771,63 +1772,90 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // guaranteed available.
         let debug_anchor_boundary = u32::from(natural_anchor_height(&wallet)?);
 
-        let migration_id: Option<i64> = store_conn
-            .query_row(
-                "SELECT m.id FROM orchard_ironwood_migrations m \
-                 JOIN accounts a ON a.id = m.account_id \
-                 WHERE a.uuid = ?1",
-                rusqlite::params![account.expose_uuid()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| anyhow!("Error reading migration row: {}", e))?;
-        let Some(migration_id) = migration_id else {
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let Some(state) = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+        else {
             return Ok(0);
         };
 
-        let tx_ids: Vec<i64> = {
-            let mut stmt = store_conn
-                .prepare(
-                    "SELECT tx_id FROM orchard_ironwood_migration_transactions \
-                     WHERE migration_id = ?1 AND kind = 'transfer' \
-                       AND state NOT IN ('broadcast', 'mined') \
-                     ORDER BY scheduled_height ASC",
-                )
-                .map_err(|e| anyhow!("Error preparing transfer query: {}", e))?;
-            stmt.query_map(rusqlite::params![migration_id], |row| row.get(0))
-                .map_err(|e| anyhow!("Error reading pending transfers: {}", e))?
-                .collect::<Result<_, _>>()
-                .map_err(|e| anyhow!("Error reading pending transfers: {}", e))?
-        };
+        // The still-pending transfers, earliest-scheduled first: transfer-kind transactions that
+        // have neither broadcast nor mined (i.e. only AwaitingSignature/Signed/Proved qualify),
+        // sorted by scheduled_height ascending. This order gives each pending transfer its index
+        // `i` below (matching the old `ORDER BY scheduled_height ASC` query).
+        let mut pending: Vec<&MigrationTransaction> = state
+            .transactions()
+            .iter()
+            .filter(|t| {
+                matches!(t.kind(), MigrationTxKind::Transfer { .. })
+                    && !matches!(
+                        t.state(),
+                        MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
+                    )
+            })
+            .collect();
+        pending.sort_by_key(|t| t.scheduled_height());
 
-        for (i, tx_id) in tx_ids.iter().enumerate() {
-            let new_height = u32::from(target) + FIRST_DELAY_BLOCKS + (i as u32) * STRIDE_BLOCKS;
+        // The new (scheduled_height, anchor_boundary) for each pending transfer, keyed by its
+        // stable id so the full transactions vec can be rebuilt in its original order below.
+        let mut reschedule: HashMap<MigrationTxId, (BlockHeight, Option<BlockHeight>)> =
+            HashMap::with_capacity(pending.len());
+        for (i, tx) in pending.iter().enumerate() {
+            let new_height = BlockHeight::from(
+                u32::from(target) + FIRST_DELAY_BLOCKS + (i as u32) * STRIDE_BLOCKS,
+            );
             // `is_prove_ready` (`finalizeReadyTransfers`) gates purely on `anchor_boundary`, NOT on
             // `scheduled_height` — so rewriting every transfer's anchor here would make ALL of them
             // prove-ready in the same `finalizeReadyTransfers` call (confirmed live: 12 real Halo2
             // proofs run back-to-back under one MIGRATION_DB_ACCESS_MUTEX hold, ~4-5 minutes,
             // starving a concurrent "Send Now" tap the whole time — not a hang, just an unrealistic
             // proving batch this debug tool itself created). Only the earliest-due transfer (i==0,
-            // this loop's existing scheduled_height-ascending order) gets a valid anchor; the rest
-            // keep their original, still-in-the-future one, matching production's natural
-            // one-becomes-ready-at-a-time shape. Re-invoke this debug action once this transfer
-            // broadcasts to unlock the next one.
+            // this list's scheduled_height-ascending order) gets a valid anchor; the rest keep their
+            // original, still-in-the-future one (the old `COALESCE(NULL, anchor_boundary)`),
+            // matching production's natural one-becomes-ready-at-a-time shape. Re-invoke this debug
+            // action once this transfer broadcasts to unlock the next one.
             let anchor_boundary = if i == 0 {
-                Some(debug_anchor_boundary)
+                Some(BlockHeight::from(debug_anchor_boundary))
             } else {
-                None
+                tx.anchor_boundary()
             };
-            store_conn
-                .execute(
-                    "UPDATE orchard_ironwood_migration_transactions \
-                     SET scheduled_height = ?1, \
-                         anchor_boundary = COALESCE(?2, anchor_boundary) \
-                     WHERE migration_id = ?3 AND tx_id = ?4",
-                    rusqlite::params![new_height, anchor_boundary, migration_id, tx_id],
-                )
-                .map_err(|e| anyhow!("Error rescheduling transfer {tx_id}: {}", e))?;
+            reschedule.insert(tx.id(), (new_height, anchor_boundary));
         }
-        Ok(tx_ids.len() as jint)
+        let rescheduled = reschedule.len();
+
+        // Rebuild every transaction in its ORIGINAL order: a rescheduled pending transfer gets its
+        // new scheduled_height and anchor_boundary (every other part copied through unchanged); any
+        // other transaction is kept as-is.
+        let new_transactions: Vec<MigrationTransaction> = state
+            .transactions()
+            .iter()
+            .map(|tx| match reschedule.get(&tx.id()) {
+                Some(&(new_height, new_anchor_boundary)) => MigrationTransaction::from_parts(
+                    tx.id(),
+                    tx.kind(),
+                    tx.pczt().clone(),
+                    tx.depends_on().clone(),
+                    new_height,
+                    tx.expiry_height(),
+                    new_anchor_boundary,
+                    tx.state(),
+                    tx.lock_owner(),
+                ),
+                None => tx.clone(),
+            })
+            .collect();
+
+        let new_state = MigrationState::from_parts(
+            state.status(),
+            state.note_split().clone(),
+            state.preparation().clone(),
+            new_transactions,
+        );
+        backend
+            .replace_migration(&new_state)
+            .map_err(|e| anyhow!("Error persisting rescheduled migration state: {:?}", e))?;
+        Ok(rescheduled as jint)
     });
     unwrap_exc_or(&mut env, res, 0)
 }
