@@ -59,6 +59,21 @@ pub(crate) fn java_nullable_string_to_rust(
         .transpose()
 }
 
+/// Decodes a Java `byte[][]` (a `JObjectArray` whose elements are `JByteArray`s) into a
+/// `Vec<Vec<u8>>`.
+pub(crate) fn decode_byte_array_list(
+    env: &mut JNIEnv,
+    list: &JObjectArray,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let count = env.get_array_length(list)?;
+    let mut out = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let obj = env.get_object_array_element(list, i)?;
+        out.push(java_bytes_to_rust(env, &JByteArray::from(obj))?);
+    }
+    Ok(out)
+}
+
 pub(crate) fn rust_bytes_to_java<'a>(env: &JNIEnv<'a>, data: &[u8]) -> JNIResult<JByteArray<'a>> {
     // SAFETY: jbyte (i8) has the same size and alignment as u8, and a well-defined
     // twos-complement representation with no "trap representations".

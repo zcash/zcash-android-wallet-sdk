@@ -87,11 +87,117 @@ The project uses ticket-prefixed commit messages for tracked work, e.g.
 prefix is acceptable (`fix: ...`, `chore: ...`). Keep the first line under
 72 characters; include context in the body.
 
+## JNI module layout (Rust)
+
+All `Java_*` JNI exports live under `backend-lib/src/main/rust/jni/`, one
+submodule per logical area. The sibling modules hold only logic, with no
+`extern "C"` functions:
+
+```
+backend-lib/src/main/rust/
+  lib.rs            crate root: module declarations + non-JNI logic
+  jni/
+    mod.rs          submodule declarations
+    wallet.rs       ..._jni_RustBackend_*                  (50)
+    derivation.rs   ..._jni_RustDerivationTool_*            (9)
+    tor.rs          ..._model_TorClient_* / _TorWalletClient_*  (17)
+    migration.rs    ..._jni_MigrationRustBackend_*         (32)
+    eip681.rs       ..._jni_RustEip681Tool_*                (2)
+    slipstream.rs   com_zodl_slipstream_SlipstreamNative_* (17)  [slipstream]
+    voting/         ..._jni_VotingRustBackend_*            (60)  [chp-voting]
+  migration.rs      migration logic + its tests
+  tor.rs            Tor logic
+  voting/           voting logic (helpers.rs, progress.rs, ...)
+  slipstream/       Slipstream engine logic
+```
+
+Counts are the exported symbols per class as of the split (187 total). The
+Java class name determines the submodule, not the file the logic lives in.
+
+**When adding a new JNI function, put it in the matching `jni/` submodule,
+never in the logic module.** Keep the logic in the sibling module and call
+into it, so the export stays a thin boundary. If a new area has no `jni/`
+submodule yet, add one rather than parking exports in `lib.rs`.
+
+### Where the boundary falls
+
+It is not only the `Java_*` functions that belong in `jni/`. The rule is
+*does this symbol speak JNI?*:
+
+| Goes in `jni/` | Stays in the logic module |
+|---|---|
+| `Java_*` exports | Domain constants and types |
+| Anything whose signature mentions `JNIEnv` or a `J*` / `j*` type | Anything expressible in plain Rust types |
+| Java class-path descriptors (`"cash/z/ecc/.../JniFoo"`) | Database, planning, proving, protocol logic |
+| Helpers that build or parse Java objects (`encode_*` / `decode_*` over `env.new_object`) | Unit tests of that logic |
+
+When a helper mixes both -- e.g. one that decodes a `JString` path and then
+opens a database -- split it rather than moving it wholesale: the decoding
+half goes in `jni/`, and it calls a pure function in the logic module.
+
+Marshalling code lives **beside the exports it serves**, not in a shared
+bucket: `jni/migration/encode.rs` serves `jni/migration.rs`. A submodule
+becomes a directory when it grows, as `migration` has.
+
+Do not create a `jni/helpers.rs` (or `common`, `util`, `shared`) holding
+several areas' marshalling. Those modules are named for what their contents
+*are* rather than what they *serve*, so they accrete unrelated code and
+become an import magnet. A helper that genuinely is domain-neutral goes in
+`crate::utils`, which already holds `java_bytes_to_rust`,
+`rust_bytes_to_java`, `rust_vec_to_java`, and `catch_unwind`.
+
+This yields a mechanically checkable invariant: **outside `#[cfg(test)]`, a
+logic module must not reference the `jni` crate at all.**
+
+```bash
+cd backend-lib/src/main/rust
+grep -n 'jni::\|JNIEnv\|JString\|JByteArray\|JObject\|jlong\|jint' \
+  migration.rs eip681.rs tor.rs
+```
+
+Any hit outside a test block means the boundary is in the wrong place.
+
+### Gotcha: `mod jni` shadows the `jni` crate
+
+Because the module is named `jni` and is declared in `lib.rs`, a bare
+`jni::...` path **inside `lib.rs`** resolves to the module, not the external
+crate. Write `::jni::` there when the crate is meant. Submodules are
+unaffected, since a bare path in a submodule already resolves to the crate.
+
+### The symbol set is the Kotlin binding contract
+
+Kotlin binds to these functions by exported symbol name, so:
+
+- Moving a `#[unsafe(no_mangle)] pub extern "C"` function between Rust
+  modules is link-safe -- the module path does not affect the symbol name.
+- **Renaming one is a runtime crash**, not a compile error. The Kotlin
+  `external fun` declaration resolves lazily at call time.
+
+### Verifying a change to the JNI surface
+
+`chp-voting` and `slipstream` are **off by default**, so a plain
+`cargo check` silently skips 76 of the 187 exports. Always use
+`--all-features`:
+
+```bash
+cd backend-lib
+cargo check --lib --all-features
+
+# Symbol-set check: capture before your change, compare after.
+cargo build --lib --all-features
+nm -gU target/debug/libzcashwalletsdk.dylib | awk '{print $3}' \
+  | sed 's/^_//' | grep '^Java_' | sort -u > /tmp/nm-after.txt
+diff /tmp/nm-before.txt /tmp/nm-after.txt
+```
+
+For a refactor that is *only* meant to move code, that diff must be empty.
+When intentionally adding an export, it should show exactly the additions.
+
 ## Other notes
 
 - The SDK and related libraries are Kotlin + Rust. Changes that cross the
-  JNI boundary (`backend-lib/src/main/rust/*` and the Kotlin `Jni*` model
-  classes) require updating both sides in lockstep.
+  JNI boundary (`backend-lib/src/main/rust/jni/*` and the Kotlin `Jni*`
+  model classes) require updating both sides in lockstep.
 - Detekt and ktlint are strict; treat their output as blocking. `detektAll`
   catches `MaxLineLength`, `ReturnCount`, `LongParameterList`, and similar
   issues that won't be apparent from a plain `./gradlew build`.
