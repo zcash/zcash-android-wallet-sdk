@@ -99,33 +99,51 @@ class EngineMappingTest {
                 recoveryProgress = null,
                 nextSaplingSubtreeIndex = 0,
                 nextOrchardSubtreeIndex = 0,
-                nextIronwoodSubtreeIndex = null
+                nextIronwoodSubtreeIndex = 0
             )
         val balances = summary.toAccountBalances(isRecovering = false, tipFresh = true)
         assertTrue(balances.containsKey(AccountUuid.new(uuidA)))
         assertTrue(balances.containsKey(AccountUuid.new(uuidB)))
     }
 
+    @Test
+    fun ironwood_balance_surfaces_when_tip_fresh() {
+        val uuid = ByteArray(16) { it.toByte() }
+        val summary =
+            summaryWith(
+                uuid,
+                sapling = SlipstreamPoolBalance(0, 0, 0),
+                ironwood = SlipstreamPoolBalance(99, 0, 0)
+            )
+
+        val balances = summary.toAccountBalances(isRecovering = false, tipFresh = true)
+        val balance = balances.getValue(AccountUuid.new(uuid))
+
+        assertEquals(99L, balance.ironwood.available.value)
+    }
+
     private fun accountBalance(
         uuid: ByteArray,
         sapling: SlipstreamPoolBalance,
         orchard: SlipstreamPoolBalance,
-        unshielded: Long
-    ) = SlipstreamAccountBalance(uuid, sapling, orchard, ironwood = null, unshielded = unshielded)
+        unshielded: Long,
+        ironwood: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0)
+    ) = SlipstreamAccountBalance(uuid, sapling, orchard, ironwood = ironwood, unshielded = unshielded)
 
     private fun summaryWith(
         uuid: ByteArray,
         sapling: SlipstreamPoolBalance,
         orchard: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0),
-        unshielded: Long = 0
+        unshielded: Long = 0,
+        ironwood: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0)
     ) = SlipstreamWalletSummary(
-        accountBalances = arrayOf(accountBalance(uuid, sapling, orchard, unshielded)),
+        accountBalances = arrayOf(accountBalance(uuid, sapling, orchard, unshielded, ironwood)),
         chainTipHeight = 0,
         fullyScannedHeight = 0,
         scanProgress = null,
         recoveryProgress = null,
         nextSaplingSubtreeIndex = 0,
         nextOrchardSubtreeIndex = 0,
-        nextIronwoodSubtreeIndex = null
+        nextIronwoodSubtreeIndex = 0
     )
 }
