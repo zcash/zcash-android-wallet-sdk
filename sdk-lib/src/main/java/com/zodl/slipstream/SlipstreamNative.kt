@@ -153,7 +153,12 @@ internal object SlipstreamNative {
         txid: ByteArray
     ): SlipstreamRawTransaction?
 
-    /** `listTransactionOutputs`: non-change outputs for one txid, or - when [txid] is `null` - every account's. */
+    /**
+     * `listTransactionOutputs`: ALL of a transaction's `v_tx_outputs` rows for one txid, or - when [txid] is
+     * `null` - every account's. No change filter, matching iOS's `TransactionDao.getTransactionOutputs(for:)`:
+     * wallet-internal rows are included, so self-transfers (pool migration) surface account-tagged rows and,
+     * where recorded, the stored receiving address. Serves both the outputs and recipients reads.
+     */
     @JvmStatic
     @Throws(RuntimeException::class)
     external fun listTransactionOutputs(

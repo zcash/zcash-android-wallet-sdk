@@ -72,7 +72,7 @@ internal class SlipstreamTransactionReader(
             )
         }
 
-    /** R19/R22: non-change output properties for [txId], oldest-first - `v_tx_outputs` (`TxOutputsViewDefinition`). */
+    /** R19/R22: output properties for [txId], oldest-first - ALL `v_tx_outputs` rows, change included (iOS parity). */
     suspend fun getOutputProperties(txId: FirstClassByteArray): List<OutputProperty> =
         withContext(Dispatchers.IO) {
             SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, txId.byteArray).map {
@@ -85,12 +85,11 @@ internal class SlipstreamTransactionReader(
         getOutputProperties(txId).map { TransactionOutput(poolFromCode(it.poolCode)) }
 
     /**
-     * Batched alternative to [getOutputProperties] that returns the non-change output properties
-     * for ALL transactions in a single query, grouped by txid. Mirrors the upstream SDK's
-     * `TxOutputsView.getAllOutputProperties`/`DbDerivedDataRepository.getAllOutputProperties`
-     * filter (`is_change = 0`) and ordering (`txid ASC, output_index ASC`); a transaction with
-     * only change outputs (or no outputs) is absent from the map rather than present with an
-     * empty list.
+     * Batched alternative to [getOutputProperties] that returns every transaction's output
+     * properties in a single query, grouped by txid - ALL `v_tx_outputs` rows, change included,
+     * matching iOS's unfiltered `TransactionDao.getTransactionOutputs(for:)` read; ordering is
+     * `txid ASC, output_index ASC`. A transaction with no outputs is absent from the map rather
+     * than present with an empty list.
      */
     suspend fun getAllOutputProperties(): Map<FirstClassByteArray, List<OutputProperty>> =
         withContext(Dispatchers.IO) {
@@ -114,7 +113,12 @@ internal class SlipstreamTransactionReader(
             SlipstreamNative.findTransactionsByMemo(dbFile.absolutePath, substring).map(::FirstClassByteArray)
         }
 
-    /** R21: non-change recipients for [txId] - either an address or an internal account, never both. */
+    /**
+     * R21: recipients for [txId], oldest-first - derived from the same unfiltered outputs read
+     * (iOS parity: recipients ARE the outputs, row for row). Internal rows carry [AccountUuid]
+     * marking them wallet-internal; `addressValue` is the stored receiving address where the
+     * wallet recorded one, else null. Selection/preference is the caller's concern.
+     */
     suspend fun getRecipients(txId: FirstClassByteArray): List<TransactionRecipient> =
         withContext(Dispatchers.IO) {
             SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, txId.byteArray).map {
@@ -126,9 +130,8 @@ internal class SlipstreamTransactionReader(
         }
 
     /**
-     * Batched alternative to [getRecipients] that returns the non-change recipients for ALL
-     * transactions in a single query, grouped by txid; see [getAllOutputProperties] for the
-     * grouping semantics.
+     * Batched alternative to [getRecipients] that returns the recipients for ALL transactions in a
+     * single query, grouped by txid; see [getAllOutputProperties] for the grouping semantics.
      */
     suspend fun getAllRecipients(): Map<FirstClassByteArray, List<TransactionRecipient>> =
         withContext(Dispatchers.IO) {

@@ -624,7 +624,10 @@ interface Synchronizer {
     fun getTransactionsByMemoSubstring(query: String): Flow<List<TransactionId>>
 
     /**
-     * Returns a list of recipients for a transaction.
+     * Returns a list of recipients for a transaction. May include wallet-internal entries (the recipient's
+     * [TransactionRecipient.accountUuid] is non-null) whose [TransactionRecipient.addressValue] is the stored
+     * receiving address where the wallet recorded one (else null), so a self-transfer (e.g. a pool migration)
+     * surfaces a recipient instead of being filtered out as change.
      */
     fun getRecipients(transactionOverview: TransactionOverview): Flow<TransactionRecipient>
 
@@ -633,9 +636,8 @@ interface Synchronizer {
      * grouped by [TransactionId]. Prefer this over calling [getRecipients] in a loop for every transaction, e.g.
      * when building a transaction list for the UI.
      *
-     * The map only contains entries for transactions that have at least one non-change recipient; a
-     * transaction with only change outputs (or no outputs) is absent from the map rather than being present
-     * with an empty list.
+     * The map only contains entries for transactions that have at least one recipient; a transaction with only
+     * change outputs (or no outputs) is absent from the map rather than being present with an empty list.
      */
     suspend fun getRecipients(): Map<TransactionId, List<TransactionRecipient>>
 

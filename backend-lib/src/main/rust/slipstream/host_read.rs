@@ -308,8 +308,12 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_getTransactionRaw<'l
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
-/// `listTransactionOutputs`: non-change outputs for one txid, or — when `txid` is null —
-/// every account's non-change outputs (used by the "all recipients" reads).
+/// `listTransactionOutputs`: ALL of a transaction's `v_tx_outputs` rows for one txid, or —
+/// when `txid` is null — every account's rows (used by the outputs AND recipients reads).
+/// No `is_change` filter, matching iOS's `TransactionDao.getTransactionOutputs(for:)` exactly:
+/// change/wallet-internal rows are included, so a self-transfer (pool migration) surfaces its
+/// account-tagged rows (`to_account_uuid` set) and, where recorded, the stored receiving
+/// address. Recipient selection/preference is the host's concern.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listTransactionOutputs<'local>(
     mut env: JNIEnv<'local>,
@@ -329,11 +333,11 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listTransactionOutpu
         let sql = match txid_bytes {
             Some(_) => {
                 "SELECT txid, output_index, output_pool, to_address, to_account_uuid \
-                 FROM v_tx_outputs WHERE txid = ? AND is_change = 0 ORDER BY output_index ASC"
+                 FROM v_tx_outputs WHERE txid = ? ORDER BY output_index ASC"
             }
             None => {
                 "SELECT txid, output_index, output_pool, to_address, to_account_uuid \
-                 FROM v_tx_outputs WHERE is_change = 0 ORDER BY txid ASC, output_index ASC"
+                 FROM v_tx_outputs ORDER BY txid ASC, output_index ASC"
             }
         };
         let mut stmt = conn

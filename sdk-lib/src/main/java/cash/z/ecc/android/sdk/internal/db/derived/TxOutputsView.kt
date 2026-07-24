@@ -53,13 +53,12 @@ internal class TxOutputsView(
                 TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT
             )
 
-        private val SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE =
+        private val SELECT_BY_TRANSACTION_ID =
             String.format(
                 Locale.ROOT,
                 // $NON-NLS
-                "%s = ? AND %s == 0",
-                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
-                TxOutputsViewDefinition.COLUMN_INTEGER_IS_CHANGE
+                "%s = ?",
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID
             )
 
         private val SELECT_BY_MEMO_QUERY =
@@ -70,13 +69,8 @@ internal class TxOutputsView(
                 TxOutputsViewDefinition.COLUMN_BLOB_MEMO,
             )
 
-        private val SELECT_NOT_CHANGE =
-            String.format(
-                Locale.ROOT,
-                // $NON-NLS
-                "%s == 0",
-                TxOutputsViewDefinition.COLUMN_INTEGER_IS_CHANGE
-            )
+
+
 
         private val ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX =
             String.format(
@@ -92,23 +86,24 @@ internal class TxOutputsView(
         sqliteDatabase.queryAndMap(
             table = TxOutputsViewDefinition.VIEW_NAME,
             columns = PROJECTION_OUTPUT_PROPERTIES,
-            selection = SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE,
+            selection = SELECT_BY_TRANSACTION_ID,
             selectionArgs = arrayOf(transactionId.byteArray),
             orderBy = ORDER_BY,
             cursorParser = { it.parseOutputProperties() }
         )
 
     /**
-     * Returns the non-change output properties for ALL transactions in a single query, grouped by transaction ID
-     * via the emitted [Pair]. This is a batched alternative to [getOutputProperties] intended for callers that
-     * would otherwise need to query per-transaction in a loop. A transaction with only change outputs (or no
-     * outputs) does not emit any [Pair].
+     * Returns every transaction's output properties in a single query, grouped by transaction ID via the emitted
+     * [Pair] - ALL `v_tx_outputs` rows, change included, matching iOS's unfiltered
+     * `TransactionDao.getTransactionOutputs(for:)`. This is a batched alternative to [getOutputProperties] intended
+     * for callers that would otherwise need to query per-transaction in a loop. A transaction with no outputs does
+     * not emit any [Pair].
      */
     fun getAllOutputProperties(): Flow<Pair<FirstClassByteArray, OutputProperties>> =
         sqliteDatabase.queryAndMap(
             table = TxOutputsViewDefinition.VIEW_NAME,
             columns = PROJECTION_ALL_OUTPUT_PROPERTIES,
-            selection = SELECT_NOT_CHANGE,
+            selection = null,
             selectionArgs = null,
             orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
             cursorParser = {
@@ -133,23 +128,24 @@ internal class TxOutputsView(
         sqliteDatabase.queryAndMap(
             table = TxOutputsViewDefinition.VIEW_NAME,
             columns = PROJECTION_RECIPIENT,
-            selection = SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE,
+            selection = SELECT_BY_TRANSACTION_ID,
             selectionArgs = arrayOf(transactionId.byteArray),
             orderBy = ORDER_BY,
             cursorParser = { it.parseRecipient() }
         )
 
     /**
-     * Returns the non-change recipients for ALL transactions in a single query, grouped by transaction ID via the
-     * emitted [Pair]. This is a batched alternative to [getRecipients] intended for callers that would otherwise
-     * need to query per-transaction in a loop. A transaction with only change outputs (or no outputs) does not
-     * emit any [Pair].
+     * Returns every transaction's recipients in a single query, grouped by transaction ID via the emitted [Pair] -
+     * derived from the same unfiltered rows as [getAllOutputProperties] (iOS parity: recipients ARE the outputs,
+     * row for row; wallet-internal rows carry `accountUuid`). This is a batched alternative to [getRecipients]
+     * intended for callers that would otherwise need to query per-transaction in a loop. A transaction with no
+     * outputs does not emit any [Pair].
      */
     fun getAllRecipients(): Flow<Pair<FirstClassByteArray, TransactionRecipient>> =
         sqliteDatabase.queryAndMap(
             table = TxOutputsViewDefinition.VIEW_NAME,
             columns = PROJECTION_ALL_RECIPIENT,
-            selection = SELECT_NOT_CHANGE,
+            selection = null,
             selectionArgs = null,
             orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
             cursorParser = {
