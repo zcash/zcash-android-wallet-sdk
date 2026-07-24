@@ -31,6 +31,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.after
@@ -47,6 +48,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * H6: covers the lifecycle crash paths H1/H4/H5 fixed above - [SlipstreamSynchronizer.close]'s
@@ -410,7 +413,225 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    // ── syncBurst: bounded background sync advance ──────────────────────────────
+
+    @Test
+    fun sync_burst_refuses_while_paused_and_returns_privacy_blocked() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            synchronizer.pause()
+            clearInvocations(engine)
+
+            val result = runBlocking { synchronizer.syncBurst(timeout = ONE_SECOND) { false } }
+
+            assertEquals(Synchronizer.SyncBurstResult.PRIVACY_BLOCKED, result)
+            runBlocking {
+                verify(engine, after(SETTLE_MS).never()).start(null, STARTING_BIRTHDAY_VALUE)
+                verify(engine, never()).startPolling()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun sync_burst_after_close_returns_unavailable() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            synchronizer.close()
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).shutdown() }
+            clearInvocations(engine)
+
+            val result = runBlocking { synchronizer.syncBurst(timeout = ONE_SECOND) { false } }
+
+            assertEquals(Synchronizer.SyncBurstResult.UNAVAILABLE, result)
+            runBlocking { verify(engine, after(SETTLE_MS).never()).start(null, STARTING_BIRTHDAY_VALUE) }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun sync_burst_force_starts_stopped_engine_then_returns_target_reached() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            `when`(engine.isRunning).thenReturn(false)
+            clearInvocations(engine) // drop the init() startPolling
+
+            var polls = 0
+            val result =
+                runBlocking {
+                    synchronizer.syncBurst(timeout = TWO_SECONDS, targetCheckInterval = TICK) { polls++ >= 1 }
+                }
+
+            assertEquals(Synchronizer.SyncBurstResult.TARGET_REACHED, result)
+            runBlocking<Unit> {
+                // Force-started the stopped engine and drove its poll loop...
+                verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+                verify(engine).startPolling()
+                // ...then restored the backgrounded (inForeground=false) state by stopping it again.
+                verify(engine).stop()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun sync_burst_returns_synced_to_tip_on_a_fresh_done_snapshot() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        // Engine already running (foreground/live) → current snapshots are trusted, not stale.
+        val snapshots = MutableStateFlow<SlipstreamSnapshot?>(snapshot(state = 3, tipFresh = true))
+        val synchronizer = buildSynchronizer(engine = engine, key = key, lastSnapshotOverride = snapshots)
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+
+            val result =
+                runBlocking {
+                    synchronizer.syncBurst(timeout = TWO_SECONDS, targetCheckInterval = TICK) { false }
+                }
+
+            assertEquals(Synchronizer.SyncBurstResult.SYNCED_TO_TIP, result)
+            runBlocking { verify(engine, never()).start(null, STARTING_BIRTHDAY_VALUE) }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun sync_burst_returns_disconnected_on_a_fresh_error_snapshot() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val snapshots = MutableStateFlow<SlipstreamSnapshot?>(snapshot(state = 2))
+        val synchronizer = buildSynchronizer(engine = engine, key = key, lastSnapshotOverride = snapshots)
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+
+            val result =
+                runBlocking {
+                    synchronizer.syncBurst(timeout = TWO_SECONDS, targetCheckInterval = TICK) { false }
+                }
+
+            assertEquals(Synchronizer.SyncBurstResult.DISCONNECTED, result)
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun sync_burst_does_not_terminate_on_the_stale_pre_start_snapshot() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        // A leftover "done" snapshot from before the engine was stopped in the background. Because
+        // the engine was NOT running at burst start, this is treated as stale and ignored — proving
+        // the burst waits for a snapshot produced AFTER it restarted the engine, not the frozen one.
+        val stale = snapshot(state = 3, tipFresh = true)
+        val snapshots = MutableStateFlow<SlipstreamSnapshot?>(stale)
+        val synchronizer = buildSynchronizer(engine = engine, key = key, lastSnapshotOverride = snapshots)
+        try {
+            `when`(engine.isRunning).thenReturn(false)
+
+            val result =
+                runBlocking {
+                    synchronizer.syncBurst(timeout = HALF_SECOND, targetCheckInterval = TICK) { false }
+                }
+
+            assertEquals(Synchronizer.SyncBurstResult.TIMEOUT, result)
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun sync_burst_times_out_when_neither_target_nor_terminal_is_reached() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+
+            val result =
+                runBlocking {
+                    synchronizer.syncBurst(timeout = HALF_SECOND, targetCheckInterval = TICK) { false }
+                }
+
+            assertEquals(Synchronizer.SyncBurstResult.TIMEOUT, result)
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun on_background_during_a_burst_is_deferred_until_the_burst_restore() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        val burstStarted = CountDownLatch(1)
+        val proceed = CountDownLatch(1)
+        val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+
+            runBlocking {
+                val job =
+                    launch(kotlinx.coroutines.Dispatchers.Default) {
+                        synchronizer.syncBurst(timeout = TWO_SECONDS, targetCheckInterval = TICK) {
+                            if (calls.getAndIncrement() == 0) {
+                                burstStarted.countDown()
+                                proceed.await() // hold the burst active while the test checks the deferral
+                                false
+                            } else {
+                                true // release → target reached → burst ends and runs its restore
+                            }
+                        }
+                    }
+
+                burstStarted.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                // Backgrounded mid-burst: the burst owns the engine, so onBackground must NOT stop it now.
+                synchronizer.onBackground()
+                verify(engine, after(SETTLE_MS).never()).stop()
+
+                proceed.countDown()
+                job.join()
+            }
+
+            // Once the burst finished, its restore applied the deferred backgrounded state exactly once.
+            runBlocking<Unit> { verify(engine, timeout(TIMEOUT_MS)).stop() }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
     private fun newKey() = SlipstreamKey(ZcashNetwork.Testnet, "alias_${System.nanoTime()}")
+
+    @Suppress("LongParameterList")
+    private fun snapshot(
+        state: Int,
+        tipFresh: Boolean = false,
+        chainTip: Long = 0L
+    ) = SlipstreamSnapshot(
+        chainTip = chainTip,
+        fetchedBlocks = 0,
+        scannedBlocks = 0,
+        enhancedTxs = 0,
+        currentRangeEnd = 0,
+        state = state,
+        passTotalBlocks = 0,
+        spendableHint = false,
+        rangesCompleted = 0,
+        isRecovering = false,
+        progressPermille = 0,
+        stalledSeconds = 0,
+        tipFresh = tipFresh,
+        txSetVersion = 0
+    )
 
     /**
      * Builds a [SlipstreamSynchronizer] with every collaborator mocked out, bypassing
@@ -426,7 +647,8 @@ class SlipstreamSynchronizerLifecycleTest {
         transactionsController: TransactionsController = mock(TransactionsController::class.java),
         key: SlipstreamKey = newKey(),
         startBirthday: BlockHeight = BlockHeight.new(STARTING_BIRTHDAY_VALUE),
-        engineStatusOverride: MutableStateFlow<Synchronizer.Status>? = null
+        engineStatusOverride: MutableStateFlow<Synchronizer.Status>? = null,
+        lastSnapshotOverride: MutableStateFlow<SlipstreamSnapshot?>? = null
     ): SlipstreamSynchronizer {
         `when`(engine.status).thenReturn(engineStatusOverride ?: MutableStateFlow(Synchronizer.Status.SYNCED))
         `when`(engine.progress).thenReturn(MutableStateFlow(PercentDecimal.ZERO_PERCENT))
@@ -434,7 +656,7 @@ class SlipstreamSynchronizerLifecycleTest {
         `when`(engine.networkHeight).thenReturn(MutableStateFlow<BlockHeight?>(null))
         `when`(engine.fullyScannedHeight).thenReturn(MutableStateFlow<BlockHeight?>(null))
         `when`(engine.walletBalances).thenReturn(MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null))
-        `when`(engine.lastSnapshot).thenReturn(MutableStateFlow<SlipstreamSnapshot?>(null))
+        `when`(engine.lastSnapshot).thenReturn(lastSnapshotOverride ?: MutableStateFlow<SlipstreamSnapshot?>(null))
         `when`(transactionsController.allTransactions).thenReturn(flowOf(emptyList()))
 
         return SlipstreamSynchronizer(
@@ -467,6 +689,11 @@ class SlipstreamSynchronizerLifecycleTest {
         private const val LATCH_TIMEOUT_SECONDS = 2L
         private const val STARTING_BIRTHDAY_VALUE = 2_000_000L
         private const val ACCOUNT_UUID_BYTES = 16
+
+        private val TICK = 20.milliseconds
+        private val HALF_SECOND = 500.milliseconds
+        private val ONE_SECOND = 1.seconds
+        private val TWO_SECONDS = 2.seconds
 
         /** Mirrors [SlipstreamSynchronizer]'s own private `TXID_NOT_RECOGNIZED_STATUS`. */
         private const val TXID_NOT_RECOGNIZED_STATUS = -1L

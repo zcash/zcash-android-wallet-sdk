@@ -716,6 +716,49 @@ interface Synchronizer {
 
     fun onForeground()
 
+    /** Outcome of a bounded background sync advance — see [syncBurst]. */
+    enum class SyncBurstResult {
+        /** [syncBurst]'s `isTargetReached` returned true — the caller's goal was met. */
+        TARGET_REACHED,
+
+        /** The engine reached the network tip (a fresh pass refreshed the tip) without the target being met. */
+        SYNCED_TO_TIP,
+
+        /** The engine entered its error state (no server reachable, etc.). */
+        DISCONNECTED,
+
+        /** A privacy sync-block ([CloseableSynchronizer.pause]) was active — the burst refused to run. */
+        PRIVACY_BLOCKED,
+
+        /** [syncBurst]'s `timeout` elapsed before any other terminal. */
+        TIMEOUT,
+
+        /** This [Synchronizer] implementation cannot drive a bounded burst (or is closed). */
+        UNAVAILABLE,
+    }
+
+    /**
+     * Actively drives a bounded sync pass even while the app is backgrounded (i.e. after
+     * [onBackground] stopped the engine), then restores the prior lifecycle state. Unlike merely
+     * observing [status] — which a stopped or paused engine reports as [Status.SYNCED] against a
+     * stale chain tip — this force-starts the engine so the synced tip actually advances, which is
+     * what the migration background worker needs to make a scheduled transfer become broadcastable.
+     *
+     * Never overrides a privacy pause: while paused ([CloseableSynchronizer.pause]) it returns
+     * [SyncBurstResult.PRIVACY_BLOCKED] without touching the network, so the burst and a later
+     * migration broadcast stay decoupled in time. [isTargetReached] is polled roughly every
+     * [targetCheckInterval] and must be cheap and idempotent — e.g. the migration engine's
+     * height-gated `hasOverdueTransfers()`.
+     *
+     * The default implementation is a no-op returning [SyncBurstResult.UNAVAILABLE]; only the
+     * Slipstream engine drives a real burst.
+     */
+    suspend fun syncBurst(
+        timeout: Duration,
+        targetCheckInterval: Duration = 5.seconds,
+        isTargetReached: suspend () -> Boolean,
+    ): SyncBurstResult = SyncBurstResult.UNAVAILABLE
+
     /**
      *
      * @param config to configure [HttpClient]

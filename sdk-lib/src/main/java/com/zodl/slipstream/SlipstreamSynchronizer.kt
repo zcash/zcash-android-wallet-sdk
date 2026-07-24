@@ -97,6 +97,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -115,9 +116,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.Duration
 
 /**
  * The three facts [SlipstreamSynchronizer.Companion.newLocked] derives from resolving
@@ -177,6 +180,21 @@ class SlipstreamSynchronizer internal constructor(
 
     /** True while a migration sync-block is pausing this synchronizer (see [pause]/[resume]). */
     private val migrationPaused = MutableStateFlow(false)
+
+    /**
+     * Last lifecycle signal seen via [onForeground]/[onBackground]; [syncBurst]'s restore reads it
+     * to decide whether to stop the engine (backgrounded) or leave it polling (foreground). Starts
+     * `false` because the dominant [syncBurst] caller is a headless background worker.
+     */
+    private val inForeground = AtomicBoolean(false)
+
+    /**
+     * True while [syncBurst] is driving the engine. [onForeground]/[onBackground] record their
+     * lifecycle signal but defer the engine work while it is set, so a lifecycle event that lands
+     * mid-burst cannot stop the engine out from under the burst — the burst's own restore applies
+     * the final state instead.
+     */
+    private val burstActive = AtomicBoolean(false)
 
     override val status: Flow<Synchronizer.Status> =
         combine(engine.status, migrationPaused) { status, paused ->
@@ -751,6 +769,9 @@ class SlipstreamSynchronizer internal constructor(
      */
     override fun onBackground() {
         if (closed.get()) return
+        inForeground.set(false)
+        // A burst owns the engine while it runs; its restore will apply this backgrounded state.
+        if (burstActive.get()) return
         launchGuarded("onBackground") {
             engine.stopPolling()
             engine.stop()
@@ -771,6 +792,73 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     /**
+     * Force-starts the engine (which [onBackground] stopped) and drives a bounded sync pass, then
+     * restores the pre-burst lifecycle state in a [NonCancellable] `finally`. Refuses to run while a
+     * migration privacy pause is active — sync traffic and a later migration broadcast must stay
+     * decoupled — and never broadcasts itself. See [Synchronizer.syncBurst].
+     */
+    override suspend fun syncBurst(
+        timeout: Duration,
+        targetCheckInterval: Duration,
+        isTargetReached: suspend () -> Boolean,
+    ): Synchronizer.SyncBurstResult {
+        if (closed.get()) return Synchronizer.SyncBurstResult.UNAVAILABLE
+        if (migrationPaused.value) return Synchronizer.SyncBurstResult.PRIVACY_BLOCKED
+        if (!burstActive.compareAndSet(false, true)) return Synchronizer.SyncBurstResult.UNAVAILABLE
+
+        val wasRunning = engine.isRunning
+        // A stopped engine's lastSnapshot retains its last (stale) value; only a snapshot produced
+        // by a tick AFTER this burst (re)started the engine proves real progress. When the engine
+        // was already running (foreground), the current snapshot is live and trusted.
+        val staleSnapshot = if (wasRunning) null else engine.lastSnapshot.value
+        return try {
+            if (!wasRunning) engine.start(ufvk = null, birthday = startBirthday.value)
+            engine.startPolling()
+            withTimeoutOrNull(timeout) {
+                while (true) {
+                    if (isTargetReached()) return@withTimeoutOrNull Synchronizer.SyncBurstResult.TARGET_REACHED
+                    val snap = engine.lastSnapshot.value
+                    if (snap != null && snap !== staleSnapshot) {
+                        when (snap.state) {
+                            // 3 = done/following the tip; tipFresh = this run refreshed the tip.
+                            SNAPSHOT_STATE_DONE ->
+                                if (snap.tipFresh) return@withTimeoutOrNull Synchronizer.SyncBurstResult.SYNCED_TO_TIP
+                            // 2 = error episode (server unreachable etc.). 0 (idle) is NOT terminal —
+                            // it's the transient just-started phase; the timeout covers a real hang.
+                            SNAPSHOT_STATE_ERROR -> return@withTimeoutOrNull Synchronizer.SyncBurstResult.DISCONNECTED
+                        }
+                    }
+                    delay(targetCheckInterval)
+                }
+                @Suppress("UNREACHABLE_CODE")
+                Synchronizer.SyncBurstResult.TIMEOUT
+            } ?: Synchronizer.SyncBurstResult.TIMEOUT
+        } finally {
+            withContext(NonCancellable) { restoreAfterBurst() }
+            burstActive.set(false)
+        }
+    }
+
+    /** Re-applies whatever lifecycle/pause state should hold now that a [syncBurst] is over. */
+    private suspend fun restoreAfterBurst() {
+        when {
+            // Mirror onBackground(): app is backgrounded — fully stop so no sync traffic lingers
+            // between the burst and a later broadcast (privacy), and to spare the battery.
+            !inForeground.get() -> {
+                engine.stopPolling()
+                engine.stop()
+                lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
+            }
+            // Mirror pause(): the privacy gate closed mid-burst (typically because the burst reached
+            // the target and hasOverdueTransfers flipped, so WalletCoordinator paused us). Keep the
+            // engine warm but stop polling, per the keep-alive sync-block design.
+            migrationPaused.value -> engine.stopPolling()
+            // Mirror onForeground(): a live foreground wallet — leave it running and polling.
+            else -> engine.startPolling()
+        }
+    }
+
+    /**
      * [SlipstreamEngine.start] unconditionally aborts any in-flight pass and reruns its bounded
      * quiescence drain, so restarting an already-running engine on every foreground would churn
      * useful work instead of resuming it. [SlipstreamEngine.isRunning] guards against that - skip
@@ -781,6 +869,9 @@ class SlipstreamSynchronizer internal constructor(
      */
     override fun onForeground() {
         if (closed.get()) return
+        inForeground.set(true)
+        // A burst owns the engine while it runs; its restore will apply this foregrounded state.
+        if (burstActive.get()) return
         launchGuarded("onForeground") {
             lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
             if (!engine.isRunning) {
@@ -899,6 +990,10 @@ class SlipstreamSynchronizer internal constructor(
     companion object {
         private const val TRANSPARENT_POOL_CODE = 0
         private const val TXID_NOT_RECOGNIZED_STATUS = -1L
+
+        /** [com.zodl.slipstream.model.SlipstreamSnapshot.state] values [syncBurst] treats as terminal. */
+        private const val SNAPSHOT_STATE_ERROR = 2
+        private const val SNAPSHOT_STATE_DONE = 3
 
         /**
          * Mirrors `Synchronizer.new` parameter-for-parameter - same names, order, and defaults -
