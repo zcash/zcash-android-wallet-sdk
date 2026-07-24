@@ -27,6 +27,8 @@ internal interface TypesafeVotingBackend {
 
     suspend fun warmProvingCaches()
 
+    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
+
     /**
      * Computes when a delegated helper share should submit, honoring the ceremony's
      * last-moment buffer window. A passthrough to the Rust backend, which sources its own
@@ -120,7 +122,6 @@ internal interface TypesafeVotingDb {
      * [JniVotingHotkey.storedSecret] deterministically reconstructs the same hotkey. This call
      * is not scoped to a round.
      */
-    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
     suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey
 
     /**

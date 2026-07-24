@@ -575,7 +575,9 @@ class SlipstreamSynchronizerLifecycleTest {
         val synchronizer = buildSynchronizer(engine = engine, key = key)
         val burstStarted = CountDownLatch(1)
         val proceed = CountDownLatch(1)
-        val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        val calls =
+            java.util.concurrent.atomic
+                .AtomicInteger(0)
         try {
             `when`(engine.isRunning).thenReturn(true)
 

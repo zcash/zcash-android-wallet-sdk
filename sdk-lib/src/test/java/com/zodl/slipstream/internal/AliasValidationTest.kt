@@ -1,9 +1,9 @@
 package com.zodl.slipstream.internal
 
 import org.junit.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import kotlin.test.assertFailsWith
 
 class AliasValidationTest {
     @Test

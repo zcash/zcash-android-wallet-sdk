@@ -1,3 +1,5 @@
+@file:Suppress("MagicNumber", "MaxLineLength", "TooManyFunctions")
+
 package com.zodl.slipstream.internal.db
 
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -95,7 +97,8 @@ internal class SlipstreamTransactionReader(
         withContext(Dispatchers.IO) {
             val result = LinkedHashMap<FirstClassByteArray, MutableList<OutputProperty>>()
             for (row in SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, null)) {
-                result.getOrPut(FirstClassByteArray(row.txId)) { mutableListOf() }
+                result
+                    .getOrPut(FirstClassByteArray(row.txId)) { mutableListOf() }
                     .add(OutputProperty(index = row.outputIndex, poolCode = row.outputPool))
             }
             result
@@ -137,7 +140,8 @@ internal class SlipstreamTransactionReader(
         withContext(Dispatchers.IO) {
             val result = LinkedHashMap<FirstClassByteArray, MutableList<TransactionRecipient>>()
             for (row in SlipstreamNative.listTransactionOutputs(dbFile.absolutePath, null)) {
-                result.getOrPut(FirstClassByteArray(row.txId)) { mutableListOf() }
+                result
+                    .getOrPut(FirstClassByteArray(row.txId)) { mutableListOf() }
                     .add(
                         TransactionRecipient(
                             addressValue = row.toAddress,
@@ -172,7 +176,11 @@ internal class SlipstreamTransactionReader(
                 val row = rows.getJSONArray(i)
                 for (column in 0 until row.length()) {
                     val value = if (row.isNull(column)) "null" else row.get(column).toString()
-                    append("column").append(column).append('=').append(value).append(' ')
+                    append("column")
+                        .append(column)
+                        .append('=')
+                        .append(value)
+                        .append(' ')
                 }
                 append('\n')
             }

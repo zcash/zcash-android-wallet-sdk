@@ -1,3 +1,11 @@
+@file:Suppress(
+    "LongParameterList",
+    "MaxLineLength",
+    "SwallowedException",
+    "TooGenericExceptionCaught",
+    "TooManyFunctions"
+)
+
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
@@ -42,7 +50,6 @@ import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import java.io.File
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -57,6 +64,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.File
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -91,7 +99,6 @@ internal class OrchardMigrationSdkImpl(
     private val defaultSubmitEndpoint: LightWalletEndpoint,
     private val preferenceProviderHolder: EncryptedPreferenceProvider,
 ) : OrchardMigrationSdk {
-
     /**
      * [NetworkPrivacyOptions.useTor] is a per-migration setting, independent of the app's global
      * Tor toggle (`IsTorEnabledStorageProvider`) — this uses its own [TorClient], in its own
@@ -181,54 +188,60 @@ internal class OrchardMigrationSdkImpl(
 
     // ── State ────────────────────────────────────────────────────────────────
 
-    override suspend fun getMigrationState(): MigrationState = logged("getMigrationState") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged MigrationState.NotStarted
-        migrationBackend.migrationState(dbDataPath, network, account).toPublic()
-    }
+    override suspend fun getMigrationState(): MigrationState =
+        logged("getMigrationState") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged MigrationState.NotStarted
+            migrationBackend.migrationState(dbDataPath, network, account).toPublic()
+        }
 
-    override suspend fun getMigrationProgress(): MigrationProgress? = logged("getMigrationProgress") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged null
-        migrationBackend.migrationProgress(dbDataPath, network, account)?.toPublic()
-    }
+    override suspend fun getMigrationProgress(): MigrationProgress? =
+        logged("getMigrationProgress") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged null
+            migrationBackend.migrationProgress(dbDataPath, network, account)?.toPublic()
+        }
 
-    override suspend fun estimateMigrationRunCount(): Int? = logged("estimateMigrationRunCount") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged null
-        migrationBackend.estimateMigrationRunCount(dbDataPath, network, account)
-    }
+    override suspend fun estimateMigrationRunCount(): Int? =
+        logged("estimateMigrationRunCount") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged null
+            migrationBackend.estimateMigrationRunCount(dbDataPath, network, account)
+        }
 
     // ── Note splitting ───────────────────────────────────────────────────────
 
-    override suspend fun isNoteSplitNeeded(): Boolean = logged("isNoteSplitNeeded") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged false
-        migrationBackend.isNoteSplitNeeded(dbDataPath, network, account)
-    }
+    override suspend fun isNoteSplitNeeded(): Boolean =
+        logged("isNoteSplitNeeded") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged false
+            migrationBackend.isNoteSplitNeeded(dbDataPath, network, account)
+        }
 
-    override suspend fun prepareNoteSplit(): NoteSplitProposal = logged("prepareNoteSplit") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        val proposal = migrationBackend.prepareNoteSplit(dbDataPath, network, account)
-        NoteSplitProposal(
-            outputNotes = proposal.outputValuesZatoshi.toList(),
-            fee = proposal.feeZatoshi,
-            proposalHandle = proposal.proposalHandle,
-        )
-    }
+    override suspend fun prepareNoteSplit(): NoteSplitProposal =
+        logged("prepareNoteSplit") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            val proposal = migrationBackend.prepareNoteSplit(dbDataPath, network, account)
+            NoteSplitProposal(
+                outputNotes = proposal.outputValuesZatoshi.toList(),
+                fee = proposal.feeZatoshi,
+                proposalHandle = proposal.proposalHandle,
+            )
+        }
 
     override suspend fun submitNoteSplit(proposal: NoteSplitProposal, usk: UnifiedSpendingKey): TransferResult =
         logged("submitNoteSplit") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            val prepared = migrationBackend.signNoteSplit(
-                dbDataPath,
-                network,
-                account,
-                proposal.proposalHandle,
-                usk.copyBytes(),
-            )
+            val prepared =
+                migrationBackend.signNoteSplit(
+                    dbDataPath,
+                    network,
+                    account,
+                    proposal.proposalHandle,
+                    usk.copyBytes(),
+                )
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val submitResult = broadcast(rawTx, prepared.txid, useTor = false, endpoint = defaultSubmitEndpoint)
             val mapped = mapSubmitResult(submitResult)
@@ -256,31 +269,33 @@ internal class OrchardMigrationSdkImpl(
     override suspend fun storeSignedNoteSplitPczt(
         signedPczt: ByteArray,
         options: NetworkPrivacyOptions
-    ): TransferResult = logged("storeSignedNoteSplitPczt") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        val prepared = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt)
-        val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
-        val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
-        val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
-        val mapped = mapSubmitResult(submitResult)
-        migrationBackend.recordTransferResult(
-            dbDataPath,
-            network,
-            account,
-            prepared.id,
-            mapped.tag,
-            mapped.retryable,
-            mapped.txIdBytes,
-        )
-        mapped.transferResult
-    }
+    ): TransferResult =
+        logged("storeSignedNoteSplitPczt") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            val prepared = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt)
+            val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
+            val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
+            val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
+            val mapped = mapSubmitResult(submitResult)
+            migrationBackend.recordTransferResult(
+                dbDataPath,
+                network,
+                account,
+                prepared.id,
+                mapped.tag,
+                mapped.retryable,
+                mapped.txIdBytes,
+            )
+            mapped.transferResult
+        }
 
     override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<String, ByteArray>> =
         logged("createUnsignedTransferPczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.createUnsignedTransferPczts(dbDataPath, network, account, schedule.proposalHandle)
+            migrationBackend
+                .createUnsignedTransferPczts(dbDataPath, network, account, schedule.proposalHandle)
                 .map { it.id to it.pcztBytes }
         }
 
@@ -302,37 +317,43 @@ internal class OrchardMigrationSdkImpl(
         splitUnsignedPczt: ByteArray?,
         transferUnsignedPczts: List<ByteArray>,
         maxFragmentLen: Int
-    ): List<String> = logged("buildKeystoneSignBatchQrParts") {
-        migrationBackend.buildKeystoneSignBatchQrParts(
-            requestId,
-            splitUnsignedPczt,
-            transferUnsignedPczts.toTypedArray(),
-            maxFragmentLen,
-        ).toList()
-    }
+    ): List<String> =
+        logged("buildKeystoneSignBatchQrParts") {
+            migrationBackend
+                .buildKeystoneSignBatchQrParts(
+                    requestId,
+                    splitUnsignedPczt,
+                    transferUnsignedPczts.toTypedArray(),
+                    maxFragmentLen,
+                ).toList()
+        }
 
-    override suspend fun resetKeystoneSignBatchDecoder() = logged("resetKeystoneSignBatchDecoder") {
-        migrationBackend.resetKeystoneSignBatchDecoder()
-    }
+    override suspend fun resetKeystoneSignBatchDecoder() =
+        logged("resetKeystoneSignBatchDecoder") {
+            migrationBackend.resetKeystoneSignBatchDecoder()
+        }
 
     override suspend fun decodeKeystoneSignBatchPart(
         part: String,
         expectedRequestId: ByteArray
-    ): KeystoneBatchDecodeResult = logged("decodeKeystoneSignBatchPart") {
-        migrationBackend.decodeKeystoneSignBatchPart(part, expectedRequestId).toPublic()
-    }
+    ): KeystoneBatchDecodeResult =
+        logged("decodeKeystoneSignBatchPart") {
+            migrationBackend.decodeKeystoneSignBatchPart(part, expectedRequestId).toPublic()
+        }
 
     override suspend fun applyKeystoneBatchSignatures(
         splitUnsignedPczt: ByteArray?,
         transferUnsignedPczts: List<ByteArray>,
         batchSignResponse: ByteArray
-    ): KeystoneBatchSignedPczts = logged("applyKeystoneBatchSignatures") {
-        migrationBackend.applyKeystoneBatchSignatures(
-            splitUnsignedPczt,
-            transferUnsignedPczts.toTypedArray(),
-            batchSignResponse,
-        ).toPublic()
-    }
+    ): KeystoneBatchSignedPczts =
+        logged("applyKeystoneBatchSignatures") {
+            migrationBackend
+                .applyKeystoneBatchSignatures(
+                    splitUnsignedPczt,
+                    transferUnsignedPczts.toTypedArray(),
+                    batchSignResponse,
+                ).toPublic()
+        }
 
     // ── Migration proposal ───────────────────────────────────────────────────
 
@@ -347,19 +368,21 @@ internal class OrchardMigrationSdkImpl(
         logged("proposeMigrationTransfersFromSplit") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.proposeMigrationTransfersFromSplit(
-                dbDataPath,
-                network,
-                account,
-                splitProposal.proposalHandle,
-            ).toPublic()
+            migrationBackend
+                .proposeMigrationTransfersFromSplit(
+                    dbDataPath,
+                    network,
+                    account,
+                    splitProposal.proposalHandle,
+                ).toPublic()
         }
 
-    override suspend fun proposeImmediateMigration(): Proposal = logged("proposeImmediateMigration") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        Proposal.fromByteArray(migrationBackend.proposeImmediateSendMax(dbDataPath, network, account))
-    }
+    override suspend fun proposeImmediateMigration(): Proposal =
+        logged("proposeImmediateMigration") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            Proposal.fromByteArray(migrationBackend.proposeImmediateSendMax(dbDataPath, network, account))
+        }
 
     override suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey) =
         logged("signAndStoreMigrationSchedule") {
@@ -376,11 +399,12 @@ internal class OrchardMigrationSdkImpl(
 
     // ── Background execution ─────────────────────────────────────────────────
 
-    override suspend fun finalizeReadyTransfers(): Int = logged("finalizeReadyTransfers") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged 0
-        migrationBackend.finalizeReadyTransfers(dbDataPath, network, account)
-    }
+    override suspend fun finalizeReadyTransfers(): Int =
+        logged("finalizeReadyTransfers") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged 0
+            migrationBackend.finalizeReadyTransfers(dbDataPath, network, account)
+        }
 
     override suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions): TransferResult? =
         logged("executeNextPendingTransfer") {
@@ -433,37 +457,41 @@ internal class OrchardMigrationSdkImpl(
 
     // ── On-launch reconciliation ─────────────────────────────────────────────
 
-    override suspend fun hasOverdueTransfers(): Boolean = logged("hasOverdueTransfers") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged false
-        migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
-    }
+    override suspend fun hasOverdueTransfers(): Boolean =
+        logged("hasOverdueTransfers") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged false
+            migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
+        }
 
-    override suspend fun rescheduleOverdueTransfer(): TransferProposal = logged("rescheduleOverdueTransfer") {
-        // No Rust call backs the reschedule decision itself (see the interface doc) — but the
-        // pending transfer's own fields (amount/anchorHeight/expiryHeight) come from
-        // pendingTransferProposal(), a dedicated MigrationContext accessor added specifically for
-        // this: next_due_transfer() only returns an opaque, already-signed PreparedTransfer
-        // (id/txid/pcztBytes), not the proposal it was signed from.
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        val pending = migrationBackend.pendingTransferProposal(dbDataPath, network, account)?.toPublic()
-            ?: error("OrchardMigrationSdk: no pending transfer to reschedule")
-        val nowSeconds = Clock.System.now().epochSeconds
-        // Target the same natural cadence the engine schedules by default; if that would land at
-        // or past the transfer's own expiry, target just short of it instead — pushing past
-        // expiry isn't a valid reschedule (hasInvalidTransfers/restartCurrentMigrationStep is the
-        // recovery path once even that isn't possible).
-        val newNextExecutableAfterHeight =
-            minOf(nowSeconds + RESCHEDULE_INTERVAL_SECONDS, pending.expiryHeight - 1)
-        pending.copy(nextExecutableAfterHeight = newNextExecutableAfterHeight)
-    }
+    override suspend fun rescheduleOverdueTransfer(): TransferProposal =
+        logged("rescheduleOverdueTransfer") {
+            // No Rust call backs the reschedule decision itself (see the interface doc) — but the
+            // pending transfer's own fields (amount/anchorHeight/expiryHeight) come from
+            // pendingTransferProposal(), a dedicated MigrationContext accessor added specifically for
+            // this: next_due_transfer() only returns an opaque, already-signed PreparedTransfer
+            // (id/txid/pcztBytes), not the proposal it was signed from.
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            val pending =
+                migrationBackend.pendingTransferProposal(dbDataPath, network, account)?.toPublic()
+                    ?: error("OrchardMigrationSdk: no pending transfer to reschedule")
+            val nowSeconds = Clock.System.now().epochSeconds
+            // Target the same natural cadence the engine schedules by default; if that would land at
+            // or past the transfer's own expiry, target just short of it instead — pushing past
+            // expiry isn't a valid reschedule (hasInvalidTransfers/restartCurrentMigrationStep is the
+            // recovery path once even that isn't possible).
+            val newNextExecutableAfterHeight =
+                minOf(nowSeconds + RESCHEDULE_INTERVAL_SECONDS, pending.expiryHeight - 1)
+            pending.copy(nextExecutableAfterHeight = newNextExecutableAfterHeight)
+        }
 
-    override suspend fun hasInvalidTransfers(): Boolean = logged("hasInvalidTransfers") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: return@logged false
-        migrationBackend.hasInvalidTransfers(dbDataPath, network, account)
-    }
+    override suspend fun hasInvalidTransfers(): Boolean =
+        logged("hasInvalidTransfers") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged false
+            migrationBackend.hasInvalidTransfers(dbDataPath, network, account)
+        }
 
     // ── Invalidity recovery ──────────────────────────────────────────────────
 
@@ -488,44 +516,49 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.migrationDustThresholdZatoshi()
         }
 
-    override suspend fun lockRemainingOrchardBalance() = logged("lockRemainingOrchardBalance") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        migrationBackend.lockRemainingOrchardBalance(dbDataPath, network, account)
-        Unit
-    }
+    override suspend fun lockRemainingOrchardBalance() =
+        logged("lockRemainingOrchardBalance") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.lockRemainingOrchardBalance(dbDataPath, network, account)
+            Unit
+        }
 
     // ── Debug ─────────────────────────────────────────────────────────────────
 
-    override suspend fun clearMigration() = logged("clearMigration") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        migrationBackend.clearMigration(dbDataPath, network, account)
-        Unit
-    }
+    override suspend fun clearMigration() =
+        logged("clearMigration") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.clearMigration(dbDataPath, network, account)
+            Unit
+        }
 
-    override suspend fun debugRescheduleTransfers(): Int = logged("debugRescheduleTransfers") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        migrationBackend.debugRescheduleTransfers(dbDataPath, network, account)
-    }
+    override suspend fun debugRescheduleTransfers(): Int =
+        logged("debugRescheduleTransfers") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.debugRescheduleTransfers(dbDataPath, network, account)
+        }
 
     private suspend fun isSyncBlockedNow(preferenceProvider: PreferenceProvider): Boolean {
         val dbDataPath = dbDataPath()
         // Same mutex as logged() — this poll must never read the wallet DB at the same moment a
         // real migration operation (propose/sign/execute) does; see logged()'s doc comment.
-        val overdue = MIGRATION_DB_ACCESS_MUTEX.withLock {
-            // No account was bound at construction (the WalletCoordinatorFactory gate case,
-            // evaluated before any account is chosen) — check every account in the wallet rather
-            // than assuming one, so sync stays blocked if *any* of them has an overdue migration
-            // transfer.
-            if (account != null) {
-                migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
-            } else {
-                migrationBackend.getAccountUuids(dbDataPath, network)
-                    .any { migrationBackend.hasOverdueTransfers(dbDataPath, network, it) }
+        val overdue =
+            MIGRATION_DB_ACCESS_MUTEX.withLock {
+                // No account was bound at construction (the WalletCoordinatorFactory gate case,
+                // evaluated before any account is chosen) — check every account in the wallet rather
+                // than assuming one, so sync stays blocked if *any* of them has an overdue migration
+                // transfer.
+                if (account != null) {
+                    migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
+                } else {
+                    migrationBackend
+                        .getAccountUuids(dbDataPath, network)
+                        .any { migrationBackend.hasOverdueTransfers(dbDataPath, network, it) }
+                }
             }
-        }
         val resumeAtEpochSeconds =
             preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key)?.toLongOrNull()
         val bufferActive = resumeAtEpochSeconds != null && resumeAtEpochSeconds > Clock.System.now().epochSeconds
@@ -535,12 +568,13 @@ internal class OrchardMigrationSdkImpl(
     // Time passing alone can flip "overdue"/"buffer elapsed" even with no data change, so
     // isSyncBlocked() needs to re-evaluate periodically, not just when the resume-at timestamp
     // itself changes.
-    private fun tickerFlow(interval: Duration): Flow<Unit> = flow {
-        while (currentCoroutineContext().isActive) {
-            emit(Unit)
-            delay(interval)
+    private fun tickerFlow(interval: Duration): Flow<Unit> =
+        flow {
+            while (currentCoroutineContext().isActive) {
+                emit(Unit)
+                delay(interval)
+            }
         }
-    }
 
     /**
      * Submits raw consensus transaction bytes directly via [WalletClientFactory], deliberately
@@ -638,14 +672,16 @@ private class MappedTransferResult(
  */
 private fun mapSubmitResult(result: TransactionSubmitResult): MappedTransferResult =
     when (result) {
-        is TransactionSubmitResult.Success ->
+        is TransactionSubmitResult.Success -> {
             MappedTransferResult(
                 transferResult = TransferResult.Success(result.txIdString()),
                 tag = 0,
                 retryable = false,
                 txIdBytes = result.txId.byteArray,
             )
-        is TransactionSubmitResult.Failure ->
+        }
+
+        is TransactionSubmitResult.Failure -> {
             if (result.grpcError) {
                 MappedTransferResult(
                     TransferResult.NetworkError(retryable = true, isTorFailure = result.isTorFailure),
@@ -656,13 +692,16 @@ private fun mapSubmitResult(result: TransactionSubmitResult): MappedTransferResu
             } else {
                 MappedTransferResult(TransferResult.InvalidNote, tag = 2, retryable = false, txIdBytes = ByteArray(0))
             }
-        is TransactionSubmitResult.NotAttempted ->
+        }
+
+        is TransactionSubmitResult.NotAttempted -> {
             MappedTransferResult(
                 TransferResult.NetworkError(retryable = true, isTorFailure = false),
                 tag = 1,
                 retryable = true,
                 txIdBytes = ByteArray(0),
             )
+        }
     }
 
 /**

@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength")
+
 package com.zodl.slipstream.internal
 
 import cash.z.ecc.android.sdk.Synchronizer.Status

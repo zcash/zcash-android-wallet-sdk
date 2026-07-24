@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength")
+
 package com.zodl.slipstream.internal.spend
 
 import kotlinx.coroutines.Dispatchers

@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength")
+
 package com.zodl.slipstream.internal.spend
 
 import cash.z.ecc.android.sdk.internal.Backend

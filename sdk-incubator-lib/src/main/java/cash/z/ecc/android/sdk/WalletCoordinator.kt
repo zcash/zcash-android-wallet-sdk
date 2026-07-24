@@ -1,3 +1,5 @@
+@file:Suppress("DestructuringDeclarationWithTooManyEntries", "LongParameterList")
+
 package cash.z.ecc.android.sdk
 
 import android.content.Context
@@ -103,67 +105,68 @@ class WalletCoordinator(
             )
         }.distinctUntilChanged()
             .flatMapLatest { (persistableWallet, lockoutId, isTorEnabled, isExchangeRateEnabled) ->
-            if (null != lockoutId) { // this one needs to come first
-                flowOf(InternalSynchronizerStatus.Lockout(lockoutId))
-            } else if (null == persistableWallet) {
-                flowOf(InternalSynchronizerStatus.NoWallet)
-            } else {
-                callbackFlow<InternalSynchronizerStatus.Available> {
-                    val closeableSynchronizer =
-                        if (isSlipstreamEnabled) {
-                            SlipstreamSynchronizer.new(
-                                context = context,
-                                zcashNetwork = persistableWallet.network,
-                                lightWalletEndpoint = persistableWallet.endpoint,
-                                birthday = persistableWallet.birthday,
-                                setup =
-                                    AccountCreateSetup(
-                                        accountName = accountName,
-                                        keySource = keySource,
-                                        seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
-                                    ),
-                                walletInitMode = persistableWallet.walletInitMode,
-                                isTorEnabled = isTorEnabled == true,
-                                isExchangeRateEnabled = isExchangeRateEnabled == true
-                            )
-                        } else {
-                            Synchronizer.new(
-                                context = context,
-                                zcashNetwork = persistableWallet.network,
-                                lightWalletEndpoint = persistableWallet.endpoint,
-                                birthday = persistableWallet.birthday,
-                                setup =
-                                    AccountCreateSetup(
-                                        accountName = accountName,
-                                        keySource = keySource,
-                                        seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
-                                    ),
-                                walletInitMode = persistableWallet.walletInitMode,
-                                isTorEnabled = isTorEnabled == true,
-                                isExchangeRateEnabled = isExchangeRateEnabled == true
-                            )
+                if (null != lockoutId) { // this one needs to come first
+                    flowOf(InternalSynchronizerStatus.Lockout(lockoutId))
+                } else if (null == persistableWallet) {
+                    flowOf(InternalSynchronizerStatus.NoWallet)
+                } else {
+                    callbackFlow<InternalSynchronizerStatus.Available> {
+                        val closeableSynchronizer =
+                            if (isSlipstreamEnabled) {
+                                SlipstreamSynchronizer.new(
+                                    context = context,
+                                    zcashNetwork = persistableWallet.network,
+                                    lightWalletEndpoint = persistableWallet.endpoint,
+                                    birthday = persistableWallet.birthday,
+                                    setup =
+                                        AccountCreateSetup(
+                                            accountName = accountName,
+                                            keySource = keySource,
+                                            seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
+                                        ),
+                                    walletInitMode = persistableWallet.walletInitMode,
+                                    isTorEnabled = isTorEnabled == true,
+                                    isExchangeRateEnabled = isExchangeRateEnabled == true
+                                )
+                            } else {
+                                Synchronizer.new(
+                                    context = context,
+                                    zcashNetwork = persistableWallet.network,
+                                    lightWalletEndpoint = persistableWallet.endpoint,
+                                    birthday = persistableWallet.birthday,
+                                    setup =
+                                        AccountCreateSetup(
+                                            accountName = accountName,
+                                            keySource = keySource,
+                                            seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
+                                        ),
+                                    walletInitMode = persistableWallet.walletInitMode,
+                                    isTorEnabled = isTorEnabled == true,
+                                    isExchangeRateEnabled = isExchangeRateEnabled == true
+                                )
+                            }
+
+                        trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
+
+                        // Keep this Synchronizer alive across migration sync-blocks: instead of tearing
+                        // it down (which nulled the app's balance/snapshot into a stuck loading state),
+                        // pause its polling for decorrelation and resume when the block clears. Scoped to
+                        // this callbackFlow so it is torn down with the synchronizer (wallet change/lockout).
+                        val pauseJob =
+                            launch {
+                                isSyncBlocked.distinctUntilChanged().collect { blocked ->
+                                    if (blocked) closeableSynchronizer.pause() else closeableSynchronizer.resume()
+                                }
+                            }
+
+                        awaitClose {
+                            Twig.info { "Closing flow and stopping synchronizer" }
+                            pauseJob.cancel()
+                            closeableSynchronizer.close()
                         }
-
-                    trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
-
-                    // Keep this Synchronizer alive across migration sync-blocks: instead of tearing
-                    // it down (which nulled the app's balance/snapshot into a stuck loading state),
-                    // pause its polling for decorrelation and resume when the block clears. Scoped to
-                    // this callbackFlow so it is torn down with the synchronizer (wallet change/lockout).
-                    val pauseJob = launch {
-                        isSyncBlocked.distinctUntilChanged().collect { blocked ->
-                            if (blocked) closeableSynchronizer.pause() else closeableSynchronizer.resume()
-                        }
-                    }
-
-                    awaitClose {
-                        Twig.info { "Closing flow and stopping synchronizer" }
-                        pauseJob.cancel()
-                        closeableSynchronizer.close()
                     }
                 }
             }
-        }
 
     /**
      * Synchronizer for the Zcash SDK. Emits null until a wallet secret is persisted.

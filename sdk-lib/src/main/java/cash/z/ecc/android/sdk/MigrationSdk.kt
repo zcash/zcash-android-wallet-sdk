@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package cash.z.ecc.android.sdk
 
 import cash.z.ecc.android.sdk.model.Proposal
@@ -5,7 +7,7 @@ import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.flow.Flow
 import kotlin.time.Duration
 
-/**
+/*
  * Kotlin interface for the Orchard → Ironwood migration SDK bridge.
  *
  * Boundary: SDK owns all business logic (split algorithm, anchor height selection,
@@ -77,12 +79,13 @@ data class NetworkPrivacyOptions(
     val submissionEndpoint: String? = null
 )
 
-/**
+/*
  * SDK-generated note split proposal. The SDK decides the number of output notes,
  * their sizes, and randomisation — the app only shows this to the user for confirmation.
  *
  * Splitting into ~10 notes is the current target heuristic (20k ZEC cap per note).
  */
+
 /**
  * [proposalHandle] is the opaque identifier of the SDK-native cached migration plan this proposal
  * was rendered from. The plan's details never leave the native side: commit calls
@@ -92,7 +95,7 @@ data class NetworkPrivacyOptions(
  * always exactly what the user reviewed.
  */
 data class NoteSplitProposal(
-    val outputNotes: List<Long>,  // amounts in zatoshi
+    val outputNotes: List<Long>, // amounts in zatoshi
     val fee: Long,
     val proposalHandle: Long
 )
@@ -227,13 +230,17 @@ sealed class MigrationState {
     object ReadyToPropose : MigrationState()
 
     /** Migration schedule is committed and transfers are executing. */
-    data class InProgress(val progress: MigrationProgress) : MigrationState()
+    data class InProgress(
+        val progress: MigrationProgress
+    ) : MigrationState()
 
     /**
      * A transfer cannot proceed automatically. App must surface a non-error prompt
      * and call restartCurrentMigrationStep() after user acknowledges.
      */
-    data class RequiresAttention(val reason: AttentionReason) : MigrationState()
+    data class RequiresAttention(
+        val reason: AttentionReason
+    ) : MigrationState()
 
     /** All transfers confirmed on-chain. Orchard balance is zero. */
     object Complete : MigrationState()
@@ -241,7 +248,9 @@ sealed class MigrationState {
 
 sealed class AttentionReason {
     /** Input note was spent externally before the migration transfer was broadcast. */
-    data class InvalidTransfer(val transferId: String) : AttentionReason()
+    data class InvalidTransfer(
+        val transferId: String
+    ) : AttentionReason()
 
     /** Transaction anchor expired before broadcast (e.g. extended offline period). */
     object TransferExpired : AttentionReason()
@@ -258,7 +267,9 @@ sealed class AttentionReason {
  * do not collapse these into a generic error.
  */
 sealed class TransferResult {
-    data class Success(val txId: String) : TransferResult()
+    data class Success(
+        val txId: String
+    ) : TransferResult()
 
     /**
      * Transient network failure. Retry in the next WorkManager window while [retryable] and the
@@ -268,7 +279,10 @@ sealed class TransferResult {
      * setup/bootstrap rather than a generic network/gRPC problem — callers use this to route to
      * Tor-specific recovery UI (e.g. "continue without Tor") instead of the generic failure path.
      */
-    data class NetworkError(val retryable: Boolean, val isTorFailure: Boolean = false) : TransferResult()
+    data class NetworkError(
+        val retryable: Boolean,
+        val isTorFailure: Boolean = false
+    ) : TransferResult()
 
     /**
      * Input note is already spent. Sets MigrationState to RequiresAttention.
@@ -286,7 +300,6 @@ sealed class TransferResult {
 // ─── Main interface ───────────────────────────────────────────────────────────
 
 interface OrchardMigrationSdk {
-
     // ── State ────────────────────────────────────────────────────────────────
 
     /**
@@ -776,7 +789,9 @@ interface OrchardMigrationSdk {
                 network = zcashNetwork,
                 alias = alias,
                 account = account,
-                migrationBackend = cash.z.ecc.android.sdk.internal.TypesafeMigrationBackendImpl(),
+                migrationBackend =
+                    cash.z.ecc.android.sdk.internal
+                        .TypesafeMigrationBackendImpl(),
                 defaultSubmitEndpoint = lightWalletEndpoint,
                 preferenceProviderHolder =
                     cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider(

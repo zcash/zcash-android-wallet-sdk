@@ -1,3 +1,5 @@
+@file:Suppress("LongMethod")
+
 package cash.z.ecc.android.sdk.internal.jni
 
 import android.content.ContentValues

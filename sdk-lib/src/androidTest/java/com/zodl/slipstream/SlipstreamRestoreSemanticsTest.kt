@@ -1,3 +1,5 @@
+@file:Suppress("ForbiddenComment", "MaxLineLength")
+
 package com.zodl.slipstream
 
 import androidx.test.ext.junit.runners.AndroidJUnit4

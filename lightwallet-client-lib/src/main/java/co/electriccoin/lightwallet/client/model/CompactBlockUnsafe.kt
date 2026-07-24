@@ -1,3 +1,5 @@
+@file:Suppress("LongParameterList")
+
 package co.electriccoin.lightwallet.client.model
 
 import cash.z.wallet.sdk.internal.rpc.CompactFormats

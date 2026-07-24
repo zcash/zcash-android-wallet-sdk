@@ -29,12 +29,12 @@ internal class TransactionsController(
     private val reader: SlipstreamTransactionReader,
     private val engine: SlipstreamEngine,
 ) {
-
     @OptIn(ExperimentalCoroutinesApi::class)
-    val allTransactions = engine.requeryTicks
-        .onStart { emit(Unit) }
-        .mapLatest { reader.queryVisible(isRecovering(), latestHeight()) }
-        .flowOn(Dispatchers.Default)
+    val allTransactions =
+        engine.requeryTicks
+            .onStart { emit(Unit) }
+            .mapLatest { reader.queryVisible(isRecovering(), latestHeight()) }
+            .flowOn(Dispatchers.Default)
 
     /**
      * R23: same machinery as R18 plus the `account_uuid = ?` filter; the interface has no
@@ -49,5 +49,9 @@ internal class TransactionsController(
 
     private fun isRecovering(): Boolean = engine.lastSnapshot.value?.isRecovering ?: false
 
-    private fun latestHeight(): BlockHeight? = engine.lastSnapshot.value?.chainTip?.takeIf { it > 0 }?.let(BlockHeight::new)
+    private fun latestHeight(): BlockHeight? =
+        engine.lastSnapshot.value
+            ?.chainTip
+            ?.takeIf { it > 0 }
+            ?.let(BlockHeight::new)
 }
