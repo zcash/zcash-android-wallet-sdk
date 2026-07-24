@@ -16,4 +16,5 @@
 //!
 //! [`JNIEnv`]: jni::JNIEnv
 
+pub(crate) mod derivation;
 pub(crate) mod eip681;
