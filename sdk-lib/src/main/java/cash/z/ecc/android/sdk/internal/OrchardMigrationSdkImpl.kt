@@ -654,7 +654,6 @@ private fun JniMigrationProgress.toPublic(): MigrationProgress =
     MigrationProgress(
         completedTransfers = completedTransfers,
         totalTransfers = totalTransfers,
-        remainingOrchardZatoshi = remainingOrchardValueZatoshi,
         nextTransferReadyAtHeight = nextTransferReadyAtHeight.takeIf { it != -1L },
     )
 
