@@ -65,6 +65,11 @@ internal interface TypesafeBackend {
         memo: ByteArray? = null
     ): Proposal
 
+    /**
+     * Proposes migrating the account's entire Orchard balance into the Ironwood pool.
+     */
+    suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal
+
     suspend fun proposeShielding(
         account: Account,
         shieldingThreshold: Long,

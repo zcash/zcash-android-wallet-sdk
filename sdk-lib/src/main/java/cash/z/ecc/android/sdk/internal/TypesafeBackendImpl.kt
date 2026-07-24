@@ -124,6 +124,11 @@ internal class TypesafeBackendImpl(
             )
         )
 
+    override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
+        Proposal.fromUnsafe(
+            backend.proposeOrchardToIronwoodMigration(account.accountUuid.value)
+        )
+
     override suspend fun proposeShielding(
         account: Account,
         shieldingThreshold: Long,
