@@ -25,6 +25,7 @@ use zcash_protocol::{
     value::Zatoshis,
 };
 
+mod eip681;
 mod tor;
 mod utils;
 mod zcash_jni;

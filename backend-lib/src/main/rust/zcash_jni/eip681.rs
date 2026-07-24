@@ -12,6 +12,7 @@ use jni::{
 
 use eip681::{TransactionRequest, U256};
 
+use crate::eip681::chain_id_string_to_u64;
 use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
@@ -66,19 +67,6 @@ fn hex_string_to_u256(s: Option<String>) -> anyhow::Result<Option<U256>> {
         None => Ok(None),
     }
 }
-
-/// Parse a nullable decimal chain-ID string into an `Option<u64>`.
-fn chain_id_string_to_u64(s: Option<String>) -> anyhow::Result<Option<u64>> {
-    match s {
-        Some(id) => {
-            Ok(Some(id.parse::<u64>().map_err(|e| {
-                anyhow::anyhow!("invalid chain ID '{}': {}", id, e)
-            })?))
-        }
-        None => Ok(None),
-    }
-}
-
 /// Read a non-null `String` field from a Java object.
 fn get_string_field(env: &mut JNIEnv<'_>, obj: &JObject<'_>, name: &str) -> anyhow::Result<String> {
     let jstr = JString::from(env.get_field(obj, name, "Ljava/lang/String;")?.l()?);
