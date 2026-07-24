@@ -247,8 +247,7 @@ mod tests {
 
     #[test]
     fn any_to_string_string_payload() {
-        let payload =
-            panic::catch_unwind(|| -> () { panic!("boom {}", "formatted") }).unwrap_err();
+        let payload = panic::catch_unwind(|| -> () { panic!("boom {}", "formatted") }).unwrap_err();
         assert_eq!(any_to_string(&payload), "boom formatted");
     }
 

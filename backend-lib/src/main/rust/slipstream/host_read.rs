@@ -282,9 +282,12 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_getTransactionRaw<'l
         let txid_bytes = env.convert_byte_array(&txid)?;
         let conn = read_query::open_read_only(&db_path)?;
 
+        // `v_transactions` is the public, versioned query surface (like every other read in this
+        // module) — never the wallet-internal `transactions` base table. The view has one row per
+        // involved account; `raw`/`expiry_height` are identical across them, so take the first.
         let found: Option<(Vec<u8>, i64)> = conn
             .query_row(
-                "SELECT raw, expiry_height FROM transactions WHERE txid = ?",
+                "SELECT raw, expiry_height FROM v_transactions WHERE txid = ? LIMIT 1",
                 rusqlite::params![txid_bytes],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )

@@ -110,8 +110,11 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
     // The pool-migration tables are created by `zcash_client_sqlite`'s own schema migrations
     // (`orchard_ironwood_migration_tables`, run as part of the wallet's normal `init_wallet_db`
-    // call, see `lib.rs`), not by this crate — no separate init call needed here.
-    ensure_migration_schema_current(&store_conn)?;
+    // call, see `lib.rs`), not by this crate — no separate init call needed here. All schema
+    // management belongs to those migrations: this crate must never run DDL against the wallet
+    // database (a pre-release self-heal shim that patched `lock_owner` in place lived here once;
+    // the release-line librustzcash pin froze the schema, and wallets created against older
+    // pre-release shapes must be recreated instead).
     Ok((wallet, store_conn))
 }
 
@@ -190,49 +193,6 @@ pub(crate) fn min_pending_anchor_boundary(
         }
     }
     Ok(min_height.map(u32::from))
-}
-
-/// Self-heals `orchard_ironwood_migration_transactions` against a wallet created between two
-/// pre-release librustzcash schema revisions.
-///
-/// `orchard_ironwood_migration_tables`'s migration has repeatedly grown its DDL IN PLACE, under
-/// the SAME never-changing `MIGRATION_ID` (account-keying, commit `ff15da7c8f`; this table's
-/// `lock_owner` column, commit `fcf4ceb3b1`) — this is librustzcash's stated, deliberate policy
-/// while the feature is unreleased ("these tables have not been part of a public release... a
-/// developer database must be recreated", `ff15da7c8f`'s commit message), not an oversight. Since
-/// `schemerz` never re-runs a migration whose id it already recorded as applied, and the DDL is
-/// `CREATE TABLE IF NOT EXISTS` (a no-op on an existing table), a wallet that already ran this
-/// migration under an OLDER shape keeps that older shape forever and crashes with "no such
-/// column" the moment newer code queries the missing one (confirmed live twice now: `account_id`,
-/// then `lock_owner`).
-///
-/// Rather than requiring a full wallet wipe on every such churn, patch the one column difference
-/// we've hit directly: idempotent (checks before altering), and a no-op if the table doesn't
-/// exist yet (a wallet that has never attempted a migration) or already has the column.
-fn ensure_migration_schema_current(conn: &Connection) -> anyhow::Result<()> {
-    let table_exists: bool = conn
-        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orchard_ironwood_migration_transactions'")
-        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?
-        .exists([])
-        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?;
-    if !table_exists {
-        return Ok(());
-    }
-    let has_lock_owner: bool = conn
-        .prepare(
-            "SELECT 1 FROM pragma_table_info('orchard_ironwood_migration_transactions') \
-             WHERE name = 'lock_owner'",
-        )
-        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?
-        .exists([])
-        .map_err(|e| anyhow!("Error checking migration schema: {}", e))?;
-    if !has_lock_owner {
-        conn.execute_batch(
-            "ALTER TABLE orchard_ironwood_migration_transactions ADD COLUMN lock_owner BLOB",
-        )
-        .map_err(|e| anyhow!("Error patching migration schema (lock_owner): {}", e))?;
-    }
-    Ok(())
 }
 
 fn open(
@@ -487,12 +447,7 @@ fn derive_migration_state<'a>(
         .and_then(|id| transactions.iter().find(|t| t.id() == id))
         .map_or(-1i64, |_| i64::from(u32::from(tip)));
 
-    let progress = encode_migration_progress(
-        env,
-        completed,
-        total,
-        next_transfer_ready_at_height,
-    )?;
+    let progress = encode_migration_progress(env, completed, total, next_transfer_ready_at_height)?;
     Ok(env.new_object(
         format!("{JNI_MIGRATION_STATE}$InProgress"),
         format!("(L{JNI_MIGRATION_PROGRESS};)V"),
@@ -1145,13 +1100,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 } else {
                     -1
                 };
-                encode_migration_progress(
-                    env,
-                    completed,
-                    transactions.len(),
-                    next_ready_height,
-                )?
-                .into_raw()
+                encode_migration_progress(env, completed, transactions.len(), next_ready_height)?
+                    .into_raw()
             }
             _ => ptr::null_mut(),
         })
@@ -1680,17 +1630,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// DEBUG ONLY: wipes this account's in-progress migration entirely (every preparation and
-/// transfer transaction, signed or not, proved or not, broadcast or not), so the next
+/// DEBUG ONLY: abandons this account's in-progress migration (every not-yet-broadcast
+/// preparation and transfer transaction, signed or not, proved or not), so the next
 /// propose/commit call starts completely fresh — for manual testing, not exposed to production
-/// users. Deletes the account's single row in `orchard_ironwood_migrations`; every child table
-/// (`_transactions`, `_crossing_values`, `_prep_inputs`/`_prep_outputs`, `_transaction_deps`)
-/// cascades via its own `ON DELETE CASCADE` foreign key — no separate cleanup needed. Distinct
-/// from `restartCurrentMigrationStepNative`, which recovers a RequiresAttention migration by
-/// re-planning the remaining balance, not wiping it.
+/// users. Persists the run as `Failed` through the engine store (`replace_migration`) — the
+/// engine's cancellation shape, and the same one `zcash-swift-wallet-sdk`'s restart path
+/// persists — rather than deleting the store's rows out from under it with raw SQL (this crate
+/// never manipulates engine-owned tables directly). A subsequent propose/commit starts a fresh
+/// run over the terminal predecessor, which the engine supports. Distinct from
+/// `restartCurrentMigrationStepNative`, which recovers a RequiresAttention migration by
+/// re-planning the remaining balance.
 ///
-/// Returns the number of migration rows deleted (0 or 1 — the table enforces at most one
-/// in-progress migration per account).
+/// Behavioral note versus the earlier row-delete implementation: the cancelled run remains
+/// stored, so `getMigrationStateNative` reports `RequiresAttention` (as after any failure)
+/// rather than `NotStarted`, and an already-terminal run is left as-is.
+///
+/// Returns 1 if an in-progress run was cancelled, 0 if there was nothing to cancel (no stored
+/// run, or a run that already reached `Complete`/`Failed`).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_clearMigrationNative<
     'local,
@@ -1702,16 +1658,28 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, _wallet, store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let deleted = store_conn
-            .execute(
-                "DELETE FROM orchard_ironwood_migrations \
-                 WHERE account_id = (SELECT id FROM accounts WHERE uuid = ?1)",
-                rusqlite::params![account.expose_uuid()],
-            )
-            .map_err(|e| anyhow!("Error clearing migration: {}", e))?;
-        Ok(deleted as jint)
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let Some(state) = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration: {}", e))?
+        else {
+            return Ok(0);
+        };
+        if state.is_terminal() {
+            return Ok(0);
+        }
+        let cancelled = MigrationState::from_parts(
+            engine::MigrationStatus::Failed,
+            state.note_split().clone(),
+            state.preparation().clone(),
+            state.transactions().clone(),
+        );
+        backend
+            .replace_migration(&cancelled)
+            .map_err(|e| anyhow!("Error cancelling migration: {}", e))?;
+        Ok(1)
     });
     unwrap_exc_or(&mut env, res, 0)
 }
@@ -1761,6 +1729,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// broadcast spacing.
 ///
 /// Returns the number of transfers rescheduled.
+///
+/// KNOWN EXCEPTION — direct SQL against engine-owned tables: rewriting a committed schedule is
+/// deliberately not something `zcash_pool_migration_backend` exposes (the ZIP 318 schedule is a
+/// privacy property, and `MigrationTransaction` offers no schedule setters), so this debug-only
+/// function reads and updates `orchard_ironwood_migration_transactions` rows directly. This is
+/// the ONLY remaining direct manipulation of wallet-database internals in this crate; if the
+/// engine ever grows a (feature-gated) rescheduling hook, replace this with it. Column-name
+/// drift here fails only this debug aid, never a production path.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_debugRescheduleTransfersNative<
     'local,
@@ -2735,14 +2711,13 @@ mod live_wallet_edge_case_tests {
     /// Finds a real, already-mined transaction's txid in the fixture wallet DB, so a test can
     /// simulate `WalletRead::get_tx_height` returning `Some(_)` for a migration transaction
     /// without actually broadcasting anything and waiting for it to mine. `Wallet` (`WalletDb`)
-    /// keeps its own `rusqlite::Connection` private, so this queries the wallet's
-    /// `transactions` table directly through the migration store's own second connection to the
-    /// same on-disk file — the same raw-query pattern `debugRescheduleTransfersNative` already
-    /// uses against this DB.
+    /// keeps its own `rusqlite::Connection` private, so this queries the public `v_transactions`
+    /// view (the supported query surface, never a wallet-internal base table) through the
+    /// migration store's own second connection to the same on-disk file.
     fn a_mined_txid_in_fixture(store_conn: &Connection) -> TxId {
         let txid_bytes: [u8; 32] = store_conn
             .query_row(
-                "SELECT txid FROM transactions WHERE mined_height IS NOT NULL LIMIT 1",
+                "SELECT txid FROM v_transactions WHERE mined_height IS NOT NULL LIMIT 1",
                 [],
                 |row| row.get(0),
             )

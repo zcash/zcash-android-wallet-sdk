@@ -710,11 +710,13 @@ interface OrchardMigrationSdk {
     // ── Debug ─────────────────────────────────────────────────────────────────
 
     /**
-     * DEBUG ONLY: wipes this account's in-progress migration entirely (every preparation and
-     * transfer transaction, regardless of state), so the next propose/commit call starts
-     * completely fresh. Not for production use — exists purely as a debug-settings testing aid
-     * (e.g. re-running a migration proposal with a shorter test schedule without waiting out or
-     * resuming the previous one).
+     * DEBUG ONLY: abandons this account's in-progress migration (every preparation and transfer
+     * transaction not yet broadcast, regardless of signing/proving state), so the next
+     * propose/commit call starts completely fresh. The run is persisted as failed through the
+     * engine store — the same cancellation shape any real failure leaves — so [getMigrationState]
+     * reports RequiresAttention (not NotStarted) until a new run is committed over it. Not for
+     * production use — exists purely as a debug-settings testing aid (e.g. re-running a migration
+     * proposal with a shorter test schedule without waiting out or resuming the previous one).
      */
     suspend fun clearMigration()
 
