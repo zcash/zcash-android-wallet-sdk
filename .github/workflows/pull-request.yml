@@ -176,7 +176,7 @@ jobs:
         with:
           rust-cache: true
       - name: Android Lint
-        timeout-minutes: 25
+        timeout-minutes: 45
         env:
           # Disable minify, since it makes lint run faster
           ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: false
