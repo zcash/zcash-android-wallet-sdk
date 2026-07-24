@@ -81,9 +81,11 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
-     * DEBUG ONLY: wipes this account's in-progress migration entirely, so the next propose/commit
-     * call starts completely fresh. Not exposed to production users. Returns the number of
-     * migration rows deleted (0 or 1).
+     * DEBUG ONLY: abandons this account's in-progress migration (persisting it as failed through
+     * the engine store), so the next propose/commit call starts completely fresh. The cancelled
+     * run remains stored, so the migration state reads as RequiresAttention (not NotStarted)
+     * until a new run is committed. Not exposed to production users. Returns 1 if an in-progress
+     * run was cancelled, 0 if there was nothing to cancel.
      */
     @Throws(RuntimeException::class)
     suspend fun clearMigration(

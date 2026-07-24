@@ -6,6 +6,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The native backend no longer runs any DDL or direct DML against wallet-database
+  internals: the pre-release schema self-heal shim for
+  `orchard_ironwood_migration_transactions` is removed (wallets created against
+  pre-release schema shapes must be recreated), and the debug-only
+  `OrchardMigrationSdk.clearMigration` now cancels the run through the engine
+  store (persisting it as failed, so `getMigrationState` reports
+  `RequiresAttention` rather than `NotStarted` until a new run is committed)
+  instead of deleting the engine's rows with raw SQL. The Slipstream
+  `getTransactionRaw` host read now queries the public `v_transactions` view
+  instead of a wallet-internal base table.
+
 ## [2.6.5] - 2026-06-19
 
 ### Fixed
