@@ -21,17 +21,20 @@
 //!    `zcash_pool_migration_backend`'s own `WalletMigrationProver`/`engine::prove_transfer`/
 //!    `prove_preparation` — adopted 2026-07-23, replacing this file's former hand-ported
 //!    `migration_finalize.rs` stopgap (removed) now that core provides the equivalent built-in.
-//! 3. The commit functions (`signNoteSplitNative`, `signAndStoreMigrationScheduleNative`,
-//!    `createUnsignedNoteSplitPcztNative`, `createUnsignedTransferPcztsNative`) ignore the
-//!    Kotlin-supplied schedule arrays and instead sign the plan cached by the most recent
-//!    `propose*`/`prepare*` call, via `commit_or_reuse`/`migration_plan_cache` — see that module's
-//!    doc comment for why (the new engine's plan types have no public constructor to rebuild one
-//!    from primitives, verified directly, not assumed).
+//! 3. Plan details never cross the JNI boundary inward. Each `propose*`/`prepare*` call caches
+//!    its plan Rust-side under an opaque `PlanHandle` (returned to Kotlin as the proposal
+//!    object's `proposalHandle` field, for display alongside the schedule), and the commit
+//!    functions (`signNoteSplitNative`, `signAndStoreMigrationScheduleNative`,
+//!    `createUnsignedNoteSplitPcztNative`, `createUnsignedTransferPcztsNative`) take ONLY that
+//!    handle back — `commit_or_reuse`/`migration_plan_cache` then sign exactly the identified
+//!    plan or error if it was superseded by a later proposal. (Rebuilding a plan from
+//!    caller-echoed primitives is impossible anyway: the new engine's plan types have no public
+//!    constructor — verified directly, not assumed.)
 
 use anyhow::anyhow;
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use prost::Message;
@@ -261,15 +264,17 @@ fn natural_anchor_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
         .ok_or_else(|| anyhow!("wallet has no anchor height yet; scan required"))
 }
 
-/// Computes a fresh preview plan and caches it (see `migration_plan_cache`'s module doc for why)
-/// so a later commit call signs exactly this plan, not an independently re-randomized one. Also
-/// returns the wallet's current tip, needed as the "now" reference point when encoding transfer
-/// proposals (see `encode_transfer_proposal`'s doc comment for why this matters).
+/// Computes a fresh preview plan WITHOUT caching it — the read-only building block shared by
+/// `plan_for` (which caches, for proposals the user will be shown and may commit) and by pure
+/// peek queries like `isNoteSplitNeededNative` (which must NOT cache: replacing the cached plan
+/// would invalidate the handle of a proposal the user is currently reviewing). Also returns the
+/// wallet's current tip, needed as the "now" reference point when encoding transfer proposals
+/// (see `encode_transfer_proposal`'s doc comment for why this matters).
 ///
 /// JNI-free — see `open_at`'s doc comment. Every `MIGRATION_DIAG` log line this crate has needed
 /// so far to diagnose a live bug (anchor/witness resolution, schedule spread, note-split
 /// detection) came from here or `migration_finalize`, both callable directly from `cargo test`.
-fn plan_for(
+fn compute_plan(
     network: &Network,
     wallet: &Wallet,
     account: AccountUuid,
@@ -322,8 +327,26 @@ fn plan_for(
             entry.expiry_height(),
         );
     }
-    crate::migration_plan_cache::set(account, migration_plan.clone());
     Ok((migration_plan, tip))
+}
+
+/// Computes a fresh preview plan via `compute_plan` and caches it under a fresh
+/// [`migration_plan_cache::PlanHandle`] (see that module's doc for why), so a later commit call —
+/// which must echo the handle back — signs exactly this plan, not an independently re-randomized
+/// one.
+fn plan_for(
+    network: &Network,
+    wallet: &Wallet,
+    account: AccountUuid,
+    store_conn: &mut Connection,
+) -> anyhow::Result<(
+    MigrationPlan,
+    BlockHeight,
+    crate::migration_plan_cache::PlanHandle,
+)> {
+    let (migration_plan, tip) = compute_plan(network, wallet, account, store_conn)?;
+    let handle = crate::migration_plan_cache::set(account, migration_plan.clone());
+    Ok((migration_plan, tip, handle))
 }
 
 fn plan(
@@ -331,24 +354,32 @@ fn plan(
     db_data: JString,
     network_id: jint,
     account_uuid: JByteArray,
-) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
+) -> anyhow::Result<(
+    MigrationPlan,
+    BlockHeight,
+    crate::migration_plan_cache::PlanHandle,
+)> {
     let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
     let account = crate::account_id_from_jni(env, account_uuid)?;
     plan_for(&network, &wallet, account, &mut store_conn)
 }
 
 /// Returns the already-committed migration state if one exists (non-terminal), otherwise commits
-/// the plan cached by the most recent `plan()` call for `account` — erroring if none was cached
-/// (see `migration_plan_cache`'s module doc). Shared by both the in-process-signing and
-/// external-signer commit paths below; `sign` picks which `commit_preparation`/
-/// `build_preparation_unsigned` variant to run, and whether a spending key is available to the
-/// `Backend` while doing so.
+/// the cached plan that `plan_handle` identifies — erroring if no plan is cached or if a later
+/// `propose*`/`prepare*` call replaced the plan the caller was shown (see `migration_plan_cache`'s
+/// module doc: the handle gate is what guarantees a commit can only sign the exact plan the user
+/// reviewed). On the reuse path the handle is not consulted: the commitment already happened —
+/// with a handle-verified plan — and is durable, so there is nothing left the handle could
+/// protect. Shared by both the in-process-signing and external-signer commit paths below; `sign`
+/// picks which `commit_preparation`/`build_preparation_unsigned` variant to run, and whether a
+/// spending key is available to the `Backend` while doing so.
 fn commit_or_reuse(
     network: &Network,
     wallet: &Wallet,
     account: AccountUuid,
     store_conn: &mut Connection,
     target: BlockHeight,
+    plan_handle: crate::migration_plan_cache::PlanHandle,
     usk: Option<UnifiedSpendingKey>,
     sign: impl FnOnce(
         &Network,
@@ -375,8 +406,7 @@ fn commit_or_reuse(
             }
         }
     }
-    let migration_plan = crate::migration_plan_cache::get(account)
-        .ok_or_else(|| anyhow!("No pending migration proposal — call propose/prepare first"))?;
+    let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
     let mut backend = Backend::new(wallet, account, usk, store_conn)?;
     let mut rng = OsRng;
     let result = sign(network, target, &mut backend, &migration_plan, &mut rng)?;
@@ -477,6 +507,7 @@ fn derive_migration_state<'a>(
 fn encode_note_split_proposal<'a>(
     env: &mut JNIEnv<'a>,
     plan: &MigrationPlan,
+    plan_handle: crate::migration_plan_cache::PlanHandle,
 ) -> jni::errors::Result<JObject<'a>> {
     let split = plan.note_split();
     let values: Vec<i64> = split
@@ -490,8 +521,12 @@ fn encode_note_split_proposal<'a>(
 
     env.new_object(
         JNI_NOTE_SPLIT_PROPOSAL,
-        "([JJ)V",
-        &[JValue::Object(&values_array), JValue::Long(fee)],
+        "([JJJ)V",
+        &[
+            JValue::Object(&values_array),
+            JValue::Long(fee),
+            JValue::Long(plan_handle as i64),
+        ],
     )
 }
 
@@ -544,6 +579,7 @@ fn encode_migration_schedule<'a>(
     env: &mut JNIEnv<'a>,
     plan: &MigrationPlan,
     tip: BlockHeight,
+    plan_handle: crate::migration_plan_cache::PlanHandle,
 ) -> anyhow::Result<JObject<'a>> {
     // `funding_notes()`, NOT `note_split().crossing_values()`: the funding notes are the
     // post-reconciliation values (crossing_values() minus whatever the smallest denominations
@@ -635,10 +671,11 @@ fn encode_migration_schedule<'a>(
 
     Ok(env.new_object(
         JNI_MIGRATION_SCHEDULE,
-        format!("([L{JNI_TRANSFER_PROPOSAL};I)V"),
+        format!("([L{JNI_TRANSFER_PROPOSAL};IJ)V"),
         &[
             JValue::Object(&transfers),
             JValue::Int(estimated_duration_hours as jint),
+            JValue::Long(plan_handle as i64),
         ],
     )?)
 }
@@ -654,8 +691,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (migration_plan, _tip) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(encode_note_split_proposal(env, &migration_plan)?.into_raw())
+        let (migration_plan, _tip, plan_handle) = plan(env, db_data, network_id, account_uuid)?;
+        Ok(encode_note_split_proposal(env, &migration_plan, plan_handle)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -672,8 +709,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     _include_residual: jboolean,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (migration_plan, tip) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(encode_migration_schedule(env, &migration_plan, tip)?.into_raw())
+        let (migration_plan, tip, plan_handle) = plan(env, db_data, network_id, account_uuid)?;
+        Ok(encode_migration_schedule(env, &migration_plan, tip, plan_handle)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -681,10 +718,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// The new engine plans the note split and the transfer schedule together in one
 /// `plan_migration()` call (the split's realized output values ARE `plan.note_split()
 /// .crossing_values()`, which is exactly what `encode_migration_schedule` already derives the
-/// schedule from) — so this and `proposeMigrationTransfersNative` above are now equivalent; kept
-/// as two JNI entry points only so the Kotlin call sites don't need to change. The double-spend
-/// class of bug this function existed to fix in the old crate (schedule computed independently of
-/// the split's realized output) cannot recur here: there is only ever one plan.
+/// schedule from) — so unlike `proposeMigrationTransfersNative` above, this does NOT plan afresh:
+/// it encodes the schedule of the exact cached plan `proposal_handle` identifies (the one whose
+/// split the user was just shown by `prepareNoteSplitNative`), erroring if that plan is missing
+/// or superseded. Re-planning here — as an earlier version did — would silently swap in a
+/// differently-randomized plan between the split display and the schedule display. The returned
+/// schedule carries the SAME handle: split view, schedule view, and eventual commit all refer to
+/// one plan.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_proposeMigrationTransfersFromSplitNative<
     'local,
@@ -694,12 +734,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    _output_values_zatoshi: JLongArray<'local>,
-    _fee_zatoshi: jlong,
+    proposal_handle: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (migration_plan, tip) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(encode_migration_schedule(env, &migration_plan, tip)?.into_raw())
+        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let plan_handle = proposal_handle as u64;
+        let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
+        let tip = wallet
+            .chain_height()
+            .map_err(|e| anyhow!("chain height lookup failed: {}", e))?
+            .ok_or_else(|| anyhow!("wallet has no chain tip yet"))?;
+        Ok(encode_migration_schedule(env, &migration_plan, tip, plan_handle)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -895,8 +941,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    _output_values_zatoshi: JLongArray<'local>,
-    _fee_zatoshi: jlong,
+    proposal_handle: jlong,
     usk: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -910,6 +955,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             account,
             &mut store_conn,
             target,
+            proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
                 let state =
@@ -1138,7 +1184,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // `submitNoteSplit` then failed with "no note-split preparation transaction" since there
         // was nothing to sign). The real signal is whether the preparation plan has any
         // transactions to build at all.
-        let (migration_plan, _tip) = plan(env, db_data, network_id, account_uuid)?;
+        //
+        // `compute_plan`, NOT `plan`: this is a pure peek — caching its throwaway plan would
+        // invalidate the handle of any proposal the user is currently reviewing (see
+        // `migration_plan_cache`'s module doc).
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let (migration_plan, _tip) = compute_plan(&network, &wallet, account, &mut store_conn)?;
         Ok(if migration_plan.preparation().transaction_count() > 0 {
             JNI_TRUE
         } else {
@@ -1241,26 +1293,19 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    _ids: JObjectArray<'local>,
-    _amounts_zatoshi: JLongArray<'local>,
-    _anchor_heights: JLongArray<'local>,
-    _next_executable_after_heights: JLongArray<'local>,
-    _expiry_heights: JLongArray<'local>,
-    _estimated_duration_hours: jint,
+    proposal_handle: jlong,
     usk: JByteArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let usk = crate::decode_usk(env, usk)?;
-        // The Kotlin-supplied schedule arrays are ignored — `commit_preparation` takes a
-        // `MigrationPlan` value directly, not a caller-echoed schedule, and the new engine's plan
-        // types have no public constructor to rebuild one from primitives (verified against
-        // `zcash_pool_migration_backend`'s source, not assumed). Instead of re-deriving a fresh
-        // (differently-randomized) plan here, `commit_or_reuse` signs exactly the plan the most
-        // recent `propose*`/`prepare*` call cached — see `migration_plan_cache`'s module doc for
-        // why that matters (this was a real, discussed regression risk versus the old crate, which
-        // did sign exactly the caller-echoed values).
+        // No schedule fields cross the boundary here — `commit_preparation` takes a
+        // `MigrationPlan` value directly, and the plan's details never leave the Rust side:
+        // `proposal_handle` identifies the cached plan whose schedule the user was shown, and
+        // `commit_or_reuse` signs exactly that plan or errors (see `migration_plan_cache`'s
+        // module doc — this closes the sign-what-the-user-never-saw hazard of the previous
+        // latest-plan-wins cache contract).
         let target = target_height(&wallet)?;
         commit_or_reuse(
             &network,
@@ -1268,6 +1313,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             account,
             &mut store_conn,
             target,
+            proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
                 let state =
@@ -1537,8 +1583,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     _include_residual: jboolean,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (migration_plan, tip) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(encode_migration_schedule(env, &migration_plan, tip)?.into_raw())
+        let (migration_plan, tip, plan_handle) = plan(env, db_data, network_id, account_uuid)?;
+        Ok(encode_migration_schedule(env, &migration_plan, tip, plan_handle)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -1896,6 +1942,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
+    proposal_handle: jlong,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
         let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
@@ -1907,6 +1954,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             account,
             &mut store_conn,
             target,
+            proposal_handle as u64,
             None,
             |network, target, backend, migration_plan, rng| {
                 let (state, unsigned) = engine::build_preparation_unsigned(
@@ -2016,19 +2064,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    _ids: JObjectArray<'local>,
-    _amounts_zatoshi: JLongArray<'local>,
-    _anchor_heights: JLongArray<'local>,
-    _next_executable_after_heights: JLongArray<'local>,
-    _expiry_heights: JLongArray<'local>,
-    _estimated_duration_hours: jint,
+    proposal_handle: jlong,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        // Mirrors `createUnsignedNoteSplitPcztNative`: the caller-supplied schedule arrays are
-        // ignored — `commit_or_reuse` signs exactly the plan cached by the preceding
-        // `propose*`/`prepare*` call, or (this being the *second* external-signer call in the
+        // Mirrors `createUnsignedNoteSplitPcztNative`: no schedule fields cross the boundary —
+        // `commit_or_reuse` builds exactly the cached plan `proposal_handle` identifies (erroring
+        // if it's missing or superseded), or (this being the *second* external-signer call in the
         // Keystone sequence, after `createUnsignedNoteSplitPcztNative` already committed) just
         // re-reads what's already persisted, rather than committing a second, independent plan
         // (which would have hit `CommitError::MigrationInProgress` from the engine anyway).
@@ -2039,6 +2082,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             account,
             &mut store_conn,
             target,
+            proposal_handle as u64,
             None,
             |network, target, backend, migration_plan, rng| {
                 let (state, unsigned) = engine::build_preparation_unsigned(
@@ -2334,7 +2378,8 @@ mod live_wallet_tests {
         let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan, tip) = plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
 
         println!(
             "tip={tip:?} funding_notes={} prep_layers={} prep_txs={} direct_funding={}",
@@ -2420,7 +2465,7 @@ mod live_wallet_signing_tests {
              the seed phrase and/or account index (this test assumes account 0)"
         );
 
-        let (migration_plan, tip) =
+        let (migration_plan, tip, _handle) =
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
 
@@ -2557,7 +2602,7 @@ mod live_wallet_signing_tests {
         let usk = UnifiedSpendingKey::from_seed(&network, &seed, zip32::AccountId::ZERO)
             .expect("derive USK from seed for account 0");
 
-        let (migration_plan, tip) =
+        let (migration_plan, tip, _handle) =
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
 
@@ -2740,7 +2785,7 @@ mod live_wallet_edge_case_tests {
         assert_ne!(account_a, account_b);
 
         // Plan + commit an (unsigned) migration for account A only — account B is never touched.
-        let (plan_a, tip) =
+        let (plan_a, tip, _handle) =
             plan_for(&network, &wallet, account_a, &mut store_conn).expect("plan_for account_a");
         let target = tip + 1;
         {
@@ -2800,7 +2845,8 @@ mod live_wallet_edge_case_tests {
         // state unconditionally (no prior-state precondition, confirmed in
         // `zcash_pool_migration_backend::state`), so an `AwaitingSignature` transaction from
         // `build_preparation_unsigned` works fine here without needing real signing.
-        let (plan, tip) = plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         let mut state = {
             let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
@@ -2878,7 +2924,8 @@ mod live_wallet_edge_case_tests {
         let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (_plan, tip) = plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (_plan, tip, handle) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
 
         let (state1, unsigned1) = commit_or_reuse(
@@ -2887,6 +2934,7 @@ mod live_wallet_edge_case_tests {
             account,
             &mut store_conn,
             target,
+            handle,
             None,
             sign_unsigned,
         )
@@ -2900,12 +2948,16 @@ mod live_wallet_edge_case_tests {
         // itself disturb the already-committed migration.
         plan_for(&network, &wallet, account, &mut store_conn).expect("re-plan after commit");
 
+        // Deliberately passes the ORIGINAL handle, which the re-plan above superseded: on the
+        // reuse path the handle must NOT be consulted (the commitment already happened, with a
+        // handle-verified plan) — a stale handle only blocks a FRESH commit.
         let (state2, unsigned2) = commit_or_reuse(
             &network,
             &wallet,
             account,
             &mut store_conn,
             target,
+            handle,
             None,
             sign_unsigned,
         )
@@ -2936,6 +2988,64 @@ mod live_wallet_edge_case_tests {
         }
     }
 
+    /// The plan-handle gate closing the approve-X-sign-Y hazard: a FRESH commit must refuse a
+    /// handle that a later `propose*`/`prepare*` call superseded (the caller would otherwise sign
+    /// a re-randomized schedule the user never reviewed), must refuse an unknown handle when
+    /// nothing is cached, and must succeed with the handle of the currently cached plan.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn fresh_commit_requires_the_current_plan_handle() {
+        use crate::migration_plan_cache::PlanLookupError;
+
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        let (_plan1, tip, stale_handle) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("first plan");
+        let (_plan2, _tip2, current_handle) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("superseding plan");
+        let target = tip + 1;
+
+        let err = commit_or_reuse(
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+            target,
+            stale_handle,
+            None,
+            sign_unsigned,
+        )
+        .expect_err("committing with a superseded handle must be rejected");
+        assert_eq!(
+            err.downcast_ref::<PlanLookupError>(),
+            Some(&PlanLookupError::Superseded),
+            "expected Superseded, got: {err:?}"
+        );
+
+        let (_state, unsigned) = commit_or_reuse(
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+            target,
+            current_handle,
+            None,
+            sign_unsigned,
+        )
+        .expect("committing with the current handle succeeds");
+        assert!(!unsigned.is_empty());
+
+        // The successful commit consumed the cache — a would-be second fresh commit (were the
+        // committed state not already reusable) now reports Missing, not Superseded.
+        assert!(matches!(
+            crate::migration_plan_cache::get(account, current_handle),
+            Err(PlanLookupError::Missing)
+        ));
+    }
+
     /// Calling the raw engine directly (bypassing our `commit_or_reuse` reuse guard) a second
     /// time over an already-committed, non-terminal migration must fail with
     /// `CommitError::MigrationInProgress` — this is the exact condition `commit_or_reuse` relies
@@ -2949,7 +3059,8 @@ mod live_wallet_edge_case_tests {
         let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan, tip) = plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         {
             let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
@@ -2985,7 +3096,7 @@ mod live_wallet_edge_case_tests {
         let committed_ids: Vec<MigrationTxId> = {
             let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
             let account = first_account(&wallet);
-            let (plan, tip) =
+            let (plan, tip, _handle) =
                 plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
             let target = tip + 1;
             let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
@@ -3031,7 +3142,7 @@ mod live_wallet_edge_case_tests {
         let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan_before, _tip) =
+        let (plan_before, _tip, _handle) =
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan before commit");
         let target = target_height(&wallet).expect("target height");
         {
@@ -3048,7 +3159,7 @@ mod live_wallet_edge_case_tests {
             .expect("commit");
         }
 
-        let (plan_after, _tip2) = plan_for(&network, &wallet, account, &mut store_conn)
+        let (plan_after, _tip2, _handle2) = plan_for(&network, &wallet, account, &mut store_conn)
             .expect("plan_migration must remain callable after a migration is committed");
 
         assert_eq!(

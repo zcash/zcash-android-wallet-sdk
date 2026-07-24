@@ -75,12 +75,16 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): JniNoteSplitProposal
 
+    /**
+     * [proposalHandle] identifies the Rust-side cached plan to commit and sign — from the
+     * [JniNoteSplitProposal] the user reviewed. Throws if that plan is missing or superseded by a
+     * later propose/prepare call.
+     */
     suspend fun signNoteSplit(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        outputValuesZatoshi: LongArray,
-        feeZatoshi: Long,
+        proposalHandle: Long,
         usk: ByteArray
     ): JniPreparedTransfer
 
@@ -113,12 +117,17 @@ internal interface TypesafeMigrationBackend {
         includeResidual: Boolean
     ): JniMigrationSchedule
 
+    /**
+     * Renders the transfer schedule of the exact cached plan [proposalHandle] identifies (from
+     * the [JniNoteSplitProposal] the user was just shown) — never re-plans, so the schedule shown
+     * is guaranteed to belong to the same plan as the split. The returned schedule carries the
+     * SAME handle.
+     */
     suspend fun proposeMigrationTransfersFromSplit(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        outputValuesZatoshi: LongArray,
-        feeZatoshi: Long
+        proposalHandle: Long
     ): JniMigrationSchedule
 
     /**
@@ -133,11 +142,16 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): ByteArray
 
+    /**
+     * Commits and signs the migration plan [proposalHandle] identifies (from the
+     * [JniMigrationSchedule] the user reviewed). No schedule fields cross the boundary — the Rust
+     * side signs exactly the identified plan or throws if it was superseded.
+     */
     suspend fun signAndStoreMigrationSchedule(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        schedule: JniMigrationSchedule,
+        proposalHandle: Long,
         usk: ByteArray
     )
 
@@ -193,7 +207,8 @@ internal interface TypesafeMigrationBackend {
     suspend fun createUnsignedNoteSplitPczt(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
+        account: AccountUuid,
+        proposalHandle: Long
     ): ByteArray
 
     suspend fun storeSignedNoteSplitPczt(
@@ -207,7 +222,7 @@ internal interface TypesafeMigrationBackend {
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        schedule: JniMigrationSchedule
+        proposalHandle: Long
     ): Array<JniUnsignedTransferPczt>
 
     /**

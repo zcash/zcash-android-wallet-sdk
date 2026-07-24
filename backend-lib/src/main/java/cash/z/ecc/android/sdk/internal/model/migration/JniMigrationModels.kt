@@ -24,11 +24,17 @@ class JniMigrationProgress(
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
+ *
+ * [proposalHandle] is the opaque identifier of the Rust-side cached migration plan this proposal
+ * was rendered from. The plan's details never cross the JNI boundary inward: commit calls pass
+ * this handle back, and the Rust side refuses to sign any plan other than the one it identifies
+ * (erroring if a later propose/prepare call superseded it).
  */
 @Keep
 class JniNoteSplitProposal(
     val outputValuesZatoshi: LongArray,
-    val feeZatoshi: Long
+    val feeZatoshi: Long,
+    val proposalHandle: Long
 )
 
 /**
@@ -55,11 +61,15 @@ class JniTransferProposal(
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
+ *
+ * [proposalHandle] identifies the Rust-side cached migration plan this schedule was rendered
+ * from — see [JniNoteSplitProposal.proposalHandle] for the contract.
  */
 @Keep
 class JniMigrationSchedule(
     val transfers: Array<JniTransferProposal>,
-    val estimatedDurationHours: Int
+    val estimatedDurationHours: Int,
+    val proposalHandle: Long
 )
 
 /**
