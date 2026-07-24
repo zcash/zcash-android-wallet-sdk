@@ -113,6 +113,10 @@ class FakeRustBackend(
         error("Intentionally not implemented yet.")
     }
 
+    override suspend fun proposeOrchardToIronwoodMigration(accountUuid: ByteArray): ProposalUnsafe {
+        error("Intentionally not implemented yet.")
+    }
+
     override suspend fun proposeShielding(
         accountUuid: ByteArray,
         shieldingThreshold: Long,

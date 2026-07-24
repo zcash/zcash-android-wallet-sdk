@@ -436,6 +436,17 @@ class RustBackend private constructor(
             )
         }
 
+    override suspend fun proposeOrchardToIronwoodMigration(accountUuid: ByteArray): ProposalUnsafe =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            ProposalUnsafe.parse(
+                proposeOrchardToIronwoodMigration(
+                    dataDbFile.absolutePath,
+                    accountUuid,
+                    networkId = networkId,
+                )
+            )
+        }
+
     override suspend fun proposeShielding(
         accountUuid: ByteArray,
         shieldingThreshold: Long,
@@ -877,6 +888,13 @@ class RustBackend private constructor(
             dbDataPath: String,
             accountUuid: ByteArray,
             uri: String,
+            networkId: Int,
+        ): ByteArray
+
+        @JvmStatic
+        private external fun proposeOrchardToIronwoodMigration(
+            dbDataPath: String,
+            accountUuid: ByteArray,
             networkId: Int,
         ): ByteArray
 

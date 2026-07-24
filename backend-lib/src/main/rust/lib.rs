@@ -102,6 +102,7 @@ use crate::utils::{
 };
 
 mod eip681;
+mod migration;
 mod tor;
 mod utils;
 
@@ -2189,6 +2190,36 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
+
+        Ok(utils::rust_bytes_to_java(
+            env,
+            Proposal::from_standard_proposal(&proposal)
+                .encode_to_vec()
+                .as_ref(),
+        )?
+        .into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOrchardToIronwoodMigration<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    account_uuid: JByteArray<'local>,
+    network_id: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposeOrchardToIronwoodMigration").entered();
+        let network = parse_network(network_id as u32)?;
+        let mut db_data = wallet_db(env, network, db_data)?;
+        let account_uuid = account_id_from_jni(env, account_uuid)?;
+
+        let proposal =
+            crate::migration::propose_orchard_to_ironwood(&mut db_data, &network, account_uuid)?;
 
         Ok(utils::rust_bytes_to_java(
             env,
