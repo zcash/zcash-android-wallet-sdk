@@ -86,20 +86,6 @@ class OrchardMigrationSdkImplTest {
             assertEquals(100_000L, result)
         }
 
-    /**
-     * A minimal, hand-encoded `cash.z.wallet.sdk.ffi.Proposal` protobuf message (see
-     * `backend-lib/src/main/proto/proposal.proto`) — just field 2 (`feeRule`) set to `Zip317` (3),
-     * with no steps. `ProposalUnsafe`'s init check only requires a non-default `feeRule`, and
-     * `Proposal.check()`'s `totalFeeRequired()` folds over an empty `steps` list to 0, so this
-     * round-trips cleanly through `Proposal.fromByteArray`.
-     *
-     * Built by hand (proto3 varint wire format: tag byte `(fieldNumber shl 3) or wireType`,
-     * followed by the varint value) rather than via the generated `ProposalOuterClass` builder,
-     * because the protobuf-lite runtime is an `implementation`-scoped dependency of `backend-lib`
-     * (not exposed transitively) — `sdk-lib` can call into `ProposalUnsafe`'s own API (as
-     * production code already does) but cannot reference `com.google.protobuf.*` supertypes
-     * directly at compile time.
-     */
     @Test
     fun `withBroadcastTimeout passes through a result that completes before the timeout`() =
         runBlocking {
@@ -145,6 +131,20 @@ class OrchardMigrationSdkImplTest {
             assertFalse(result.isTorFailure)
         }
 
+    /**
+     * A minimal, hand-encoded `cash.z.wallet.sdk.ffi.Proposal` protobuf message (see
+     * `backend-lib/src/main/proto/proposal.proto`) — just field 2 (`feeRule`) set to `Zip317` (3),
+     * with no steps. `ProposalUnsafe`'s init check only requires a non-default `feeRule`, and
+     * `Proposal.check()`'s `totalFeeRequired()` folds over an empty `steps` list to 0, so this
+     * round-trips cleanly through `Proposal.fromByteArray`.
+     *
+     * Built by hand (proto3 varint wire format: tag byte `(fieldNumber shl 3) or wireType`,
+     * followed by the varint value) rather than via the generated `ProposalOuterClass` builder,
+     * because the protobuf-lite runtime is an `implementation`-scoped dependency of `backend-lib`
+     * (not exposed transitively) — `sdk-lib` can call into `ProposalUnsafe`'s own API (as
+     * production code already does) but cannot reference `com.google.protobuf.*` supertypes
+     * directly at compile time.
+     */
     private fun fakeProposalBytes(): ByteArray {
         val fieldNumber = 2
         val wireTypeVarint = 0
