@@ -18,3 +18,4 @@
 
 pub(crate) mod derivation;
 pub(crate) mod eip681;
+pub(crate) mod tor;
