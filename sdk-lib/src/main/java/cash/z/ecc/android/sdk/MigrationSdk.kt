@@ -203,7 +203,6 @@ data class MigrationTransferStates(
 data class MigrationProgress(
     val completedTransfers: Int,
     val totalTransfers: Int,
-    val remainingOrchardZatoshi: Long,
     val nextTransferReadyAtHeight: Long?
 )
 

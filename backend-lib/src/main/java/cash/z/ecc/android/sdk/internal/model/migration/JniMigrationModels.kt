@@ -10,7 +10,6 @@ import cash.z.ecc.android.sdk.internal.ext.isInUIntRange
 class JniMigrationProgress(
     val completedTransfers: Int,
     val totalTransfers: Int,
-    val remainingOrchardValueZatoshi: Long,
     val nextTransferReadyAtHeight: Long
 ) {
     init {

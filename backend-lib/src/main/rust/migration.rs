@@ -424,16 +424,14 @@ fn encode_migration_progress<'a>(
     env: &mut JNIEnv<'a>,
     completed: usize,
     total: usize,
-    remaining_orchard_value: Zatoshis,
     next_transfer_ready_at_height: i64,
 ) -> jni::errors::Result<JObject<'a>> {
     env.new_object(
         JNI_MIGRATION_PROGRESS,
-        "(IIJJ)V",
+        "(IIJ)V",
         &[
             JValue::Int(completed as jint),
             JValue::Int(total as jint),
-            JValue::Long(u64::from(remaining_orchard_value) as i64),
             JValue::Long(next_transfer_ready_at_height),
         ],
     )
@@ -450,8 +448,6 @@ fn encode_migration_progress<'a>(
 /// §7 item — this was flagged as a known open risk before implementation started).
 fn derive_migration_state<'a>(
     env: &mut JNIEnv<'a>,
-    wallet: &Wallet,
-    account: AccountUuid,
     persisted: Option<MigrationState>,
     tip: BlockHeight,
 ) -> anyhow::Result<JObject<'a>> {
@@ -486,11 +482,6 @@ fn derive_migration_state<'a>(
         .iter()
         .filter(|t| matches!(t.state(), MigrationTxState::Mined { .. }))
         .count();
-    let remaining_orchard_value = wallet
-        .get_account(account)
-        .map_err(|e| anyhow!("account lookup failed: {}", e))?
-        .and_then(|_| None::<Zatoshis>)
-        .unwrap_or(Zatoshis::ZERO);
     let next_ready = state.next_broadcastable(tip);
     let next_transfer_ready_at_height = next_ready
         .and_then(|id| transactions.iter().find(|t| t.id() == id))
@@ -500,7 +491,6 @@ fn derive_migration_state<'a>(
         env,
         completed,
         total,
-        remaining_orchard_value,
         next_transfer_ready_at_height,
     )?;
     Ok(env.new_object(
@@ -1122,7 +1112,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let tip = target_height(&wallet)? - 1;
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
-        Ok(derive_migration_state(env, &wallet, account, persisted, tip)?.into_raw())
+        Ok(derive_migration_state(env, persisted, tip)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -1159,7 +1149,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     env,
                     completed,
                     transactions.len(),
-                    Zatoshis::ZERO,
                     next_ready_height,
                 )?
                 .into_raw()
