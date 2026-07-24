@@ -8,9 +8,9 @@
 //! export: anything whose signature mentions [`JNIEnv`], a `J*` / `j*` type, a
 //! Java class descriptor, or `env.new_object` belongs here. Everything
 //! expressible in plain Rust types stays in the logic module. Where a helper
-//! mixed both, it was split rather than moved wholesale: [`wallet_db`] decodes
-//! a [`JString`] path here and then calls the pure [`crate::wallet_db`] to do
-//! the real work.
+//! mixed both, it was split rather than moved wholesale: [`wallet_db`] and
+//! [`block_db`] decode a [`JString`] path here and then call the pure
+//! [`crate::wallet_db`] / [`crate::block_db`] to do the real work.
 //!
 //! Marshalling lives beside the exports it serves. What is defined in this
 //! file is only what more than one submodule needs; anything used by a single
@@ -60,9 +60,9 @@ fn wallet_db<P: Parameters>(
     crate::wallet_db(path_from_jni(env, db_data)?, params)
 }
 
+/// Opens the block source database at the [`JString`] path.
 fn block_db(env: &mut JNIEnv, fsblockdb_root: JString) -> anyhow::Result<FsBlockDb> {
-    FsBlockDb::for_path(path_from_jni(env, fsblockdb_root)?)
-        .map_err(|e| anyhow!("Error opening block source database connection: {:?}", e))
+    crate::block_db(path_from_jni(env, fsblockdb_root)?)
 }
 
 fn path_from_jni(env: &mut JNIEnv, path: JString) -> anyhow::Result<PathBuf> {

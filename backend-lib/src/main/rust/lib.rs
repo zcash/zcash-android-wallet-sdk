@@ -13,7 +13,7 @@ use zcash_client_backend::{
     keys::{ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest},
     tor::DormantMode,
 };
-use zcash_client_sqlite::{WalletDb, util::SystemClock};
+use zcash_client_sqlite::{FsBlockDb, WalletDb, util::SystemClock};
 use zcash_protocol::{
     ShieldedPool,
     consensus::{
@@ -45,6 +45,11 @@ fn wallet_db<P: Parameters>(
 ) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, OsRng>> {
     WalletDb::for_path(path, params, SystemClock, OsRng)
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
+}
+
+fn block_db(path: PathBuf) -> anyhow::Result<FsBlockDb> {
+    FsBlockDb::for_path(path)
+        .map_err(|e| anyhow!("Error opening block source database connection: {:?}", e))
 }
 
 bitflags! {
