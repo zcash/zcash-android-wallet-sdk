@@ -42,16 +42,17 @@ use zcash_address::{
 use zcash_client_backend::{
     address::{Address, UnifiedAddress},
     data_api::{
-        Account, AccountBalance, AccountBirthday, AccountPurpose, BirthdayError, InputSource,
-        OutputStatusFilter, SeedRelevance, TransactionDataRequest, TransactionStatus,
-        TransactionStatusFilter, TransparentKeyOrigin, TransparentOutputFilter,
-        WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite, Zip32Derivation,
+        Account, AccountBalance, AccountBirthday, AccountPurpose, BirthdayError, CoinbaseFilter,
+        InputSource, OutputStatusFilter, SeedRelevance, TransactionDataRequest, TransactionStatus,
+        TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
+        WalletSummary, WalletWrite, Zip32Derivation,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
             self, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
-            input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
+            input_selection::{GreedyInputSelector, LockFilter, SpendPolicy},
+            propose_shielding, propose_transfer,
         },
     },
     encoding::AddressCodec,
@@ -78,11 +79,11 @@ use zcash_client_sqlite::{
 use zcash_primitives::{
     block::BlockHash,
     merkle_tree::HashSer,
-    transaction::{Transaction, TxId},
+    transaction::{Transaction, TxId, components::orchard::bundle_version_for_branch},
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
-    ShieldedProtocol,
+    ShieldedPool,
     consensus::{
         BlockHeight, BranchId, Network,
         Network::{MainNetwork, TestNetwork},
@@ -1119,7 +1120,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
                 &taddr,
                 target,
                 wallet::ConfirmationsPolicy::MIN,
-                TransparentOutputFilter::All,
+                CoinbaseFilter::AllTransparentOutputs,
+                // Balance display, not a spend selection - show the true total regardless of any
+                // lock another in-flight proposal might hold, matching pre-locking behavior.
+                LockFilter::Unfiltered,
             )
             .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))?
             .iter()
@@ -1359,7 +1363,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
         let mut db_data = wallet_db(env, network, db_data)?;
 
         let height = BlockHeight::try_from(height)?;
-        let rewind_result = db_data.rewind_to_height(height);
+        let rewind_result = db_data.truncate_to_height(height);
 
         Ok(encode_rewind_result(env, height, rewind_result)?.into_raw())
     });
@@ -1965,6 +1969,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putUtxo<'
                 script_pubkey,
             },
             Some(BlockHeight::from(height as u32)),
+            None,
+            None,
+            None,
         )
         .ok_or_else(|| anyhow!("UTXO is not P2PKH or P2SH"))?;
 
@@ -2051,7 +2058,7 @@ fn zip317_helper<DbT>(
         MultiOutputChangeStrategy::new(
             StandardFeeRule::Zip317,
             change_memo,
-            ShieldedProtocol::Orchard,
+            ShieldedPool::Orchard,
             DustOutputPolicy::default(),
             SplitPolicy::with_min_output_value(
                 NonZeroUsize::new(4).expect("4 is nonzero"),
@@ -2094,6 +2101,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             &change_strategy,
             request,
             wallet::ConfirmationsPolicy::default(),
+            &SpendPolicy::default(),
+            None,
             None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
@@ -2156,6 +2165,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             &change_strategy,
             request,
             wallet::ConfirmationsPolicy::default(),
+            &SpendPolicy::default(),
+            None,
             None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
@@ -2291,7 +2302,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             &from_addrs,
             account_uuid,
             confirmations_policy,
-            TransparentOutputFilter::All,
+            CoinbaseFilter::AllTransparentOutputs,
+            None,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
@@ -2331,7 +2343,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
-            .try_into_standard_proposal(&db_data)?;
+            .try_into_standard_proposal(&network, &db_data)?;
 
         let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
             &mut db_data,
@@ -2380,7 +2392,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
-            .try_into_standard_proposal(&db_data)?;
+            .try_into_standard_proposal(&network, &db_data)?;
 
         if proposal.steps().len() == 1 {
             let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
@@ -2389,10 +2401,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
                 account_id,
                 OvkPolicy::Sender,
                 &proposal,
+                None,
+                orchard::builder::BundleType::DEFAULT,
             )
             .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
 
-            Ok(utils::rust_bytes_to_java(env, &pczt.serialize())?.into_raw())
+            Ok(utils::rust_bytes_to_java(
+                env,
+                &pczt
+                    .serialize()
+                    .map_err(|e| anyhow!("Failed to serialize PCZT: {:?}", e))?,
+            )?
+            .into_raw())
         } else {
             Err(anyhow!(
                 "Multi-step proposals are not yet supported for PCZT generation."
@@ -2439,7 +2459,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcz
             })
             .finish();
 
-        Ok(utils::rust_bytes_to_java(env, &pczt_with_proofs.serialize())?.into_raw())
+        Ok(utils::rust_bytes_to_java(
+            env,
+            &pczt_with_proofs
+                .serialize()
+                .map_err(|e| anyhow!("Failed to serialize PCZT: {:?}", e))?,
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -2486,11 +2512,21 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         let pczt = parse_pczt(env, pczt)?;
 
+        // The Orchard circuit version is fixed by the consensus branch under which the
+        // transaction will be mined; derive it from the branch id carried by the PCZT.
+        let orchard_circuit_version = BranchId::try_from(*pczt.global().consensus_branch_id())
+            .ok()
+            .and_then(|branch_id| bundle_version_for_branch(branch_id, orchard::ValuePool::Orchard))
+            .map(|bundle_version| bundle_version.circuit_version());
+
         let mut prover = Prover::new(pczt);
 
         if prover.requires_orchard_proof() {
+            let circuit_version = orchard_circuit_version.ok_or_else(|| {
+                anyhow!("PCZT requires an Orchard proof but its consensus branch does not support Orchard")
+            })?;
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build())
+                .create_orchard_proof(&orchard::circuit::ProvingKey::build(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
@@ -2508,7 +2544,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         let pczt_with_proofs = prover.finish();
 
-        Ok(utils::rust_bytes_to_java(env, &pczt_with_proofs.serialize())?.into_raw())
+        Ok(utils::rust_bytes_to_java(
+            env,
+            &pczt_with_proofs
+                .serialize()
+                .map_err(|e| anyhow!("Failed to serialize PCZT: {:?}", e))?,
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -2554,7 +2596,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_extractAn
             &mut db_data,
             pczt,
             Some((&spend_vk, &output_vk)),
-            Some(&orchard::circuit::VerifyingKey::build()),
+            // Passing `None` lets the extractor build the verifying key for the
+            // circuit version fixed by the bundle's own `BundleVersion`.
+            None,
         )
         .map_err(|e| anyhow!("Failed to extract transaction from PCZT: {:?}", e))?;
 
@@ -3667,10 +3711,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
 // Utility functions
 //
 
-fn parse_protocol(code: i32) -> anyhow::Result<ShieldedProtocol> {
+fn parse_protocol(code: i32) -> anyhow::Result<ShieldedPool> {
     match code {
-        2 => Ok(ShieldedProtocol::Sapling),
-        3 => Ok(ShieldedProtocol::Orchard),
+        2 => Ok(ShieldedPool::Sapling),
+        3 => Ok(ShieldedPool::Orchard),
         _ => Err(anyhow!("Shielded protocol not recognized: {code}")),
     }
 }
