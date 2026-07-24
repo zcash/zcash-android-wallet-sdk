@@ -12,8 +12,11 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
 import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.ArgumentMatchers.anyString
@@ -21,7 +24,9 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.io.File
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 class OrchardMigrationSdkImplTest {
     @Test
@@ -95,6 +100,51 @@ class OrchardMigrationSdkImplTest {
      * production code already does) but cannot reference `com.google.protobuf.*` supertypes
      * directly at compile time.
      */
+    @Test
+    fun `withBroadcastTimeout passes through a result that completes before the timeout`() =
+        runBlocking {
+            val txId = ByteArray(32) { it.toByte() }
+            val expected = TransactionSubmitResult.Success(FirstClassByteArray(txId))
+
+            val result =
+                withBroadcastTimeout(useTor = false, txId = txId, timeout = 200.milliseconds) {
+                    expected
+                }
+
+            assertEquals(expected, result)
+        }
+
+    @Test
+    fun `withBroadcastTimeout maps a hang past the timeout to a Tor-tagged failure when useTor is true`() =
+        runBlocking {
+            val txId = ByteArray(32) { it.toByte() }
+
+            val result =
+                withBroadcastTimeout(useTor = true, txId = txId, timeout = 20.milliseconds) {
+                    delay(500.milliseconds)
+                    error("should never reach here — timeout should win first")
+                }
+
+            assertTrue(result is TransactionSubmitResult.Failure)
+            assertTrue(result.isTorFailure)
+            assertTrue(result.grpcError)
+        }
+
+    @Test
+    fun `withBroadcastTimeout does not tag the failure as Tor when useTor is false`() =
+        runBlocking {
+            val txId = ByteArray(32) { it.toByte() }
+
+            val result =
+                withBroadcastTimeout(useTor = false, txId = txId, timeout = 20.milliseconds) {
+                    delay(500.milliseconds)
+                    error("should never reach here — timeout should win first")
+                }
+
+            assertTrue(result is TransactionSubmitResult.Failure)
+            assertFalse(result.isTorFailure)
+        }
+
     private fun fakeProposalBytes(): ByteArray {
         val fieldNumber = 2
         val wireTypeVarint = 0

@@ -43,6 +43,7 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import java.io.File
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -55,6 +56,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -557,11 +559,13 @@ internal class OrchardMigrationSdkImpl(
         val torClient = if (useTor) torClientLazy.getInstance(Unit) else null
         val client = WalletClientFactory(context, torClient?.let { resolved -> LazyTorClient { resolved } }).create(endpoint)
         return try {
-            client.submitTransaction(
-                FirstClassByteArray(rawTx),
-                FirstClassByteArray(txId),
-                SdkFlags(isTorEnabled = useTor && torClient != null, isExchangeRateEnabled = false),
-            )
+            withBroadcastTimeout(useTor = useTor, txId = txId) {
+                client.submitTransaction(
+                    FirstClassByteArray(rawTx),
+                    FirstClassByteArray(txId),
+                    SdkFlags(isTorEnabled = useTor && torClient != null, isExchangeRateEnabled = false),
+                )
+            }
         } finally {
             withContext(NonCancellable) { client.dispose() }
         }
@@ -643,12 +647,62 @@ private fun mapSubmitResult(result: TransactionSubmitResult): MappedTransferResu
             )
         is TransactionSubmitResult.Failure ->
             if (result.grpcError) {
-                MappedTransferResult(TransferResult.NetworkError(retryable = true), tag = 1, retryable = true, txIdBytes = ByteArray(0))
+                MappedTransferResult(
+                    TransferResult.NetworkError(retryable = true, isTorFailure = result.isTorFailure),
+                    tag = 1,
+                    retryable = true,
+                    txIdBytes = ByteArray(0),
+                )
             } else {
                 MappedTransferResult(TransferResult.InvalidNote, tag = 2, retryable = false, txIdBytes = ByteArray(0))
             }
         is TransactionSubmitResult.NotAttempted ->
-            MappedTransferResult(TransferResult.NetworkError(retryable = true), tag = 1, retryable = true, txIdBytes = ByteArray(0))
+            MappedTransferResult(
+                TransferResult.NetworkError(retryable = true, isTorFailure = false),
+                tag = 1,
+                retryable = true,
+                txIdBytes = ByteArray(0),
+            )
+    }
+
+/**
+ * How long [broadcast] waits for a submit call (including Tor circuit bootstrap, when [useTor])
+ * before giving up. Without this, a stuck Tor circuit or a gRPC call with no server-side deadline
+ * can hang the whole call indefinitely — previously observed hanging a background MigrationWorker
+ * invocation for the full ~10-minute WorkManager execution ceiling, repeatedly, since nothing ever
+ * threw or returned. A generous value relative to normal RPC latency, but small relative to that
+ * 10-minute ceiling so up to 3 attempts (see MigrationWorker/MigrationSendingVM) still fit.
+ */
+internal val BROADCAST_TIMEOUT = 60.seconds
+
+// Sentinel gRPC-shaped code for a client-side timeout — never returned by a real server, so it's
+// distinguishable in logs/telemetry from an actual server response code.
+private const val BROADCAST_TIMEOUT_CODE = -2
+
+/**
+ * Runs [block] (a submit attempt) under a [timeout], mapping a timeout into the same
+ * [TransactionSubmitResult.Failure] shape a real gRPC failure would produce instead of letting
+ * [kotlinx.coroutines.TimeoutCancellationException] propagate — callers (just [broadcast] today)
+ * don't need a separate catch clause. Top-level and `internal` (rather than a private method on
+ * [OrchardMigrationSdkImpl]) specifically so it's unit-testable without needing a real
+ * WalletClientFactory/CombinedWalletClient/Tor stack.
+ */
+internal suspend fun withBroadcastTimeout(
+    useTor: Boolean,
+    txId: ByteArray,
+    timeout: Duration = BROADCAST_TIMEOUT,
+    block: suspend () -> TransactionSubmitResult,
+): TransactionSubmitResult =
+    try {
+        withTimeout(timeout) { block() }
+    } catch (e: TimeoutCancellationException) {
+        TransactionSubmitResult.Failure(
+            txId = FirstClassByteArray(txId),
+            grpcError = true,
+            code = BROADCAST_TIMEOUT_CODE,
+            description = "Broadcast timed out after $timeout",
+            isTorFailure = useTor,
+        )
     }
 
 private fun JniMigrationProgress.toPublic(): MigrationProgress =
