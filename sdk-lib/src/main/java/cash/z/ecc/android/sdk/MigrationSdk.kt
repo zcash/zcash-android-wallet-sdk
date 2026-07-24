@@ -679,6 +679,16 @@ interface OrchardMigrationSdk {
     // ── Dust locking ─────────────────────────────────────────────────────────
 
     /**
+     * The zatoshi value below which a remaining post-migration Orchard balance counts as dust
+     * (as opposed to a residual too large to ignore) — e.g. for the Migration Complete screen's
+     * "is the leftover balance negligible" gate. 100,000 zatoshi (0.001 ZEC) as of this writing.
+     * A fixed protocol-level constant (`MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`), not
+     * derived from any wallet/account state — callers should still call this rather than hardcode
+     * the value, so the app and the Rust engine can't drift apart on what counts as dust.
+     */
+    suspend fun migrationDustThresholdZatoshi(): Long
+
+    /**
      * Marks whatever Orchard balance remains after migration (dust below the migratable
      * threshold, or an opted-out residual) as unspendable, so it can't later be swept into a
      * transaction that reveals its specific — and therefore identifying — amount.

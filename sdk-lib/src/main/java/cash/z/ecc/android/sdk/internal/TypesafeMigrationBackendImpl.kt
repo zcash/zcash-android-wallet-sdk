@@ -190,6 +190,8 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): JniTransferProposal? = rustBackend().pendingTransferProposal(dbDataPath, network.id, account.value)
 
+    override suspend fun migrationDustThresholdZatoshi(): Long = rustBackend().migrationDustThresholdZatoshi()
+
     override suspend fun createUnsignedNoteSplitPczt(
         dbDataPath: String,
         network: ZcashNetwork,
