@@ -87,11 +87,10 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        outputValuesZatoshi: LongArray,
-        feeZatoshi: Long,
+        proposalHandle: Long,
         usk: ByteArray
     ): JniPreparedTransfer =
-        rustBackend().signNoteSplit(dbDataPath, network.id, account.value, outputValuesZatoshi, feeZatoshi, usk)
+        rustBackend().signNoteSplit(dbDataPath, network.id, account.value, proposalHandle, usk)
 
     override suspend fun extractBroadcastTx(
         dbDataPath: String,
@@ -130,15 +129,13 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        outputValuesZatoshi: LongArray,
-        feeZatoshi: Long
+        proposalHandle: Long
     ): JniMigrationSchedule =
         rustBackend().proposeMigrationTransfersFromSplit(
             dbDataPath,
             network.id,
             account.value,
-            outputValuesZatoshi,
-            feeZatoshi
+            proposalHandle
         )
 
     override suspend fun proposeImmediateSendMax(
@@ -151,9 +148,9 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        schedule: JniMigrationSchedule,
+        proposalHandle: Long,
         usk: ByteArray
-    ) = rustBackend().signAndStoreMigrationSchedule(dbDataPath, network.id, account.value, schedule, usk)
+    ) = rustBackend().signAndStoreMigrationSchedule(dbDataPath, network.id, account.value, proposalHandle, usk)
 
     override suspend fun finalizeReadyTransfers(
         dbDataPath: String,
@@ -196,8 +193,9 @@ internal class TypesafeMigrationBackendImpl(
     override suspend fun createUnsignedNoteSplitPczt(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): ByteArray = rustBackend().createUnsignedNoteSplitPczt(dbDataPath, network.id, account.value)
+        account: AccountUuid,
+        proposalHandle: Long
+    ): ByteArray = rustBackend().createUnsignedNoteSplitPczt(dbDataPath, network.id, account.value, proposalHandle)
 
     override suspend fun storeSignedNoteSplitPczt(
         dbDataPath: String,
@@ -211,9 +209,9 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        schedule: JniMigrationSchedule
+        proposalHandle: Long
     ): Array<JniUnsignedTransferPczt> =
-        rustBackend().createUnsignedTransferPczts(dbDataPath, network.id, account.value, schedule)
+        rustBackend().createUnsignedTransferPczts(dbDataPath, network.id, account.value, proposalHandle)
 
     override suspend fun storeSignedSchedulePczts(
         dbDataPath: String,

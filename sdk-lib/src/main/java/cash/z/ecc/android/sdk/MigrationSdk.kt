@@ -83,9 +83,18 @@ data class NetworkPrivacyOptions(
  *
  * Splitting into ~10 notes is the current target heuristic (20k ZEC cap per note).
  */
+/**
+ * [proposalHandle] is the opaque identifier of the SDK-native cached migration plan this proposal
+ * was rendered from. The plan's details never leave the native side: commit calls
+ * ([OrchardMigrationSdk.submitNoteSplit], [OrchardMigrationSdk.createUnsignedNoteSplitPczt])
+ * pass the handle back, and the native side refuses to sign any plan other than the one it
+ * identifies — throwing if a later propose/prepare call superseded it, so what gets signed is
+ * always exactly what the user reviewed.
+ */
 data class NoteSplitProposal(
     val outputNotes: List<Long>,  // amounts in zatoshi
-    val fee: Long
+    val fee: Long,
+    val proposalHandle: Long
 )
 
 /**
@@ -114,10 +123,15 @@ data class TransferProposal(
  * Full migration schedule returned by [OrchardMigrationSdk.proposeMigrationTransfers].
  * Shown to the user for review before [OrchardMigrationSdk.signAndStoreMigrationSchedule]
  * is called. After sign+store, individual transfers do not require per-send confirmation.
+ *
+ * [proposalHandle] identifies the SDK-native cached plan this schedule was rendered from — see
+ * [NoteSplitProposal.proposalHandle] for the contract. The transfer fields here are for display;
+ * signing passes only the handle back, so the native side signs exactly the identified plan.
  */
 data class MigrationSchedule(
     val transfers: List<TransferProposal>,
-    val estimatedDurationHours: Int
+    val estimatedDurationHours: Int,
+    val proposalHandle: Long
 )
 
 /**
@@ -346,11 +360,13 @@ interface OrchardMigrationSdk {
     // ── External signer (Keystone hardware wallet) ───────────────────────────
 
     /**
-     * Builds the note-split transaction as an unsigned PCZT for an external signer — the
-     * [submitNoteSplit] equivalent for callers with no software spending key. Nothing is
-     * broadcast; pass the device's returned signature to [storeSignedNoteSplitPczt].
+     * Builds the note-split transaction of the plan [proposal] identifies as an unsigned PCZT
+     * for an external signer — the [submitNoteSplit] equivalent for callers with no software
+     * spending key. Nothing is broadcast; pass the device's returned signature to
+     * [storeSignedNoteSplitPczt]. Throws if [proposal]'s plan has been superseded by a later
+     * propose/prepare call (see [NoteSplitProposal.proposalHandle]).
      */
-    suspend fun createUnsignedNoteSplitPczt(): ByteArray
+    suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): ByteArray
 
     /**
      * Accepts the externally-signed note-split PCZT, finalizes it, and broadcasts it — the
@@ -454,11 +470,14 @@ interface OrchardMigrationSdk {
      * never actually mints, which then silently (and incorrectly) falls back to an unrelated
      * already-existing note — one the split's own "sweep every spendable note" construction may
      * already be consuming as one of its own inputs, a double-spend once the split mines. Deriving
-     * the schedule from the split's own realized output plan instead makes this class of mismatch
-     * structurally impossible.
+     * the schedule from the split's own plan instead makes this class of mismatch structurally
+     * impossible.
      *
-     * Implementation note (Rust bridge, 2026-07-20): backed by
-     * `MigrationContext::propose_migration_transfers_from_split`.
+     * This never re-plans: it renders the schedule of the exact SDK-native cached plan
+     * [splitProposal] identifies (via [NoteSplitProposal.proposalHandle]) — the same plan whose
+     * split the user was just shown — and throws if that plan is missing or superseded. The
+     * returned [MigrationSchedule] carries the SAME handle, so split view, schedule view, and the
+     * eventual [submitNoteSplit]/[signAndStoreMigrationSchedule] all refer to one plan.
      */
     suspend fun proposeMigrationTransfersFromSplit(splitProposal: NoteSplitProposal): MigrationSchedule
 
@@ -498,6 +517,11 @@ interface OrchardMigrationSdk {
      * witnessed yet — it defers the proof for such transfers rather than requiring them to wait.
      * Callers do not need to wait for note-split to confirm on-chain before calling this. See
      * [finalizeReadyTransfers] for how those deferred-proof transfers are later completed.
+     *
+     * Only [schedule]'s [MigrationSchedule.proposalHandle] crosses to the native side — the
+     * schedule's display fields are never echoed back. The native side signs exactly the cached
+     * plan the handle identifies, and throws if a later propose/prepare call superseded it (in
+     * which case re-propose and show the user the new schedule before retrying).
      */
     suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey)
 

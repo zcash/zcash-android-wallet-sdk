@@ -142,13 +142,18 @@ class MigrationRustBackend private constructor() {
                 ?: error("prepareNoteSplit returned null")
         }
 
+    /**
+     * [proposalHandle] identifies the Rust-side cached plan to commit and sign — the one whose
+     * proposal ([JniNoteSplitProposal.proposalHandle]) the user reviewed. Throws if that plan is
+     * missing or has been superseded by a later propose/prepare call; the Rust side never signs
+     * anything the handle doesn't identify.
+     */
     @Throws(RuntimeException::class)
     suspend fun signNoteSplit(
         dbDataPath: String,
         networkId: Int,
         accountUuidBytes: ByteArray,
-        outputValuesZatoshi: LongArray,
-        feeZatoshi: Long,
+        proposalHandle: Long,
         usk: ByteArray
     ): JniPreparedTransfer =
         withContext(SdkDispatchers.DATABASE_IO) {
@@ -156,8 +161,7 @@ class MigrationRustBackend private constructor() {
                 dbDataPath,
                 networkId,
                 accountUuidBytes,
-                outputValuesZatoshi,
-                feeZatoshi,
+                proposalHandle,
                 usk
             ) ?: error("signNoteSplit returned null")
         }
@@ -213,26 +217,26 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
-     * Proposes the migration schedule directly from a note-split's own output plan — use this
-     * instead of [proposeMigrationTransfers] whenever a split is about to run or just ran, so
-     * every crossing value is guaranteed to match a note the split actually produces (see
-     * `MigrationContext::propose_migration_transfers_from_split`'s Rust doc comment for why).
+     * Renders the transfer schedule of the exact cached plan [proposalHandle] identifies (the one
+     * whose note split the user was just shown by [prepareNoteSplit]) — use this instead of
+     * [proposeMigrationTransfers] whenever a split is about to run or just ran, so the schedule
+     * shown is guaranteed to belong to the same plan as the split. Unlike
+     * [proposeMigrationTransfers] this never re-plans; it throws if the identified plan is
+     * missing or superseded. The returned schedule carries the SAME handle.
      */
     @Throws(RuntimeException::class)
     suspend fun proposeMigrationTransfersFromSplit(
         dbDataPath: String,
         networkId: Int,
         accountUuidBytes: ByteArray,
-        outputValuesZatoshi: LongArray,
-        feeZatoshi: Long
+        proposalHandle: Long
     ): JniMigrationSchedule =
         withContext(SdkDispatchers.DATABASE_IO) {
             proposeMigrationTransfersFromSplitNative(
                 dbDataPath,
                 networkId,
                 accountUuidBytes,
-                outputValuesZatoshi,
-                feeZatoshi
+                proposalHandle
             ) ?: error("proposeMigrationTransfersFromSplit returned null")
         }
 
@@ -253,25 +257,25 @@ class MigrationRustBackend private constructor() {
             proposeImmediateSendMaxNative(dbDataPath, networkId, accountUuidBytes)
         }
 
-    @Suppress("LongParameterList")
+    /**
+     * Commits and signs the migration plan [proposalHandle] identifies. No schedule fields cross
+     * the boundary — the plan's details live only on the Rust side, and this throws if the
+     * identified plan is missing or has been superseded by a later propose/prepare call, so it
+     * can only ever sign the exact schedule the user was shown.
+     */
     @Throws(RuntimeException::class)
     suspend fun signAndStoreMigrationSchedule(
         dbDataPath: String,
         networkId: Int,
         accountUuidBytes: ByteArray,
-        schedule: JniMigrationSchedule,
+        proposalHandle: Long,
         usk: ByteArray
     ) = withContext(SdkDispatchers.DATABASE_IO) {
         signAndStoreMigrationScheduleNative(
             dbDataPath,
             networkId,
             accountUuidBytes,
-            Array(schedule.transfers.size) { schedule.transfers[it].id },
-            LongArray(schedule.transfers.size) { schedule.transfers[it].amountZatoshi },
-            LongArray(schedule.transfers.size) { schedule.transfers[it].anchorHeight },
-            LongArray(schedule.transfers.size) { schedule.transfers[it].nextExecutableAfterHeight },
-            LongArray(schedule.transfers.size) { schedule.transfers[it].expiryHeight },
-            schedule.estimatedDurationHours,
+            proposalHandle,
             usk
         )
     }
@@ -352,14 +356,20 @@ class MigrationRustBackend private constructor() {
 
     // ----- External signer (Keystone hardware wallet) -----
 
+    /**
+     * Commits the migration plan [proposalHandle] identifies (unsigned — external-signer path)
+     * and returns the note split's unsigned PCZT. Same handle contract as [signNoteSplit]: throws
+     * if the identified plan is missing or superseded.
+     */
     @Throws(RuntimeException::class)
     suspend fun createUnsignedNoteSplitPczt(
         dbDataPath: String,
         networkId: Int,
-        accountUuidBytes: ByteArray
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long
     ): ByteArray =
         withContext(SdkDispatchers.DATABASE_IO) {
-            createUnsignedNoteSplitPcztNative(dbDataPath, networkId, accountUuidBytes)
+            createUnsignedNoteSplitPcztNative(dbDataPath, networkId, accountUuidBytes, proposalHandle)
                 ?: error("createUnsignedNoteSplitPczt returned null")
         }
 
@@ -375,24 +385,24 @@ class MigrationRustBackend private constructor() {
                 ?: error("storeSignedNoteSplitPczt returned null")
         }
 
+    /**
+     * Builds the unsigned transfer PCZTs of the migration plan [proposalHandle] identifies
+     * (committing it first if [createUnsignedNoteSplitPczt] hasn't already). Same handle contract
+     * as [signAndStoreMigrationSchedule].
+     */
     @Throws(RuntimeException::class)
     suspend fun createUnsignedTransferPczts(
         dbDataPath: String,
         networkId: Int,
         accountUuidBytes: ByteArray,
-        schedule: JniMigrationSchedule
+        proposalHandle: Long
     ): Array<JniUnsignedTransferPczt> =
         withContext(SdkDispatchers.DATABASE_IO) {
             createUnsignedTransferPcztsNative(
                 dbDataPath,
                 networkId,
                 accountUuidBytes,
-                Array(schedule.transfers.size) { schedule.transfers[it].id },
-                LongArray(schedule.transfers.size) { schedule.transfers[it].amountZatoshi },
-                LongArray(schedule.transfers.size) { schedule.transfers[it].anchorHeight },
-                LongArray(schedule.transfers.size) { schedule.transfers[it].nextExecutableAfterHeight },
-                LongArray(schedule.transfers.size) { schedule.transfers[it].expiryHeight },
-                schedule.estimatedDurationHours
+                proposalHandle
             ) ?: error("createUnsignedTransferPczts returned null")
         }
 
@@ -574,8 +584,7 @@ class MigrationRustBackend private constructor() {
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray,
-            outputValuesZatoshi: LongArray,
-            feeZatoshi: Long,
+            proposalHandle: Long,
             usk: ByteArray
         ): JniPreparedTransfer?
 
@@ -615,8 +624,7 @@ class MigrationRustBackend private constructor() {
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray,
-            outputValuesZatoshi: LongArray,
-            feeZatoshi: Long
+            proposalHandle: Long
         ): JniMigrationSchedule?
 
         @JvmStatic
@@ -628,18 +636,12 @@ class MigrationRustBackend private constructor() {
         ): ByteArray
 
         @JvmStatic
-        @Suppress("LongParameterList")
         @Throws(RuntimeException::class)
         private external fun signAndStoreMigrationScheduleNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray,
-            ids: Array<String>,
-            amountsZatoshi: LongArray,
-            anchorHeights: LongArray,
-            nextExecutableAfterHeights: LongArray,
-            expiryHeights: LongArray,
-            estimatedDurationHours: Int,
+            proposalHandle: Long,
             usk: ByteArray
         )
 
@@ -696,7 +698,8 @@ class MigrationRustBackend private constructor() {
         private external fun createUnsignedNoteSplitPcztNative(
             dbDataPath: String,
             networkId: Int,
-            accountUuidBytes: ByteArray
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long
         ): ByteArray?
 
         @JvmStatic
@@ -709,18 +712,12 @@ class MigrationRustBackend private constructor() {
         ): JniPreparedTransfer?
 
         @JvmStatic
-        @Suppress("LongParameterList")
         @Throws(RuntimeException::class)
         private external fun createUnsignedTransferPcztsNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray,
-            ids: Array<String>,
-            amountsZatoshi: LongArray,
-            anchorHeights: LongArray,
-            nextExecutableAfterHeights: LongArray,
-            expiryHeights: LongArray,
-            estimatedDurationHours: Int
+            proposalHandle: Long
         ): Array<JniUnsignedTransferPczt>?
 
         @JvmStatic

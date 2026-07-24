@@ -153,8 +153,7 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid,
-            outputValuesZatoshi: LongArray,
-            feeZatoshi: Long,
+            proposalHandle: Long,
             usk: ByteArray
         ): JniPreparedTransfer = error("Unused")
 
@@ -186,8 +185,7 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid,
-            outputValuesZatoshi: LongArray,
-            feeZatoshi: Long
+            proposalHandle: Long
         ): JniMigrationSchedule = error("Unused")
 
         override suspend fun proposeImmediateSendMax(
@@ -204,7 +202,7 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid,
-            schedule: JniMigrationSchedule,
+            proposalHandle: Long,
             usk: ByteArray
         ) = error("Unused")
 
@@ -247,7 +245,8 @@ class OrchardMigrationSdkImplTest {
         override suspend fun createUnsignedNoteSplitPczt(
             dbDataPath: String,
             network: ZcashNetwork,
-            account: AccountUuid
+            account: AccountUuid,
+            proposalHandle: Long
         ): ByteArray = error("Unused")
 
         override suspend fun storeSignedNoteSplitPczt(
@@ -261,7 +260,7 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid,
-            schedule: JniMigrationSchedule
+            proposalHandle: Long
         ): Array<JniUnsignedTransferPczt> = error("Unused")
 
         override suspend fun storeSignedSchedulePczts(

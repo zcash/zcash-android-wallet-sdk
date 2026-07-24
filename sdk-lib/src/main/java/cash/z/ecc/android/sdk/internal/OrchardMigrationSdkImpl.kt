@@ -211,6 +211,7 @@ internal class OrchardMigrationSdkImpl(
         NoteSplitProposal(
             outputNotes = proposal.outputValuesZatoshi.toList(),
             fee = proposal.feeZatoshi,
+            proposalHandle = proposal.proposalHandle,
         )
     }
 
@@ -222,8 +223,7 @@ internal class OrchardMigrationSdkImpl(
                 dbDataPath,
                 network,
                 account,
-                proposal.outputNotes.toLongArray(),
-                proposal.fee,
+                proposal.proposalHandle,
                 usk.copyBytes(),
             )
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
@@ -243,11 +243,12 @@ internal class OrchardMigrationSdkImpl(
 
     // ── External signer (Keystone hardware wallet) ──────────────────────────
 
-    override suspend fun createUnsignedNoteSplitPczt(): ByteArray = logged("createUnsignedNoteSplitPczt") {
-        val dbDataPath = dbDataPath()
-        val account = account ?: noAccountAvailable()
-        migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account)
-    }
+    override suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): ByteArray =
+        logged("createUnsignedNoteSplitPczt") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account, proposal.proposalHandle)
+        }
 
     override suspend fun storeSignedNoteSplitPczt(
         signedPczt: ByteArray,
@@ -276,7 +277,7 @@ internal class OrchardMigrationSdkImpl(
         logged("createUnsignedTransferPczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.createUnsignedTransferPczts(dbDataPath, network, account, schedule.toJni())
+            migrationBackend.createUnsignedTransferPczts(dbDataPath, network, account, schedule.proposalHandle)
                 .map { it.id to it.pcztBytes }
         }
 
@@ -347,8 +348,7 @@ internal class OrchardMigrationSdkImpl(
                 dbDataPath,
                 network,
                 account,
-                splitProposal.outputNotes.toLongArray(),
-                splitProposal.fee,
+                splitProposal.proposalHandle,
             ).toPublic()
         }
 
@@ -366,7 +366,7 @@ internal class OrchardMigrationSdkImpl(
                 dbDataPath,
                 network,
                 account,
-                schedule.toJni(),
+                schedule.proposalHandle,
                 usk.copyBytes(),
             )
         }
@@ -673,6 +673,7 @@ private fun JniMigrationSchedule.toPublic(): MigrationSchedule =
     MigrationSchedule(
         transfers = transfers.map { it.toPublic() },
         estimatedDurationHours = estimatedDurationHours,
+        proposalHandle = proposalHandle,
     )
 
 private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
@@ -686,21 +687,6 @@ private fun JniMigrationTransferStates.toPublic(): MigrationTransferStates =
     MigrationTransferStates(
         transfers = transfers.map { it.toPublic() },
         tipHeight = tipHeight,
-    )
-
-private fun TransferProposal.toJni(): JniTransferProposal =
-    JniTransferProposal(
-        id = id,
-        amountZatoshi = amountZatoshi,
-        anchorHeight = anchorHeight,
-        nextExecutableAfterHeight = nextExecutableAfterHeight,
-        expiryHeight = expiryHeight,
-    )
-
-private fun MigrationSchedule.toJni(): JniMigrationSchedule =
-    JniMigrationSchedule(
-        transfers = transfers.map { it.toJni() }.toTypedArray(),
-        estimatedDurationHours = estimatedDurationHours,
     )
 
 private fun JniKeystoneBatchDecodeResult.toPublic(): KeystoneBatchDecodeResult =
