@@ -111,6 +111,8 @@ message Exclude {
 
 // The TreeState is derived from the Zcash z_gettreestate rpc.
 message TreeState {
+    // The field numbers below must follow lightwalletd's generated bindings:
+    // https://github.com/zcash/lightwalletd/blob/master/walletrpc/service.pb.go
     string network = 1;     // "main" or "test"
     uint64 height = 2;      // block height
     string hash = 3;        // block id
