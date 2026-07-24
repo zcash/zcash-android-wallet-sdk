@@ -2496,6 +2496,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
 
 /// Redacts information from the given PCZT that is unnecessary for the Signer role.
 ///
+/// Applies the canonical Signer-role policy from
+/// [`zcash_client_backend::data_api::wallet::redact_pczt_for_signer`], and additionally
+/// omits Sapling spend witnesses. The caller must retain the unredacted PCZT and combine
+/// the Signer output into it via `extractAndStoreTxFromPczt`.
+///
 /// Returns the updated PCZT in its serialized format.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcztForSignerRole<
@@ -2510,24 +2515,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcz
 
         let pczt = parse_pczt(env, pczt)?;
 
-        let pczt_with_proofs = Redactor::new(pczt)
-            .redact_global_with(|mut r| r.redact_proprietary("zcash_client_backend:proposal_info"))
-            .redact_orchard_with(|mut r| {
-                r.redact_actions(|mut ar| {
-                    ar.clear_spend_witness();
-                    ar.redact_output_proprietary("zcash_client_backend:output_info");
-                })
-            })
+        // The upstream policy retains Sapling spend witnesses for Signers that verify
+        // nullifiers; the Signers this SDK targets do not, so keep omitting them.
+        let pczt_with_proofs = Redactor::new(wallet::redact_pczt_for_signer(&pczt))
             .redact_sapling_with(|mut r| {
                 r.redact_spends(|mut sr| sr.clear_witness());
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .redact_transparent_with(|mut r| {
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
             })
             .finish();
 

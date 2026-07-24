@@ -6,6 +6,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `Synchronizer.redactPcztForSigner` now applies the canonical Signer-role redaction policy
+  from `zcash_client_backend`: in addition to the previously redacted wallet metadata and
+  spend witnesses, it removes zero-knowledge proofs, binding signing keys, and dummy-spend
+  signing keys, redacts the Ironwood bundle identically to Orchard, compacts resolvable
+  Orchard/Ironwood fields, and removes shielded anchors from v6 transactions. This
+  substantially reduces the size of the payload transferred to air-gapped hardware signers
+  such as Keystone over animated QR codes. All removed data is regenerated or restored from
+  the retained unredacted PCZT when it is combined with the signed PCZT in
+  `Synchronizer.createTransactionFromPczt`, so no caller changes are required.
+
 ## [2.6.5] - 2026-06-19
 
 ### Fixed
