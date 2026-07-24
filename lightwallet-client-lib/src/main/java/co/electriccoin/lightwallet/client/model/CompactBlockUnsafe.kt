@@ -36,17 +36,21 @@ class CompactBlockUnsafe(
         }
 
         private fun getOutputsCounts(vtxList: List<CompactFormats.CompactTx>): CompactBlockOutputsCounts {
-            var outputsCount: UInt = 0u
-            var actionsCount: UInt = 0u
+            var saplingOutputsCount: UInt = 0u
+            var orchardActionsCount: UInt = 0u
             var ironwoodActionsCount: UInt = 0u
 
             vtxList.forEach { compactTx ->
-                outputsCount += compactTx.outputsCount.toUInt()
-                actionsCount += compactTx.actionsCount.toUInt()
+                saplingOutputsCount += compactTx.outputsCount.toUInt()
+                orchardActionsCount += compactTx.actionsCount.toUInt()
                 ironwoodActionsCount += compactTx.ironwoodActionsCount.toUInt()
             }
 
-            return CompactBlockOutputsCounts(outputsCount, actionsCount, ironwoodActionsCount)
+            return CompactBlockOutputsCounts(
+                saplingOutputsCount = saplingOutputsCount,
+                orchardActionsCount = orchardActionsCount,
+                ironwoodActionsCount = ironwoodActionsCount
+            )
         }
     }
 
