@@ -3732,6 +3732,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
 //
 
 fn parse_protocol(code: i32) -> anyhow::Result<ShieldedPool> {
+    // The codes below must follow zcash_client_sqlite's own pool-type encoding:
+    // https://github.com/zcash/librustzcash/blob/main/zcash_client_sqlite/src/wallet/encoding.rs#L42
     match code {
         2 => Ok(ShieldedPool::Sapling),
         3 => Ok(ShieldedPool::Orchard),
