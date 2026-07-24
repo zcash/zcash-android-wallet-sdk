@@ -1,4 +1,8 @@
-//! EIP-681 transaction request parsing via JNI.
+//! JNI bindings for EIP-681 transaction requests.
+//!
+//! Exports for `cash.z.ecc.android.sdk.internal.jni.RustEip681Tool`, plus the
+//! encoders and decoders that marshal a [`TransactionRequest`] across the
+//! boundary, and the parsing helpers those use.
 
 use jni::{
     JNIEnv,
@@ -13,8 +17,6 @@ use crate::utils::{
 };
 
 const JNI_CLASS_PREFIX: &str = "cash/z/ecc/android/sdk/internal/model/JniEip681TransactionRequest";
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
