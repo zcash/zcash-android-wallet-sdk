@@ -183,6 +183,28 @@ jobs:
           name: Android Lint static analysis results
           path: ~/artifacts
 
+  # Asserts the JNI export surface has not drifted. Kotlin binds these symbols
+  # by name and resolves them lazily, so a renamed or dropped export is a crash
+  # on the device rather than a build failure; nothing else in this workflow
+  # would catch it.
+  check_jni_symbols:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+      - name: Check the JNI export surface
+        timeout-minutes: 30
+        run: |
+          ./scripts/check-jni-symbols.sh
+
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
     runs-on: ubuntu-latest
