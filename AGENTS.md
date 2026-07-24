@@ -104,6 +104,93 @@ The project uses ticket-prefixed commit messages for tracked work, e.g.
 prefix is acceptable (`fix: ...`, `chore: ...`). Keep the first line under
 72 characters; include context in the body.
 
+## JNI module layout (Rust)
+
+All `Java_*` JNI exports live under `backend-lib/src/main/rust/zcash_jni/`,
+one submodule per area. The sibling modules hold only logic, with no
+`extern "C"` functions:
+
+```
+backend-lib/src/main/rust/
+  lib.rs            crate root: module declarations + non-JNI logic
+  zcash_jni/
+    mod.rs          submodule declarations + shared marshalling
+    wallet.rs       ..._jni_RustBackend_*                       (50)
+    derivation.rs   ..._jni_RustDerivationTool_*                 (9)
+    tor.rs          ..._model_TorClient_* / _TorWalletClient_*  (17)
+    eip681.rs       ..._jni_RustEip681Tool_*                     (2)
+  eip681.rs         EIP-681 parsing logic
+  tor.rs            Tor runtime and lightwalletd logic
+  utils.rs          domain-neutral JNI plumbing (see below)
+```
+
+**When adding a new JNI function, put it in the matching `zcash_jni`
+submodule, never in the logic module.** Keep the logic in the sibling
+module and call into it, so the export stays a thin boundary. If a new area
+has no submodule yet, add one rather than parking exports in `lib.rs`.
+
+### Why the module is called `zcash_jni`
+
+A crate-root `mod jni;` would shadow the `jni` crate, so every bare `jni::`
+path in `lib.rs` would have to be respelled `::jni::`. The prefix keeps
+`jni::` meaning the crate everywhere.
+
+### Where the boundary falls
+
+It is not only the `Java_*` functions that belong in `zcash_jni`. The rule
+is *does this symbol speak JNI?*:
+
+| Goes in `zcash_jni` | Stays in the logic module |
+|---|---|
+| `Java_*` exports | Domain constants and types |
+| Anything whose signature mentions `JNIEnv` or a `J*` / `j*` type | Anything expressible in plain Rust types |
+| Java class-path descriptors (`"cash/z/ecc/.../JniFoo"`) | Database, planning, proving, protocol logic |
+| Helpers that build or parse Java objects (`encode_*` / `decode_*` over `env.new_object`) | Unit tests of that logic |
+
+When a helper mixes both, split it rather than moving it wholesale. The
+worked example is `wallet_db`: it decoded a `JString` path and then opened
+a database, so the decoding half is `zcash_jni::wallet_db` and it calls the
+pure `crate::wallet_db`, which takes a `PathBuf`.
+
+Marshalling lives **beside the exports it serves**, not in a shared bucket.
+`zcash_jni/mod.rs` holds only what two or more submodules need; anything
+with a single caller lives in that caller's submodule. That is why
+`encode_usk` sits in `wallet.rs` and `encode_transaction` in `tor.rs`.
+
+This gives a checkable invariant: **outside `#[cfg(test)]`, a logic module
+must not reference the `jni` crate at all.** `crate::utils` is the
+exception by design; it is the domain-neutral plumbing (`catch_unwind`,
+byte-array and string conversion, exception handling) that every submodule
+builds on, not a logic module.
+
+### Verifying the JNI export surface
+
+Kotlin binds JNI by symbol name and resolves lazily, so renaming or dropping
+an export is a *runtime* crash, not a compile error. Neither `cargo check`
+nor the Kotlin build catches it. `scripts/check-jni-symbols.sh` does:
+
+```bash
+./scripts/check-jni-symbols.sh            # verify against the baseline
+./scripts/check-jni-symbols.sh --update   # rewrite the baseline
+```
+
+It builds the cdylib, extracts the exported `Java_*` names, and diffs them
+against `backend-lib/jni-symbols.txt`, which is committed.
+
+**A pure refactor must never need `--update`.** If it does, the refactor
+renamed something and the Kotlin side would have failed to resolve it on a
+device. Run the script before and after any change that only moves code.
+
+Adding, removing or renaming a JNI function *is* a change to the export
+surface, so it legitimately needs `--update`. Commit the regenerated
+baseline in the same commit as the code, so the contract change is visible
+in review rather than buried in a rebuild.
+
+Only the symbol *name* is compared. `nm`'s address column shifts on every
+rebuild, and Mach-O prefixes names with an underscore that ELF does not, so
+neither belongs in the baseline. There are no feature-gated modules in this
+crate, so one build covers the whole surface.
+
 ## Other notes
 
 - The SDK and related libraries are Kotlin + Rust. Changes that cross the
