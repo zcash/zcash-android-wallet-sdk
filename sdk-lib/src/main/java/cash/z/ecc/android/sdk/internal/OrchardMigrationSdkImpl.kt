@@ -480,6 +480,11 @@ internal class OrchardMigrationSdkImpl(
 
     // ── Dust locking ─────────────────────────────────────────────────────────
 
+    override suspend fun migrationDustThresholdZatoshi(): Long =
+        logged("migrationDustThresholdZatoshi") {
+            migrationBackend.migrationDustThresholdZatoshi()
+        }
+
     override suspend fun lockRemainingOrchardBalance() = logged("lockRemainingOrchardBalance") {
         val dbDataPath = dbDataPath()
         val account = account ?: noAccountAvailable()
