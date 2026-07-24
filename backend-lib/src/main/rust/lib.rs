@@ -3401,6 +3401,80 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_get
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Streams compact blocks in the given range over Tor.
+/// Calls the provided callback for each serialized CompactBlock proto.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_getBlockRange<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    lwd_conn: jlong,
+    start_height: jlong,
+    end_height: jlong,
+    callback: JObject<'local>,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        lwd_conn.with_block_range(
+            start_height as u64,
+            end_height as u64,
+            |block_bytes| {
+                let java_bytes = utils::rust_bytes_to_java(env, &block_bytes)?;
+                env.call_method(
+                    &callback,
+                    "onBlock",
+                    "([B)V",
+                    &[jni::objects::JValueOwned::from(java_bytes).borrow()],
+                )?;
+                Ok(())
+            },
+        )
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Fetches subtree roots over Tor.
+/// protocol: 0=Sapling, 1=Orchard
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_getSubtreeRoots<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    lwd_conn: jlong,
+    start_index: jint,
+    shielded_protocol: jint,
+    max_entries: jint,
+    callback: JObject<'local>,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        lwd_conn.with_subtree_roots(
+            start_index as u32,
+            shielded_protocol,
+            max_entries as u32,
+            |root_bytes| {
+                let java_bytes = utils::rust_bytes_to_java(env, &root_bytes)?;
+                env.call_method(
+                    &callback,
+                    "onSubtreeRoot",
+                    "([B)V",
+                    &[jni::objects::JValueOwned::from(java_bytes).borrow()],
+                )?;
+                Ok(())
+            },
+        )
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
 /// Checks to find any single-use ephemeral addresses exposed in the past day that have not yet
 /// received funds, excluding any whose next check time is in the future. This will then choose the
 /// address that is most overdue for checking, retrieve any UTXOs for that address over Tor, and

@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal.model
 
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.LightWalletClient
+import cash.z.ecc.android.sdk.internal.model.TorWalletClient
 import co.electriccoin.lightwallet.client.PartialTorWalletClient
 import co.electriccoin.lightwallet.client.PartialWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
@@ -14,6 +15,7 @@ import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.UninitializedTorClientException
+import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
 import co.electriccoin.lightwallet.client.util.use
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -35,7 +37,8 @@ class CombinedWalletClientImpl private constructor(
     override suspend fun dispose() {
         semaphore.withLock {
             lightWalletClient.dispose()
-            torClient?.dispose()
+            // Note: torClient is owned by SdkSynchronizer and disposed there.
+            // Disposing it here would cause double-dispose when SdkSynchronizer.close() runs.
             cache.forEach { (_, client) -> client.dispose() }
             cache.clear()
         }
@@ -52,7 +55,14 @@ class CombinedWalletClientImpl private constructor(
 
     override suspend fun getLatestBlockHeight(
         serviceMode: ServiceMode
-    ) = executeAsResponse(serviceMode) { getLatestBlockHeight() }
+    ): Response<BlockHeightUnsafe> {
+        val isOnion = endpoint.host.endsWith(".onion") && torClient != null
+        if ((serviceMode != ServiceMode.Direct || isOnion) && torClient != null) {
+            val client = semaphore.withLock { getOrCreate(ServiceMode.Group("onion-sync")) }
+            return client.getLatestBlockHeight()
+        }
+        return executeAsResponse(ServiceMode.Direct) { getLatestBlockHeight() }
+    }
 
     override suspend fun submitTransaction(
         tx: ByteArray,
@@ -62,7 +72,14 @@ class CombinedWalletClientImpl private constructor(
     override suspend fun getTreeState(
         height: BlockHeightUnsafe,
         serviceMode: ServiceMode
-    ) = executeAsResponse(serviceMode) { getTreeState(height) }
+    ): Response<TreeStateUnsafe> {
+        val isOnion = endpoint.host.endsWith(".onion") && torClient != null
+        if ((serviceMode != ServiceMode.Direct || isOnion) && torClient != null) {
+            val client = semaphore.withLock { getOrCreate(ServiceMode.Group("onion-sync")) }
+            return client.getTreeState(height)
+        }
+        return executeAsResponse(ServiceMode.Direct) { getTreeState(height) }
+    }
 
     override suspend fun checkSingleUseTransparentAddress(
         accountUuid: ByteArray,
@@ -103,8 +120,14 @@ class CombinedWalletClientImpl private constructor(
         heightRange: ClosedRange<BlockHeightUnsafe>,
         serviceMode: ServiceMode
     ): Flow<Response<CompactBlockUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
-        return executeAsFlow(serviceMode) {
+        val isOnion = endpoint.host.endsWith(".onion") && torClient != null
+        if (serviceMode != ServiceMode.Direct || isOnion) {
+            val client = semaphore.withLock { getOrCreate(ServiceMode.Group("onion-sync")) }
+            (client as? TorWalletClient)?.let {
+                return it.getBlockRange(heightRange.start.value, heightRange.endInclusive.value)
+            }
+        }
+        return executeAsFlow(ServiceMode.Direct) {
             require(this is LightWalletClient)
             getBlockRange(heightRange)
         }
@@ -128,8 +151,14 @@ class CombinedWalletClientImpl private constructor(
         maxEntries: UInt,
         serviceMode: ServiceMode
     ): Flow<Response<SubtreeRootUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
-        return executeAsFlow(serviceMode) {
+        val isOnion = endpoint.host.endsWith(".onion") && torClient != null
+        if (serviceMode != ServiceMode.Direct || isOnion) {
+            val client = semaphore.withLock { getOrCreate(ServiceMode.Group("onion-sync")) }
+            (client as? TorWalletClient)?.let {
+                return it.getSubtreeRoots(startIndex.toInt(), shieldedProtocol, maxEntries.toInt())
+            }
+        }
+        return executeAsFlow(ServiceMode.Direct) {
             require(this is LightWalletClient)
             getSubtreeRoots(startIndex, shieldedProtocol, maxEntries)
         }
@@ -205,7 +234,7 @@ class CombinedWalletClientImpl private constructor(
         if (torClient == null) throw UninitializedTorClientException(NullPointerException("torClient is null"))
 
         return try {
-            torClient.createWalletClient("https://${endpoint.host}:${endpoint.port}")
+            torClient.createWalletClient("${if (endpoint.isSecure) "https" else "grpc"}://${endpoint.host}:${endpoint.port}")
         } catch (e: Exception) {
             throw UninitializedTorClientException(e)
         }

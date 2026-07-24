@@ -30,6 +30,7 @@ zcash_client_backend = { version = "0.23", features = [
     "unstable",
     "pczt",
 ] }
+arti-client = { version = "0.35", default-features = false, features = ["onion-service-client"] }
 zcash_client_sqlite = { version = "0.21", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.28"
