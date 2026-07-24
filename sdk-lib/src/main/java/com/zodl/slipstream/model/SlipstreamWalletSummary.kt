@@ -38,9 +38,9 @@ data class SlipstreamAccountBalance(
     val sapling: SlipstreamPoolBalance,
     val orchard: SlipstreamPoolBalance,
     /**
-     * FORWARD FIELD: unspent Ironwood (Orchard note-version V3) outputs. Null when the AAR's
-     * engine tag predates ironwood support. Presence follows the engine tag the AAR was built
-     * from (`FFI_JNI_CONTRACT.md` section 9.2).
+     * FORWARD FIELD: unspent Ironwood (Orchard note-version V3) outputs. Populated whenever the
+     * linked librustzcash generation is ironwood-capable; null only when the AAR's engine/JNI
+     * tag predates ironwood support (`FFI_JNI_CONTRACT.md` section 9.2).
      */
     val ironwood: SlipstreamPoolBalance?,
     /** All unspent transparent outputs regardless of confirmations (zero-conf shieldable). */
@@ -79,6 +79,9 @@ data class SlipstreamWalletSummary(
     val recoveryProgress: SlipstreamScanProgress?,
     val nextSaplingSubtreeIndex: Long,
     val nextOrchardSubtreeIndex: Long,
-    /** FORWARD FIELD: null when the AAR's engine tag predates ironwood support. */
+    /**
+     * FORWARD FIELD: populated whenever the linked librustzcash generation is ironwood-capable;
+     * null only when the AAR's engine/JNI tag predates ironwood support.
+     */
     val nextIronwoodSubtreeIndex: Long?
 )

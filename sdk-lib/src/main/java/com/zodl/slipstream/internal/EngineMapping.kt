@@ -48,9 +48,10 @@ private fun SlipstreamPoolBalance.maskIfStale(mask: Boolean): SlipstreamPoolBala
 
 /**
  * Maps the engine's phase-resolving summary to the SDK's public balance model. `ironwood` is
- * read straight from the engine's own `SlipstreamAccountBalance.ironwood` FORWARD FIELD; on the
- * v0.6.x AAR line (pre-ironwood, DECISIONS.md D4) it is always null and surfaces as a zero
- * balance until an ironwood-tagged AAR ships real values.
+ * read straight from the engine's own `SlipstreamAccountBalance.ironwood` FORWARD FIELD; the JNI
+ * populates it whenever the linked librustzcash generation is ironwood-capable (DECISIONS.md D4).
+ * It is null only for an engine/JNI build that predates ironwood support, in which case it
+ * surfaces as a zero balance here.
  */
 internal fun SlipstreamWalletSummary.toAccountBalances(
     isRecovering: Boolean,

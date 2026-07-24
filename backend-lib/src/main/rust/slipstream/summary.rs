@@ -16,11 +16,12 @@
 //! replacement is intentionally NOT cached — it re-reads the cheap view every call so a
 //! recovering host sees the per-tick climb.
 //!
-//! One forward-compat gap (see README): **Ironwood forward fields**
-//! (`SlipstreamAccountBalance.ironwood`, `SlipstreamWalletSummary.nextIronwoodSubtreeIndex`)
-//! are constructed as `null` here. They stay null at the v0.6.0 contract; when the AAR is
-//! built from an ironwood engine tag, wire them from `balance.ironwood_balance()` / the
-//! summary index (marked inline).
+//! **Ironwood forward fields** (`SlipstreamAccountBalance.ironwood`,
+//! `SlipstreamWalletSummary.nextIronwoodSubtreeIndex`) are populated whenever the linked
+//! librustzcash generation is ironwood-capable, wired from `balance.ironwood_balance()` / the
+//! summary's `next_ironwood_subtree_index()` (marked inline). They fall back to `null` only for
+//! an engine/JNI build that predates ironwood support, and (deliberately) during recovery, where
+//! the collapsed net already includes ironwood value (marked inline).
 
 use anyhow::anyhow;
 use std::num::NonZeroU32;
@@ -193,6 +194,11 @@ pub(crate) fn wallet_summary_object<'local>(
         let obj = if is_recovering {
             // Direction-B collapse (rust/src/ffi.rs:399): the whole clamped recovery net
             // becomes orchard `spendableValue`, every other component zero; `total()` == net.
+            // ironwood stays null here deliberately (not a forward-field gap): the recovery net
+            // comes from `slipstream_v_recovery_balance` (core/src/reconcile.rs:96-103), which
+            // sums pool-agnostic `v_transactions.account_balance_delta` — ironwood value is
+            // already folded into that single collapsed net, so adding an ironwood pool object
+            // here would double-count it.
             let net = recovery_nets.get(uuid_bytes).copied().unwrap_or(0);
             let sapling = pool_balance(env, 0, 0, 0)?;
             let orchard = pool_balance(env, net.max(0), 0, 0)?;
@@ -211,17 +217,18 @@ pub(crate) fn wallet_summary_object<'local>(
                 zat(balance.orchard_balance().value_pending_spendability()),
             )?;
             let unshielded = zat(balance.unshielded_balance().total());
-            // FORWARD FIELD (§9.2): ironwood pool is null at v0.6.0. When built from an
-            // ironwood engine tag, replace `&JObject::null()` with a `SlipstreamPoolBalance`
-            // constructed from `balance.ironwood_balance()` (spendable/change/pending).
-            account_balance(
+            // FORWARD FIELD (§9.2): populated because the linked librustzcash pin is
+            // ironwood-capable — `balance.ironwood_balance()` folds `ironwood_received_notes`
+            // the same way `lib.rs:1647-1651` (`encode_account_balance`) does for the mainline
+            // getWalletSummary JNI. Stays null only for an engine/JNI build that predates
+            // ironwood support.
+            let ironwood = pool_balance(
                 env,
-                uuid_bytes,
-                &sapling,
-                &orchard,
-                &JObject::null(),
-                unshielded,
-            )?
+                zat(balance.ironwood_balance().spendable_value()),
+                zat(balance.ironwood_balance().change_pending_confirmation()),
+                zat(balance.ironwood_balance().value_pending_spendability()),
+            )?;
+            account_balance(env, uuid_bytes, &sapling, &orchard, &ironwood, unshielded)?
         };
         env.set_object_array_element(&acc_array, i as i32, &obj)?;
     }
@@ -240,9 +247,15 @@ pub(crate) fn wallet_summary_object<'local>(
     let fully_scanned = i64::from(u32::from(summary.fully_scanned_height()));
     let next_sapling = summary.next_sapling_subtree_index() as i64;
     let next_orchard = summary.next_orchard_subtree_index() as i64;
-    // FORWARD FIELD (§9.2): nextIronwoodSubtreeIndex is null at v0.6.0. From an ironwood tag,
-    // box the index as a `java/lang/Long` instead of `JObject::null()`.
-    let next_ironwood = JObject::null();
+    // FORWARD FIELD (§9.2): boxed because the linked librustzcash pin is ironwood-capable —
+    // mirrors the `java/lang/Long` boxing `lib.rs:1696-1706` uses for the recovery-progress
+    // Option fields. `next_ironwood_subtree_index()` itself is not optional (always a valid
+    // index once a summary exists), so it is always boxed, never left null.
+    let next_ironwood = env.new_object(
+        "java/lang/Long",
+        "(J)V",
+        &[JValue::Long(summary.next_ironwood_subtree_index() as i64)],
+    )?;
 
     let summary_obj = env.new_object(
         JNI_WALLET_SUMMARY,
