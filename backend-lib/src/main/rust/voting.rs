@@ -26,7 +26,7 @@ use voting::storage::{RoundPhase, RoundState, RoundSummary, VoteRecord, VotingDb
 use voting::tree_sync::VoteTreeSync;
 use voting::types::{
     DelegationPirPrecomputeResult, DelegationProofResult, DelegationSubmissionData, GovernancePczt,
-    NoopProgressReporter, NoteInfo, ProofProgressReporter, SharePayload, VoteCommitmentBundle,
+    NoopProgressReporter, NoteInfo, ProgressReporter, SharePayload, VoteCommitmentBundle,
     WireEncryptedShare, WitnessData,
 };
 

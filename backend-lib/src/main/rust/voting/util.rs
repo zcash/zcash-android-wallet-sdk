@@ -14,6 +14,10 @@ fn tree_state_fixture(orchard_tree: String) -> zcash_client_backend::proto::serv
         time: 0,
         sapling_tree: String::new(),
         orchard_tree,
+        // New field on the lightwalletd `TreeState` message in this librustzcash generation.
+        // This branch's voting notes are still Orchard notes, so the fixture leaves the
+        // Ironwood tree empty and keeps populating `orchard_tree` as before.
+        ironwood_tree: String::new(),
     }
 }
 

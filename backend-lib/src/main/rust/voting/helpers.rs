@@ -556,7 +556,7 @@ pub(super) fn java_witness_data(
 pub(super) fn java_van_witness(
     env: &mut JNIEnv<'_>,
     witness: &JObject<'_>,
-) -> anyhow::Result<voting::tree_sync::VanWitness> {
+) -> anyhow::Result<voting::vote::VanWitness> {
     let auth_path = java_byte_array_list_field(env, witness, "authPath")?;
     if auth_path.len() != VAN_WITNESS_PATH_DEPTH {
         return Err(anyhow!(
@@ -571,7 +571,7 @@ pub(super) fn java_van_witness(
         .map(|(index, bytes)| fixed_bytes(bytes, &format!("authPath[{index}]")))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    Ok(voting::tree_sync::VanWitness {
+    Ok(voting::vote::VanWitness {
         auth_path,
         position: jlong_to_u32(env.get_field(witness, "position", "J")?.j()?, "position")?,
         anchor_height: jlong_to_u32(
@@ -1129,7 +1129,7 @@ fn make_jni_witness_data<'local>(
 // stay explicit instead of being modeled as TryFrom conversions.
 pub(super) fn make_jni_van_witness<'local>(
     env: &mut JNIEnv<'local>,
-    witness: voting::tree_sync::VanWitness,
+    witness: voting::vote::VanWitness,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_VAN_WITNESS)?;
     let auth_path = witness
@@ -1728,7 +1728,7 @@ fn make_jni_fixed_byte_array_vec<'local>(
 /// Runs the voting note chunker and returns total count, total eligible weight,
 /// and each bundle's quantized voting weight.
 pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32, u64, Vec<u64>)> {
-    let chunk_result = voting::types::chunk_notes(notes);
+    let chunk_result = voting::note_bundling::chunk_notes(notes);
     let bundle_weights = chunk_result
         .bundles
         .iter()
@@ -1753,7 +1753,7 @@ pub(super) fn bundled_notes_for_index(
     notes: &[NoteInfo],
     bundle_index: u32,
 ) -> anyhow::Result<Vec<NoteInfo>> {
-    let chunk_result = voting::types::chunk_notes(notes);
+    let chunk_result = voting::note_bundling::chunk_notes(notes);
     let bundle_index = usize::try_from(bundle_index)
         .map_err(|_| anyhow!("bundle_index is too large for this platform: {bundle_index}"))?;
 
