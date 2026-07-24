@@ -20,6 +20,8 @@ import cash.z.ecc.android.sdk.internal.ext.isInUIntRange
  *        the next range of subtree roots passed to `Backend.putSaplingSubtreeRoots`.
  * @param nextOrchardSubtreeIndex the Orchard subtree index that should start
  *        the next range of subtree roots passed to `Backend.putOrchardSubtreeRoots`.
+ * @param nextIronwoodSubtreeIndex the Ironwood subtree index that should start
+ *        the next range of subtree roots passed to `Backend.putSubtreeRoots`.
  * @throws IllegalArgumentException unless (progressNumerator is nonnegative,
  *         progressDenominator is positive, and the represented ratio is in the
  *         range 0.0 to 1.0 inclusive).
@@ -36,6 +38,7 @@ class JniWalletSummary(
     val recoveryProgressDenominator: Long?,
     val nextSaplingSubtreeIndex: Long,
     val nextOrchardSubtreeIndex: Long,
+    val nextIronwoodSubtreeIndex: Long,
 ) {
     init {
         require(chainTipHeight.isInUIntRange()) {
@@ -88,6 +91,9 @@ class JniWalletSummary(
         }
         require(nextOrchardSubtreeIndex.isInUIntRange()) {
             "Height $nextOrchardSubtreeIndex is outside of allowed UInt range"
+        }
+        require(nextIronwoodSubtreeIndex.isInUIntRange()) {
+            "Height $nextIronwoodSubtreeIndex is outside of allowed UInt range"
         }
     }
 }

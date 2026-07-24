@@ -262,11 +262,14 @@ interface Backend {
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
+    @Suppress("LongParameterList")
     suspend fun putSubtreeRoots(
         saplingStartIndex: Long,
         saplingRoots: List<JniSubtreeRoot>,
         orchardStartIndex: Long,
         orchardRoots: List<JniSubtreeRoot>,
+        ironwoodStartIndex: Long,
+        ironwoodRoots: List<JniSubtreeRoot>,
     )
 
     /**
