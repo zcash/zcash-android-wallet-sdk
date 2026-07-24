@@ -2,7 +2,7 @@
 //!
 //! Exports for `cash.z.ecc.android.sdk.internal.jni.RustEip681Tool`, plus the
 //! encoders and decoders that marshal a [`TransactionRequest`] across the
-//! boundary, and the parsing helpers those use.
+//! boundary. The parsing logic itself lives in [`crate::eip681`].
 
 use jni::{
     JNIEnv,
@@ -12,7 +12,7 @@ use jni::{
 
 use eip681::{TransactionRequest, U256};
 
-use crate::eip681::chain_id_string_to_u64;
+use crate::eip681::{chain_id_string_to_u64, hex_string_to_u256};
 use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
@@ -47,24 +47,6 @@ fn chain_id_to_jstring<'a>(
     match chain_id {
         Some(id) => Ok(env.new_string(id.to_string())?.into()),
         None => Ok(JObject::null()),
-    }
-}
-
-/// Parse a nullable `0x`-prefixed hex string into an `Option<U256>`.
-///
-/// Returns an error if the string is present but does not start with `0x` or `0X`.
-fn hex_string_to_u256(s: Option<String>) -> anyhow::Result<Option<U256>> {
-    match s {
-        Some(hex) => {
-            let stripped = hex
-                .strip_prefix("0x")
-                .or_else(|| hex.strip_prefix("0X"))
-                .ok_or_else(|| anyhow::anyhow!("hex string '{}' missing 0x prefix", hex))?;
-            Ok(Some(U256::from_str_radix(stripped, 16).map_err(|e| {
-                anyhow::anyhow!("invalid hex U256 '{}': {}", hex, e)
-            })?))
-        }
-        None => Ok(None),
     }
 }
 /// Read a non-null `String` field from a Java object.
