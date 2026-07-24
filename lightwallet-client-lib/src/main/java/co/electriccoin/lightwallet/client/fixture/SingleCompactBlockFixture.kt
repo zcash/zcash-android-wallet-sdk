@@ -11,7 +11,7 @@ internal object SingleCompactBlockFixture {
     internal const val DEFAULT_TIME = 0
     internal const val DEFAULT_SAPLING_OUTPUT_COUNT = 1u
     internal const val DEFAULT_ORCHARD_OUTPUT_COUNT = 2u
-    internal const val DEFAULT_IRONWOOD_OUTPUT_COUNT = 0u
+    internal const val DEFAULT_IRONWOOD_OUTPUT_COUNT = 3u
     internal const val DEFAULT_HASH = DEFAULT_HEIGHT
     internal const val DEFAULT_BLOCK_BYTES = DEFAULT_HEIGHT
 
