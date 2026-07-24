@@ -260,8 +260,15 @@ sealed class AttentionReason {
 sealed class TransferResult {
     data class Success(val txId: String) : TransferResult()
 
-    /** Transient network failure. Retry in the next WorkManager window. */
-    data class NetworkError(val retryable: Boolean) : TransferResult()
+    /**
+     * Transient network failure. Retry in the next WorkManager window while [retryable] and the
+     * caller's own attempt budget allows it.
+     *
+     * @param isTorFailure true when this failure specifically originated from Tor circuit
+     * setup/bootstrap rather than a generic network/gRPC problem — callers use this to route to
+     * Tor-specific recovery UI (e.g. "continue without Tor") instead of the generic failure path.
+     */
+    data class NetworkError(val retryable: Boolean, val isTorFailure: Boolean = false) : TransferResult()
 
     /**
      * Input note is already spent. Sets MigrationState to RequiresAttention.
