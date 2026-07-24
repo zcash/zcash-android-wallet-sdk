@@ -7,15 +7,15 @@ use std::path::PathBuf;
 use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, anyhow};
-use bitflags::bitflags;
-use bytes::Bytes;
-use http_body_util::BodyExt;
-use jni::{
+use ::jni::{
     JNIEnv,
     objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
 };
+use anyhow::{Context, anyhow};
+use bitflags::bitflags;
+use bytes::Bytes;
+use http_body_util::BodyExt;
 use nonempty::NonEmpty;
 use prost::Message;
 use rand::rngs::OsRng;
@@ -102,6 +102,7 @@ use crate::utils::{
 };
 
 mod eip681;
+mod jni;
 mod migration;
 mod migration_engine;
 mod migration_keystone;
@@ -286,7 +287,7 @@ fn encode_account<'a, P: Parameters>(
     env: &mut JNIEnv<'a>,
     network: &P,
     account: zcash_client_sqlite::wallet::Account,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     let ufvk = match account.ufvk() {
         Some(ufvk) => env.new_string(ufvk.encode(network))?.into(),
         None => JObject::null(),
@@ -399,7 +400,7 @@ fn encode_usk<'a>(
     env: &mut JNIEnv<'a>,
     account_uuid: AccountUuid,
     usk: UnifiedSpendingKey,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     let encoded = SecretVec::new(usk.to_bytes(Era::Orchard));
     let bytes = env.byte_array_from_slice(encoded.expose_secret())?;
     env.new_object(
@@ -416,7 +417,7 @@ fn encode_transaction<'a>(
     env: &mut JNIEnv<'a>,
     height: u64,
     txid_bytes: Vec<u8>,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     let java_byte_array = env.byte_array_from_slice(&txid_bytes)?;
     env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniTransaction",
@@ -734,7 +735,7 @@ fn encode_single_use_taddr<'a>(
     address: &TransparentAddress,
     gap_position: u32,
     gap_limit: u32,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     let address_str = address.encode(&network);
     env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniSingleUseTransparentAddress",
@@ -1217,7 +1218,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getMemoAs
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-fn encode_blockmeta<'a>(env: &mut JNIEnv<'a>, meta: BlockMeta) -> jni::errors::Result<JObject<'a>> {
+fn encode_blockmeta<'a>(
+    env: &mut JNIEnv<'a>,
+    meta: BlockMeta,
+) -> ::jni::errors::Result<JObject<'a>> {
     let block_hash = env.byte_array_from_slice(&meta.block_hash.0)?;
     env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniBlockMeta",
@@ -1631,7 +1635,7 @@ fn encode_account_balance<'a>(
     env: &mut JNIEnv<'a>,
     account_uuid: &AccountUuid,
     balance: &AccountBalance,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     let sapling_verified_balance = ZatBalance::from(balance.sapling_balance().spendable_value());
     let sapling_change_pending =
         ZatBalance::from(balance.sapling_balance().change_pending_confirmation());
@@ -1755,7 +1759,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getWallet
 fn encode_scan_range<'a>(
     env: &mut JNIEnv<'a>,
     scan_range: ScanRange,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     let priority = match scan_range.priority() {
         ScanPriority::Ignored => 0,
         ScanPriority::Scanned => 10,
@@ -1867,7 +1871,7 @@ fn encode_transaction_data_request<'a>(
     env: &mut JNIEnv<'a>,
     net: NetworkType,
     transaction_data_request: TransactionDataRequest,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     match transaction_data_request {
         TransactionDataRequest::GetStatus(txid) => env.new_object(
             "cash/z/ecc/android/sdk/internal/model/JniTransactionDataRequest$GetStatus",
@@ -3180,7 +3184,7 @@ fn encode_http_header<'a>(
     env: &mut JNIEnv<'a>,
     name: &http::HeaderName,
     value: &str,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     let name = JObject::from(env.new_string(name.as_str())?);
     let value = JObject::from(env.new_string(value)?);
 
@@ -3646,7 +3650,7 @@ fn encode_address_check_result<'a, P: Parameters>(
     env: &mut JNIEnv<'a>,
     network: &P,
     found: Option<TransparentAddress>,
-) -> jni::errors::Result<JObject<'a>> {
+) -> ::jni::errors::Result<JObject<'a>> {
     match found {
         None => {
             let nf_class = env.find_class(
