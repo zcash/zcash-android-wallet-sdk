@@ -5,6 +5,18 @@ inputs:
     description: "Whether to restore and save the Rust build cache for jobs that compile Rust."
     required: false
     default: "false"
+  slipstream-app-id:
+    description: >-
+      App ID of the GitHub App that grants read access to the private zodl-inc/slipstream
+      repository, source of the `slipstream-core` cargo dependency. Leave empty to skip the
+      credential setup entirely; cargo will then be unable to resolve `slipstream-core`. This is
+      what happens on pull requests from forks, where secrets are unavailable by design.
+    required: false
+    default: ""
+  slipstream-app-private-key:
+    description: "PEM-encoded private key for the App identified by slipstream-app-id."
+    required: false
+    default: ""
 runs:
   using: "composite"
   steps:
@@ -35,6 +47,36 @@ runs:
         rustup toolchain install "${CHANNEL}"
         rustup default "${CHANNEL}"
         rustup target add --toolchain "${CHANNEL}" armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+    - name: Mint a read token for the private slipstream repository
+      id: slipstream-token
+      if: inputs.slipstream-app-id != '' && inputs.slipstream-app-private-key != ''
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+      with:
+        app-id: ${{ inputs.slipstream-app-id }}
+        private-key: ${{ inputs.slipstream-app-private-key }}
+        # The App is installed on zodl-inc, not on this repository's owner, so the installation
+        # to mint against has to be named explicitly.
+        owner: zodl-inc
+        repositories: slipstream
+    - name: Authorize cargo against the private slipstream repository
+      if: steps.slipstream-token.outputs.token != ''
+      shell: bash
+      env:
+        SLIPSTREAM_TOKEN: ${{ steps.slipstream-token.outputs.token }}
+      run: |
+        # backend-lib depends on `slipstream-core` by git rev against the private
+        # zodl-inc/slipstream repo. Cargo fetches that source while resolving the dependency
+        # graph, before feature selection, so every job that runs cargo needs read access even
+        # though the `slipstream` feature is off by default.
+        #
+        # The rewrite is scoped to the zodl-inc org: the token is never offered to github.com
+        # generally, so the other git dependencies (librustzcash and friends) keep fetching
+        # anonymously. libgit2, cargo's default git transport, ignores `insteadOf` rewrites
+        # altogether, hence handing the fetch to the git CLI.
+        git config --global \
+          url."https://x-access-token:${SLIPSTREAM_TOKEN}@github.com/zodl-inc/".insteadOf \
+          "https://github.com/zodl-inc/"
+        echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
     - name: Configure Gradle
       shell: bash
       run: |
@@ -81,12 +123,29 @@ runs:
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
+        # Deliberately enumerated rather than caching `~/.cargo` wholesale: that would include
+        # `~/.cargo/git`, where cargo keeps its clone of the PRIVATE zodl-inc/slipstream repo.
+        # This repository is public, and GitHub lets workflow runs from forked pull requests
+        # restore caches created on the base branch — a cached clone would hand fork PRs the
+        # private source without their ever holding the App credential. Re-cloning one small
+        # repo per run is the cost of keeping it out.
+        #
+        # `registry/` is crates.io content and safe to cache. `backend-lib/target` still holds
+        # slipstream-core's compiled rlib/rmeta, which is a far smaller disclosure than the
+        # source tree and too expensive to rebuild every run; dropping it too would require
+        # solving the public-repo/private-dependency problem properly instead.
         path: |
           backend-lib/target
-          ~/.cargo
-        key: ${{ runner.os }}-rust-v2-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/backend-lib/build.rs'), format('{0}{1}', github.workspace, '/rust-toolchain.toml'), format('{0}{1}', github.workspace, '/gradle.properties'), format('{0}{1}', github.workspace, '/.github/actions/setup/action.yml')) }}
+          ~/.cargo/bin
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/registry/src
+        # v3: v2 entries were saved with the wide `~/.cargo` path above, and `restore-keys`
+        # prefix-matching would otherwise keep unpacking those archives — reinstating
+        # `~/.cargo/git` regardless of what this step now lists.
+        key: ${{ runner.os }}-rust-v3-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/backend-lib/build.rs'), format('{0}{1}', github.workspace, '/rust-toolchain.toml'), format('{0}{1}', github.workspace, '/gradle.properties'), format('{0}{1}', github.workspace, '/.github/actions/setup/action.yml')) }}
         restore-keys: |
-          ${{ runner.os }}-rust-v2-
+          ${{ runner.os }}-rust-v3-
 
     - name: Gradle Binary Download
       if: steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'

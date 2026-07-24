@@ -2,6 +2,11 @@
 # EMULATOR_WTF_API_KEY - Optional API key for emulator.wtf
 # FIREBASE_TEST_LAB_SERVICE_ACCOUNT - Email address of Firebase Test Lab service account
 # FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER - Workload identity provider to generate temporary service account key
+# SLIPSTREAM_APP_ID - App ID of the GitHub App granting read access to the private zodl-inc/slipstream repo
+# SLIPSTREAM_APP_PRIVATE_KEY - PEM private key for that App
+#   Without these two, every job that compiles Rust fails in `:backend-lib:cargoBuild*`: cargo cannot
+#   resolve the `slipstream-core` git dependency. They are unavailable to pull requests from forks,
+#   which therefore cannot pass those jobs.
 
 # Expected variables
 # FIREBASE_TEST_LAB_PROJECT - Firebase Test Lab project name
@@ -182,6 +187,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Android Lint
         timeout-minutes: 25
         env:
@@ -221,6 +228,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build and test
         timeout-minutes: 30
         run: |
@@ -261,6 +270,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build
         timeout-minutes: 20
         run: |
@@ -318,6 +329,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build and test
         timeout-minutes: 30
         env:
@@ -357,6 +370,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
         env:
