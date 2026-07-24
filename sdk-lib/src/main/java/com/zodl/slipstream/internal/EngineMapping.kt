@@ -48,10 +48,9 @@ private fun SlipstreamPoolBalance.maskIfStale(mask: Boolean): SlipstreamPoolBala
 
 /**
  * Maps the engine's phase-resolving summary to the SDK's public balance model. `ironwood` is
- * read straight from the engine's own `SlipstreamAccountBalance.ironwood` FORWARD FIELD; the JNI
- * populates it whenever the linked librustzcash generation is ironwood-capable (DECISIONS.md D4).
- * It is null only for an engine/JNI build that predates ironwood support, in which case it
- * surfaces as a zero balance here.
+ * read straight from the engine's own `SlipstreamAccountBalance.ironwood` field, which the JNI
+ * layer populates from the linked librustzcash summary (`balance.ironwood_balance()`), so migrated
+ * Orchard→Ironwood funds recorded in the wallet DB surface here.
  */
 internal fun SlipstreamWalletSummary.toAccountBalances(
     isRecovering: Boolean,
@@ -63,8 +62,7 @@ internal fun SlipstreamWalletSummary.toAccountBalances(
             AccountBalance(
                 sapling = ab.sapling.maskIfStale(mask).toWalletBalance(),
                 orchard = ab.orchard.maskIfStale(mask).toWalletBalance(),
-                ironwood = ab.ironwood?.maskIfStale(mask)?.toWalletBalance()
-                    ?: WalletBalance(Zatoshi(0), Zatoshi(0), Zatoshi(0)),
+                ironwood = ab.ironwood.maskIfStale(mask).toWalletBalance(),
                 unshielded = Zatoshi(ab.unshielded)
             )
     }
