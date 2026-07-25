@@ -103,7 +103,9 @@ use crate::utils::{
 mod eip681;
 mod tor;
 mod utils;
-mod voting;
+// Shielded voting is disabled for this release line; see backend-lib/Cargo.toml.
+// #[cfg(feature = "chp-voting")]
+// mod voting;
 
 #[cfg(debug_assertions)]
 fn print_debug_state() {

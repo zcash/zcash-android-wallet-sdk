@@ -15,6 +15,16 @@ rust-version = "1.92"
 # This feature must not be enabled for production native builds.
 android-test-fixtures = []
 
+# Shielded voting is disabled for this release line: the `zcash_voting` dependency (below)
+# and the `chp-voting` feature that pulled it in are commented out, along with `mod voting`
+# in lib.rs, so no voting native code is compiled. `zcash_voting` 0.11 also pins Orchard to
+# `=0.14` with `unstable-voting-circuits`, which is incompatible with the Ironwood crate
+# versions (Orchard 0.15 / zcash_protocol 0.10); commenting it out keeps it out of Cargo's
+# version resolution entirely. Re-enable by uncommenting the feature here, the `zcash_voting`
+# dependency below, and `mod voting` in lib.rs, then align `zcash_voting` with the active
+# Orchard / zcash_protocol versions.
+# chp-voting = ["dep:zcash_voting"]
+
 [dependencies]
 # Zcash dependencies
 orchard = { version = "=0.14.0", features = ["unstable-voting-circuits"] }
@@ -105,10 +115,10 @@ xz2 = { version = "0.1", features = ["static"] }
 # Expected PIR/tree-sync networking transitives include `pir-client`, `pir-types`,
 # `valar-ypir`, `valar-spiral-rs`, `vote-commitment-tree-client`, and
 # `hyper-rustls`.
-zcash_voting = { version = "=0.11.0", default-features = false, features = [
-    "client-pir",
-    "client-tree-sync",
-] }
+# zcash_voting = { version = "=0.11.0", default-features = false, optional = true, features = [
+#     "client-pir",
+#     "client-tree-sync",
+# ] }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]
