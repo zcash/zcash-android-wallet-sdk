@@ -14,6 +14,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that
   moves the account's entire Orchard balance across the NU6.3 turnstile into the
   Ironwood pool.
+- `CompactBlockProcessorException.MismatchedConsensusBranch`, `MismatchedNetwork`
+  and `MismatchedSaplingActivationHeight` now expose their constructor arguments
+  as public `val`s (`clientBranchId`/`serverBranchId`,
+  `clientNetwork`/`serverNetwork`, `clientHeight`/`serverHeight`). Previously the
+  mismatched values were reachable only by parsing the exception's `message`, so
+  consumers had to either scrape English prose or surface it verbatim. Wallets
+  can now render a localized, structured explanation of why a server is
+  incompatible. Note that consensus branch IDs are opaque unordered constants:
+  neither the SDK nor a consumer can infer from them alone which side is stale.
 
 ### Changed
 - Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
