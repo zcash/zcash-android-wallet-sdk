@@ -51,7 +51,7 @@ use zcash_client_backend::{
         wallet::{
             self, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
-            input_selection::{GreedyInputSelector, SpendPolicy},
+            input_selection::{GreedyInputSelector, LockFilter, LockedInputPolicy, SpendPolicy},
             propose_shielding, propose_transfer,
         },
     },
@@ -1115,12 +1115,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
             .map_err(|e| anyhow!("Error while fetching target height: {}", e))?
             .context("Target height not available; scan required.")?;
 
+        // This backend does not use input locking, so exclude locked outputs.
+        // `Exclude` is the policy's default, and selects no locked outputs.
+        let lock_filter = LockFilter::Policy(&LockedInputPolicy::Exclude);
+
         let amount = db_data
             .get_spendable_transparent_outputs(
                 &taddr,
                 target,
                 wallet::ConfirmationsPolicy::MIN,
                 CoinbaseFilter::AllTransparentOutputs,
+                lock_filter,
             )
             .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))?
             .iter()
@@ -2115,6 +2120,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         let request = TransactionRequest::from_uri(&payment_uri)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
+        // This backend does not lock the selected inputs, and always builds at
+        // the transaction version implied by the target height.
+        let lock_inputs = None;
+        let proposed_version = None;
+
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2124,7 +2134,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             request,
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
-            None,
+            lock_inputs,
+            proposed_version,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
 
@@ -2178,6 +2189,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         ])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
+        // This backend does not lock the selected inputs, and always builds at
+        // the transaction version implied by the target height.
+        let lock_inputs = None;
+        let proposed_version = None;
+
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2187,7 +2203,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             request,
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
-            None,
+            lock_inputs,
+            proposed_version,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
 
@@ -2343,6 +2360,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
         // Always use ZIP 317 fees
         let (change_strategy, input_selector) = zip317_helper(memo);
 
+        // This backend does not lock the selected inputs.
+        let lock_inputs = None;
+
         let proposal = propose_shielding::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2353,6 +2373,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             account_uuid,
             confirmations_policy,
             CoinbaseFilter::AllTransparentOutputs,
+            lock_inputs,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
@@ -2394,6 +2415,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
             .try_into_standard_proposal(&network, &db_data)?;
 
+        // Let the proposal's own target height imply the expiry height.
+        let expiry_height = None;
+
         let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
             &mut db_data,
             &network,
@@ -2402,6 +2426,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             &wallet::SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &proposal,
+            expiry_height,
         )
         .map_err(|e| anyhow!("Error while creating transactions: {}", e))?;
 
@@ -2443,14 +2468,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
             .try_into_standard_proposal(&network, &db_data)?;
 
         if proposal.steps().len() == 1 {
+            // Let the proposal's own target height imply the expiry height,
+            // and use the default Orchard-pool output padding.
+            let expiry_height = None;
+            let orchard_pool_padding =
+                zcash_primitives::transaction::builder::BundlePadding::DEFAULT;
+
             let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
                 &mut db_data,
                 &network,
                 account_id,
                 OvkPolicy::Sender,
                 &proposal,
-                None,
-                orchard::builder::BundleType::DEFAULT,
+                expiry_height,
+                orchard_pool_padding,
             )
             .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
 
