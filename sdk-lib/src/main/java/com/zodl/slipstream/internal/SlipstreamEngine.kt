@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength")
+
 package com.zodl.slipstream.internal
 
 import cash.z.ecc.android.sdk.Synchronizer.Status
@@ -188,12 +190,13 @@ internal class SlipstreamEngine(
             )
         }
 
-        val summary = SlipstreamNative.walletSummary(
-            handle = handle,
-            trustedConfirmations = TRUSTED,
-            untrustedConfirmations = UNTRUSTED,
-            allowZeroConfShielding = ALLOW_ZERO_CONF
-        )
+        val summary =
+            SlipstreamNative.walletSummary(
+                handle = handle,
+                trustedConfirmations = TRUSTED,
+                untrustedConfirmations = UNTRUSTED,
+                allowZeroConfShielding = ALLOW_ZERO_CONF
+            )
         summary?.let {
             walletBalances.value = it.toAccountBalances(isRecovering = snap.isRecovering, tipFresh = snap.tipFresh)
             fullyScannedHeight.value = it.fullyScannedHeight.takeIf { height -> height > 0 }?.let(BlockHeight::new)
@@ -228,8 +231,14 @@ internal class SlipstreamEngine(
                 val retry = onProcessorErrorHandler?.invoke(SlipstreamSyncException(snap.chainTip)) ?: false
                 if (retry) start(ufvk = null, birthday = lastStartBirthday)
             }
-            ErrorEpisodeTransition.LEAVE -> onProcessorErrorResolved?.invoke()
-            ErrorEpisodeTransition.STAY, ErrorEpisodeTransition.NONE -> Unit
+
+            ErrorEpisodeTransition.LEAVE -> {
+                onProcessorErrorResolved?.invoke()
+            }
+
+            ErrorEpisodeTransition.STAY, ErrorEpisodeTransition.NONE -> {
+                Unit
+            }
         }
     }
 

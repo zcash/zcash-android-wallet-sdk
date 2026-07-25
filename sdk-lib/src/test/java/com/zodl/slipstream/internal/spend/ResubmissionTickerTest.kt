@@ -11,7 +11,10 @@ class ResubmissionTickerTest {
             var findCalls = 0
             val ticker =
                 ResubmissionTicker(
-                    findCandidates = { findCalls++; emptyList() },
+                    findCandidates = {
+                        findCalls++
+                        emptyList()
+                    },
                     resubmit = {},
                     notifyTxChange = {}
                 )
@@ -25,7 +28,10 @@ class ResubmissionTickerTest {
             var findCalls = 0
             val ticker =
                 ResubmissionTicker(
-                    findCandidates = { findCalls++; emptyList() },
+                    findCandidates = {
+                        findCalls++
+                        emptyList()
+                    },
                     resubmit = {},
                     notifyTxChange = {}
                 )
@@ -39,7 +45,10 @@ class ResubmissionTickerTest {
             var findCalls = 0
             val ticker =
                 ResubmissionTicker(
-                    findCandidates = { findCalls++; emptyList() },
+                    findCandidates = {
+                        findCalls++
+                        emptyList()
+                    },
                     resubmit = {},
                     notifyTxChange = {}
                 )
@@ -54,7 +63,11 @@ class ResubmissionTickerTest {
         runBlocking {
             val resubmitted = mutableListOf<ByteArray>()
             var notifyCalls = 0
-            val candidates = listOf(ResubmissionCandidate(txId = byteArrayOf(1), raw = byteArrayOf(9)), ResubmissionCandidate(txId = byteArrayOf(2), raw = byteArrayOf(8)))
+            val candidates =
+                listOf(
+                    ResubmissionCandidate(txId = byteArrayOf(1), raw = byteArrayOf(9)),
+                    ResubmissionCandidate(txId = byteArrayOf(2), raw = byteArrayOf(8))
+                )
             val ticker =
                 ResubmissionTicker(
                     findCandidates = { candidates },

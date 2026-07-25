@@ -1,3 +1,5 @@
+@file:Suppress("ReturnCount")
+
 package com.zodl.slipstream.internal.db
 
 import cash.z.ecc.android.sdk.model.BlockHeight

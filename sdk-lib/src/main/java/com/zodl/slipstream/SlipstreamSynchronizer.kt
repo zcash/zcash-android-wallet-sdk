@@ -1,3 +1,14 @@
+@file:Suppress(
+    "CyclomaticComplexMethod",
+    "LargeClass",
+    "LongParameterList",
+    "MaxLineLength",
+    "ReturnCount",
+    "ThrowsCount",
+    "TooGenericExceptionCaught",
+    "TooManyFunctions"
+)
+
 package com.zodl.slipstream
 
 import android.app.ActivityManager
@@ -101,10 +112,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -168,7 +179,6 @@ class SlipstreamSynchronizer internal constructor(
     private val resubmissionTicker: ResubmissionTicker,
     private var startBirthday: BlockHeight,
 ) : CloseableSynchronizer {
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val accountsBus = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -181,7 +191,7 @@ class SlipstreamSynchronizer internal constructor(
     /** True while a migration sync-block is pausing this synchronizer (see [pause]/[resume]). */
     private val migrationPaused = MutableStateFlow(false)
 
-    /**
+    /*
      * Last lifecycle signal seen via [onForeground]/[onBackground]; [syncBurst]'s restore reads it
      * to decide whether to stop the engine (backgrounded) or leave it polling (foreground). Starts
      * `false` because the dominant [syncBurst] caller is a headless background worker.
@@ -223,12 +233,16 @@ class SlipstreamSynchronizer internal constructor(
                             emit(lastExchangeRateValue.copy(isLoading = true))
                             lastExchangeRateValue =
                                 when (val result = exchangeRateFetcher()) {
-                                    is FetchFiatCurrencyResult.Error -> lastExchangeRateValue.copy(isLoading = false)
-                                    is FetchFiatCurrencyResult.Success ->
+                                    is FetchFiatCurrencyResult.Error -> {
+                                        lastExchangeRateValue.copy(isLoading = false)
+                                    }
+
+                                    is FetchFiatCurrencyResult.Success -> {
                                         lastExchangeRateValue.copy(
                                             isLoading = false,
                                             currencyConversion = result.currencyConversion
                                         )
+                                    }
                                 }
                             emit(lastExchangeRateValue)
                         }
@@ -243,7 +257,11 @@ class SlipstreamSynchronizer internal constructor(
         )
 
     override val latestHeight: BlockHeight?
-        get() = engine.lastSnapshot.value?.chainTip?.takeIf { it > 0 }?.let(BlockHeight::new)
+        get() =
+            engine.lastSnapshot.value
+                ?.chainTip
+                ?.takeIf { it > 0 }
+                ?.let(BlockHeight::new)
 
     override val latestBirthdayHeight: BlockHeight?
         get() = startBirthday
@@ -288,10 +306,10 @@ class SlipstreamSynchronizer internal constructor(
      */
     override var onSetupErrorHandler: ((Throwable?) -> Boolean)? = null
 
-    /** Settable, but never invoked - the engine owns reorg recovery internally; there is no host-visible chain-error event. */
+    // Settable, but never invoked - the engine owns reorg recovery internally; there is no host-visible chain-error event.
     override var onChainErrorHandler: ((BlockHeight, BlockHeight) -> Any)? = null
 
-    /**
+    /*
      * The Android [Synchronizer] interface has no public `start()`; `new` auto-starts the poll
      * loop as part of construction, and [onForeground]/[onBackground] only pause/resume it
      * thereafter. [SlipstreamEngine.startPolling] cancels any prior job before launching, so
@@ -557,13 +575,17 @@ class SlipstreamSynchronizer internal constructor(
             }
             val currentChainTip =
                 when (val response = client.getLatestBlockHeight(serviceMode)) {
-                    is Response.Success -> runCatchingCancellable { BlockHeight.new(response.result.value) }.getOrElse {
-                        return ServerValidation.InValid(
-                            it
-                        )
+                    is Response.Success -> {
+                        runCatchingCancellable { BlockHeight.new(response.result.value) }.getOrElse {
+                            return ServerValidation.InValid(
+                                it
+                            )
+                        }
                     }
 
-                    is Response.Failure -> return ServerValidation.InValid(response.toThrowable())
+                    is Response.Failure -> {
+                        return ServerValidation.InValid(response.toThrowable())
+                    }
                 }
             val sdkBranchId =
                 runCatchingCancellable { "%x".format(Locale.ROOT, backend.getBranchIdForHeight(currentChainTip.value)) }
@@ -631,9 +653,13 @@ class SlipstreamSynchronizer internal constructor(
             runCatchingCancellable { backend.rewindToHeight(height.value) }
                 .getOrElse { return null }
         return when (result) {
-            is JniRewindResult.Success -> BlockHeight.new(result.height)
-            is JniRewindResult.Invalid ->
+            is JniRewindResult.Success -> {
+                BlockHeight.new(result.height)
+            }
+
+            is JniRewindResult.Invalid -> {
                 if (result.safeRewindHeight != -1L) rewindRetrying(BlockHeight.new(result.safeRewindHeight)) else null
+            }
         }
     }
 
@@ -661,8 +687,7 @@ class SlipstreamSynchronizer internal constructor(
                                 output.poolCode,
                                 output.index
                             )
-                        }
-                            .getOrNull()
+                        }.getOrNull()
                     emit(memo ?: "")
                 }
             }
@@ -821,11 +846,15 @@ class SlipstreamSynchronizer internal constructor(
                     if (snap != null && snap !== staleSnapshot) {
                         when (snap.state) {
                             // 3 = done/following the tip; tipFresh = this run refreshed the tip.
-                            SNAPSHOT_STATE_DONE ->
+                            SNAPSHOT_STATE_DONE -> {
                                 if (snap.tipFresh) return@withTimeoutOrNull Synchronizer.SyncBurstResult.SYNCED_TO_TIP
+                            }
+
                             // 2 = error episode (server unreachable etc.). 0 (idle) is NOT terminal —
                             // it's the transient just-started phase; the timeout covers a real hang.
-                            SNAPSHOT_STATE_ERROR -> return@withTimeoutOrNull Synchronizer.SyncBurstResult.DISCONNECTED
+                            SNAPSHOT_STATE_ERROR -> {
+                                return@withTimeoutOrNull Synchronizer.SyncBurstResult.DISCONNECTED
+                            }
                         }
                     }
                     delay(targetCheckInterval)
@@ -849,12 +878,18 @@ class SlipstreamSynchronizer internal constructor(
                 engine.stop()
                 lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
             }
+
             // Mirror pause(): the privacy gate closed mid-burst (typically because the burst reached
             // the target and hasOverdueTransfers flipped, so WalletCoordinator paused us). Keep the
             // engine warm but stop polling, per the keep-alive sync-block design.
-            migrationPaused.value -> engine.stopPolling()
+            migrationPaused.value -> {
+                engine.stopPolling()
+            }
+
             // Mirror onForeground(): a live foreground wallet — leave it running and polling.
-            else -> engine.startPolling()
+            else -> {
+                engine.startPolling()
+            }
         }
     }
 
@@ -886,15 +921,17 @@ class SlipstreamSynchronizer internal constructor(
     @Suppress("TooGenericExceptionCaught")
     override suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit): HttpClient {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
-        val client = lazyTorClient
-            ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
-        val isolatedTor = try {
-            client.getOrCreate().isolatedTorClient()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw TorInitializationErrorException(e)
-        }
+        val client =
+            lazyTorClient
+                ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
+        val isolatedTor =
+            try {
+                client.getOrCreate().isolatedTorClient()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw TorInitializationErrorException(e)
+            }
         @Suppress("UNCHECKED_CAST")
         return HttpClient(TorHttp) {
             engine {
@@ -947,7 +984,7 @@ class SlipstreamSynchronizer internal constructor(
         if (closed.compareAndSet(false, true)) {
             val shutdownJob =
                 scope.launch {
-                    /**
+                    /*
                      * Isolates each shutdown step from the others: a single step's failure is
                      * logged but never skips the remaining steps, so a wedged native call can
                      * never leave e.g. [walletClient] undisposed.
@@ -1059,15 +1096,21 @@ class SlipstreamSynchronizer internal constructor(
 
             val ufvk: String? =
                 when (walletInitMode) {
-                    WalletInitMode.ExistingWallet -> null
+                    WalletInitMode.ExistingWallet -> {
+                        null
+                    }
+
                     WalletInitMode.NewWallet, WalletInitMode.RestoreWallet -> {
                         val seed =
                             requireNotNull(setup?.seed) { "AccountCreateSetup with a seed is required for $walletInitMode" }
-                        DerivationTool.getInstance().deriveUnifiedFullViewingKeys(
-                            seed.byteArray,
-                            zcashNetwork,
-                            numberOfAccounts = 1
-                        )[0].encoding
+                        DerivationTool
+                            .getInstance()
+                            .deriveUnifiedFullViewingKeys(
+                                seed.byteArray,
+                                zcashNetwork,
+                                numberOfAccounts = 1
+                            )[0]
+                            .encoding
                     }
                 }
 
@@ -1098,8 +1141,11 @@ class SlipstreamSynchronizer internal constructor(
                             }
                         WalletProvisioningPlan(
                             startBirthday = BlockHeight.new(anchor.height),
-                            treeState = CheckpointTool.loadNearest(applicationContext, zcashNetwork, requestedBirthday)
-                                .treeState().encoded,
+                            treeState =
+                                CheckpointTool
+                                    .loadNearest(applicationContext, zcashNetwork, requestedBirthday)
+                                    .treeState()
+                                    .encoded,
                             recoverUntil = anchor.height
                         )
                     }
@@ -1119,28 +1165,33 @@ class SlipstreamSynchronizer internal constructor(
                                 )
                             }
                         WalletProvisioningPlan(
-                            startBirthday = anchor.height.takeIf { it > 0 }?.let(BlockHeight::new) ?: BlockHeight.new(
-                                fallbackCheckpoint
-                            ),
-                            treeState = anchor.treestate ?: CheckpointTool.loadLast(applicationContext, zcashNetwork)
-                                .treeState().encoded,
-                            recoverUntil = null
-                        )
-                    }
-
-                    else ->
-                        WalletProvisioningPlan(
-                            startBirthday = birthday ?: BlockHeight.new(fallbackCheckpoint),
+                            startBirthday =
+                                anchor.height.takeIf { it > 0 }?.let(BlockHeight::new) ?: BlockHeight.new(
+                                    fallbackCheckpoint
+                                ),
                             treeState =
-                                CheckpointTool.loadNearest(
-                                    applicationContext,
-                                    zcashNetwork,
-                                    birthday ?: zcashNetwork.saplingActivationHeight
-                                )
+                                anchor.treestate ?: CheckpointTool
+                                    .loadLast(applicationContext, zcashNetwork)
                                     .treeState()
                                     .encoded,
                             recoverUntil = null
                         )
+                    }
+
+                    else -> {
+                        WalletProvisioningPlan(
+                            startBirthday = birthday ?: BlockHeight.new(fallbackCheckpoint),
+                            treeState =
+                                CheckpointTool
+                                    .loadNearest(
+                                        applicationContext,
+                                        zcashNetwork,
+                                        birthday ?: zcashNetwork.saplingActivationHeight
+                                    ).treeState()
+                                    .encoded,
+                            recoverUntil = null
+                        )
+                    }
                 }
             val startBirthday = provisioning.startBirthday
 
@@ -1158,7 +1209,7 @@ class SlipstreamSynchronizer internal constructor(
                 )
             val typesafeBackend = TypesafeBackendImpl(backend)
 
-            /**
+            /*
              * Mirrors `DerivedDataDb.new`: unconditional [Backend.initDataDb], then
              * [Backend.createAccount] gated on `setup != null && accounts.isEmpty()`.
              */
@@ -1182,24 +1233,25 @@ class SlipstreamSynchronizer internal constructor(
                 }.getOrElse { throw InitializeException.CreateAccountException(it) }
             }
 
-            val engine = SlipstreamEngine(
-                dbFile.absolutePath,
-                lightWalletEndpoint,
-                zcashNetwork.id,
-                engineTorDir,
-                CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            )
+            val engine =
+                SlipstreamEngine(
+                    dbFile.absolutePath,
+                    lightWalletEndpoint,
+                    zcashNetwork.id,
+                    engineTorDir,
+                    CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                )
 
             val activityManager = applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val memoryInfo = ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
             engine.open(totalMemoryBytes = memoryInfo.totalMem)
-            /**
+            /*
              * `ufvk` stays non-null even though the account row already exists: `FFI_JNI_CONTRACT.md`
              * section 3.5's `start(ufvk != null)` is a no-op when an account is already present.
              */
             engine.start(ufvk, startBirthday.value)
 
-            /**
+            /*
              * Tor is only needed for on-demand/background work, never on the cold-start critical
              * path, so its creation (~1s) is deferred to first use via [LazyTorClient].
              */

@@ -2,6 +2,11 @@
 # EMULATOR_WTF_API_KEY - Optional API key for emulator.wtf
 # FIREBASE_TEST_LAB_SERVICE_ACCOUNT - Email address of Firebase Test Lab service account
 # FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER - Workload identity provider to generate temporary service account key
+# SLIPSTREAM_APP_ID - App ID of the GitHub App granting read access to the private zodl-inc/slipstream repo
+# SLIPSTREAM_APP_PRIVATE_KEY - PEM private key for that App
+#   Without these two, every job that compiles Rust fails in `:backend-lib:cargoBuild*`: cargo cannot
+#   resolve the `slipstream-core` git dependency. They are unavailable to pull requests from forks,
+#   which therefore cannot pass those jobs.
 
 # Expected variables
 # FIREBASE_TEST_LAB_PROJECT - Firebase Test Lab project name
@@ -182,6 +187,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Android Lint
         timeout-minutes: 25
         env:
@@ -221,6 +228,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build and test
         timeout-minutes: 30
         run: |
@@ -261,6 +270,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build
         timeout-minutes: 20
         run: |
@@ -302,8 +313,25 @@ jobs:
           name: Test Android modules with FTL results
           path: ~/artifacts
 
+  # DISABLED: the emulator.wtf organization has exhausted its credits, so this job fails on every
+  # run with `Http error 402: You've run out of free credits on emulator.wtf`. The plugin then
+  # parses that error body as a test-run response, so what actually surfaces is the misleading
+  # `com.google.gson.JsonSyntaxException: Missing required properties: testRunId`. Nothing about
+  # the build or the tests is wrong.
+  #
+  # To re-enable: configure billing at
+  # https://emulator.wtf/o/005b7bef-ece6-4af6-a3e6-62c245489044/billing, then restore the
+  # `if:` condition recorded below.
+  #
+  # Note that disabling this does NOT fall back to Firebase Test Lab: test_android_modules_ftl is
+  # gated on the emulator.wtf API key being *absent*, and the key is still set — it is the credits
+  # that ran out. Device-test coverage is therefore zero, which is unchanged from the status quo
+  # (the job was already failing rather than testing), but it is zero rather than merely red.
+  # Removing EMULATOR_WTF_API_KEY from the repository secrets would route these tests to FTL
+  # instead, if that tradeoff is preferred over fixing the billing.
   test_android_modules_wtf:
-    if: needs.check_emulator_wtf_secrets.outputs.has-secrets == 'true'
+    # Original condition: needs.check_emulator_wtf_secrets.outputs.has-secrets == 'true'
+    if: false
     needs: [ validate_gradle_wrapper, check_emulator_wtf_secrets ]
     runs-on: ubuntu-latest
     permissions:
@@ -318,6 +346,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build and test
         timeout-minutes: 30
         env:
@@ -357,6 +387,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
         env:

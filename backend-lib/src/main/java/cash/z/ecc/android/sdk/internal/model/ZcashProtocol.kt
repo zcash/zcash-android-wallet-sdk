@@ -14,6 +14,7 @@ enum class ZcashProtocol {
     ORCHARD {
         override val poolCode = 3
     },
+
     // Ironwood (NU6.3): must match zcash_client_sqlite's own pool-type encoding exactly
     // (PoolType::Shielded(ShieldedPool::Ironwood) => 4i64 in wallet/encoding.rs) — this enum has
     // no other way to stay in sync with that Rust-side mapping.

@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength", "ThrowsCount")
+
 package cash.z.ecc.android.sdk.block.processor
 
 import androidx.annotation.VisibleForTesting

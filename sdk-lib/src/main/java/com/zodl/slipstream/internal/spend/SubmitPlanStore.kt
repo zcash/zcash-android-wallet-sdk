@@ -1,3 +1,5 @@
+@file:Suppress("ReturnCount")
+
 package com.zodl.slipstream.internal.spend
 
 import android.content.SharedPreferences

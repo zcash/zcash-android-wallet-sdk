@@ -154,7 +154,10 @@ class OrchardMigrationSdkImplTest {
     }
 
     private fun fakeAndroidContext(): Context {
-        val tempDir = kotlin.io.path.createTempDirectory("OrchardMigrationSdkImplTest").toFile()
+        val tempDir =
+            kotlin.io.path
+                .createTempDirectory("OrchardMigrationSdkImplTest")
+                .toFile()
         val context = mock(Context::class.java)
         `when`(context.applicationContext).thenReturn(context)
         `when`(context.noBackupFilesDir).thenReturn(File(tempDir, "no_backup"))

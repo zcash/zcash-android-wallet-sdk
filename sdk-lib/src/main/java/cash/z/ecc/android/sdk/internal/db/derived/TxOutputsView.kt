@@ -69,9 +69,6 @@ internal class TxOutputsView(
                 TxOutputsViewDefinition.COLUMN_BLOB_MEMO,
             )
 
-
-
-
         private val ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX =
             String.format(
                 Locale.ROOT,

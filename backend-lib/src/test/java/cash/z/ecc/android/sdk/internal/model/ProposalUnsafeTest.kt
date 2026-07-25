@@ -6,16 +6,18 @@ import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.ProposedInput
 import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.ReceivedOutput
 import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.TransactionBalance
 import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.ValuePool
-import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.Proposal as ProposalProto
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.Proposal as ProposalProto
 
 class ProposalUnsafeTest {
     private fun receivedOutputInput(valuePool: ValuePool) =
-        ProposedInput.newBuilder()
+        ProposedInput
+            .newBuilder()
             .setReceivedOutput(
-                ReceivedOutput.newBuilder()
+                ReceivedOutput
+                    .newBuilder()
                     .setValuePool(valuePool)
                     .setIndex(0)
                     .setValue(10_000L)
@@ -23,12 +25,14 @@ class ProposalUnsafeTest {
 
     private fun proposalWithInputs(vararg valuePools: ValuePool): ProposalUnsafe {
         val step =
-            ProposalStep.newBuilder()
+            ProposalStep
+                .newBuilder()
                 .addAllInputs(valuePools.map { receivedOutputInput(it) })
                 .setBalance(TransactionBalance.newBuilder().setFeeRequired(10_000L))
                 .build()
         val proposal =
-            ProposalProto.newBuilder()
+            ProposalProto
+                .newBuilder()
                 .setProtoVersion(1)
                 .setFeeRule(FeeRule.Zip317)
                 .setMinTargetHeight(1)
