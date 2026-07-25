@@ -30,6 +30,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
   backend-specific error codes or message text.
 
+## [2.6.5] - 2026-06-19
+
+### Fixed
+- Fixed `InvalidParameterName` error in `delete_account` for accounts with cross-account transactions ([librustzcash#2426](https://github.com/zcash/librustzcash/pull/2426)).
+
 ## [2.6.4] - 2026-06-16
 
 ### Fixed
