@@ -44,7 +44,8 @@ class VotingRustBackendTest {
         private const val WALLET_ID = "wallet-1"
         private const val OTHER_WALLET_ID = "wallet-2"
         private const val ROUND_ID = "round-1"
-        private const val SNAPSHOT_HEIGHT = 123_456L
+        private const val SNAPSHOT_HEIGHT = 4_134_000L
+        private const val MAINNET_SNAPSHOT_HEIGHT = 3_428_143L
         private const val SESSION_JSON = "{\"round\":\"one\"}"
         private const val TESTNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_TESTNET
         private const val ACCOUNT_INDEX = 0
@@ -433,7 +434,7 @@ class VotingRustBackendTest {
             try {
                 db.initRound(
                     roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    snapshotHeight = SNAPSHOT_HEIGHT + 1,
                     eaPK = EA_PK,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
@@ -456,7 +457,7 @@ class VotingRustBackendTest {
             try {
                 db.initRound(
                     roundId = ROUND_ID,
-                    snapshotHeight = 1,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
@@ -479,7 +480,7 @@ class VotingRustBackendTest {
             try {
                 db.initRound(
                     roundId = ROUND_ID,
-                    snapshotHeight = 1,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
                     eaPK = EA_PK,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
@@ -555,7 +556,7 @@ class VotingRustBackendTest {
                 val treeState = backend.nonEmptyTreeStateFixtureForTesting()
                 db.initRound(
                     roundId = PCZT_ROUND_ID,
-                    snapshotHeight = 1,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
                     eaPK = EA_PK,
                     ncRoot = backend.extractNcRoot(treeState),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
@@ -591,9 +592,11 @@ class VotingRustBackendTest {
             val db = backend.openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
                 val notes = witnessNotes()
+                val wallet = newWalletDbWithAccount()
+                markWalletScannedThrough(wallet.path, walletBirthdayHeight(wallet.path))
                 db.initRound(
                     roundId = PCZT_ROUND_ID,
-                    snapshotHeight = 1,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
                     eaPK = EA_PK,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
@@ -603,12 +606,12 @@ class VotingRustBackendTest {
                 db.storeTreeState(PCZT_ROUND_ID, backend.treeStateFixtureForTesting())
 
                 assertRuntimeExceptionContains(
-                    "empty orchard frontier - no Orchard activity at snapshot"
+                    "empty ironwood frontier at snapshot height"
                 ) {
                     db.generateNoteWitnesses(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 0,
-                        walletDbPath = newDbPath(),
+                        walletDbPath = wallet.path,
                         networkId = TESTNET_NETWORK_ID,
                         notes = notes
                     )
@@ -847,7 +850,7 @@ class VotingRustBackendTest {
 
                 assertTrue(error.message.orEmpty().contains("ufvk does not match walletSeed"))
                 assertEquals(
-                    JniRoundPhase.HOTKEY_GENERATED,
+                    JniRoundPhase.INITIALIZED,
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
                 )
             } finally {
@@ -858,11 +861,11 @@ class VotingRustBackendTest {
     @Test
     fun build_governance_pczt_accepts_mainnet_network_id() =
         runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, MAINNET_NETWORK_ID)
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk(networkId = MAINNET_NETWORK_ID)
-                db.initPcztRoundWithBundles(notes)
+                db.initPcztRoundWithBundles(notes, snapshotHeight = MAINNET_SNAPSHOT_HEIGHT)
 
                 val pczt =
                     db.buildTestGovernancePczt(
@@ -896,7 +899,7 @@ class VotingRustBackendTest {
                 )
 
                 assertEquals(
-                    JniRoundPhase.HOTKEY_GENERATED,
+                    JniRoundPhase.INITIALIZED,
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
                 )
                 db.storeWitnesses(
@@ -1232,7 +1235,7 @@ class VotingRustBackendTest {
                 )
 
                 db.assertStoredTxHashesRoundTrip()
-                assertNull(db.getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+                assertNotNull(db.getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
                 db.assertShareDelegationRecoveryStateRoundTrips()
                 db.clearRecoveryState(PCZT_ROUND_ID)
                 db.assertRecoveryStateCleared()
@@ -1417,7 +1420,7 @@ class VotingRustBackendTest {
             nullifier = nullifier,
             submitAt = 123
         )
-        assertRecordedShareDelegation(nullifier)
+        assertRecordedShareDelegation(EXPECTED_NULLIFIER)
 
         addSentServers(
             roundId = PCZT_ROUND_ID,
@@ -1587,11 +1590,12 @@ class VotingRustBackendTest {
     private suspend fun VotingRustBackend.VotingDb.initPcztRoundWithBundles(
         notes: List<JniNoteInfo>,
         roundId: String = PCZT_ROUND_ID,
-        ncRoot: ByteArray = NC_ROOT
+        ncRoot: ByteArray = NC_ROOT,
+        snapshotHeight: Long = SNAPSHOT_HEIGHT
     ) {
         initRound(
             roundId = roundId,
-            snapshotHeight = SNAPSHOT_HEIGHT,
+            snapshotHeight = snapshotHeight,
             eaPK = EA_PK,
             ncRoot = ncRoot,
             nullifierIMTRoot = NULLIFIER_IMT_ROOT,

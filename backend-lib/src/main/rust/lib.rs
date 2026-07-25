@@ -46,6 +46,7 @@ use zcash_client_backend::{
         InputSource, OutputStatusFilter, SeedRelevance, TransactionDataRequest, TransactionStatus,
         TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
         WalletSummary, WalletWrite, Zip32Derivation,
+        anchor_retention::AnchorRetentionInterval,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
@@ -79,7 +80,7 @@ use zcash_client_sqlite::{
 use zcash_primitives::{
     block::BlockHash,
     merkle_tree::HashSer,
-    transaction::{Transaction, TxId},
+    transaction::{Transaction, TxId, builder::BundlePadding},
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
@@ -129,12 +130,40 @@ fn print_debug_state() {
     debug!("Release enabled (congrats, this is NOT a debug build).");
 }
 
+/// The spacing, in blocks, of the durable anchor checkpoints a wallet on a test network retains.
+///
+/// Short enough that a pool migration can be driven end to end in a test session: a migration
+/// transfer may only anchor to a boundary of this grid, so ZIP 318's 144-block spacing would make
+/// each transfer wait hours for a usable anchor. The anonymity-set argument that fixes the grid on
+/// mainnet — a wallet anchoring off-grid is distinguishable from its peers — does not apply to a
+/// test network.
+const TESTNET_ANCHOR_RETENTION_INTERVAL: NonZeroU32 =
+    NonZeroU32::new(12).expect("12 is nonzero, so it is a valid interval modulus");
+
+/// The grid of block heights on which a wallet on `network` retains note commitment tree
+/// checkpoints as durable anchors.
+///
+/// Every `WalletDb` this crate opens over the same wallet must be configured with this interval:
+/// a pool migration draws its transfers' anchors from the grid the wallet reports (see
+/// `migration_engine::Backend`'s `scheduling_params`), and a transfer anchored to a boundary whose
+/// checkpoint was never retained can no longer be proved once ordinary pruning has passed it.
+fn anchor_retention_interval(network: NetworkType) -> AnchorRetentionInterval {
+    match network {
+        NetworkType::Main => AnchorRetentionInterval::ZIP_318,
+        NetworkType::Test | NetworkType::Regtest => {
+            AnchorRetentionInterval::custom(TESTNET_ANCHOR_RETENTION_INTERVAL)
+        }
+    }
+}
+
 fn wallet_db<P: Parameters>(
     env: &mut JNIEnv,
     params: P,
     db_data: JString,
 ) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, OsRng>> {
+    let retention_interval = anchor_retention_interval(params.network_type());
     WalletDb::for_path(path_from_jni(env, db_data)?, params, SystemClock, OsRng)
+        .map(|db| db.with_anchor_retention_interval(retention_interval))
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
 }
 
@@ -2474,7 +2503,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
                 OvkPolicy::Sender,
                 &proposal,
                 None,
-                orchard::builder::BundleType::DEFAULT,
+                BundlePadding::DEFAULT,
             )
             .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
 

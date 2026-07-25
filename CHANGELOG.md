@@ -17,6 +17,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of deleting the engine's rows with raw SQL. The Slipstream
   `getTransactionRaw` host read now queries the public `v_transactions` view
   instead of a wallet-internal base table.
+- On testnet, pool-migration transfers are now bucketed onto a 12-block anchor
+  grid instead of ZIP 318's 144-block one, and the transfer/preparation
+  broadcast delays scale down with it, so a migration can be exercised end to
+  end in minutes rather than days. Mainnet is unchanged and still uses the ZIP
+  318 parameters. A testnet wallet that committed a migration before this change
+  has its transfers anchored to the old grid; those runs must be restarted.
 
 ## [2.6.5] - 2026-06-19
 

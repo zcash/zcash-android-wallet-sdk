@@ -1,7 +1,7 @@
 //! JNI bindings for the migration engine.
 //!
 //! Rewired (2026-07-21) from our own hand-rolled `zcash_pool_migration` crate onto the core/
-//! upstream `zcash_pool_migration_backend` crate plus `zcash_client_sqlite::pool_migration`
+//! upstream `zcash_pool_migration` crate plus `zcash_client_sqlite::pool_migration`
 //! (Danny/core team, `zcash/librustzcash` PR #2669 + stack; the SQLite persistence side was later
 //! folded from a standalone `zcash_pool_migration_sqlite` crate into `zcash_client_sqlite` proper).
 //! See `migration_engine.rs` for the adapter wiring our wallet DB into the new engine's traits, and
@@ -18,7 +18,7 @@
 //!    it no longer carries a real commitment-tree anchor value. Callers must not treat it as one.
 //! 2. `finalizeReadyTransfersNative` and `nextDueTransferNative` prove transactions ahead of
 //!    broadcast (ZIP 374) via `try_prove` (see its doc comment), which wraps
-//!    `zcash_pool_migration_backend`'s own `WalletMigrationProver`/`engine::prove_transfer`/
+//!    `zcash_pool_migration`'s own `WalletMigrationProver`/`engine::prove_transfer`/
 //!    `prove_preparation` — adopted 2026-07-23, replacing this file's former hand-ported
 //!    `migration_finalize.rs` stopgap (removed) now that core provides the equivalent built-in.
 //! 3. Plan details never cross the JNI boundary inward. Each `propose*`/`prepare*` call caches
@@ -40,8 +40,8 @@ use jni::{
 use prost::Message;
 use rand::rngs::OsRng;
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::ptr;
+use std::{collections::HashMap, num::NonZeroU32};
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
 use zcash_client_backend::data_api::{InputSource, WalletRead, WalletWrite};
@@ -49,15 +49,20 @@ use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
 use zcash_client_sqlite::util::SystemClock;
-use zcash_protocol::consensus::{BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants};
+use zcash_protocol::consensus::{
+    BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants, Parameters,
+};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{PoolType, ShieldedPool};
 
-use zcash_pool_migration_backend::engine::{
-    self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction, MigrationTxId,
-    MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
+use zcash_pool_migration::wallet::{WalletMigrationProver, WalletProveError};
+use zcash_pool_migration::{
+    engine::{
+        self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction, MigrationTxId,
+        MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
+    },
+    scheduling::AnchorBucketInterval,
 };
-use zcash_pool_migration_backend::wallet::{WalletMigrationProver, WalletProveError};
 
 use crate::migration_engine::Backend;
 use crate::utils::{catch_unwind, exception::unwrap_exc_or};
@@ -105,7 +110,12 @@ pub(crate) type Wallet = zcash_client_sqlite::WalletDb<Connection, Network, Syst
 /// callable directly from `cargo test` against a real wallet DB file, without an emulator or a
 /// Kotlin/JNI round-trip. See the `tests` module at the bottom of this file.
 fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Wallet, Connection)> {
+    // Configured with the same anchor grid `lib.rs`'s `wallet_db` uses, so the boundaries this
+    // migration draws its transfer anchors from are exactly the ones the scanning path retains
+    // checkpoints for.
+    let retention_interval = crate::anchor_retention_interval(network.network_type());
     let wallet = Wallet::for_path(db_path.to_path_buf(), network, SystemClock, OsRng)
+        .map(|wallet| wallet.with_anchor_retention_interval(retention_interval))
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
     let store_conn = Connection::open(db_path)
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
@@ -567,7 +577,7 @@ fn encode_migration_schedule<'a>(
 
     // The real `MigrationTxId` the engine will assign at commit time numbers every preparation
     // transaction (across all layers) first, THEN transfers in `schedule()` order (confirmed
-    // directly against `commit_preparation_inner` in `zcash_pool_migration_backend::engine`) — so
+    // directly against `commit_preparation_inner` in `zcash_pool_migration::engine`) — so
     // transfer `i`'s id is `prep_tx_count + i`, not `i`. Getting this wrong doesn't affect Kotlin
     // (it tracks transfers by array position, not by this id — confirmed directly against
     // `MigrationPlanRepository`/`MigrationProgressVM`), but the SDK's own `nextDueTransfer`/
@@ -703,7 +713,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// IMMEDIATE mode's proposal entry point. Unlike `proposeMigrationTransfersNative` (which plans
-/// the AUTOMATIC-mode, shuffled N-transfer engine plan via `zcash_pool_migration_backend`), this
+/// the AUTOMATIC-mode, shuffled N-transfer engine plan via `zcash_pool_migration`), this
 /// bypasses the engine entirely: it builds an ordinary send-max proposal sweeping every spendable
 /// Orchard note into the account's own Ironwood receiver
 /// (`migration_engine::propose_immediate_send_max`). Nothing here reads or writes the persisted
@@ -741,7 +751,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// Whether transaction `tx` is ready to PROVE at `target_height` (`chain_tip + 1`) — a local copy
-/// of `zcash_pool_migration_backend::state`'s private `MigrationState::prove_ready`, using only its
+/// of `zcash_pool_migration::state`'s private `MigrationState::prove_ready`, using only its
 /// public surface (`deps_mined`, `anchor_boundary`, `scheduled_height`). Duplicated rather than
 /// relying on `MigrationState::next_provable` because that returns only the SINGLE next-ready
 /// transaction — looping it would re-return the same id forever on a transient witness/anchor
@@ -763,12 +773,12 @@ fn is_prove_ready(
 
 /// Attempts to prove one `Signed` migration transaction in place within `state` — installing its
 /// deferred Orchard anchor and spend witness(es) (ZIP 374) and running the prover, via
-/// `zcash_pool_migration_backend`'s own `WalletMigrationProver` (the core-team-maintained
+/// `zcash_pool_migration`'s own `WalletMigrationProver` (the core-team-maintained
 /// replacement for this crate's former hand-ported `migration_finalize` stopgap; see that module's
 /// removal and `docs` for context). A transfer proves against its own persisted `anchor_boundary`
 /// (read internally by `engine::prove_transfer`); a preparation transaction carries no drawn
 /// boundary and proves against the wallet's current natural anchor instead, matching
-/// `zcash_pool_migration_backend`'s own `prove_chain_sim.rs` integration test.
+/// `zcash_pool_migration`'s own `prove_chain_sim.rs` integration test.
 ///
 /// Returns `Ok(true)` if proved (`state` now has this transaction `Proved`, with the proven PCZT
 /// replacing the stored one), `Ok(false)` if its witness/anchor isn't resolvable yet — the funding
@@ -1671,11 +1681,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         if state.is_terminal() {
             return Ok(0);
         }
+        // Only the status changes; the anchor bucket grid the run was committed under is carried
+        // through unchanged, since rewriting it would misreport which boundaries the already-drawn
+        // transfer anchors lie on.
         let cancelled = MigrationState::from_parts(
             engine::MigrationStatus::Failed,
             state.note_split().clone(),
             state.preparation().clone(),
             state.transactions().clone(),
+            state.anchor_bucket_interval(),
         );
         backend
             .replace_migration(&cancelled)
@@ -1687,7 +1701,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
 /// DEBUG ONLY: overrides this account's persisted migration schedule so its transfers become due
 /// in quick succession, for manually testing real broadcast execution without waiting out ZIP
-/// 318's privacy-motivated delay (mean ~3h between transfers — see `zcash_pool_migration_backend::
+/// 318's privacy-motivated delay (mean ~3h between transfers — see `zcash_pool_migration::
 /// scheduling`'s module doc: this is a deliberate anti-correlation choice, not a technical
 /// requirement). Not exposed to production users.
 ///
@@ -1732,7 +1746,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// Returns the number of transfers rescheduled.
 ///
 /// KNOWN EXCEPTION — direct SQL against engine-owned tables: rewriting a committed schedule is
-/// deliberately not something `zcash_pool_migration_backend` exposes (the ZIP 318 schedule is a
+/// deliberately not something `zcash_pool_migration` exposes (the ZIP 318 schedule is a
 /// privacy property, and `MigrationTransaction` offers no schedule setters), so this debug-only
 /// function reads and updates `orchard_ironwood_migration_transactions` rows directly. This is
 /// the ONLY remaining direct manipulation of wallet-database internals in this crate; if the
@@ -1759,7 +1773,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     const STRIDE_BLOCKS: u32 = 1;
 
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         // The wallet's real, currently-witnessable anchor — NOT a hand-picked "tip minus N" guess.
@@ -1851,6 +1865,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             state.note_split().clone(),
             state.preparation().clone(),
             new_transactions,
+            match network {
+                Network::MainNetwork => AnchorBucketInterval::ZIP_318,
+                Network::TestNetwork => {
+                    AnchorBucketInterval::custom(NonZeroU32::try_from(12).expect("12 is nonzero"))
+                }
+            },
         );
         backend
             .replace_migration(&new_state)
@@ -2424,14 +2444,14 @@ mod live_wallet_tests {
     // PCZTs against our old hand-rolled `migration_finalize::finalize_transaction`, which didn't
     // care whether a PCZT was signed — it just resolved the witness/anchor and let extraction fail
     // on the missing signature) was REMOVED when this crate adopted
-    // `zcash_pool_migration_backend`'s own `WalletMigrationProver`/`engine::prove_transfer`/
+    // `zcash_pool_migration`'s own `WalletMigrationProver`/`engine::prove_transfer`/
     // `prove_preparation` (see `try_prove`'s doc comment). Those require the transaction to be
     // `MigrationTxState::Signed` (`ProveError::NotReady` otherwise) — an UNSIGNED transaction from
     // `build_preparation_unsigned` is `AwaitingSignature`, so it is correctly rejected before ever
     // reaching witness/anchor resolution, not after (a stricter, better safety property than our old
     // stopgap had, but one this test's exact premise can no longer exercise). The witness/anchor
     // resolution logic this test covered now lives in `WalletMigrationProver` (core-team-owned,
-    // exercised by its own `zcash_pool_migration_backend/tests/prove_chain_sim.rs`); our own
+    // exercised by its own `zcash_pool_migration/tests/prove_chain_sim.rs`); our own
     // `commit_and_finalize_with_real_signing` below still covers the full real-signing → prove path
     // end to end against our wallet adapter.
 }
@@ -2662,7 +2682,7 @@ mod live_wallet_signing_tests {
         let ask = orchard::keys::SpendAuthorizingKey::from(usk.orchard());
         let unsigned_pczt =
             pczt::Pczt::parse(&unsigned_split_bytes).expect("parse unsigned split pczt");
-        let signed_pczt = zcash_pool_migration_backend::build::sign_pczt(unsigned_pczt, &ask)
+        let signed_pczt = zcash_pool_migration::build::sign_pczt(unsigned_pczt, &ask)
             .expect("sign split pczt out-of-process");
         let signed_bytes = signed_pczt
             .serialize()
@@ -2703,7 +2723,7 @@ mod live_wallet_signing_tests {
 /// what happens on re-entry, restart, and multi-account use — the moments a real app hits that a
 /// single linear test run never does. Pure `MigrationState` logic (`apply_signature`,
 /// `next_step`, `mark_broadcast`/`mark_mined`, terminal-status handling) is already unit-tested in
-/// `zcash_pool_migration_backend::state`, so it is not duplicated here; these tests are only for
+/// `zcash_pool_migration::state`, so it is not duplicated here; these tests are only for
 /// behavior that needs a real wallet DB, real accounts, or our own JNI-adapter code
 /// (`commit_or_reuse`, `Backend`) to observe.
 ///
@@ -2864,7 +2884,7 @@ mod live_wallet_edge_case_tests {
         // Commit a migration, then manually drive one of its transactions to `Broadcast` using a
         // real, already-mined txid from the fixture wallet DB — `mark_broadcast`/`mark_mined` set
         // state unconditionally (no prior-state precondition, confirmed in
-        // `zcash_pool_migration_backend::state`), so an `AwaitingSignature` transaction from
+        // `zcash_pool_migration::state`), so an `AwaitingSignature` transaction from
         // `build_preparation_unsigned` works fine here without needing real signing.
         let (plan, tip, _handle) =
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");

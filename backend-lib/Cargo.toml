@@ -35,27 +35,12 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 # voting-circuits support the old git pin provided, matching the zcash-swift-wallet-sdk pin.
 # No orchard [patch] entry is needed (and slipstream-core requires ^0.15.4, which it satisfies).
 orchard = { version = "0.15", features = ["unstable-voting-circuits"] }
-# Orchard->Ironwood migration engine (core/upstream implementation) — git dependency pinned to the
-# same librustzcash rev as the `[patch.crates-io]` block below (this crate isn't published to
-# crates.io). Replaces the former hand-rolled `zcash_pool_migration` crate. The SQLite persistence
-# side (formerly the separate `zcash_pool_migration_sqlite` crate) has since been folded into
-# `zcash_client_sqlite::pool_migration` (see that dependency's `[patch.crates-io]` entry below) —
-# no separate dependency needed for it.
-zcash_pool_migration_backend = { version = "0.1.0", features = ["wallet"] }
-pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
+zcash_pool_migration = { version = "0.1.0-rc.1", features = ["wallet"] }
+pczt = { version = "0.8", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
-# zcash_transparent, zcash_address, zcash_client_backend, zcash_client_sqlite, zcash_primitives,
-# zcash_proofs and zcash_protocol are bumped to the minor line the convergence-pin librustzcash
-# checkout actually publishes (0.9/0.13/0.24.0-rc.1/0.22.0-rc.1/0.29/0.29/0.10 respectively) so
-# the [patch.crates-io] block below is actually used. A `[patch]` only replaces the resolved
-# crate when its version satisfies the requirement string declared here; a requirement that's
-# only compatible with the *published* generation the patch replaces makes cargo silently
-# ignore the patch for that crate and pull a second, unpatched copy from crates.io instead,
-# splitting the graph (identical failure mode already hit and documented by slipstream-jni's
-# own Cargo.toml for zcash_protocol).
-transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
+transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.1", features = [
+zcash_client_backend = { version = "0.24.0-rc.2", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -63,10 +48,10 @@ zcash_client_backend = { version = "0.24.0-rc.1", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
-zcash_primitives = "0.29"
-zcash_proofs = "0.29"
+zcash_primitives = "0.30"
+zcash_proofs = "0.30"
 zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
@@ -135,19 +120,6 @@ xz2 = { version = "0.1", features = ["static"] }
 # The transitive `voting-circuits` dependency contains the share-reveal circuit
 # and the Poseidon-based `share_nullifier_hash` implementation:
 # https://github.com/valargroup/voting-circuits/blob/v0.8.0/voting-circuits/src/share_reveal/circuit.rs
-#
-# Bumped 0.11.0 -> 1.0.0 for the merged-library build only: 0.11.0's `action.rs` calls
-# `pczt::Pczt::parse`/`extract_pczt_sighash` assuming the published pczt 0.7 signatures
-# (`&[u8] -> Result<...>`), but the convergence-pin checkout's pczt 0.7.0 (patched in via
-# [patch.crates-io] below, required by the slipstream-jni merge) changed those signatures
-# without a version bump; 1.0.0 compiles cleanly against it. 1.0.0 also folded every
-# previously-optional dependency (pir-client, pir-types, valar-ypir, valar-spiral-rs,
-# vote-commitment-tree(-client), voting-circuits) into unconditional deps - it has no `features`
-# table at all - so the former `client-pir`/`client-tree-sync` feature list and
-# `default-features = false` are dropped; those capabilities are unconditionally compiled in
-# now. Optional, gated by `chp-voting`: zcash_voting 1.0's API surface has not yet been fully
-# ported past its own rename-level drift, so a default build must not carry it. Revert
-# alongside the rest of the patch block once the librustzcash family's next real release lands.
 zcash_voting = { version = "1.0.0", optional = true }
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
@@ -167,7 +139,7 @@ ff = { version = "0.13", optional = true }
 # is git-pinned (no machine-local path); backend-lib's `[patch.crates-io]` below is the single
 # source of truth governing the librustzcash rev for `core` and the whole graph. Keep this rev
 # in step with that patch block.
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "3009b7772bbedd56334af0f113a543c7fe80ecc5", optional = true }
+slipstream-core = { version = "0.6", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
@@ -193,35 +165,21 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 tracing-android = { version = "0.2", optional = true }
 
 [patch.crates-io]
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zcash_pool_migration_backend = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-equihash = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb" }
-# Pin zcash_voting to the zodl-inc fork rev built against this same librustzcash rev, so it
-# shares one copy of zcash_protocol/orchard/zcash_keys with the patched graph (crates.io
-# zcash_voting 1.0.0 pulls its own zcash_protocol 0.9.0, splitting the graph) and exposes the
-# API the voting module is written against.
-zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting.git", rev = "a4daaf77f793b35a98a3d811b920a01b95fbfa7a" }
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "35faa0c2f2095704c53d79849d2ef547c4ce2cad" }
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
 
-## Uncomment this to test someone else's librustzcash changes in a branch
+## Uncomment and modify the following block to use librustzcash crates at a pinned revision.
 #[patch.crates-io]
-#pczt = { git = "https://github.com/zcash/librustzcash.git", branch = "main" }
-#transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_address = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_primitives = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_proofs = { git = "https://github.com/zcash/librustzcash", branch = "main" }
-#zcash_protocol = { git = "https://github.com/zcash/librustzcash", branch = "main" }
+#pczt = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 
 [dev-dependencies]
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
