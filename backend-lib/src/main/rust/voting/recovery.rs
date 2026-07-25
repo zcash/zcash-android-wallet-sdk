@@ -477,6 +477,56 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
             &[0xAA; PROTOCOL_FIELD_BYTES],
         )
         .map_err(|e| anyhow!("store_vote fixture: {e}"))?;
+
+        let recovery = voting::vote::VoteRecoveryBundle {
+            vote_round_id: round_id.clone(),
+            bundle_index,
+            proposal_id,
+            vote_decision: choice,
+            anchor_height: 100,
+            vc_tree_position: 456,
+            single_share: false,
+            num_options: 3,
+            van_nullifier: [0x31; PROTOCOL_FIELD_BYTES],
+            vote_authority_note_new: [0x32; PROTOCOL_FIELD_BYTES],
+            vote_commitment: [0x01; PROTOCOL_FIELD_BYTES],
+            proof: vec![0x34; 8],
+            shares_hash: [0x35; PROTOCOL_FIELD_BYTES],
+            r_vpk: [0x36; PROTOCOL_FIELD_BYTES],
+            alpha_v: [0x37; PROTOCOL_FIELD_BYTES],
+            vote_auth_sig: [0x38; SPEND_AUTH_SIG_BYTES],
+            encrypted_shares: (0..VOTE_SHARE_COUNT)
+                .map(|share_index| voting::types::EncryptedShare {
+                    c1: vec![0x21; PROTOCOL_FIELD_BYTES],
+                    c2: vec![0x22; PROTOCOL_FIELD_BYTES],
+                    share_index: share_index as u32,
+                    plaintext_value: 5,
+                    randomness: vec![0x23; PROTOCOL_FIELD_BYTES],
+                })
+                .collect(),
+            share_blinds: vec![[0x02; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
+            share_comms: vec![[0x51; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
+        };
+        let recovery_json = voting::vote::serialize_recovery(&recovery)
+            .map_err(|e| anyhow!("serialize vote recovery fixture: {e}"))?;
+        conn.execute(
+            "UPDATE votes
+             SET commitment_bundle_json = :recovery_json,
+                 vc_tree_position = :vc_tree_position
+             WHERE round_id = :round_id
+               AND wallet_id = :wallet_id
+               AND bundle_index = :bundle_index
+               AND proposal_id = :proposal_id",
+            rusqlite::named_params! {
+                ":recovery_json": recovery_json,
+                ":vc_tree_position": 456_i64,
+                ":round_id": round_id,
+                ":wallet_id": wallet_id,
+                ":bundle_index": i64::from(bundle_index),
+                ":proposal_id": i64::from(proposal_id),
+            },
+        )
+        .map_err(|e| anyhow!("store vote recovery fixture: {e}"))?;
         Ok(())
     });
     unwrap_exc_or(&mut env, res, ())

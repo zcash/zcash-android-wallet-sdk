@@ -4,6 +4,8 @@ use super::*;
 #[cfg(feature = "android-test-fixtures")]
 const TEST_TREE_STATE_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
+#[cfg(feature = "android-test-fixtures")]
+const TESTNET_NU6_3_ACTIVATION_HEIGHT: u64 = 4_134_000;
 
 // Voting notes are Ironwood/V3 notes, so these fixtures populate the
 // ironwood_tree field (not orchard_tree) that generateNoteWitnessesNative and
@@ -12,7 +14,7 @@ const TEST_TREE_STATE_HASH: &str =
 fn tree_state_fixture(ironwood_tree: String) -> zcash_client_backend::proto::service::TreeState {
     zcash_client_backend::proto::service::TreeState {
         network: "test".to_string(),
-        height: 1,
+        height: TESTNET_NU6_3_ACTIVATION_HEIGHT,
         hash: TEST_TREE_STATE_HASH.to_string(),
         time: 0,
         sapling_tree: String::new(),
