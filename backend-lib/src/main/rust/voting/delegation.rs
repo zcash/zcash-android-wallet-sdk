@@ -653,7 +653,7 @@ mod tests {
         signer
             .sign_orchard(result.action_index, &spend_authorizing_key)
             .expect("sign orchard action");
-        let signed_pczt = signer.finish().serialize();
+        let signed_pczt = signer.finish().serialize().expect("serialize signed PCZT");
         let sig = extract_indexed_spend_auth_sig(&signed_pczt, result.action_index).unwrap();
 
         assert_ne!(sig, [0u8; 64]);

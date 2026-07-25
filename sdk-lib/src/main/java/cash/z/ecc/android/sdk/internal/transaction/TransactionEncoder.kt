@@ -49,6 +49,12 @@ internal interface TransactionEncoder {
     ): Proposal
 
     /**
+     * Creates a proposal migrating the account's entire Orchard balance into Ironwood.
+     */
+    @Throws(TransactionEncoderException.ProposalFromParametersException::class)
+    suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal
+
+    /**
      * Creates a proposal for shielding any transparent funds sent to the given account.
      *
      * @param account the account for which to shield funds.
