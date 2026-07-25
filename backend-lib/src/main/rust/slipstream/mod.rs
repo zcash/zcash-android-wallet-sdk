@@ -70,7 +70,7 @@ use slipstream_core::ffi_handle::{
     FfiSlipstreamEvent, SlipstreamHandle as CoreHandle, SyncState, spawn_supervised,
 };
 use slipstream_core::session::{SessionConfig, SessionReporter, TorSessionConfig, run_session};
-use slipstream_core::{Endpoint, EngineConfig, Network, ProgressArc};
+use slipstream_core::{AnchorRetention, Endpoint, EngineConfig, Network, ProgressArc};
 
 // The engine's `SessionConfig` now takes pre-parsed accounts; parse the host UFVK encoding here.
 use zcash_client_backend::keys::UnifiedFullViewingKey;
@@ -480,7 +480,7 @@ fn open_handle(
 /// dependency in the other direction would make `slipstream-jni` depend on `backend-lib` depend
 /// on `slipstream-jni`: a cyclic package dependency, which Cargo rejects regardless of the two
 /// crates' separate `[workspace]` roots. Raw SQL also keeps this crate from having to link
-/// `zcash_pool_migration_backend`/`orchard` at all, which it otherwise has no reason to depend
+/// `zcash_pool_migration`/`orchard` at all, which it otherwise has no reason to depend
 /// on.
 ///
 /// Reads via `read_query::open_read_only` (the shared bundled-SQLite-instance path — see that
@@ -573,7 +573,7 @@ fn start_session(
     // failure must never block sync from starting: fall back to no retention floor (the
     // pre-fix behavior) and log loudly enough to notice, since silently reverting to "no
     // protection" is itself worth knowing about.
-    cfg.anchor_retention_height = h
+    let anchor_retention_floor = h
         .wallet_db_path
         .to_str()
         .ok_or_else(|| anyhow!("wallet_db_path is not valid UTF-8"))
@@ -585,6 +585,17 @@ fn start_session(
             );
             None
         });
+    // The grid must be the one this crate configures on the wallet (see
+    // `crate::anchor_retention_interval`): the engine runs its own tree-update path, so a
+    // boundary it does not retain is one a migration transfer cannot later be proved against.
+    cfg.anchor_retention = anchor_retention_floor.map(|floor| {
+        AnchorRetention::new(
+            BlockHeight::from(floor),
+            crate::anchor_retention_interval(zcash_protocol::consensus::Parameters::network_type(
+                &h.network,
+            )),
+        )
+    });
 
     // `ufvk` present = view-only import on the first pass (keyless — a UFVK is viewing
     // capability, never a spending key); absent = an account must already exist. The engine's

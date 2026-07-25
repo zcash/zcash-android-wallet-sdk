@@ -16,7 +16,7 @@
 //! Unlike this file's neighbors, this is NOT backed by the wallet SQLite database: the new
 //! engine's `MigrationPlan` (and its `NoteSplitPlan`/`PreparationPlan` fields) has no `serde`
 //! support and no public constructor — the only way to obtain one is calling `plan_migration()`
-//! itself (verified directly against `zcash_pool_migration_backend`'s source, not assumed), so it
+//! itself (verified directly against `zcash_pool_migration`'s source, not assumed), so it
 //! can't be round-tripped through our own persistence the way `migration_finalize`'s proven-pczt
 //! cache was. Instead this holds it in memory, in a process-lifetime static — valid because the
 //! app's entire "review a migration proposal, then confirm/sign it" flow happens on one screen, in
@@ -28,7 +28,7 @@ use std::sync::{Mutex, OnceLock};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use zcash_client_sqlite::AccountUuid;
-use zcash_pool_migration_backend::engine::MigrationPlan;
+use zcash_pool_migration::engine::MigrationPlan;
 
 /// Opaque identifier of one cached [`MigrationPlan`]. Drawn fresh (randomly) for every plan, so a
 /// handle from an earlier proposal can never accidentally match a later one.

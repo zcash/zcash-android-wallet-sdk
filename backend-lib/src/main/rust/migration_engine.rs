@@ -1,7 +1,7 @@
-//! Adapter wiring the Android wallet database into `zcash_pool_migration_backend`'s
+//! Adapter wiring the Android wallet database into `zcash_pool_migration`'s
 //! `MigrationBackend`/`MigrationCrypto`/`PoolMigrationRead`/`PoolMigrationWrite` traits.
 //!
-//! This is deliberately a separate, thinner adapter than `zcash_pool_migration_backend::wallet::
+//! This is deliberately a separate, thinner adapter than `zcash_pool_migration::wallet::
 //! WalletMigration`: that type's constructor requires a `UnifiedSpendingKey` unconditionally
 //! (its `orchard_fvk()` is derived from the usk), but several JNI entry points in `migration.rs`
 //! only ever plan or build unsigned PCZTs (no usk available at that call site — mirroring the old
@@ -9,7 +9,7 @@
 //! not from a spending key). `Backend::usk` is therefore optional: every method needed for
 //! planning/building unsigned PCZTs (`orchard_fvk`, `resolve_wallet_note`,
 //! `spendable_orchard_note_values`, `chain_tip_height`) works without it; only `sign()` requires
-//! one, and `zcash_pool_migration_backend::engine::build_preparation_unsigned` never calls it (only
+//! one, and `zcash_pool_migration::engine::build_preparation_unsigned` never calls it (only
 //! `commit_preparation`'s in-process-signing path does).
 
 use std::convert::Infallible;
@@ -34,10 +34,11 @@ use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 
 use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
-use zcash_pool_migration_backend::engine::{
+use zcash_pool_migration::engine::{
     MigrationBackend, MigrationCrypto, MigrationState, MigrationTxId, MigrationTxState,
     PoolMigrationRead, PoolMigrationWrite,
 };
+use zcash_pool_migration::scheduling::SchedulingParams;
 
 use crate::migration::Wallet;
 
@@ -148,6 +149,17 @@ where
             .map_err(|e| anyhow::anyhow!("chain height lookup failed: {e}"))?
             .ok_or_else(|| anyhow::anyhow!("wallet has no chain tip yet"))
     }
+
+    /// Read off the wallet's own anchor retention grid (configured per network by
+    /// `crate::anchor_retention_interval`) rather than chosen here, so a transfer can only be
+    /// anchored to a boundary whose checkpoint the wallet actually keeps. The delay distributions
+    /// are scaled from that same grid, which reproduces the ZIP 318 schedule exactly at the ZIP 318
+    /// interval and compresses it proportionally on a test network.
+    fn scheduling_params(&self) -> SchedulingParams {
+        SchedulingParams::new_with_default_distributions(
+            self.wallet.anchor_retention_interval().into(),
+        )
+    }
 }
 
 impl<'a, W> MigrationCrypto for Backend<'a, W>
@@ -188,7 +200,7 @@ where
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no spending key available for in-process signing"))?;
         let ask = SpendAuthorizingKey::from(usk.orchard());
-        zcash_pool_migration_backend::build::sign_pczt(pczt, &ask)
+        zcash_pool_migration::build::sign_pczt(pczt, &ask)
             .map_err(|e| anyhow::anyhow!("signing the migration PCZT failed: {e:?}"))
     }
 }
@@ -232,7 +244,7 @@ where
 }
 
 /// Builds an ordinary send-max proposal sweeping every spendable Orchard note into the account's
-/// own Ironwood receiver — bypassing `zcash_pool_migration_backend` entirely. Unlike AUTOMATIC
+/// own Ironwood receiver — bypassing `zcash_pool_migration` entirely. Unlike AUTOMATIC
 /// mode's `plan_migration`/`commit_preparation`/`commit_or_reuse` path, this function never reads
 /// or writes the persisted `MigrationState`: there is nothing to reconcile, no `is_immediate`
 /// flag, no consumed-run bookkeeping, because the engine's `InProgress`/`Complete` derivation
@@ -249,7 +261,7 @@ where
 /// receiver) — there is no separate "Ironwood address" type, so deriving
 /// `orchard_fvk.address_at(0u32, Scope::Internal)` and wrapping it as `Receiver::Orchard` before
 /// encoding to a `ZcashAddress` is both correct and exactly how
-/// `zcash_pool_migration_backend::build::build_transfer_pczt` derives a migration transfer's own
+/// `zcash_pool_migration::build::build_transfer_pczt` derives a migration transfer's own
 /// crossing destination (its `recipient = orchard_fvk.address_at(0u32, Scope::Internal)`) — this
 /// reuses that same derivation, not a second one.
 pub fn propose_immediate_send_max(

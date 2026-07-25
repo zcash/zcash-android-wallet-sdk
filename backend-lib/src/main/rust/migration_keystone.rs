@@ -29,7 +29,7 @@ use ur_registry::zcash::zcash_sign_batch::ZcashSignBatch;
 /// PCZT with the account's ZIP 32 derivation path, so an external signer (Keystone) can derive
 /// its own full viewing key and recognize which of its accounts a spend belongs to.
 ///
-/// `zcash_pool_migration_backend`'s builders (`build_prep_tx`/`build_transfer_pczt`) never set
+/// `zcash_pool_migration`'s builders (`build_prep_tx`/`build_transfer_pczt`) never set
 /// this metadata — they only run the shared `Creator`/`IoFinalizer` plumbing, with no `Updater`
 /// step for spend derivation (unlike `zcash_client_backend::data_api::wallet::create_pczt_from_proposal`,
 /// which sets it for ordinary sends). Combined with [`build_sign_batch_qr_parts`]'s batch
@@ -342,7 +342,7 @@ mod tests {
     use shardtree::store::memory::MemoryShardStore;
     use ur_registry::zcash::zcash_sign_batch::ZcashSignBatch;
     use zcash_note_encryption::try_note_decryption;
-    use zcash_primitives::transaction::builder::{BuildConfig, Builder, PcztResult};
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding, PcztResult};
     use zcash_primitives::transaction::fees::zip317;
     use zcash_protocol::consensus::{BlockHeight, Network};
     use zcash_protocol::memo::{Memo, MemoBytes};
@@ -421,8 +421,8 @@ mod tests {
                 sapling_anchor: None,
                 orchard_anchor: Some(anchor),
                 ironwood_anchor: None,
-                orchard_bundle_type: orchard::builder::BundleType::DEFAULT,
-                ironwood_bundle_type: orchard::builder::BundleType::DEFAULT,
+                orchard_padding: BundlePadding::DEFAULT,
+                ironwood_padding: BundlePadding::DEFAULT,
             },
         );
         builder
