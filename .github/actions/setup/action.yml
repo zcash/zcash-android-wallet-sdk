@@ -55,6 +55,7 @@ runs:
         rustup toolchain install "${CHANNEL}"
         rustup default "${CHANNEL}"
         rustup target add --toolchain "${CHANNEL}" armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        rustup component add --toolchain "${CHANNEL}" clippy
     - name: Mint a read token for the private slipstream repository
       id: slipstream-token
       if: inputs.slipstream-app-id != '' && inputs.slipstream-app-private-key != ''

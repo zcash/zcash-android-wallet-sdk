@@ -306,6 +306,33 @@ jobs:
           rust-cache: true
           slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
           slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
+      - name: Clippy
+        timeout-minutes: 15
+        working-directory: backend-lib
+        run: |
+          cargo clippy --tests --all-features -- -W clippy::all -D warnings
+
+  test_android_modules_unit:
+    needs: [validate_gradle_wrapper]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build and test
         timeout-minutes: 30
         run: |
@@ -398,26 +425,11 @@ jobs:
           name: Test Android modules with FTL results
           path: ~/artifacts
 
-  # DISABLED: the emulator.wtf organization has exhausted its credits, so this job fails on every
-  # run with `Http error 402: You've run out of free credits on emulator.wtf`. The plugin then
-  # parses that error body as a test-run response, so what actually surfaces is the misleading
-  # `com.google.gson.JsonSyntaxException: Missing required properties: testRunId`. Nothing about
-  # the build or the tests is wrong.
-  #
-  # To re-enable: configure billing at
-  # https://emulator.wtf/o/005b7bef-ece6-4af6-a3e6-62c245489044/billing, then restore the
-  # `if:` condition recorded below.
-  #
-  # Note that disabling this does NOT fall back to Firebase Test Lab: test_android_modules_ftl is
-  # gated on the emulator.wtf API key being *absent*, and the key is still set — it is the credits
-  # that ran out. Device-test coverage is therefore zero, which is unchanged from the status quo
-  # (the job was already failing rather than testing), but it is zero rather than merely red.
-  # Removing EMULATOR_WTF_API_KEY from the repository secrets would route these tests to FTL
-  # instead, if that tradeoff is preferred over fixing the billing.
-  test_android_modules_wtf:
-    # Original condition: needs.check_emulator_wtf_secrets.outputs.has-secrets == 'true'
-    if: false
-    needs: [ validate_gradle_wrapper, check_emulator_wtf_secrets ]
+  # Runs the Android instrumentation suites on a Gradle Managed Device: a
+  # hardware-accelerated emulator booted inside the runner. This replaces the
+  # former emulator.wtf cloud job and depends on no external test service.
+  test_android_modules_emulator:
+    needs: [validate_gradle_wrapper]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -429,6 +441,15 @@ jobs:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
           persist-credentials: false
+      # ubuntu-latest exposes /dev/kvm, but the default udev rules do not grant
+      # the runner user access to it. This rule opens it so the managed-device
+      # emulator can use KVM acceleration instead of falling back to software.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -437,10 +458,14 @@ jobs:
           rust-cache: true
           slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
           slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
-      - name: Build and test
-        timeout-minutes: 30
-        env:
-          ORG_GRADLE_PROJECT_ZCASH_EMULATOR_WTF_API_KEY: ${{ secrets.EMULATOR_WTF_API_KEY }}
+      # The hosted runner's Android SDK does not include the emulator package,
+      # which a Gradle Managed Device requires. AGP auto-installs the system
+      # image but not the emulator, so without this the pixel2MinSetup task
+      # fails at VersionedSdkLoader.getEmulatorDirectoryProvider().get() with
+      # "Cannot query the value of this property because it has no value
+      # available". Install it explicitly.
+      - name: Install Android emulator
+        timeout-minutes: 5
         run: |
           yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "emulator"
       # pixel2Min is the Gradle Managed Device defined in
