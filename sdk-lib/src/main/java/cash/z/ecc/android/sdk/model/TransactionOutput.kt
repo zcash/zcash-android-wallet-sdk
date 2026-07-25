@@ -7,5 +7,6 @@ data class TransactionOutput(
 enum class TransactionPool {
     TRANSPARENT,
     SAPLING,
-    ORCHARD
+    ORCHARD,
+    IRONWOOD
 }

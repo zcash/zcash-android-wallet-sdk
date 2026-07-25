@@ -36,6 +36,14 @@ interface Backend {
     ): ProposalUnsafe
 
     /**
+     * Proposes migrating the account's entire Orchard balance into the Ironwood pool.
+     *
+     * @throws RuntimeException if NU6.3 is not active, if any Orchard note is not yet
+     * spendable, or as a common indicator of the operation failure
+     */
+    suspend fun proposeOrchardToIronwoodMigration(accountUuid: ByteArray): ProposalUnsafe
+
+    /**
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
@@ -262,11 +270,14 @@ interface Backend {
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
+    @Suppress("LongParameterList")
     suspend fun putSubtreeRoots(
         saplingStartIndex: Long,
         saplingRoots: List<JniSubtreeRoot>,
         orchardStartIndex: Long,
         orchardRoots: List<JniSubtreeRoot>,
+        ironwoodStartIndex: Long,
+        ironwoodRoots: List<JniSubtreeRoot>,
     )
 
     /**

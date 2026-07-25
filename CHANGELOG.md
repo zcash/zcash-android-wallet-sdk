@@ -6,6 +6,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Ironwood (NU6.3) shielded pool support: the SDK now exposes the Ironwood pool
+  (balance, subtree roots, sync) alongside Sapling and Orchard.
+- `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that
+  moves the account's entire Orchard balance across the NU6.3 turnstile into the
+  Ironwood pool.
+
+### Changed
+- Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
+  line, adapting the backend to the send-max and builder API changes.
+- Updated the librustzcash crates to their published releases,
+  `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
+
 ## [2.5.2] - 2026-06-03
 
 ### Changed
