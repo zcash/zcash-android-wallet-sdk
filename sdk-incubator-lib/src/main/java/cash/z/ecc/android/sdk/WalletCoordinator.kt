@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk
 
 import android.content.Context
+import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.ext.onFirst
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
@@ -76,7 +78,12 @@ class WalletCoordinator(
         class Lockout(
             val id: UUID
         ) : InternalSynchronizerStatus()
+
+        object SeedMismatch : InternalSynchronizerStatus()
     }
+
+    private val _isSeedMismatch = MutableStateFlow(false)
+    val isSeedMismatch: StateFlow<Boolean> = _isSeedMismatch.asStateFlow()
 
     @Suppress("DestructuringDeclarationWithTooManyEntries")
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -99,28 +106,37 @@ class WalletCoordinator(
             } else if (null == persistableWallet) {
                 flowOf(InternalSynchronizerStatus.NoWallet)
             } else {
-                callbackFlow<InternalSynchronizerStatus.Available> {
-                    val closeableSynchronizer =
-                        Synchronizer.new(
-                            context = context,
-                            zcashNetwork = persistableWallet.network,
-                            lightWalletEndpoint = persistableWallet.endpoint,
-                            birthday = persistableWallet.birthday,
-                            setup =
-                                AccountCreateSetup(
-                                    accountName = accountName,
-                                    keySource = keySource,
-                                    seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
-                                ),
-                            walletInitMode = persistableWallet.walletInitMode,
-                            isTorEnabled = isTorEnabled == true,
-                            isExchangeRateEnabled = isExchangeRateEnabled == true
-                        )
+                callbackFlow<InternalSynchronizerStatus> {
+                    try {
+                        val closeableSynchronizer =
+                            Synchronizer.new(
+                                context = context,
+                                zcashNetwork = persistableWallet.network,
+                                lightWalletEndpoint = persistableWallet.endpoint,
+                                birthday = persistableWallet.birthday,
+                                setup =
+                                    AccountCreateSetup(
+                                        accountName = accountName,
+                                        keySource = keySource,
+                                        seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
+                                    ),
+                                walletInitMode = persistableWallet.walletInitMode,
+                                isTorEnabled = isTorEnabled == true,
+                                isExchangeRateEnabled = isExchangeRateEnabled == true
+                            )
 
-                    trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
-                    awaitClose {
-                        Twig.info { "Closing flow and stopping synchronizer" }
-                        closeableSynchronizer.close()
+                        trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
+                        awaitClose {
+                            Twig.info { "Closing flow and stopping synchronizer" }
+                            closeableSynchronizer.close()
+                        }
+                    } catch (e: InitializeException.SeedNotRelevant) {
+                        Twig.error(e) { "Seed does not match the wallet database — emitting SeedMismatch" }
+                        _isSeedMismatch.value = true
+                        trySend(InternalSynchronizerStatus.SeedMismatch)
+                        // Reset when flatMapLatest cancels this flow (e.g. on lockout triggered by
+                        // RecoverFromSeedMismatchUseCase or when persistableWallet changes).
+                        awaitClose { _isSeedMismatch.value = false }
                     }
                 }
             }
@@ -139,6 +155,7 @@ class WalletCoordinator(
                 when (it) {
                     is InternalSynchronizerStatus.Available -> it.synchronizer
                     is InternalSynchronizerStatus.Lockout -> null
+                    InternalSynchronizerStatus.SeedMismatch -> null
                     InternalSynchronizerStatus.NoWallet -> null
                 }
             }.stateIn(
@@ -181,33 +198,33 @@ class WalletCoordinator(
     }
 
     /**
+     * Runs [block] with the synchronizer stopped via lockout. Guarantees no synchronizer is
+     * active during the block, even if one was starting up concurrently.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun withSynchronizerLockout(block: suspend () -> Unit) {
+        lockoutMutex.withLock {
+            val lockoutId = UUID.randomUUID()
+            synchronizerLockoutId.update { lockoutId }
+            synchronizerOrLockoutId
+                .filterIsInstance<InternalSynchronizerStatus.Lockout>()
+                .filter { it.id == lockoutId }
+                .onFirst { block() }
+            synchronizerLockoutId.update { null }
+        }
+    }
+
+    /**
      * Resets persisted data in the SDK, but preserves the wallet secret.  This will cause the
      * WalletCoordinator to emit a new synchronizer instance.
      */
-    @OptIn(ExperimentalCoroutinesApi::class)
     fun resetSdk() {
         walletScope.launch {
-            val zcashNetwork = persistableWallet.first()?.network
-            if (null != zcashNetwork) {
-                lockoutMutex.withLock {
-                    val lockoutId = UUID.randomUUID()
-                    synchronizerLockoutId.update { lockoutId }
-
-                    synchronizerOrLockoutId
-                        .filterIsInstance<InternalSynchronizerStatus.Lockout>()
-                        .filter { it.id == lockoutId }
-                        .onFirst {
-                            synchronizerMutex.withLock {
-                                val didDelete =
-                                    Synchronizer.erase(
-                                        appContext = applicationContext,
-                                        network = zcashNetwork
-                                    )
-                                Twig.info { "SDK erase result: $didDelete" }
-                            }
-                        }
-
-                    synchronizerLockoutId.update { null }
+            val zcashNetwork = persistableWallet.first()?.network ?: return@launch
+            withSynchronizerLockout {
+                synchronizerMutex.withLock {
+                    val didDelete = Synchronizer.erase(appContext = applicationContext, network = zcashNetwork)
+                    Twig.info { "SDK erase result: $didDelete" }
                 }
             }
         }
@@ -221,22 +238,16 @@ class WalletCoordinator(
     fun deleteSdkDataFlow(): Flow<Boolean> =
         callbackFlow {
             walletScope.launch {
-                val zcashNetwork = persistableWallet.first()?.network
-                if (null != zcashNetwork) {
+                val zcashNetwork = persistableWallet.first()?.network ?: return@launch
+                withSynchronizerLockout {
                     synchronizerMutex.withLock {
-                        val didDelete =
-                            Synchronizer.erase(
-                                appContext = applicationContext,
-                                network = zcashNetwork
-                            )
+                        val didDelete = Synchronizer.erase(appContext = applicationContext, network = zcashNetwork)
                         Twig.info { "SDK erase result: $didDelete" }
                         trySend(didDelete)
                     }
                 }
             }
-            awaitClose {
-                // Nothing to close here
-            }
+            awaitClose { }
         }
 
     // Allows for extension functions
