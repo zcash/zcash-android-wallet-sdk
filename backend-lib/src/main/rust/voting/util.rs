@@ -14,6 +14,9 @@ fn tree_state_fixture(orchard_tree: String) -> zcash_client_backend::proto::serv
         time: 0,
         sapling_tree: String::new(),
         orchard_tree,
+        // NU6.3 added an Ironwood commitment tree to the TreeState proto. These voting
+        // fixtures exercise the Orchard tree only, so it stays empty like the Sapling one.
+        ironwood_tree: String::new(),
     }
 }
 
