@@ -6,7 +6,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Ironwood (NU6.3) shielded pool support: the SDK now exposes the Ironwood pool
+  (balance, subtree roots, sync) alongside Sapling and Orchard.
+- `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that
+  moves the account's entire Orchard balance across the NU6.3 turnstile into the
+  Ironwood pool.
+
 ### Changed
+- Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
+  line, adapting the backend to the send-max and builder API changes.
+- Updated the librustzcash crates to their published releases,
+  `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
 - The native backend no longer runs any DDL or direct DML against wallet-database
   internals: the pre-release schema self-heal shim for
   `orchard_ironwood_migration_transactions` is removed (wallets created against
@@ -23,6 +34,30 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end in minutes rather than days. Mainnet is unchanged and still uses the ZIP
   318 parameters. A testnet wallet that committed a migration before this change
   has its transfers anchored to the old grid; those runs must be restarted.
+
+### Fixed
+- The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
+  helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
+  paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that
+  fired during the active `submit()` RPC could race the foreground submit with a second
+  `txManager.submit()`. With the plan-store dance, the in-flight window is `AwaitingPlan` and the
+  resubmit step skips it. Note that `resubmitUnminedTransactions` is DB-driven (loads
+  unmined-and-not-expired txs from the wallet DB) and does not query the mempool, so a tx that
+  has been accepted into a server's mempool but not yet mined will still be re-broadcast on the
+  next sync tick — that mempool-duplication path is handled by the "verify against the server"
+  reclassification (separate `## Fixed` entry below). This entry narrows the *in-flight* race
+  window specifically. The public `Broadcaster.submit` and both legacy helpers record their
+  endpoint after the submit RPC returns (rather than before), and the write is wrapped in
+  `NonCancellable` so a coroutine cancellation mid-submit cannot leave the plan stranded at
+  `AwaitingPlan`.
+- `Synchronizer.submitTransaction` (and the broadcaster equivalent) now verifies submit failures
+  against the server before surfacing them: when the submit RPC returns a non-zero error code
+  (and not a gRPC-layer failure), the SDK immediately asks the same lightwalletd whether the tx
+  is known via `fetchTransaction`, and reclassifies the result as `TransactionSubmitResult.Success`
+  if the server reports the tx is in mempool or chain. This covers the cases that previously
+  produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's
+  `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
+  backend-specific error codes or message text.
 
 ## [2.6.5] - 2026-06-19
 
@@ -45,6 +80,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.0] - 2026-05-26
 
 ### Added
+- `CompactBlockProcessor.enhanceTransactionDetails` and the per-transaction `enhanceTransaction`
+  step now emit structured diagnostic logs at each step of an enhance cycle — cycle start with
+  request count, per-request type, fetch response shape (whether a tx was returned, whether it
+  has a mined height), the decision taken (`setTransactionStatus` or `decryptAndStoreTransaction`),
+  per-request errors with error type, and cycle completion. Logs use opaque per-request
+  correlation ids (no transaction ids, addresses, or other PII) so production logs are debuggable
+  for future stuck-transaction reports without exposing user-identifying data.
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
   to the bundled checkpoint if this optimization does not complete within 5 seconds.
@@ -71,6 +113,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exposes raw-address derivation to callers that do not retain the hotkey seed.
 - Pinned `orchard` to `=0.13.1` with `unstable-voting-circuits` to match `zcash_voting` / `voting-circuits` requirements.
 - Pinned `zcash_voting` to `=0.10.1`.
+
+## [2.5.2] - 2026-06-03
+
+### Changed
+- Migrated to NU 6.2
 
 ## [2.5.1] - 2026-05-14
 

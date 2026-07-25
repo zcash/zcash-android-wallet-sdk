@@ -1,4 +1,4 @@
-@file:Suppress("MaxLineLength")
+@file:Suppress("MaxLineLength", "TooManyFunctions")
 
 package com.zodl.slipstream.internal.spend
 
@@ -66,6 +66,14 @@ internal class SlipstreamSpendService(
         backend
             .proposeShielding(account.accountUuid.value, shieldingThreshold.value, memo.toMemoBytesOrNull(), transparentReceiver)
             ?.let(Proposal::fromUnsafe)
+
+    /**
+     * Proposes the one-shot Orchard to Ironwood crossing: a single transaction carrying the
+     * account's entire Orchard balance, which any chain observer can read off as such. The
+     * scheduled, denomination-splitting alternative is [com.zodl.slipstream.MigrationSdk].
+     */
+    suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
+        Proposal.fromUnsafe(backend.proposeOrchardToIronwoodMigration(account.accountUuid.value))
 
     /**
      * Store-first (S-SPEND): `create` already wrote the transactions into `data.db`, so the FIRST

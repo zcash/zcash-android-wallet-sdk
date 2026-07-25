@@ -13,7 +13,7 @@ jobs that are runnable on a dev machine:
 
 ```bash
 ./scripts/ci-local.sh fast     # detekt + ktlint (~30s) -- run this first
-./scripts/ci-local.sh quick    # fast + unit tests (~2-5m)
+./scripts/ci-local.sh quick    # fast + unit tests (~5m)
 ./scripts/ci-local.sh full     # everything, including androidTest (~15-30m)
 
 # Or a single stage when iterating:
@@ -22,12 +22,29 @@ jobs that are runnable on a dev machine:
 ./scripts/ci-local.sh demoapp
 ```
 
+`quick` is what actually compiles the Kotlin: `fast` only runs static
+analysis, so it will pass on code that does not compile. Run at least `quick`
+after any change to a Kotlin source file.
+
 ### Environment requirements
 
 - **JDK 17 or 21.** Android Gradle Plugin 8.13.x does not support JDK 25+.
   If your default `java -version` reports 25 or newer, install JDK 21 via
   Homebrew (`brew install openjdk@21`) or SDKMAN! and set `JAVA_HOME` before
   running the script.
+
+  On a machine where `java` is not on `PATH` at all (common on macOS, where
+  the JDK is installed but not linked), export it for the command:
+
+  ```bash
+  export JAVA_HOME=/opt/homebrew/opt/openjdk@21          # brew install openjdk@21
+  export PATH="$JAVA_HOME/bin:$PATH"
+  export ANDROID_HOME="$HOME/Library/Android/sdk"
+  ./scripts/ci-local.sh quick
+  ```
+
+  Android Studio's bundled runtime works too, if you prefer not to install a
+  second JDK: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
 - **Android SDK** at `$ANDROID_HOME` or `~/Library/Android/sdk`.
 - For the `androidtest` stage on Apple Silicon, the `aosp` SDK-36 Pixel 2
   system image is downloaded on first run (~1.5 GB).
@@ -80,21 +97,114 @@ git pull origin main
 git worktree add ../fix-something -b fix/something main
 ```
 
+## Security-critical API rules
+
+These rules exist because violations have shipped before. They are not
+stylistic.
+
+### Semantic types for public APIs (MUST)
+
+Every public API parameter that carries a domain value — key material,
+seeds, addresses, memos, account identifiers — MUST use its semantic
+wrapper type. Never accept or pass bare `String` or `ByteArray` for these
+values in the public surface. A primitive-typed parameter lets a typo or
+autocomplete slip a key into a memo field, and lets invalid input travel
+all the way to the Rust backend before failing.
+
+- Gold-standard pattern to copy: `UnifiedSpendingKey`
+  (`sdk-lib/.../sdk/model/UnifiedSpendingKey.kt`) — private constructor,
+  rust-backed validation on construction (`validateUnifiedSpendingKey`),
+  bytes held in `FirstClassByteArray`, and `toString()` redacted so the key
+  can never leak through logs. New key-material types MUST follow it.
+- Known weak spot: `UnifiedFullViewingKey` is currently a bare
+  `data class(val encoding: String)` with no construction-time validation.
+  Do not treat it as a pattern to copy; new or changed types must validate
+  on construction through the backend so invalid values are rejected before
+  reaching deeper API calls.
+- **All parsing and validation is librustzcash's job, surfaced through the
+  JNI layer.** NEVER implement your own inline parser, regex, prefix check,
+  or encoding check for key material or addresses in Kotlin. If the
+  validation entry point you need does not exist, expose the librustzcash
+  function through `backend-lib` (`Backend.kt`) and `TypesafeBackend`, and
+  call that.
+- Known gaps — do not extend them: seeds as raw `ByteArray`
+  (`DerivationTool`), addresses and memos as `String` on `Synchronizer`
+  (`proposeTransfer`, `validateAddress`, ...), and the UFVK as `String` in
+  `DerivationTool.deriveUnifiedAddress` / `derivePrivateUseMetadataKey`.
+  Any new API takes the semantic type; conversion from raw input happens at
+  the app-facing edge.
+- Reduction to raw `String`/`ByteArray` happens only in
+  `TypesafeBackendImpl` at the JNI boundary (e.g. `setup.ufvk.encoding`).
+  That is the existing pattern — keep it there and nowhere else.
+- This does not conflict with the "soft validation for `Jni*` classes" note
+  below: that note covers data flowing *out of* Rust into `Jni*` holders;
+  this section covers caller input flowing *toward* Rust.
+
+### Key material in errors and logs (MUST)
+
+- Rust side: NEVER interpolate caller-supplied input into `anyhow!` /
+  exception messages. Counterexample not to repeat: `parse_ufvk`
+  (`backend-lib/src/main/rust/lib.rs`) embeds the full input in
+  `Value "{ufvk_string}" did not decode as a valid UFVK`. The correct
+  pattern, used elsewhere in `lib.rs`, embeds only the error (`{:?}` on
+  `e`), never the input.
+- Kotlin side: exception messages must not splice `cause?.message` from JNI
+  `RuntimeException`s — those messages originate in Rust and may echo key
+  material. Counterexample: `InitializeException.ImportAccountException`
+  (`sdk-lib/.../exception/Exceptions.kt`) builds
+  `"... due to: ${cause?.message}"`. Keep the cause as the chained
+  throwable; keep the message fixed and generic.
+- Do not pass backend throwables to `Twig` whole (e.g.
+  `Twig.error(it) { ... }` on a JNI failure) — log a fixed message instead.
+  Users copy logs and error dialogs into support emails without knowing
+  what is embedded in them.
+- Changes to error paths that cross the JNI boundary must be checked on
+  both the Rust and Kotlin sides in lockstep, same as any other JNI change.
+
 ## Commit message conventions
 
-The project uses ticket-prefixed commit messages for tracked work, e.g.
-`MOB-1100: Fixed runtime crashes`. For untracked fixes, a short imperative
-prefix is acceptable (`fix: ...`, `chore: ...`). Keep the first line under
-72 characters; include context in the body.
+Tracked work uses ticket-prefixed commit messages. Two ticket systems are
+in use, and they are equivalent in format — reference whichever ticket the
+work was assigned from:
+
+- `MOB-1100: Fixed runtime crashes` — Linear tickets, internal to the
+  wallet team. A MOB- ticket may or may not have a correlated GitHub issue.
+- `[#258] Fixed runtime crashes` — GitHub issues (the format described in
+  `CONTRIBUTING.md`); use this when the work references a GitHub issue.
+
+For untracked fixes, a short imperative prefix is acceptable (`fix: ...`,
+`chore: ...`). Keep the first line under 72 characters; include context in
+the body.
+
+## PRs and changelog
+
+- PRs that reference a GitHub issue should link it (`[#issue]` in the
+  title/commits per `CONTRIBUTING.md`); PRs for Linear-tracked work
+  reference the MOB- ticket instead.
+- All enhancements and bug fixes need an entry in `CHANGELOG.md`
+  (see `CONTRIBUTING.md` and `docs/CODE_REVIEW_GUIDELINES.md`).
 
 ## Other notes
 
 - The SDK and related libraries are Kotlin + Rust. Changes that cross the
   JNI boundary (`backend-lib/src/main/rust/*` and the Kotlin `Jni*` model
   classes) require updating both sides in lockstep.
+- The Rust backend is fastest to check on its own, without Gradle or a JDK:
+
+  ```bash
+  cd backend-lib && cargo check --lib && cargo fmt --check
+  ```
+
+  Note this only proves the Rust compiles. A JNI signature mismatch between
+  Rust and Kotlin is a *runtime* crash, not a compile error on either side,
+  so a Rust-only change that touches a `Java_*` export or an
+  `env.new_object` type signature still needs `./scripts/ci-local.sh quick`.
 - Detekt and ktlint are strict; treat their output as blocking. `detektAll`
   catches `MaxLineLength`, `ReturnCount`, `LongParameterList`, and similar
-  issues that won't be apparent from a plain `./gradlew build`.
+  issues that won't be apparent from a plain `./gradlew build`. Configs live
+  in `tools/detekt.yml` and `tools/.editorconfig`; the authoritative style
+  references are the Kotlin Coding Conventions and AOSP Java conventions
+  (see `docs/CODE_REVIEW_GUIDELINES.md`).
 - When touching `Jni*` data classes that are constructed from Rust via
   `env.new_object`, keep the JVM signature (`(JJJ)V` etc.) in sync and
   avoid adding `require` blocks that crash on edge-case inputs -- the

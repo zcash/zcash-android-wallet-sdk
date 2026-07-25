@@ -50,6 +50,8 @@ message CompactTx {
     //    valueBalanceSapling + valueBalanceOrchard + sum(vPubNew) - sum(vPubOld) - sum(tOut)
     uint32 fee = 3;
 
+    // The field numbers below must follow lightwalletd's generated bindings:
+    // https://github.com/zcash/lightwalletd/blob/master/walletrpc/compact_formats.pb.go
     repeated CompactSaplingSpend spends = 4;
     repeated CompactSaplingOutput outputs = 5;
     repeated CompactOrchardAction actions = 6;

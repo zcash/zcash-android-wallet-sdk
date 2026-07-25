@@ -13,6 +13,7 @@ import cash.z.wallet.sdk.internal.rpc.CompactFormats.CompactBlock
  *
  * It is marked as "unsafe" because it is not guaranteed to be valid.
  */
+@Suppress("LongParameterList")
 class CompactBlockUnsafe(
     val height: Long,
     val hash: ByteArray,

@@ -88,6 +88,9 @@ fastlane/readme.md
 # Rust / Cargo
 fraget/
 
+# Claude Code local config and agent worktrees
+.claude/
+
 # other
 DecompileChecker.kt
 backup-dbs/

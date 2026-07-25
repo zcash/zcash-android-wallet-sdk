@@ -16,11 +16,10 @@ name: Pull Request
 on:
   pull_request:
     paths-ignore:
-      - '.github/ISSUE_TEMPLATE/*'
-      - '.github/PULL_REQUEST_TEMPLATE.md'
-      - 'LICENSE'
-      - 'README.md'
-      - 'docs/**'
+      - ".github/ISSUE_TEMPLATE/*"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - "README.md"
+      - "docs/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,7 +36,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -82,7 +81,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -96,6 +95,21 @@ jobs:
         run: |
           ./gradlew checkProperties
 
+  static_analysis_shellcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - name: Shellcheck
+        timeout-minutes: 1
+        run: |
+          find . -name "*.sh" -not -path "./.git/*" \
+            -not -path "./build/*" -not -path "./.gradle/*" \
+            -print -exec shellcheck {} +
+
   static_analysis_detekt:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
@@ -104,7 +118,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -143,7 +157,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -182,7 +196,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -207,7 +221,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -244,15 +258,15 @@ jobs:
           name: Android Lint static analysis results
           path: ~/artifacts
 
-  test_android_modules_unit:
-    needs: [ validate_gradle_wrapper ]
+  static_analysis_clippy:
+    needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -290,7 +304,12 @@ jobs:
   # Emulator.wtf is preferred if it has an API key.
   test_android_modules_ftl:
     if: needs.check_firebase_secrets.outputs.has-secrets == 'true' && needs.check_emulator_wtf_secrets.outputs.has-secrets == 'false'
-    needs: [validate_gradle_wrapper, check_firebase_secrets, check_emulator_wtf_secrets]
+    needs:
+      [
+        validate_gradle_wrapper,
+        check_firebase_secrets,
+        check_emulator_wtf_secrets,
+      ]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -298,7 +317,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -323,7 +342,7 @@ jobs:
           project_id: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
           service_account: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
           workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
-          access_token_lifetime: '1200s'
+          access_token_lifetime: "1200s"
       - name: Test
         timeout-minutes: 30
         env:
@@ -378,7 +397,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -396,7 +415,29 @@ jobs:
         env:
           ORG_GRADLE_PROJECT_ZCASH_EMULATOR_WTF_API_KEY: ${{ secrets.EMULATOR_WTF_API_KEY }}
         run: |
-          ./gradlew testDebugWithEmulatorWtf
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "emulator"
+      # pixel2Min is the Gradle Managed Device defined in
+      # zcash-sdk.android-conventions.gradle.kts (Pixel 2, API ANDROID_MIN_SDK_VERSION).
+      # Scoped to the same four modules the former emulator.wtf job covered;
+      # the unqualified task would also pull in darkside-test-lib (needs a live
+      # darkside server) and the demo-app modules. maxConcurrentDevices=1 keeps a
+      # single emulator booted at a time so the runner is not overwhelmed by four
+      # parallel emulators; in-runner emulators run serially, hence the higher
+      # timeout than the former cloud job.
+      # emulator.gpu=swiftshader_indirect forces software rendering. The hosted
+      # runner is headless, and AGP's default '-gpu auto-no-window' intermittently
+      # falls back to 'auto', which needs a real GPU and fails to boot the
+      # emulator (EmulatorStartFailedException during snapshot creation).
+      - name: Build and test
+        timeout-minutes: 45
+        run: |
+          ./gradlew \
+            :sdk-lib:pixel2MinDebugAndroidTest \
+            :lightwallet-client-lib:pixel2MinDebugAndroidTest \
+            :sdk-incubator-lib:pixel2MinDebugAndroidTest \
+            :backend-lib:pixel2MinDebugAndroidTest \
+            -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -406,13 +447,19 @@ jobs:
         run: |
           mkdir ${ARTIFACTS_DIR_PATH}
 
-          zip -r ${TEST_RESULTS_ZIP_PATH} . -i \*/build/test-results/\*
+          # Managed-device runs write results/reports under build/outputs and
+          # build/reports/androidTests, not build/test-results, so include those
+          # too to make failures inspectable from the artifact.
+          zip -r ${TEST_RESULTS_ZIP_PATH} . \
+            -i \*/build/test-results/\* \
+            \*/build/outputs/androidTest-results/\* \
+            \*/build/reports/androidTests/\*
       - name: Upload Artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         timeout-minutes: 1
         with:
-          name: Test Android modules with WTF results
+          name: Test Android modules with emulator results
           path: ~/artifacts
 
   demo_app_release_build:
@@ -423,7 +470,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -451,7 +498,7 @@ jobs:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS: androiddebugkey
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS_PASSWORD: android
         run: |
-           ./gradlew assembleRelease
+          ./gradlew assembleRelease
       - name: Collect Artifacts
         timeout-minutes: 1
         env:
@@ -484,7 +531,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -501,7 +548,7 @@ jobs:
           project_id: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
           service_account: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
           workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
-          access_token_lifetime: '900s'
+          access_token_lifetime: "900s"
       - name: Download a single artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:

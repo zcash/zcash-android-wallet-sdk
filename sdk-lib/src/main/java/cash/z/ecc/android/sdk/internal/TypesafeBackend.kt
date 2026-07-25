@@ -67,6 +67,11 @@ internal interface TypesafeBackend {
         memo: ByteArray? = null
     ): Proposal
 
+    /**
+     * Proposes migrating the account's entire Orchard balance into the Ironwood pool.
+     */
+    suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal
+
     suspend fun proposeShielding(
         account: Account,
         shieldingThreshold: Long,
@@ -197,6 +202,7 @@ internal interface TypesafeBackend {
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
+    @Suppress("LongParameterList")
     suspend fun putSubtreeRoots(
         saplingStartIndex: UInt,
         saplingRoots: List<SubtreeRoot>,

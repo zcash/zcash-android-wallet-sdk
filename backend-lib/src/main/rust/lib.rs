@@ -107,6 +107,7 @@ mod migration;
 mod migration_engine;
 mod migration_keystone;
 mod migration_plan_cache;
+mod migration_send_max;
 mod tor;
 mod utils;
 #[cfg(feature = "chp-voting")]
@@ -3979,6 +3980,39 @@ fn parse_http_headers(
             )
         })
         .collect()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOrchardToIronwoodMigration<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    account_uuid: JByteArray<'local>,
+    network_id: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposeOrchardToIronwoodMigration").entered();
+        let network = parse_network(network_id as u32)?;
+        let mut db_data = wallet_db(env, network, db_data)?;
+        let account_uuid = account_id_from_jni(env, account_uuid)?;
+
+        let proposal = crate::migration_send_max::propose_orchard_to_ironwood(
+            &mut db_data,
+            &network,
+            account_uuid,
+        )?;
+
+        Ok(utils::rust_bytes_to_java(
+            env,
+            Proposal::from_standard_proposal(&proposal)
+                .encode_to_vec()
+                .as_ref(),
+        )?
+        .into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
 #[cfg(test)]

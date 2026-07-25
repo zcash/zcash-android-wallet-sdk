@@ -45,6 +45,9 @@ internal class OutboundTransactionManagerImpl(
         return encoder.proposeTransfer(account, recipient, amount, memoBytes)
     }
 
+    override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
+        encoder.proposeOrchardToIronwoodMigration(account)
+
     override suspend fun proposeShielding(
         account: Account,
         shieldingThreshold: Zatoshi,
