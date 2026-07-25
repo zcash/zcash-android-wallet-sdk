@@ -114,7 +114,7 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     // migration draws its transfer anchors from are exactly the ones the scanning path retains
     // checkpoints for.
     let retention_interval = crate::anchor_retention_interval(network.network_type());
-    let wallet = Wallet::for_path(db_path.to_path_buf(), network, SystemClock, OsRng)
+    let wallet = Wallet::for_path(db_path, network, SystemClock, OsRng)
         .map(|wallet| wallet.with_anchor_retention_interval(retention_interval))
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
     let store_conn = Connection::open(db_path)
@@ -342,6 +342,23 @@ fn plan(
 }
 
 /// Returns the already-committed migration state if one exists (non-terminal), otherwise commits
+/// A migration state paired with the transactions it left awaiting signature, each as its
+/// id and PCZT bytes. Named because both the commit entry point and every `sign` closure it
+/// dispatches to return this same shape.
+type MigrationCommitOutcome = (MigrationState, Vec<(MigrationTxId, Vec<u8>)>);
+
+/// The wallet-side context a commit runs against: which network and account, the store
+/// connection it writes through, and the target height the cached plan was built for. Grouped
+/// so `commit_or_reuse` takes the plan handle and signing strategy as its own arguments rather
+/// than trailing five pieces of ambient context.
+struct CommitContext<'a> {
+    network: &'a Network,
+    wallet: &'a Wallet,
+    account: AccountUuid,
+    store_conn: &'a mut Connection,
+    target: BlockHeight,
+}
+
 /// the cached plan that `plan_handle` identifies — erroring if no plan is cached or if a later
 /// `propose*`/`prepare*` call replaced the plan the caller was shown (see `migration_plan_cache`'s
 /// module doc: the handle gate is what guarantees a commit can only sign the exact plan the user
@@ -351,11 +368,7 @@ fn plan(
 /// picks which `commit_preparation`/`build_preparation_unsigned` variant to run, and whether a
 /// spending key is available to the `Backend` while doing so.
 fn commit_or_reuse(
-    network: &Network,
-    wallet: &Wallet,
-    account: AccountUuid,
-    store_conn: &mut Connection,
-    target: BlockHeight,
+    ctx: CommitContext<'_>,
     plan_handle: crate::migration_plan_cache::PlanHandle,
     usk: Option<UnifiedSpendingKey>,
     sign: impl FnOnce(
@@ -364,23 +377,29 @@ fn commit_or_reuse(
         &mut Backend<Wallet>,
         &MigrationPlan,
         &mut OsRng,
-    ) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)>,
-) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)> {
+    ) -> anyhow::Result<MigrationCommitOutcome>,
+) -> anyhow::Result<MigrationCommitOutcome> {
+    let CommitContext {
+        network,
+        wallet,
+        account,
+        store_conn,
+        target,
+    } = ctx;
     {
-        let backend = Backend::new(wallet, account, None, store_conn)?;
+        let backend = Backend::new(wallet, account, None, &mut *store_conn)?;
         if let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+            && !state.is_terminal()
         {
-            if !state.is_terminal() {
-                let unsigned = state
-                    .transactions()
-                    .iter()
-                    .filter(|t| matches!(t.state(), MigrationTxState::AwaitingSignature))
-                    .map(|t| (t.id(), t.pczt().clone()))
-                    .collect();
-                return Ok((state, unsigned));
-            }
+            let unsigned = state
+                .transactions()
+                .iter()
+                .filter(|t| matches!(t.state(), MigrationTxState::AwaitingSignature))
+                .map(|t| (t.id(), t.pczt().clone()))
+                .collect();
+            return Ok((state, unsigned));
         }
     }
     let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
@@ -912,11 +931,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let usk = crate::decode_usk(env, usk)?;
         let target = target_height(&wallet)?;
         let (mut state, _unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
@@ -1016,7 +1037,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             // engine's public API for "this attempt failed, try again later" — the transaction
             // stays `Signed`/`AwaitingSignature` and `next_step` will offer it again on the next
             // call. Nothing to persist.
-            1 | 2 | 3 => Ok(()),
+            1..=3 => Ok(()),
             other => Err(anyhow!("Unknown TransferResult tag: {}", other)),
         }
     });
@@ -1042,13 +1063,12 @@ fn read_reconciled(
     };
     let mut newly_mined = Vec::new();
     for tx in state.transactions() {
-        if let MigrationTxState::Broadcast { txid } = tx.state() {
-            if let Some(height) = wallet
+        if let MigrationTxState::Broadcast { txid } = tx.state()
+            && let Some(height) = wallet
                 .get_tx_height(txid)
                 .map_err(|e| anyhow!("Error reading tx height for {:?}: {:?}", txid, e))?
-            {
-                newly_mined.push((tx.id(), height));
-            }
+        {
+            newly_mined.push((tx.id(), height));
         }
     }
     if !newly_mined.is_empty() {
@@ -1264,11 +1284,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // latest-plan-wins cache contract).
         let target = target_height(&wallet)?;
         commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
@@ -1991,11 +2013,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         let (state, unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             None,
             |network, target, backend, migration_plan, rng| {
@@ -2119,11 +2143,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // (which would have hit `CommitError::MigrationInProgress` from the engine anyway).
         let target = target_height(&wallet)?;
         let (state, unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             None,
             |network, target, backend, migration_plan, rng| {
@@ -2350,7 +2376,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         Ok(env
             .new_object(
                 JNI_KEYSTONE_BATCH_SIGNED_PCZTS,
-                format!("([B[[B)V"),
+                "([B[[B)V".to_string(),
                 &[
                     JValue::Object(&split_signed_obj),
                     JValue::Object(&transfers_signed_obj),
@@ -2797,7 +2823,7 @@ mod live_wallet_edge_case_tests {
         backend: &mut Backend<Wallet>,
         plan: &MigrationPlan,
         rng: &mut OsRng,
-    ) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)> {
+    ) -> anyhow::Result<MigrationCommitOutcome> {
         let (state, unsigned) =
             engine::build_preparation_unsigned(network, target, backend, plan, rng)
                 .map_err(|e| anyhow!("build_preparation_unsigned: {:?}", e))?;
@@ -2970,11 +2996,13 @@ mod live_wallet_edge_case_tests {
         let target = tip + 1;
 
         let (state1, unsigned1) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             handle,
             None,
             sign_unsigned,
@@ -2993,11 +3021,13 @@ mod live_wallet_edge_case_tests {
         // reuse path the handle must NOT be consulted (the commitment already happened, with a
         // handle-verified plan) — a stale handle only blocks a FRESH commit.
         let (state2, unsigned2) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             handle,
             None,
             sign_unsigned,
@@ -3050,11 +3080,13 @@ mod live_wallet_edge_case_tests {
         let target = tip + 1;
 
         let err = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             stale_handle,
             None,
             sign_unsigned,
@@ -3067,11 +3099,13 @@ mod live_wallet_edge_case_tests {
         );
 
         let (_state, unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             current_handle,
             None,
             sign_unsigned,

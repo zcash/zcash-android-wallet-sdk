@@ -188,76 +188,6 @@ fn any_to_string(any: &Box<dyn Any + Send>) -> String {
     }
 }
 
-// Hermetic host tests (no JVM, no new dependencies) for the pure error-classification logic
-// above. `classify` is exercised directly; `unwrap_exc_or` itself is not (it needs a live
-// `JNIEnv`), but it is a thin, untested-on-purpose shell around `classify`.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classify_ok_returns_value_and_no_message() {
-        let res: thread::Result<anyhow::Result<i32>> = Ok(Ok(42));
-        let (value, message) = classify(res, false, -1);
-        assert_eq!(value, 42);
-        assert!(message.is_none());
-    }
-
-    #[test]
-    fn classify_err_with_pending_exception_is_suppressed() {
-        let res: thread::Result<anyhow::Result<i32>> = Ok(Err(anyhow!("boom")));
-        let (value, message) = classify(res, true, -1);
-        assert_eq!(value, -1);
-        assert!(message.is_none());
-    }
-
-    #[test]
-    fn classify_err_without_pending_exception_throws_its_message() {
-        let res: thread::Result<anyhow::Result<i32>> = Ok(Err(anyhow!("boom")));
-        let (value, message) = classify(res, false, -1);
-        assert_eq!(value, -1);
-        assert_eq!(message.as_deref(), Some("boom"));
-    }
-
-    #[test]
-    fn classify_panic_with_pending_exception_is_suppressed() {
-        // Locks in the M9 fix: a panic must be suppressed exactly like an `Err`, not
-        // unconditionally re-thrown, when a JNI exception is already pending.
-        let res: thread::Result<anyhow::Result<i32>> =
-            panic::catch_unwind(|| -> anyhow::Result<i32> { panic!("boom") });
-        let (value, message) = classify(res, true, -1);
-        assert_eq!(value, -1);
-        assert!(message.is_none());
-    }
-
-    #[test]
-    fn classify_panic_without_pending_exception_throws_payload_message() {
-        let res: thread::Result<anyhow::Result<i32>> =
-            panic::catch_unwind(|| -> anyhow::Result<i32> { panic!("boom") });
-        let (value, message) = classify(res, false, -1);
-        assert_eq!(value, -1);
-        assert_eq!(message.as_deref(), Some("boom"));
-    }
-
-    #[test]
-    fn any_to_string_str_payload() {
-        let payload = panic::catch_unwind(|| -> () { panic!("boom") }).unwrap_err();
-        assert_eq!(any_to_string(&payload), "boom");
-    }
-
-    #[test]
-    fn any_to_string_string_payload() {
-        let payload = panic::catch_unwind(|| -> () { panic!("boom {}", "formatted") }).unwrap_err();
-        assert_eq!(any_to_string(&payload), "boom formatted");
-    }
-
-    #[test]
-    fn any_to_string_non_string_payload() {
-        let payload = panic::catch_unwind(|| std::panic::panic_any(42u8)).unwrap_err();
-        assert_eq!(any_to_string(&payload), "unknown panic payload");
-    }
-}
-
 /// `JString → String`. All boundary strings are UTF-8 (paths, hosts, UFVKs, tor dirs).
 pub(crate) fn java_string_to_rust(env: &mut JNIEnv, s: &JString) -> anyhow::Result<String> {
     Ok(env.get_string(s)?.into())
@@ -1076,6 +1006,76 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_free<'local>(
         Ok(())
     });
     unwrap_exc_or(&mut env, res, ())
+}
+
+// Hermetic host tests (no JVM, no new dependencies) for the pure error-classification logic
+// above. `classify` is exercised directly; `unwrap_exc_or` itself is not (it needs a live
+// `JNIEnv`), but it is a thin, untested-on-purpose shell around `classify`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_ok_returns_value_and_no_message() {
+        let res: thread::Result<anyhow::Result<i32>> = Ok(Ok(42));
+        let (value, message) = classify(res, false, -1);
+        assert_eq!(value, 42);
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn classify_err_with_pending_exception_is_suppressed() {
+        let res: thread::Result<anyhow::Result<i32>> = Ok(Err(anyhow!("boom")));
+        let (value, message) = classify(res, true, -1);
+        assert_eq!(value, -1);
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn classify_err_without_pending_exception_throws_its_message() {
+        let res: thread::Result<anyhow::Result<i32>> = Ok(Err(anyhow!("boom")));
+        let (value, message) = classify(res, false, -1);
+        assert_eq!(value, -1);
+        assert_eq!(message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn classify_panic_with_pending_exception_is_suppressed() {
+        // Locks in the M9 fix: a panic must be suppressed exactly like an `Err`, not
+        // unconditionally re-thrown, when a JNI exception is already pending.
+        let res: thread::Result<anyhow::Result<i32>> =
+            panic::catch_unwind(|| -> anyhow::Result<i32> { panic!("boom") });
+        let (value, message) = classify(res, true, -1);
+        assert_eq!(value, -1);
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn classify_panic_without_pending_exception_throws_payload_message() {
+        let res: thread::Result<anyhow::Result<i32>> =
+            panic::catch_unwind(|| -> anyhow::Result<i32> { panic!("boom") });
+        let (value, message) = classify(res, false, -1);
+        assert_eq!(value, -1);
+        assert_eq!(message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn any_to_string_str_payload() {
+        let payload = panic::catch_unwind(|| -> () { panic!("boom") }).unwrap_err();
+        assert_eq!(any_to_string(&payload), "boom");
+    }
+
+    #[test]
+    fn any_to_string_string_payload() {
+        let payload = panic::catch_unwind(|| -> () { panic!("boom {}", "formatted") }).unwrap_err();
+        assert_eq!(any_to_string(&payload), "boom formatted");
+    }
+
+    #[test]
+    fn any_to_string_non_string_payload() {
+        let payload = panic::catch_unwind(|| std::panic::panic_any(42u8)).unwrap_err();
+        assert_eq!(any_to_string(&payload), "unknown panic payload");
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
