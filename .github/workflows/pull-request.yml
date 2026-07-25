@@ -26,6 +26,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default to no token scopes at all; every job that needs one declares it below.
+permissions: {}
+
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -35,12 +38,18 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
-        uses: gradle/actions/wrapper-validation@v6
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
 
   check_firebase_secrets:
     runs-on: ubuntu-latest
+    # Reads no repository content — it only reports whether secrets are configured.
+    permissions: {}
     outputs:
       has-secrets: ${{ steps.check_firebase_secrets.outputs.defined }}
     steps:
@@ -54,6 +63,8 @@ jobs:
 
   check_emulator_wtf_secrets:
     runs-on: ubuntu-latest
+    # Reads no repository content — it only reports whether secrets are configured.
+    permissions: {}
     outputs:
       has-secrets: ${{ steps.check_emulator_wtf_secrets.outputs.defined }}
     steps:
@@ -72,6 +83,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 10
@@ -90,6 +105,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -125,6 +144,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -160,6 +183,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Install pinned Rust toolchain with rustfmt
         timeout-minutes: 5
         # Read the channel from rust-toolchain.toml so the check always uses the exact
@@ -181,6 +208,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -222,6 +253,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -264,6 +299,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -340,6 +379,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -381,6 +424,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -438,6 +485,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30

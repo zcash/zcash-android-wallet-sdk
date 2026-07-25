@@ -22,7 +22,10 @@ runs:
   steps:
     - name: Set Env
       shell: bash
-      run: |
+      # The generic hazard flagged here is a GITHUB_ENV write whose value an attacker can steer.
+      # This one writes $HOME, which the runner sets and no workflow input can influence; the
+      # workflows consume it only to build artifact paths (`format('{0}/artifacts', env.home)`).
+      run: | # zizmor: ignore[github-env]
         echo "home=${HOME}" >> "$GITHUB_ENV"
     - name: Set up Java
       uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654
@@ -58,6 +61,10 @@ runs:
         # to mint against has to be named explicitly.
         owner: zodl-inc
         repositories: slipstream
+        # Narrow the minted token to exactly what cargo needs, rather than inheriting whatever
+        # the App's installation happens to hold. Fetching a git dependency is a read of
+        # repository contents and nothing more.
+        permission-contents: read
     - name: Authorize cargo against the private slipstream repository
       if: steps.slipstream-token.outputs.token != ''
       shell: bash

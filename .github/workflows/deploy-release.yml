@@ -22,9 +22,13 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
-        uses: gradle/actions/wrapper-validation@v6
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
 
   check_secrets:
     environment: deployment
@@ -53,6 +57,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 50
