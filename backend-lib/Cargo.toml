@@ -13,11 +13,11 @@ rust-version = "1.92"
 [dependencies]
 # Zcash dependencies
 orchard = "0.15"
-pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling"] }
+pczt = { version = "0.8.0", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
-transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
+transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.1", features = [
+zcash_client_backend = { version = "0.24.0-rc.2", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -25,10 +25,10 @@ zcash_client_backend = { version = "0.24.0-rc.1", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
-zcash_primitives = "0.29"
-zcash_proofs = "0.29"
+zcash_primitives = "0.30"
+zcash_proofs = "0.30"
 zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
