@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0-rc.1] - 2026-07-25
+
 ### Added
 - Ironwood (NU6.3) shielded pool support: the SDK now exposes the Ironwood pool
   (balance, subtree roots, sync) alongside Sapling and Orchard.
