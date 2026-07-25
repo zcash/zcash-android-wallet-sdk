@@ -6,6 +6,21 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.6] - 2026-07-25
+
+### Added
+- Support for the Ironwood (NU6.3) shielded pool: per-pool balances, output counts and
+  subtree roots, and the Ironwood `ShieldedProtocol` variant.
+
+### Changed
+- Migrated to `zcash_client_backend 0.24`, `zcash_client_sqlite 0.22`, `zcash_protocol 0.10`,
+  `zcash_primitives`/`zcash_proofs 0.29`, `orchard 0.15`, `pczt 0.8`, `zcash_transparent 0.9`.
+- Updated checkpoints for mainnet and testnet.
+
+### Internal
+- The shielded-voting native surface (`zcash_voting`, the `chp-voting` feature and `mod voting`)
+  is commented out, so no `Java_..._VotingRustBackend_*` JNI symbols are emitted.
+
 ## [2.6.5] - 2026-06-19
 
 ### Fixed

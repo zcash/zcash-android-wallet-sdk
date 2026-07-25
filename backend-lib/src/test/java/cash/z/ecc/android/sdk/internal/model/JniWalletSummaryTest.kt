@@ -17,6 +17,7 @@ class JniWalletSummaryTest {
                 scanProgressDenominator = 100L,
                 nextSaplingSubtreeIndex = 0L,
                 nextOrchardSubtreeIndex = 0L,
+                nextIronwoodSubtreeIndex = 0L,
                 recoveryProgressNumerator = 1L,
                 recoveryProgressDenominator = 100L
             )
@@ -34,6 +35,7 @@ class JniWalletSummaryTest {
                 scanProgressDenominator = 100L,
                 nextSaplingSubtreeIndex = 0L,
                 nextOrchardSubtreeIndex = 0,
+                nextIronwoodSubtreeIndex = 0L,
                 recoveryProgressNumerator = 1L,
                 recoveryProgressDenominator = 100L
             )
@@ -51,6 +53,7 @@ class JniWalletSummaryTest {
                 scanProgressDenominator = 100L,
                 nextSaplingSubtreeIndex = 0L,
                 nextOrchardSubtreeIndex = 0L,
+                nextIronwoodSubtreeIndex = 0L,
                 recoveryProgressNumerator = 1L,
                 recoveryProgressDenominator = 100L
             )
@@ -68,6 +71,7 @@ class JniWalletSummaryTest {
                 scanProgressDenominator = -1L,
                 nextSaplingSubtreeIndex = 0L,
                 nextOrchardSubtreeIndex = 0L,
+                nextIronwoodSubtreeIndex = 0L,
                 recoveryProgressNumerator = 1L,
                 recoveryProgressDenominator = 100L
             )
@@ -85,6 +89,7 @@ class JniWalletSummaryTest {
                 scanProgressDenominator = 1L,
                 nextSaplingSubtreeIndex = 0L,
                 nextOrchardSubtreeIndex = 0L,
+                nextIronwoodSubtreeIndex = 0L,
                 recoveryProgressNumerator = 100L,
                 recoveryProgressDenominator = 1L
             )
@@ -102,6 +107,7 @@ class JniWalletSummaryTest {
                 scanProgressDenominator = 100L,
                 nextSaplingSubtreeIndex = -1L,
                 nextOrchardSubtreeIndex = -1L,
+                nextIronwoodSubtreeIndex = -1L,
                 recoveryProgressNumerator = 1L,
                 recoveryProgressDenominator = 100L
             )
