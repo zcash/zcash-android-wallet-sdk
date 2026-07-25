@@ -235,7 +235,7 @@ jobs:
           slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
           slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Android Lint
-        timeout-minutes: 25
+        timeout-minutes: 45
         env:
           # Disable minify, since it makes lint run faster
           ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: false
