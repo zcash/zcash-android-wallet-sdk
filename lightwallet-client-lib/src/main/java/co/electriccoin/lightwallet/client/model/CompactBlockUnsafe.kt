@@ -11,12 +11,14 @@ import cash.z.wallet.sdk.internal.rpc.CompactFormats.CompactBlock
  *
  * It is marked as "unsafe" because it is not guaranteed to be valid.
  */
+@Suppress("LongParameterList")
 class CompactBlockUnsafe(
     val height: Long,
     val hash: ByteArray,
     val time: Int,
     val saplingOutputsCount: UInt,
     val orchardOutputsCount: UInt,
+    val ironwoodOutputsCount: UInt,
     val compactBlockBytes: ByteArray
 ) {
     companion object {
@@ -28,25 +30,33 @@ class CompactBlockUnsafe(
                 time = compactBlock.time,
                 saplingOutputsCount = outputCounts.saplingOutputsCount,
                 orchardOutputsCount = outputCounts.orchardActionsCount,
+                ironwoodOutputsCount = outputCounts.ironwoodActionsCount,
                 compactBlockBytes = compactBlock.toByteArray()
             )
         }
 
         private fun getOutputsCounts(vtxList: List<CompactFormats.CompactTx>): CompactBlockOutputsCounts {
-            var outputsCount: UInt = 0u
-            var actionsCount: UInt = 0u
+            var saplingOutputsCount: UInt = 0u
+            var orchardActionsCount: UInt = 0u
+            var ironwoodActionsCount: UInt = 0u
 
             vtxList.forEach { compactTx ->
-                outputsCount += compactTx.outputsCount.toUInt()
-                actionsCount += compactTx.actionsCount.toUInt()
+                saplingOutputsCount += compactTx.outputsCount.toUInt()
+                orchardActionsCount += compactTx.actionsCount.toUInt()
+                ironwoodActionsCount += compactTx.ironwoodActionsCount.toUInt()
             }
 
-            return CompactBlockOutputsCounts(outputsCount, actionsCount)
+            return CompactBlockOutputsCounts(
+                saplingOutputsCount = saplingOutputsCount,
+                orchardActionsCount = orchardActionsCount,
+                ironwoodActionsCount = ironwoodActionsCount
+            )
         }
     }
 
     data class CompactBlockOutputsCounts(
         val saplingOutputsCount: UInt,
-        val orchardActionsCount: UInt
+        val orchardActionsCount: UInt,
+        val ironwoodActionsCount: UInt
     )
 }

@@ -20,6 +20,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
 @Suppress("LargeClass", "MagicNumber")
@@ -139,7 +140,11 @@ class VotingRustBackendTest {
 
     @Test
     fun warm_proving_caches_smoke() =
-        runTest {
+        // Warming the proving caches builds the zk proving keys, which is
+        // CPU-heavy. On the in-runner managed-device emulator (slower than the
+        // former emulator.wtf hardware) it exceeds runTest's default 60s
+        // timeout, so allow more time.
+        runTest(timeout = 5.minutes) {
             VotingRustBackend.new().warmProvingCaches()
         }
 

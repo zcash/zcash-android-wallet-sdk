@@ -236,6 +236,8 @@ class SdkBroadcasterTest {
             transparentReceiver: String?
         ): Proposal? = error("Unused")
 
+        override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal = error("Unused")
+
         override suspend fun createProposedTransactions(
             proposal: Proposal,
             usk: UnifiedSpendingKey

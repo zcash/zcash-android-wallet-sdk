@@ -15,6 +15,7 @@ option swift_prefix = "";
 message ChainMetadata {
     uint32 saplingCommitmentTreeSize = 1; // the size of the Sapling note commitment tree as of the end of this block
     uint32 orchardCommitmentTreeSize = 2; // the size of the Orchard note commitment tree as of the end of this block
+    uint32 ironwoodCommitmentTreeSize = 3; // the size of the Ironwood note commitment tree as of the end of this block
 }
 
 // CompactBlock is a packaging of ONLY the data from a block that's needed to:
@@ -49,9 +50,12 @@ message CompactTx {
     //    valueBalanceSapling + valueBalanceOrchard + sum(vPubNew) - sum(vPubOld) - sum(tOut)
     uint32 fee = 3;
 
+    // The field numbers below must follow lightwalletd's generated bindings:
+    // https://github.com/zcash/lightwalletd/blob/master/walletrpc/compact_formats.pb.go
     repeated CompactSaplingSpend spends = 4;
     repeated CompactSaplingOutput outputs = 5;
     repeated CompactOrchardAction actions = 6;
+    repeated CompactOrchardAction ironwoodActions = 9;
 }
 
 // CompactSaplingSpend is a Sapling Spend Description as described in 7.3 of the Zcash

@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.internal.model.JniAccountBalance
 data class AccountBalance(
     val sapling: WalletBalance,
     val orchard: WalletBalance,
+    val ironwood: WalletBalance,
     val unshielded: Zatoshi
 ) {
     companion object {
@@ -21,6 +22,12 @@ data class AccountBalance(
                         available = Zatoshi(jni.orchardVerifiedBalance),
                         changePending = Zatoshi(jni.orchardChangePending),
                         valuePending = Zatoshi(jni.orchardValuePending)
+                    ),
+                ironwood =
+                    WalletBalance(
+                        available = Zatoshi(jni.ironwoodVerifiedBalance),
+                        changePending = Zatoshi(jni.ironwoodChangePending),
+                        valuePending = Zatoshi(jni.ironwoodValuePending)
                     ),
                 unshielded = Zatoshi(jni.unshieldedBalance)
             )
