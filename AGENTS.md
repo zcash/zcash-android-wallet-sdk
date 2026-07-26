@@ -97,6 +97,43 @@ git pull origin main
 git worktree add ../fix-something -b fix/something main
 ```
 
+## CHANGELOG discipline
+
+`CHANGELOG.md` exists for consumers of the published library, and nothing else.
+
+- Update it for any **public API change, bug fix, or semantic change**. The entry
+  **must** be part of the same commit that makes the change, not a follow-up.
+- Entries carry **only** what a consumer needs in order to adapt: the public symbol
+  by name, the precise shape of the change, what breaks at their call site, and the
+  edit to make (or that none is needed).
+- **Never** describe implementation details, or contracts that are not visible
+  through the public API. In particular, do not narrate branch or release topology
+  -- which line merged into which, which version numbers were skipped, why the
+  ordering in the file looks the way it does. None of that is actionable for a
+  consumer.
+- Record **only completed changes since the last release**, never the interstitial
+  states of an API that was changed several times since then. If a symbol was added
+  and then renamed before release, the entry describes the final name only.
+- **Never modify an entry under an already-published version heading** (a dated
+  `## [x.y.z] - DATE` section). Those are the historical record of what that release
+  shipped, and must not be altered even to clarify or correct. New information goes
+  under `## [Unreleased]`.
+- Do **not** add a separate "Breaking changes" section. `### Changed` already is the
+  breaking-change section -- everything under it is breaking, whether semver,
+  dependency, or otherwise. Non-breaking additions go under `### Added`, fixes under
+  `### Fixed`. Each `### Changed` entry should read as the consumer meets the break:
+  "positional construction will not compile", "exhaustive `when` stops compiling until
+  the new case is handled", "any implementer or test fake must now provide this".
+- Privacy, security, and cost properties are user-facing even when they are documented
+  only in KDoc or rustdoc. Wallet teams design confirmation UI from the changelog, so
+  a feature that reveals data on-chain, costs a fee, or fails at runtime belongs here
+  too.
+
+When preparing a release, audit the public surface by diffing the release range rather
+than trusting the file to be complete. Behavior-only changes with no signature change
+-- altered equality semantics, stricter validation, a previously fixed value becoming
+settable -- are the ones most often missed.
+
 ## Commit message conventions
 
 The project uses ticket-prefixed commit messages for tracked work, e.g.
