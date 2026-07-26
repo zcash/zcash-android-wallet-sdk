@@ -6,6 +6,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Shielded voting is unavailable in this release, and `VotingRustBackend` — in the
+  separately published `zcash-android-backend` artifact — is now deprecated at
+  `ERROR` level. Referencing it is a compile error rather than a runtime
+  `UnsatisfiedLinkError`, because the native library exports none of the symbols
+  its methods bind to. There is no alternative code path: callers must remove
+  every use for this release. Consumers who depend only on
+  `zcash-android-sdk` are unaffected, as the backend artifact is not on their
+  compile classpath. `Synchronizer.getWalletDbPathForVoting` still returns a
+  path, but nothing in this release can act on it.
+
 ## [2.7.0-rc.1] - 2026-07-25
 
 ### Added

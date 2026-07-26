@@ -24,7 +24,9 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
-@Suppress("LargeClass", "MagicNumber")
+// Kept compiling, and kept @Ignore'd, so the suite is ready to run again the moment
+// the native voting symbols come back. See the @Ignore reason below.
+@Suppress("LargeClass", "MagicNumber", "DEPRECATION_ERROR")
 @Ignore(
     "Voting is gated off behind cfg(zcash_voting) on the Ironwood (NU6.3) deps, so the native " +
         "library exports none of the symbols these tests bind to and every one of them would fail " +
