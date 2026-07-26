@@ -39,6 +39,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
   at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
 
+## [2.7.0-rc.2] - 2026-07-25
+
+- Hardware-wallet (Keystone) PCZT signing now sends the full (non-compacted) signer view in the
+  minimal PCZT encoding (v1 for v5 transactions). The compact view/v2-encoding wire contract is
+  not supported by deployed firmware's ordinary signing flow, and caused finalization failures
+  with `MissingSpendAuthSig`.
+
 ## [2.7.0-rc.1] - 2026-07-25
 
 ### Added
