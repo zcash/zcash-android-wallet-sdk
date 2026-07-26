@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use pczt::{
     Pczt,
-    roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
+    roles::{combiner::Combiner, prover::Prover},
 };
 use transparent::{
     address::{Script, TransparentAddress},
@@ -49,10 +49,10 @@ use zcash_client_backend::{
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
-            self, create_pczt_from_proposal, create_proposed_transactions,
+            self, SignerView, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
             input_selection::{GreedyInputSelector, LockFilter, LockedInputPolicy, SpendPolicy},
-            propose_shielding, propose_transfer,
+            propose_shielding, propose_transfer, redact_pczt_for_signer,
         },
     },
     encoding::AddressCodec,
@@ -2520,32 +2520,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcz
 
         let pczt = parse_pczt(env, pczt)?;
 
-        let pczt_with_proofs = Redactor::new(pczt)
-            .redact_global_with(|mut r| r.redact_proprietary("zcash_client_backend:proposal_info"))
-            .redact_orchard_with(|mut r| {
-                r.redact_actions(|mut ar| {
-                    ar.clear_spend_witness();
-                    ar.redact_output_proprietary("zcash_client_backend:output_info");
-                })
-            })
-            .redact_ironwood_with(|mut r| {
-                r.redact_actions(|mut ar| {
-                    ar.clear_spend_witness();
-                    ar.redact_output_proprietary("zcash_client_backend:output_info");
-                })
-            })
-            .redact_sapling_with(|mut r| {
-                r.redact_spends(|mut sr| sr.clear_witness());
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .redact_transparent_with(|mut r| {
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .finish();
+        // Keystone's ordinary send flow signs the full (non-compacted) signer
+        // view: deployed firmware predates the compact view and, for v5
+        // transactions, the v2 PCZT encoding (which `Pczt::serialize` only
+        // selects when the content requires it). Do not switch this to
+        // `SignerView::Compact` without confirming the target signer supports
+        // it — the compact view caused missing-signature failures at
+        // extraction in zcash-swift-wallet-sdk#1863, which this mirrors.
+        let pczt_with_proofs = redact_pczt_for_signer(&pczt, SignerView::Full);
 
         Ok(utils::rust_bytes_to_java(
             env,
