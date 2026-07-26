@@ -2468,17 +2468,34 @@ class CompactBlockProcessor internal constructor(
             recoveryProgress?.getSafeRatio()?.let { PercentDecimal(it) } ?: PercentDecimal.ZERO_PERCENT
         }
 
-        // [_progress] is calculated as sum numerator divided by denominators if [recoveryProgress] is not null
+        // [_progress] is calculated as sum of numerators divided by sum of denominators if [recoveryProgress] is
+        // not null. A zero combined denominator means 100% (same semantics as [Progress.getSafeRatio]) — a raw
+        // division would produce NaN and fail [PercentDecimal]'s range requirement, e.g. for a freshly imported
+        // account whose scan and recovery ranges are both empty.
         _progress.value =
             PercentDecimal(
                 if (recoveryProgress == null) {
-                    scanProgress.numerator.toFloat() /
-                        scanProgress.denominator.toFloat()
+                    scanProgress.getSafeRatio()
                 } else {
-                    (scanProgress.numerator.toFloat() + recoveryProgress.numerator.toFloat()) /
-                        (scanProgress.denominator.toFloat() + recoveryProgress.denominator.toFloat())
+                    getSafeCombinedRatio(scanProgress, recoveryProgress)
                 }
             )
+    }
+
+    /**
+     * Combined scan+recovery progress ratio with the same safety semantics as [Progress.getSafeRatio]: a zero
+     * denominator is interpreted as 100% progress and any out-of-range value is treated as 0.
+     */
+    private fun getSafeCombinedRatio(
+        scanProgress: ScanProgress,
+        recoveryProgress: RecoveryProgress
+    ): Float {
+        val denominator = scanProgress.denominator + recoveryProgress.denominator
+        if (denominator <= 0L) {
+            return 1f
+        }
+        val ratio = (scanProgress.numerator + recoveryProgress.numerator).toFloat() / denominator.toFloat()
+        return if (ratio < 0f || ratio > 1f) 0f else ratio
     }
 
     /**
