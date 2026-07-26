@@ -79,7 +79,10 @@ use zcash_client_sqlite::{
 use zcash_primitives::{
     block::BlockHash,
     merkle_tree::HashSer,
-    transaction::{Transaction, TxId, components::orchard::bundle_version_for_branch},
+    transaction::{
+        Transaction, TxId, builder::cached_orchard_proving_key,
+        components::orchard::bundle_version_for_branch,
+    },
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
@@ -2531,6 +2534,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcz
                     ar.redact_output_proprietary("zcash_client_backend:output_info");
                 })
             })
+            .redact_ironwood_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_witness();
+                    ar.redact_output_proprietary("zcash_client_backend:output_info");
+                })
+            })
             .redact_sapling_with(|mut r| {
                 r.redact_spends(|mut sr| sr.clear_witness());
                 r.redact_outputs(|mut or| {
@@ -2599,7 +2608,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         // The Orchard-family circuit versions are fixed by the consensus branch under
         // which the transaction will be mined; derive them from the branch id carried by
-        // the PCZT.
+        // the PCZT, per value pool.
+        //
+        // `BundleVersion::circuit_version` is documented as many-to-one, deriving only
+        // from the `ProtocolVersion`, so under NU6.3 the Orchard and Ironwood pools share
+        // the post-NU6.3 circuit. Each proof still derives its circuit from its own pool:
+        // `bundle_version_for_branch(_, ValuePool::Ironwood)` is `None` before NU6.3, but
+        // an Ironwood proof is only required post-NU6.3, so the per-pool lookup is total
+        // on the branches that can actually require that proof.
         let consensus_branch_id = BranchId::try_from(*pczt.global().consensus_branch_id()).ok();
         let circuit_version_for = |pool: orchard::ValuePool| {
             consensus_branch_id
@@ -2614,7 +2630,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
                 anyhow!("PCZT requires an Orchard proof but its consensus branch does not support Orchard")
             })?;
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build(circuit_version))
+                .create_orchard_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
@@ -2624,7 +2640,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
                 anyhow!("PCZT requires an Ironwood proof but its consensus branch does not support Ironwood")
             })?;
             prover = prover
-                .create_ironwood_proof(&orchard::circuit::ProvingKey::build(circuit_version))
+                .create_ironwood_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Ironwood proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_ironwood_proof());

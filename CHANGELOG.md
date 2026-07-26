@@ -26,6 +26,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differ only in currency as unequal, and code that destructures gains a third
   component. Two-argument construction still compiles unchanged and defaults to
   `USD`.
+- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
+  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
+  both Orchard and Ironwood bundles no longer constructs the key twice.
 
 ### Fixed
 - `CompactBlockProcessor` no longer crashes with an `IllegalArgumentException` from
