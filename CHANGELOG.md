@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0-rc.2] - 2026-07-26
+
 ### Fixed
 - Hardware-wallet signing of post-NU6.3 (v6) transactions: the wallet-controlled zero-value
   Orchard spends that pad such transactions now carry ZIP 32 derivation metadata (via
