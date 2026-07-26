@@ -6,6 +6,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
+  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
+  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
+
 ## [2.7.0-rc.1] - 2026-07-25
 
 ### Added
