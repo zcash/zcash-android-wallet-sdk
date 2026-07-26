@@ -2593,6 +2593,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         // The Orchard circuit version is fixed by the consensus branch under which the
         // transaction will be mined; derive it from the branch id carried by the PCZT.
+        //
+        // The pool argument does not select the circuit: `BundleVersion::circuit_version`
+        // is documented as many-to-one, deriving only from the `ProtocolVersion`, so the
+        // Orchard and Ironwood pools under NU6.3 share the post-NU6.3 circuit. Passing
+        // `ValuePool::Orchard` is therefore correct for an Ironwood bundle as well, and
+        // it is the only choice that is total over the branches Orchard supports:
+        // `bundle_version_for_branch(_, ValuePool::Ironwood)` is `None` before NU6.3,
+        // which would fail proving for every pre-NU6.3 Orchard PCZT. If a future protocol
+        // revision ever gave the two pools distinct circuits, that would break this
+        // documented contract, and the pool would have to be derived from the bundle.
         let orchard_circuit_version = BranchId::try_from(*pczt.global().consensus_branch_id())
             .ok()
             .and_then(|branch_id| bundle_version_for_branch(branch_id, orchard::ValuePool::Orchard))
