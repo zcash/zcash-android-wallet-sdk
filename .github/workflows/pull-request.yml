@@ -1,5 +1,4 @@
 # Expected secrets
-# EMULATOR_WTF_API_KEY - Optional API key for emulator.wtf
 # FIREBASE_TEST_LAB_SERVICE_ACCOUNT - Email address of Firebase Test Lab service account
 # FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER - Workload identity provider to generate temporary service account key
 
@@ -45,17 +44,6 @@ jobs:
           FIREBASE_TEST_LAB_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
           FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
         if: "${{ env.FIREBASE_TEST_LAB_PROJECT != '' && env.FIREBASE_TEST_LAB_SERVICE_ACCOUNT != '' && env.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER != '' }}"
-        run: echo "defined=true" >> $GITHUB_OUTPUT
-
-  check_emulator_wtf_secrets:
-    runs-on: ubuntu-latest
-    outputs:
-      has-secrets: ${{ steps.check_emulator_wtf_secrets.outputs.defined }}
-    steps:
-      - id: check_emulator_wtf_secrets
-        env:
-          EMULATOR_WTF_API_KEY: ${{ secrets.EMULATOR_WTF_API_KEY }}
-        if: "${{ env.EMULATOR_WTF_API_KEY != '' }}"
         run: echo "defined=true" >> $GITHUB_OUTPUT
 
   check_properties:
@@ -266,10 +254,11 @@ jobs:
           name: Test Android modules with Unit Tests
           path: ~/artifacts
 
-  # Emulator.wtf is preferred if it has an API key.
+  # Runs only where the Firebase Test Lab credentials are configured, so forks without
+  # them fall back to the in-runner emulator job below.
   test_android_modules_ftl:
-    if: needs.check_firebase_secrets.outputs.has-secrets == 'true' && needs.check_emulator_wtf_secrets.outputs.has-secrets == 'false'
-    needs: [validate_gradle_wrapper, check_firebase_secrets, check_emulator_wtf_secrets]
+    if: needs.check_firebase_secrets.outputs.has-secrets == 'true'
+    needs: [validate_gradle_wrapper, check_firebase_secrets]
     runs-on: ubuntu-latest
     permissions:
       contents: read

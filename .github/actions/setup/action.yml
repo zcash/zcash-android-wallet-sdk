@@ -27,7 +27,9 @@ runs:
       # `cargo clippy` failed with "'cargo-clippy' is not installed for the toolchain 1.92.0"
       # while clippy had been installed for 1.84.1.
       run: |
-        CHANNEL="$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)"
+        # `sed` rather than `grep -oP`: -P is a GNU extension, and this composite action
+        # should keep working if it is ever reused from a macOS/BSD runner.
+        CHANNEL="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
         rustup toolchain install "${CHANNEL}"
         rustup default "${CHANNEL}"
         rustup target add --toolchain "${CHANNEL}" armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
