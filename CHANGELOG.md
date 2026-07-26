@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0-rc.2] - 2026-07-26
+
 ### Changed
 - `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
   `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
