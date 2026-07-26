@@ -79,10 +79,25 @@ runs:
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
+        # The crate lives in backend-lib/; it moved there from sdk-lib/ in
+        # "[#971] Refactor Rust FFI to separate module" and this cache was left
+        # behind. `sdk-lib/target` has not existed since, so no compiled artifact
+        # was ever cached and every job paid a full cold build of the dependency
+        # tree (arti included). Only ~/.cargo, the download registry, was working.
         path: |
-          sdk-lib/target
+          backend-lib/target
           ~/.cargo
-        key: ${{ runner.os }}-rust-${{ hashFiles(format('{0}{1}', github.workspace, '/sdk-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/sdk-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/sdk-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/gradle.properties')) }}
+        # Cargo.lock pins the dependency versions, Cargo.toml the feature
+        # selection, build.gradle.kts the target ABIs and profile, and
+        # rust-toolchain.toml the compiler -- a change to any of them invalidates
+        # compiled output. The old key hashed two files that do not exist, so it
+        # never changed when dependencies did.
+        key: ${{ runner.os }}-rust-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/rust-toolchain.toml')) }}
+        # Without a prefix fallback an exact-key miss is a fully cold build, so
+        # every Cargo.lock bump would recompile everything. A stale hit still
+        # leaves most of the dependency tree reusable.
+        restore-keys: |
+          ${{ runner.os }}-rust-
 
     - name: Gradle Binary Download
       if: steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
@@ -128,6 +143,6 @@ runs:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
         path: |
-          sdk-lib/target
+          backend-lib/target
           ~/.cargo
         key: ${{ steps.rust-cache-restore.key }}

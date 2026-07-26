@@ -272,7 +272,11 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
       - name: Build
-        timeout-minutes: 20
+        # Matches the budget the sibling test_android_modules_emulator job gives
+        # its "Build and test" step for the same assemble work. 20 minutes was not
+        # enough for a cold cargo build of the four Android ABIs: this step timed
+        # out mid-dependency-compile once the job started running again.
+        timeout-minutes: 30
         run: |
           ./gradlew assembleDebug assembleAndroidTest
       - name: Authenticate to Google Cloud for Firebase Test Lab
