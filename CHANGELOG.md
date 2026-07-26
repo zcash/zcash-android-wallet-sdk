@@ -13,6 +13,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
   importing an account whose birthday is at the chain tip). The combined progress ratio now uses
   the same zero-denominator semantics as the individual ratios: an empty range means 100%.
+- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
+  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
+  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
 
 ## [2.6.6] - 2026-07-25
 
