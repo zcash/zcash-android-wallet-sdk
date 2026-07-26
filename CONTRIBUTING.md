@@ -113,6 +113,12 @@ main          ───●───────────────●──
 
 ### Cutting a release
 
+`./scripts/start-release.sh <remote> <version>` performs steps 1 through 4:
+it works out which release this one follows, creates and pushes the release
+branch, creates the review branch, bumps the version and promotes the
+CHANGELOG. Pass `--dry-run` first to see what it will do. The steps below are
+what it automates, and what to do by hand if a release needs to deviate.
+
 1. Create `release/vX.Y.Z` **from the previous release tag** and push it to
    upstream. It starts out identical to the last release.
 2. Create `review/vX.Y.Z` from the maintenance branch that contains all of the
