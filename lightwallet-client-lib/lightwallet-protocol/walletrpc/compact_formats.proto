@@ -1,17 +1,9 @@
-// DERIVED FILE -- DO NOT EDIT.
-//
-// Generated from lightwallet-client-lib/lightwallet-protocol/walletrpc/compact_formats.proto by
-// scripts/update-lightwallet-protocol.sh. The only change from the vendored
-// upstream copy is the added `option java_package` below; edit the subtree
-// and re-run the script rather than editing this file.
-
 // Copyright (c) 2019-2021 The Zcash developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://www.opensource.org/licenses/mit-license.php .
 
 syntax = "proto3";
 package cash.z.wallet.sdk.rpc;
-option java_package = "cash.z.wallet.sdk.internal.rpc";
 option go_package = "lightwalletd/walletrpc";
 option swift_prefix = "";
 

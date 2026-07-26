@@ -1345,12 +1345,24 @@ class CompactBlockProcessor internal constructor(
 
         var result: GetSubtreeRootsResult = GetSubtreeRootsResult.Linear
 
-        // Fetching the subtree roots of a pool differs only in which pool is targeted, so the
-        // three per-pool retry loops share one implementation. `result` and `traceScope` are
-        // captured so a failure reports the same way it did when each loop was written out.
+        // Fetching the subtree roots of a pool differs only in which pool is targeted and in
+        // whether a failure is recorded, so the three per-pool retry loops share one implementation.
+        //
+        // Sapling and Orchard record into [result] exactly as they did before Ironwood existed.
+        // Only the Ironwood fetch tolerates failure: no deployed lightwalletd answers for a pool
+        // that activates at NU6.3, so until the server population is upgraded this request fails
+        // for every wallet, on every sync start. Recording that would set a value the trailing
+        // `saplingSubtreeRootList.isNotEmpty()` block discards anyway; tolerating it keeps the
+        // absence of Ironwood roots from reading as a fetch failure.
+        //
+        // This tolerance is transitional and must not outlive the server rollout, or a genuine
+        // Ironwood fetch fault will be ignored and spend-before-sync will proceed on an
+        // incomplete Ironwood commitment tree. Tracked in
+        // https://github.com/zcash/zcash-android-wallet-sdk/issues/2061.
         suspend fun fetchSubtreeRoots(
             startIndex: UInt,
-            shieldedProtocol: ShieldedProtocolEnum
+            shieldedProtocol: ShieldedProtocolEnum,
+            onFailure: (GetSubtreeRootsResult) -> Unit
         ): List<SubtreeRoot> {
             var roots: List<SubtreeRoot> = emptyList()
             retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
@@ -1382,15 +1394,18 @@ class CompactBlockProcessor internal constructor(
                                             "Fetching $shieldedProtocol SubtreeRoot failed due to server" +
                                                 " communication problem with failure: ${response.toThrowable()}"
                                         }
-                                        result = GetSubtreeRootsResult.FailureConnection
+                                        onFailure(GetSubtreeRootsResult.FailureConnection)
                                     } else {
                                         Twig.error {
                                             "Fetching $shieldedProtocol SubtreeRoot failed with failure:" +
                                                 " ${response.toThrowable()}"
                                         }
-                                        result = GetSubtreeRootsResult.OtherFailure(error)
+                                        onFailure(GetSubtreeRootsResult.OtherFailure(error))
                                     }
-                                    traceScope.end()
+                                    // Deliberately not ending [traceScope] here: `retryUpToAndContinue`
+                                    // swallows this after the last attempt, so control always reaches the
+                                    // single `traceScope.end()` below. Ending it per failed attempt closed
+                                    // the scope early and logged "ended more than once" for each retry.
                                     throw error
                                 }
                             }
@@ -1405,9 +1420,12 @@ class CompactBlockProcessor internal constructor(
             return roots
         }
 
-        val saplingSubtreeRootList = fetchSubtreeRoots(saplingStartIndex, ShieldedProtocolEnum.SAPLING)
-        val orchardSubtreeRootList = fetchSubtreeRoots(orchardStartIndex, ShieldedProtocolEnum.ORCHARD)
-        val ironwoodSubtreeRootList = fetchSubtreeRoots(ironwoodStartIndex, ShieldedProtocolEnum.IRONWOOD)
+        val saplingSubtreeRootList =
+            fetchSubtreeRoots(saplingStartIndex, ShieldedProtocolEnum.SAPLING) { failure -> result = failure }
+        val orchardSubtreeRootList =
+            fetchSubtreeRoots(orchardStartIndex, ShieldedProtocolEnum.ORCHARD) { failure -> result = failure }
+        val ironwoodSubtreeRootList =
+            fetchSubtreeRoots(ironwoodStartIndex, ShieldedProtocolEnum.IRONWOOD) { /* tolerated; see above */ }
 
         // Intentionally omitting [orchardSubtreeRootList]/[ironwoodSubtreeRootList], e.g., for Mainnet usage, we
         // could check it, but on custom networks without NU5/NU6.3 activation, it wouldn't work. If the Orchard or
