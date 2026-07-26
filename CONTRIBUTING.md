@@ -8,6 +8,7 @@ Please read it before you start participating.
 * [Asking Questions](#asking-questions)
 * [Reporting Security Issues](#reporting-security-issues)
 * [Reporting Non Security Issues](#reporting-other-issues)
+* [Release and Maintenance Branches](#release-and-maintenance-branches)
 * [Commit Messages](#commit-messages)
 * [Developers Certificate of Origin](#developers-certificate-of-origin)
 
@@ -68,6 +69,116 @@ prioritized.
   logic are either obvious to a reasonably skilled professional, or add a
   comment that explains it.
   
+## Release and Maintenance Branches
+
+`main` is the development trunk. Released versions are maintained on long-lived
+`maint/` branches, one per minor release line, so that a fix can reach users
+already running an older version without shipping them unrelated trunk work.
+
+| Branch | Lifetime | Purpose |
+| --- | --- | --- |
+| `main` | permanent | Development trunk. New feature work lands here. |
+| `maint/vX.Y.x` | permanent | One per supported release line. Fixes to released versions land here. |
+| `release/vX.Y.Z` | one release | Cut from the previous release tag. The base of the release PR, and what gets tagged. |
+| `review/vX.Y.Z` | one release | Release preparation: version bumps, CHANGELOG promotion, final review. |
+
+### Basing a bug fix
+
+**The rule is: merge forward, cherry-pick back.**
+
+Branch bug fixes from the oldest currently-supported maintenance branch — at the
+time of writing that is `maint/v2.7.x`. From there the fix travels to every newer
+line by merging forward, keeping one commit identity and leaving later merges
+between those branches clean. This is the normal path and the one the diagram
+below shows; expect nearly every fix to take it.
+
+Cherry-picking back is the exception, for a fix that has already landed on a
+newer line and turns out to be needed on an older one too. Never merge backward:
+that would drag everything else on the newer line into the older release.
+
+```
+                    fix/1234
+                   ●────●
+                  /       \
+maint/v2.7.x  ───●─────────●─────────────────────────────▶   base bug fixes here
+                            \
+                             \  merge forward
+                              ▼
+maint/v2.8.x  ───●────────────●──────────────────────────▶
+                               \
+                                \  merge forward
+                                 ▼
+main          ───●───────────────●───────────────────────▶
+```
+
+### Cutting a release
+
+1. Create `release/vX.Y.Z` **from the previous release tag** and push it to
+   upstream. It starts out identical to the last release.
+2. Create `review/vX.Y.Z` from the maintenance branch that contains all of the
+   changes to be released.
+3. Open a pull request **on the public repository** from `review/vX.Y.Z` into
+   `release/vX.Y.Z`.
+4. Make the release preparation commits on `review/vX.Y.Z` — version bumps,
+   CHANGELOG promotion, and anything else the release needs. The review branch,
+   not the release branch, is where this work happens.
+5. Merge the pull request, then tag the result `vX.Y.Z`.
+
+Basing the release branch on the previous release tag is what makes the pull
+request worth reviewing: its diff is exactly what users receive relative to the
+last release, rather than the intervening development history.
+
+```
+tag vX.Y.W  (previous release)
+      │
+      └──▶  release/vX.Y.Z  ●──────────────────────────────●  tag vX.Y.Z
+                                                           ▲
+                                                           │  PR: review ──▶ release
+                                                           │
+        review/vX.Y.Z   ●────●────●────────────────────────┘
+                        ▲     version bumps, CHANGELOG promotion
+                        │
+                        │  branch from maint
+maint/vX.Y.x ──●────●───┴────────────────────────▶
+               └─ changes to be released ─┘
+```
+
+### After the release
+
+Three merges, in order:
+
+1. Merge `release/vX.Y.Z` back into `maint/vX.Y.x`, so the maintenance branch
+   carries the tagged release and its preparation commits.
+2. Merge each maintenance branch forward into the next newer one. With
+   `maint/v2.7.x` and `maint/v2.8.x` both active, a release on the 2.7 line goes
+   `maint/v2.7.x` → `maint/v2.8.x`. Repeat along the chain for every newer line.
+3. Merge the newest maintenance branch into `main`.
+
+```
+release/vX.Y.Z  ●  tag vX.Y.Z
+                 \
+                  \  1. merge back
+                   ▼
+maint/vX.Y.x  ──────●────────────────────────────────────▶
+                     \
+                      \  2. merge forward
+                       ▼
+maint/vX.Y+1.x  ────────●────────────────────────────────▶
+                         \
+                          \  3. merge back to trunk
+                           ▼
+main          ──────────────●────────────────────────────▶
+```
+
+Do not treat step 3 as release-time-only work: merge `maint/` branches back to
+`main` regularly. Trunk then never drifts far from what is shipping, and each
+merge stays small enough to resolve confidently.
+
+Skipping a forward merge is how a fix silently regresses — a user upgrading from
+2.7.1 to 2.8.0 would lose it. If a forward merge conflicts, resolve it in favour
+of keeping both changes rather than dropping either, and verify the result builds
+before pushing.
+
 ## Commit Messages
 
 Commit history is an important part of the project's documentation.
