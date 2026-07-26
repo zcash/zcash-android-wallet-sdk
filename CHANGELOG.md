@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.7] - 2026-07-26
+
+### Fixed
+- `CompactBlockProcessor` no longer crashes with an `IllegalArgumentException` from
+  `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
+  importing an account whose birthday is at the chain tip). The combined progress ratio now uses
+  the same zero-denominator semantics as the individual ratios: an empty range means 100%.
+
 ## [2.6.6] - 2026-07-25
 
 ### Added
