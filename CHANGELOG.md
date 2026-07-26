@@ -36,6 +36,24 @@ need source changes:
 - `Synchronizer` gains an abstract `proposeOrchardToIronwoodMigration`, which any
   implementer or test fake must now provide.
 
+The lightwallet protocol definitions are now vendored from
+[zcash/lightwallet-protocol](https://github.com/zcash/lightwallet-protocol) at
+v0.5.0 rather than maintained by hand, which changes the generated
+`cash.z.wallet.sdk.internal.rpc` types. The SDK itself uses none of the
+following, but consumers touching the generated gRPC types directly will:
+
+- `CompactTx.hash` is renamed to `CompactTx.txid`, so `getHash()`/`setHash()`
+  become `getTxid()`/`setTxid()`.
+- `CompactBlock.protoVersion` is removed; field 1 is now reserved.
+- The `Exclude` message is replaced by `GetMempoolTxRequest`, changing the
+  `GetMempoolTx` RPC signature.
+
+Additive in the same update: a `PoolType` enum, `BlockRange.poolTypes`, the
+`CompactTxIn` and `TxOut` messages with `CompactTx.vin`/`vout`, four new
+`LightdInfo` fields, and a `GetTaddressTransactions` RPC. `GetBlockNullifiers`
+and `GetBlockRangeNullifiers` are now deprecated upstream in favour of
+`GetBlockRange` with `poolTypes`.
+
 ### Changed
 - Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
   line, adapting the backend to the send-max and builder API changes.
