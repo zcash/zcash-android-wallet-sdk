@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
+  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
+  both Orchard and Ironwood bundles no longer constructs the key twice.
+
+### Fixed
+- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
+  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
+  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
+
 ## [2.7.0-rc.1] - 2026-07-25
 
 ### Added
