@@ -17,7 +17,7 @@ pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.3", features = [
+zcash_client_backend = { version = "0.24.0-rc.4", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -82,15 +82,20 @@ rust-analyzer = "0.0.1"
 # published (zcash/librustzcash#2769); sibling crates are pinned to the same revision to keep the
 # dependency graph on a single source.
 [patch.crates-io]
-# pczt = { package = "pczt", git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
-# zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_WITH_GIT_HASH" }
+# TODO: [#2072] Remove these patches once zcash_client_backend 0.24.0-rc.4 is
+# published (zcash/librustzcash#2779); they pin the release-prep revision so
+# device verification exercises exactly the bits to be published, with the
+# sibling crates pinned to the same revision to keep the dependency graph on a
+# single source.
+pczt = { package = "pczt", git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "536a10fd61af2d554bbe92764b0912a5d78e7d49" }
 
 ## Uncomment this to test someone else's librustzcash changes in a branch
 #[patch.crates-io]
