@@ -15,6 +15,27 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moves the account's entire Orchard balance across the NU6.3 turnstile into the
   Ironwood pool.
 
+  **This migration is not private.** It produces a single transaction whose value
+  is the account's entire Orchard balance, so any chain observer can read that
+  balance off the chain. The SDK deliberately does not split the crossing into
+  less-identifying denominations. Wallets should surface this in the confirmation
+  UI rather than presenting the migration as a routine self-send.
+
+### Breaking changes
+
+Adding the Ironwood pool changes several public types. Downstream consumers will
+need source changes:
+
+- `AccountBalance` gains a required `ironwood: WalletBalance` property, in third
+  position, before `unshielded`. Positional construction will not compile.
+- `CompactBlockUnsafe` gains a required `ironwoodOutputsCount: UInt` constructor
+  parameter, before `compactBlockBytes`.
+- `TransactionPool` and `ShieldedProtocolEnum` each gain an `IRONWOOD` case, so
+  exhaustive `when` expressions over them stop compiling until the new case is
+  handled.
+- `Synchronizer` gains an abstract `proposeOrchardToIronwoodMigration`, which any
+  implementer or test fake must now provide.
+
 ### Changed
 - Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
   line, adapting the backend to the send-max and builder API changes.
