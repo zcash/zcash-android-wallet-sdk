@@ -79,7 +79,10 @@ use zcash_client_sqlite::{
 use zcash_primitives::{
     block::BlockHash,
     merkle_tree::HashSer,
-    transaction::{Transaction, TxId, components::orchard::bundle_version_for_branch},
+    transaction::{
+        Transaction, TxId, builder::cached_orchard_proving_key,
+        components::orchard::bundle_version_for_branch,
+    },
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
@@ -2621,7 +2624,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
                 anyhow!("PCZT requires an Orchard proof but its consensus branch does not support Orchard")
             })?;
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build(circuit_version))
+                .create_orchard_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
@@ -2631,7 +2634,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
                 anyhow!("PCZT requires an Ironwood proof but its consensus branch does not support Ironwood")
             })?;
             prover = prover
-                .create_ironwood_proof(&orchard::circuit::ProvingKey::build(circuit_version))
+                .create_ironwood_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Ironwood proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_ironwood_proof());
