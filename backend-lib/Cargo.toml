@@ -35,12 +35,12 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 # voting-circuits support the old git pin provided, matching the zcash-swift-wallet-sdk pin.
 # No orchard [patch] entry is needed (and slipstream-core requires ^0.15.4, which it satisfies).
 orchard = { version = "0.15", features = ["unstable-voting-circuits"] }
-zcash_pool_migration = { version = "0.1.0-rc.1", features = ["wallet"] }
-pczt = { version = "0.8", features = ["prover", "orchard", "sapling", "signer"] }
+zcash_pool_migration = { version = "0.1.0-rc.2", features = ["wallet"] }
+pczt = { version = "0.9", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.2", features = [
+zcash_client_backend = { version = "0.24.0-rc.3", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -48,7 +48,7 @@ zcash_client_backend = { version = "0.24.0-rc.2", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.3", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
@@ -120,7 +120,7 @@ xz2 = { version = "0.1", features = ["static"] }
 # The transitive `voting-circuits` dependency contains the share-reveal circuit
 # and the Poseidon-based `share_nullifier_hash` implementation:
 # https://github.com/valargroup/voting-circuits/blob/v0.8.0/voting-circuits/src/share_reveal/circuit.rs
-zcash_voting = { version = "1.0.0", optional = true }
+zcash_voting = { version = "2.0.0-rc.1", optional = true }
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
 # orchard already carry transitively; pin to the versions already resolved for them
@@ -166,7 +166,7 @@ tracing-android = { version = "0.2", optional = true }
 
 [patch.crates-io]
 slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "35faa0c2f2095704c53d79849d2ef547c4ce2cad" }
-zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "e53e74487d31ad0f5713580fb2f0222b53ae9db8" }
 
 ## Uncomment and modify the following block to use librustzcash crates at a pinned revision.
 #[patch.crates-io]

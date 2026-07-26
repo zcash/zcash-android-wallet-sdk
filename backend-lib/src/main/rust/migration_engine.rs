@@ -35,7 +35,7 @@ use zcash_protocol::value::Zatoshis;
 
 use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
 use zcash_pool_migration::engine::{
-    MigrationBackend, MigrationCrypto, MigrationState, MigrationTxId, MigrationTxState,
+    MigrationBackend, MigrationCrypto, MigrationState, MigrationTransferId, MigrationTxState,
     PoolMigrationRead, PoolMigrationWrite,
 };
 use zcash_pool_migration::scheduling::SchedulingParams;
@@ -234,7 +234,7 @@ where
 
     fn update_transaction(
         &mut self,
-        id: MigrationTxId,
+        id: MigrationTransferId,
         state: MigrationTxState,
     ) -> Result<(), Self::Error> {
         self.store
