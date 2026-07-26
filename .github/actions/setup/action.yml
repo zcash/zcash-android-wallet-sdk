@@ -26,10 +26,19 @@ runs:
         echo "y" | $SDKMANAGER "ndk;27.0.12077973"
     - name: Setup Rust
       shell: bash
+      # Use the channel pinned in rust-toolchain.toml (the single source of truth) rather than a
+      # hardcoded version. rustup honors the toolchain file in-repo regardless, so a hardcoded
+      # version here installs components onto a toolchain the build never runs: that is why
+      # `cargo clippy` failed with "'cargo-clippy' is not installed for the toolchain 1.92.0"
+      # while clippy had been installed for 1.84.1.
       run: |
-        rustup install 1.84.1
-        rustup default 1.84.1
-        rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        # `sed` rather than `grep -oP`: -P is a GNU extension, and this composite action
+        # should keep working if it is ever reused from a macOS/BSD runner.
+        CHANNEL="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+        rustup toolchain install "${CHANNEL}"
+        rustup default "${CHANNEL}"
+        rustup target add --toolchain "${CHANNEL}" armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        rustup component add --toolchain "${CHANNEL}" clippy rustfmt
     - name: Configure Gradle
       shell: bash
       run: |

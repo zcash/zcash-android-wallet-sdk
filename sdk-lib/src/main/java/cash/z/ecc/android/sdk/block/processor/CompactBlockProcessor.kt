@@ -271,7 +271,7 @@ class CompactBlockProcessor internal constructor(
     suspend fun start() {
         val traceScope = TraceScope("CompactBlockProcessor.start")
 
-        val (saplingStartIndex, orchardStartIndex) = refreshWalletSummary()
+        val (saplingStartIndex, orchardStartIndex, ironwoodStartIndex) = refreshWalletSummary()
 
         updateBirthdayHeight()
 
@@ -288,7 +288,7 @@ class CompactBlockProcessor internal constructor(
 
         // Download note commitment tree data from lightwalletd to decide if we communicate with linear
         // or spend-before-sync node.
-        var subTreeRootResult = getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex)
+        var subTreeRootResult = getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex, ironwoodStartIndex)
         Twig.info { "Fetched SubTreeRoot result: $subTreeRootResult" }
 
         Twig.debug { "Setup verified. Processor starting..." }
@@ -322,6 +322,10 @@ class CompactBlockProcessor internal constructor(
                                             orchardSubtreeRootList =
                                                 (subTreeRootResult as GetSubtreeRootsResult.SpendBeforeSync)
                                                     .orchardSubtreeRootList,
+                                            ironwoodStartIndex = ironwoodStartIndex,
+                                            ironwoodSubtreeRootList =
+                                                (subTreeRootResult as GetSubtreeRootsResult.SpendBeforeSync)
+                                                    .ironwoodSubtreeRootList,
                                             lastValidHeight = lowerBoundHeight
                                         )
                                 ) {
@@ -359,7 +363,12 @@ class CompactBlockProcessor internal constructor(
                             GetSubtreeRootsResult.FailureConnection -> {
                                 // SubtreeRoot fetching retry
                                 subTreeRootResult =
-                                    getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex)
+                                    getSubtreeRoots(
+                                        downloader,
+                                        saplingStartIndex,
+                                        orchardStartIndex,
+                                        ironwoodStartIndex
+                                    )
                                 BlockProcessingResult.Reconnecting
                             }
                         }
@@ -886,7 +895,7 @@ class CompactBlockProcessor internal constructor(
      *
      * @return the next subtree index to fetch.
      */
-    internal suspend fun refreshWalletSummary(): Pair<UInt, UInt> {
+    internal suspend fun refreshWalletSummary(): Triple<UInt, UInt, UInt> {
         when (val result = getWalletSummary(backend)) {
             is GetWalletSummaryResult.Success -> {
                 val scanProgress = result.walletSummary.scanProgress
@@ -895,9 +904,10 @@ class CompactBlockProcessor internal constructor(
                 setProgress(scanProgress, recoveryProgress)
                 setFullyScannedHeight(result.walletSummary.fullyScannedHeight)
                 updateAllBalances(result.walletSummary)
-                return Pair(
+                return Triple(
                     result.walletSummary.nextSaplingSubtreeIndex,
-                    result.walletSummary.nextOrchardSubtreeIndex
+                    result.walletSummary.nextOrchardSubtreeIndex,
+                    result.walletSummary.nextIronwoodSubtreeIndex
                 )
             }
 
@@ -905,7 +915,7 @@ class CompactBlockProcessor internal constructor(
                 // Do not report the progress and balances in case of any error, and
                 // tell the caller to fetch all subtree roots.
                 Twig.info { "Progress from rust: no progress information available, progress type: $result" }
-                return Pair(UInt.MIN_VALUE, UInt.MIN_VALUE)
+                return Triple(UInt.MIN_VALUE, UInt.MIN_VALUE, UInt.MIN_VALUE)
             }
         }
     }
@@ -1333,132 +1343,110 @@ class CompactBlockProcessor internal constructor(
     internal suspend fun getSubtreeRoots(
         downloader: CompactBlockDownloader,
         saplingStartIndex: UInt,
-        orchardStartIndex: UInt
+        orchardStartIndex: UInt,
+        ironwoodStartIndex: UInt
     ): GetSubtreeRootsResult {
         Twig.debug { "Fetching SubtreeRoots..." }
         val traceScope = TraceScope("CompactBlockProcessor.getSubtreeRoots")
 
         var result: GetSubtreeRootsResult = GetSubtreeRootsResult.Linear
 
-        var saplingSubtreeRootList: List<SubtreeRoot> = emptyList()
-        var orchardSubtreeRootList: List<SubtreeRoot> = emptyList()
-
-        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
-            downloader
-                .getSubtreeRoots(
-                    saplingStartIndex,
-                    shieldedProtocol = ShieldedProtocolEnum.SAPLING,
-                    maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
-                ).onEach { response ->
-                    when (response) {
-                        is Response.Success -> {
-                            Twig.verbose {
-                                "Sapling SubtreeRoot fetched successfully: its completingHeight is: ${
-                                    response.result
-                                        .completingBlockHeight
-                                }"
-                            }
-                        }
-
-                        is Response.Failure -> {
-                            val error =
-                                LightWalletException.GetSubtreeRootsException(
-                                    response.code,
-                                    response.description,
-                                    response.toThrowable()
-                                )
-                            if (response is Response.Failure.Server.Unavailable) {
-                                Twig.error {
-                                    "Fetching Sapling SubtreeRoot failed due to server communication problem with" +
-                                        " failure: ${response.toThrowable()}"
+        // Fetching the subtree roots of a pool differs only in which pool is targeted and in
+        // whether a failure is recorded, so the three per-pool retry loops share one implementation.
+        //
+        // Sapling and Orchard record into [result] exactly as they did before Ironwood existed.
+        // Only the Ironwood fetch tolerates failure: no deployed lightwalletd answers for a pool
+        // that activates at NU6.3, so until the server population is upgraded this request fails
+        // for every wallet, on every sync start. Recording that would set a value the trailing
+        // `saplingSubtreeRootList.isNotEmpty()` block discards anyway; tolerating it keeps the
+        // absence of Ironwood roots from reading as a fetch failure.
+        //
+        // This tolerance is transitional and must not outlive the server rollout, or a genuine
+        // Ironwood fetch fault will be ignored and spend-before-sync will proceed on an
+        // incomplete Ironwood commitment tree. Tracked in
+        // https://github.com/zcash/zcash-android-wallet-sdk/issues/2061.
+        suspend fun fetchSubtreeRoots(
+            startIndex: UInt,
+            shieldedProtocol: ShieldedProtocolEnum,
+            onFailure: (GetSubtreeRootsResult) -> Unit
+        ): List<SubtreeRoot> {
+            var roots: List<SubtreeRoot> = emptyList()
+            retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
+                roots =
+                    downloader
+                        .getSubtreeRoots(
+                            startIndex = startIndex,
+                            shieldedProtocol = shieldedProtocol,
+                            maxEntries = UInt.MIN_VALUE,
+                            serviceMode = ServiceMode.Direct
+                        ).onEach { response ->
+                            when (response) {
+                                is Response.Success -> {
+                                    Twig.verbose {
+                                        "$shieldedProtocol SubtreeRoot fetched successfully: its completingHeight" +
+                                            " is: ${response.result.completingBlockHeight}"
+                                    }
                                 }
-                                result = GetSubtreeRootsResult.FailureConnection
-                            } else {
-                                Twig.error {
-                                    "Fetching Sapling SubtreeRoot failed with failure: ${response.toThrowable()}"
+
+                                is Response.Failure -> {
+                                    val error =
+                                        LightWalletException.GetSubtreeRootsException(
+                                            response.code,
+                                            response.description,
+                                            response.toThrowable()
+                                        )
+                                    if (response is Response.Failure.Server.Unavailable) {
+                                        Twig.error {
+                                            "Fetching $shieldedProtocol SubtreeRoot failed due to server" +
+                                                " communication problem with failure: ${response.toThrowable()}"
+                                        }
+                                        onFailure(GetSubtreeRootsResult.FailureConnection)
+                                    } else {
+                                        Twig.error {
+                                            "Fetching $shieldedProtocol SubtreeRoot failed with failure:" +
+                                                " ${response.toThrowable()}"
+                                        }
+                                        onFailure(GetSubtreeRootsResult.OtherFailure(error))
+                                    }
+                                    // Deliberately not ending [traceScope] here: `retryUpToAndContinue`
+                                    // swallows this after the last attempt, so control always reaches the
+                                    // single `traceScope.end()` below. Ending it per failed attempt closed
+                                    // the scope early and logged "ended more than once" for each retry.
+                                    throw error
                                 }
-                                result = GetSubtreeRootsResult.OtherFailure(error)
                             }
-                            traceScope.end()
-                            throw error
+                        }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
+                        .map { response ->
+                            response.result
+                        }.toList()
+                        .map {
+                            SubtreeRoot.new(it)
                         }
-                    }
-                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
-                .map { response ->
-                    response.result
-                }.toList()
-                .map {
-                    SubtreeRoot.new(it)
-                }.let {
-                    saplingSubtreeRootList = it
-                }
+            }
+            return roots
         }
 
-        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
-            downloader
-                .getSubtreeRoots(
-                    startIndex = orchardStartIndex,
-                    shieldedProtocol = ShieldedProtocolEnum.ORCHARD,
-                    maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
-                ).onEach { response ->
-                    when (response) {
-                        is Response.Success -> {
-                            Twig.verbose {
-                                "Orchard SubtreeRoot fetched successfully: its completingHeight is: ${
-                                    response.result
-                                        .completingBlockHeight
-                                }"
-                            }
-                        }
+        val saplingSubtreeRootList =
+            fetchSubtreeRoots(saplingStartIndex, ShieldedProtocolEnum.SAPLING) { failure -> result = failure }
+        val orchardSubtreeRootList =
+            fetchSubtreeRoots(orchardStartIndex, ShieldedProtocolEnum.ORCHARD) { failure -> result = failure }
+        val ironwoodSubtreeRootList =
+            fetchSubtreeRoots(ironwoodStartIndex, ShieldedProtocolEnum.IRONWOOD) { /* tolerated; see above */ }
 
-                        is Response.Failure -> {
-                            val error =
-                                LightWalletException.GetSubtreeRootsException(
-                                    response.code,
-                                    response.description,
-                                    response.toThrowable()
-                                )
-                            if (response is Response.Failure.Server.Unavailable) {
-                                Twig.error {
-                                    "Fetching Orchard SubtreeRoot failed due to server communication problem with" +
-                                        " failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.FailureConnection
-                            } else {
-                                Twig.error {
-                                    "Fetching Orchard SubtreeRoot failed with failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.OtherFailure(error)
-                            }
-                            traceScope.end()
-                            throw error
-                        }
-                    }
-                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
-                .map { response ->
-                    response.result
-                }.toList()
-                .map {
-                    SubtreeRoot.new(it)
-                }.let {
-                    orchardSubtreeRootList = it
-                }
-        }
-
-        // Intentionally omitting [orchardSubtreeRootList], e.g., for Mainnet usage, we could check it, but on
-        // custom networks without NU5 activation, it wouldn't work. If the Orchard subtree roots are empty, it's
-        // technically still ok (as Orchard activates after Sapling, so on a network that doesn't have NU5
-        // activated, this would behave correctly). In contrast, if the Sapling subtree roots are empty, we
-        // cannot do SbS at all.
+        // Intentionally omitting [orchardSubtreeRootList]/[ironwoodSubtreeRootList], e.g., for Mainnet usage, we
+        // could check it, but on custom networks without NU5/NU6.3 activation, it wouldn't work. If the Orchard or
+        // Ironwood subtree roots are empty, it's technically still ok (both activate after Sapling, so on a network
+        // that doesn't have them activated yet, this would behave correctly). In contrast, if the Sapling subtree
+        // roots are empty, we cannot do SbS at all.
         if (saplingSubtreeRootList.isNotEmpty()) {
             result =
                 GetSubtreeRootsResult.SpendBeforeSync(
                     saplingStartIndex,
                     saplingSubtreeRootList,
                     orchardStartIndex,
-                    orchardSubtreeRootList
+                    orchardSubtreeRootList,
+                    ironwoodStartIndex,
+                    ironwoodSubtreeRootList
                 )
         }
 
@@ -1482,6 +1470,8 @@ class CompactBlockProcessor internal constructor(
         saplingSubtreeRootList: List<SubtreeRoot>,
         orchardStartIndex: UInt,
         orchardSubtreeRootList: List<SubtreeRoot>,
+        ironwoodStartIndex: UInt,
+        ironwoodSubtreeRootList: List<SubtreeRoot>,
         lastValidHeight: BlockHeight
     ): PutSaplingSubtreeRootsResult =
         runCatching {
@@ -1490,11 +1480,13 @@ class CompactBlockProcessor internal constructor(
                 saplingRoots = saplingSubtreeRootList,
                 orchardStartIndex = orchardStartIndex,
                 orchardRoots = orchardSubtreeRootList,
+                ironwoodStartIndex = ironwoodStartIndex,
+                ironwoodRoots = ironwoodSubtreeRootList,
             )
         }.onSuccess {
             Twig.info {
-                "Subtree roots put successfully with saplingStartIndex: $saplingStartIndex and " +
-                    "orchardStartIndex: $orchardStartIndex"
+                "Subtree roots put successfully with saplingStartIndex: $saplingStartIndex, " +
+                    "orchardStartIndex: $orchardStartIndex and ironwoodStartIndex: $ironwoodStartIndex"
             }
         }.onFailure {
             Twig.error { "Sapling subtree roots put failed with: $it" }
@@ -2476,17 +2468,34 @@ class CompactBlockProcessor internal constructor(
             recoveryProgress?.getSafeRatio()?.let { PercentDecimal(it) } ?: PercentDecimal.ZERO_PERCENT
         }
 
-        // [_progress] is calculated as sum numerator divided by denominators if [recoveryProgress] is not null
+        // [_progress] is calculated as sum of numerators divided by sum of denominators if [recoveryProgress] is
+        // not null. A zero combined denominator means 100% (same semantics as [Progress.getSafeRatio]) — a raw
+        // division would produce NaN and fail [PercentDecimal]'s range requirement, e.g. for a freshly imported
+        // account whose scan and recovery ranges are both empty.
         _progress.value =
             PercentDecimal(
                 if (recoveryProgress == null) {
-                    scanProgress.numerator.toFloat() /
-                        scanProgress.denominator.toFloat()
+                    scanProgress.getSafeRatio()
                 } else {
-                    (scanProgress.numerator.toFloat() + recoveryProgress.numerator.toFloat()) /
-                        (scanProgress.denominator.toFloat() + recoveryProgress.denominator.toFloat())
+                    getSafeCombinedRatio(scanProgress, recoveryProgress)
                 }
             )
+    }
+
+    /**
+     * Combined scan+recovery progress ratio with the same safety semantics as [Progress.getSafeRatio]: a zero
+     * denominator is interpreted as 100% progress and any out-of-range value is treated as 0.
+     */
+    private fun getSafeCombinedRatio(
+        scanProgress: ScanProgress,
+        recoveryProgress: RecoveryProgress
+    ): Float {
+        val denominator = scanProgress.denominator + recoveryProgress.denominator
+        if (denominator <= 0L) {
+            return 1f
+        }
+        val ratio = (scanProgress.numerator + recoveryProgress.numerator).toFloat() / denominator.toFloat()
+        return if (ratio < 0f || ratio > 1f) 0f else ratio
     }
 
     /**

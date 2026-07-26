@@ -13,7 +13,7 @@ jobs that are runnable on a dev machine:
 
 ```bash
 ./scripts/ci-local.sh fast     # detekt + ktlint (~30s) -- run this first
-./scripts/ci-local.sh quick    # fast + unit tests (~2-5m)
+./scripts/ci-local.sh quick    # fast + unit tests (~5m)
 ./scripts/ci-local.sh full     # everything, including androidTest (~15-30m)
 
 # Or a single stage when iterating:
@@ -22,12 +22,29 @@ jobs that are runnable on a dev machine:
 ./scripts/ci-local.sh demoapp
 ```
 
+`quick` is what actually compiles the Kotlin: `fast` only runs static
+analysis, so it will pass on code that does not compile. Run at least `quick`
+after any change to a Kotlin source file.
+
 ### Environment requirements
 
 - **JDK 17 or 21.** Android Gradle Plugin 8.13.x does not support JDK 25+.
   If your default `java -version` reports 25 or newer, install JDK 21 via
   Homebrew (`brew install openjdk@21`) or SDKMAN! and set `JAVA_HOME` before
   running the script.
+
+  On a machine where `java` is not on `PATH` at all (common on macOS, where
+  the JDK is installed but not linked), export it for the command:
+
+  ```bash
+  export JAVA_HOME=/opt/homebrew/opt/openjdk@21          # brew install openjdk@21
+  export PATH="$JAVA_HOME/bin:$PATH"
+  export ANDROID_HOME="$HOME/Library/Android/sdk"
+  ./scripts/ci-local.sh quick
+  ```
+
+  Android Studio's bundled runtime works too, if you prefer not to install a
+  second JDK: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
 - **Android SDK** at `$ANDROID_HOME` or `~/Library/Android/sdk`.
 - For the `androidtest` stage on Apple Silicon, the `aosp` SDK-36 Pixel 2
   system image is downloaded on first run (~1.5 GB).
@@ -80,6 +97,43 @@ git pull origin main
 git worktree add ../fix-something -b fix/something main
 ```
 
+## CHANGELOG discipline
+
+`CHANGELOG.md` exists for consumers of the published library, and nothing else.
+
+- Update it for any **public API change, bug fix, or semantic change**. The entry
+  **must** be part of the same commit that makes the change, not a follow-up.
+- Entries carry **only** what a consumer needs in order to adapt: the public symbol
+  by name, the precise shape of the change, what breaks at their call site, and the
+  edit to make (or that none is needed).
+- **Never** describe implementation details, or contracts that are not visible
+  through the public API. In particular, do not narrate branch or release topology
+  -- which line merged into which, which version numbers were skipped, why the
+  ordering in the file looks the way it does. None of that is actionable for a
+  consumer.
+- Record **only completed changes since the last release**, never the interstitial
+  states of an API that was changed several times since then. If a symbol was added
+  and then renamed before release, the entry describes the final name only.
+- **Never modify an entry under an already-published version heading** (a dated
+  `## [x.y.z] - DATE` section). Those are the historical record of what that release
+  shipped, and must not be altered even to clarify or correct. New information goes
+  under `## [Unreleased]`.
+- Do **not** add a separate "Breaking changes" section. `### Changed` already is the
+  breaking-change section -- everything under it is breaking, whether semver,
+  dependency, or otherwise. Non-breaking additions go under `### Added`, fixes under
+  `### Fixed`. Each `### Changed` entry should read as the consumer meets the break:
+  "positional construction will not compile", "exhaustive `when` stops compiling until
+  the new case is handled", "any implementer or test fake must now provide this".
+- Privacy, security, and cost properties are user-facing even when they are documented
+  only in KDoc or rustdoc. Wallet teams design confirmation UI from the changelog, so
+  a feature that reveals data on-chain, costs a fee, or fails at runtime belongs here
+  too.
+
+When preparing a release, audit the public surface by diffing the release range rather
+than trusting the file to be complete. Behavior-only changes with no signature change
+-- altered equality semantics, stricter validation, a previously fixed value becoming
+settable -- are the ones most often missed.
+
 ## Commit message conventions
 
 The project uses ticket-prefixed commit messages for tracked work, e.g.
@@ -92,6 +146,16 @@ prefix is acceptable (`fix: ...`, `chore: ...`). Keep the first line under
 - The SDK and related libraries are Kotlin + Rust. Changes that cross the
   JNI boundary (`backend-lib/src/main/rust/*` and the Kotlin `Jni*` model
   classes) require updating both sides in lockstep.
+- The Rust backend is fastest to check on its own, without Gradle or a JDK:
+
+  ```bash
+  cd backend-lib && cargo check --lib && cargo fmt --check
+  ```
+
+  Note this only proves the Rust compiles. A JNI signature mismatch between
+  Rust and Kotlin is a *runtime* crash, not a compile error on either side,
+  so a Rust-only change that touches a `Java_*` export or an
+  `env.new_object` type signature still needs `./scripts/ci-local.sh quick`.
 - Detekt and ktlint are strict; treat their output as blocking. `detektAll`
   catches `MaxLineLength`, `ReturnCount`, `LongParameterList`, and similar
   issues that won't be apparent from a plain `./gradlew build`.

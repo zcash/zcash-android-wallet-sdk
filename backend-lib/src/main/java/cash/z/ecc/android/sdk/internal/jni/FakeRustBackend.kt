@@ -38,6 +38,8 @@ class FakeRustBackend(
         saplingRoots: List<JniSubtreeRoot>,
         orchardStartIndex: Long,
         orchardRoots: List<JniSubtreeRoot>,
+        ironwoodStartIndex: Long,
+        ironwoodRoots: List<JniSubtreeRoot>,
     ) {
         error("Intentionally not implemented yet.")
     }
@@ -108,6 +110,10 @@ class FakeRustBackend(
         value: Long,
         memo: ByteArray?
     ): ProposalUnsafe {
+        error("Intentionally not implemented yet.")
+    }
+
+    override suspend fun proposeOrchardToIronwoodMigration(accountUuid: ByteArray): ProposalUnsafe {
         error("Intentionally not implemented yet.")
     }
 

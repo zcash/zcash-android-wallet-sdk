@@ -10,6 +10,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
+import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -20,9 +21,17 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
-@Suppress("LargeClass", "MagicNumber")
+// Kept compiling, and kept @Ignore'd, so the suite is ready to run again the moment
+// the native voting symbols come back. See the @Ignore reason below.
+@Suppress("LargeClass", "MagicNumber", "DEPRECATION_ERROR")
+@Ignore(
+    "Voting is gated off behind cfg(zcash_voting) on the Ironwood (NU6.3) deps, so the native " +
+        "library exports none of the symbols these tests bind to and every one of them would fail " +
+        "with UnsatisfiedLinkError. Re-enable with the voting module."
+)
 class VotingRustBackendTest {
     companion object {
         private const val FIELD_BYTES = 32
@@ -139,7 +148,11 @@ class VotingRustBackendTest {
 
     @Test
     fun warm_proving_caches_smoke() =
-        runTest {
+        // Warming the proving caches builds the zk proving keys, which is
+        // CPU-heavy. On the in-runner managed-device emulator (slower than the
+        // former emulator.wtf hardware) it exceeds runTest's default 60s
+        // timeout, so allow more time.
+        runTest(timeout = 5.minutes) {
             VotingRustBackend.new().warmProvingCaches()
         }
 
