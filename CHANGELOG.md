@@ -6,7 +6,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.8.0-rc.1] - 2026-07-25
+## [2.8.0-rc.1] - 2026-07-26
 
 ### Changed
 - Shielded voting is unavailable in this release, and `VotingRustBackend` — in the
@@ -26,6 +26,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differ only in currency as unequal, and code that destructures gains a third
   component. Two-argument construction still compiles unchanged and defaults to
   `USD`.
+
+### Fixed
+- `CompactBlockProcessor` no longer crashes with an `IllegalArgumentException` from
+  `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
+  importing an account whose birthday is at the chain tip). The combined progress ratio now uses
+  the same zero-denominator semantics as the individual ratios: an empty range means 100%.
+- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
+  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
+  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
 
 ## [2.7.0-rc.1] - 2026-07-25
 
@@ -89,17 +98,6 @@ and `GetBlockRangeNullifiers` are now deprecated upstream in favour of
   line, adapting the backend to the send-max and builder API changes.
 - Updated the librustzcash crates to their published releases,
   `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
-
-## [2.6.7] - 2026-07-26
-
-### Fixed
-- `CompactBlockProcessor` no longer crashes with an `IllegalArgumentException` from
-  `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
-  importing an account whose birthday is at the chain tip). The combined progress ratio now uses
-  the same zero-denominator semantics as the individual ratios: an empty range means 100%.
-- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
-  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
-  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
 
 ## [2.6.6] - 2026-07-25
 
