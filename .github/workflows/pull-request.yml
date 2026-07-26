@@ -219,6 +219,30 @@ jobs:
         run: |
           cargo clippy --tests --all-features -- -W clippy::all -D warnings
 
+  # Checks that the Rust sources are rustfmt-clean. `--check` only reports; it never
+  # rewrites the tree, so this job cannot mask an unformatted commit by fixing it.
+  #
+  # There is no rustfmt.toml, so this is stock rustfmt defaults for the edition in
+  # backend-lib/Cargo.toml. Run `cargo fmt --all` in backend-lib/ to fix a failure.
+  static_analysis_rustfmt:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+      - name: Rustfmt
+        timeout-minutes: 5
+        working-directory: backend-lib
+        run: |
+          cargo fmt --all --check
+
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
     runs-on: ubuntu-latest
