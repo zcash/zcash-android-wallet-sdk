@@ -1,5 +1,4 @@
 # Expected secrets
-# EMULATOR_WTF_API_KEY - Optional API key for emulator.wtf
 # FIREBASE_TEST_LAB_SERVICE_ACCOUNT - Email address of Firebase Test Lab service account
 # FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER - Workload identity provider to generate temporary service account key
 
@@ -45,17 +44,6 @@ jobs:
           FIREBASE_TEST_LAB_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
           FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
         if: "${{ env.FIREBASE_TEST_LAB_PROJECT != '' && env.FIREBASE_TEST_LAB_SERVICE_ACCOUNT != '' && env.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER != '' }}"
-        run: echo "defined=true" >> $GITHUB_OUTPUT
-
-  check_emulator_wtf_secrets:
-    runs-on: ubuntu-latest
-    outputs:
-      has-secrets: ${{ steps.check_emulator_wtf_secrets.outputs.defined }}
-    steps:
-      - id: check_emulator_wtf_secrets
-        env:
-          EMULATOR_WTF_API_KEY: ${{ secrets.EMULATOR_WTF_API_KEY }}
-        if: "${{ env.EMULATOR_WTF_API_KEY != '' }}"
         run: echo "defined=true" >> $GITHUB_OUTPUT
 
   check_properties:
@@ -183,6 +171,78 @@ jobs:
           name: Android Lint static analysis results
           path: ~/artifacts
 
+  # Runs the Rust unit tests. static_analysis_clippy compiles them via --tests but never
+  # executes them, so without this a failing test can sit unnoticed indefinitely.
+  test_rust_unit:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+      - name: Test
+        timeout-minutes: 15
+        working-directory: backend-lib
+        run: |
+          cargo test --all-features
+
+  # --all-features matters: code behind a cargo feature (for example the
+  # android-test-fixtures gate the Android build enables) is invisible to a
+  # default-feature check, so a merge can break it while `cargo check` stays green.
+  # --tests extends the same coverage to test-only code.
+  static_analysis_clippy:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+      - name: Clippy
+        timeout-minutes: 15
+        working-directory: backend-lib
+        run: |
+          cargo clippy --tests --all-features -- -W clippy::all -D warnings
+
+  # Checks that the Rust sources are rustfmt-clean. `--check` only reports; it never
+  # rewrites the tree, so this job cannot mask an unformatted commit by fixing it.
+  #
+  # There is no rustfmt.toml, so this is stock rustfmt defaults for the edition in
+  # backend-lib/Cargo.toml. Run `cargo fmt --all` in backend-lib/ to fix a failure.
+  static_analysis_rustfmt:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+      - name: Rustfmt
+        timeout-minutes: 5
+        working-directory: backend-lib
+        run: |
+          cargo fmt --all --check
+
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
     runs-on: ubuntu-latest
@@ -218,83 +278,140 @@ jobs:
           name: Test Android modules with Unit Tests
           path: ~/artifacts
 
-  # Emulator.wtf is preferred if it has an API key.
-  test_android_modules_ftl:
-    if: needs.check_firebase_secrets.outputs.has-secrets == 'true' && needs.check_emulator_wtf_secrets.outputs.has-secrets == 'false'
-    needs: [validate_gradle_wrapper, check_firebase_secrets, check_emulator_wtf_secrets]
+  # DISABLED pending a decision with the Android devs -- do not delete yet.
+  #
+  # This job ran the module instrumentation suites on Firebase Test Lab. It had in
+  # fact been dormant for a long time: its condition compared
+  # `check_emulator_wtf_secrets.outputs.has-secrets` against the string 'false',
+  # but with no EMULATOR_WTF_API_KEY configured that output is the empty string, so
+  # the condition was never true and the job skipped on every run. Removing that
+  # dead gate let it run again, whereupon its Build step timed out at 20 minutes
+  # still compiling Rust dependencies (hence the 30 below, matching the sibling
+  # emulator job's budget for the same assemble work).
+  #
+  # The open question is whether it is worth restoring at all:
+  # test_android_modules_emulator now covers the same four modules on an in-runner
+  # Gradle Managed Device, and was added specifically to replace a cloud test
+  # service. Running both means paying Firebase Test Lab and roughly half an hour
+  # of CI for duplicate coverage -- against which FTL does test on real hardware,
+  # which the emulator does not.
+  #
+  # Commented out rather than `if: false` deliberately: a skipped-but-present job
+  # is exactly the state that hid this for so long.
+  #
+  # test_android_modules_ftl:
+  #   if: needs.check_firebase_secrets.outputs.has-secrets == 'true'
+  #   needs: [validate_gradle_wrapper, check_firebase_secrets]
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #     id-token: write
+  #   steps:
+  #     - name: Checkout
+  #       timeout-minutes: 1
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+  #     - name: Setup
+  #       id: setup
+  #       timeout-minutes: 30
+  #       uses: ./.github/actions/setup
+  #     - name: Build
+  #       timeout-minutes: 30
+  #       run: |
+  #         ./gradlew assembleDebug assembleAndroidTest
+  #     - name: Authenticate to Google Cloud for Firebase Test Lab
+  #       id: auth_test_lab
+  #       uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+  #       with:
+  #         create_credentials_file: true
+  #         project_id: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
+  #         service_account: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
+  #         workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
+  #         access_token_lifetime: '1200s'
+  #     - name: Test
+  #       timeout-minutes: 30
+  #       env:
+  #         # This first environment variable is used by Flank, since the temporary token is missing the project name
+  #         GOOGLE_CLOUD_PROJECT: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
+  #         ORG_GRADLE_PROJECT_ZCASH_FIREBASE_TEST_LAB_API_KEY_PATH: ${{ steps.auth_test_lab.outputs.credentials_file_path }}
+  #         # Because Fulladle doesn't allow Test Orchestrator to be enabled/disabled for a specific submodule, it must be enabled for all modules
+  #         ORG_GRADLE_PROJECT_IS_USE_TEST_ORCHESTRATOR: true
+  #       run: |
+  #         ./gradlew runFlank --parallel
+  #     - name: Collect Artifacts
+  #       if: ${{ always() }}
+  #       timeout-minutes: 1
+  #       env:
+  #         ARTIFACTS_DIR_PATH: ${{ format('{0}/artifacts', env.home) }}
+  #         TEST_RESULTS_ZIP_PATH: ${{ format('{0}/artifacts/test_results.zip', env.home) }}
+  #       run: |
+  #         mkdir ${ARTIFACTS_DIR_PATH}
+  #
+  #         zip -r ${TEST_RESULTS_ZIP_PATH} . -i build/fladle/\* \*/build/outputs/androidTest-results/\*
+  #     - name: Upload Artifacts
+  #       if: ${{ always() }}
+  #       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+  #       timeout-minutes: 1
+  #       with:
+  #         name: Test Android modules with FTL results
+  #         path: ~/artifacts
+
+  # Runs the Android instrumentation suites on a Gradle Managed Device: a
+  # hardware-accelerated emulator booted inside the runner. This replaces the
+  # former emulator.wtf cloud job and depends on no external test service.
+  test_android_modules_emulator:
+    needs: [validate_gradle_wrapper]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      # ubuntu-latest exposes /dev/kvm, but the default udev rules do not grant
+      # the runner user access to it. This rule opens it so the managed-device
+      # emulator can use KVM acceleration instead of falling back to software.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
-      - name: Build
-        timeout-minutes: 20
+      # The hosted runner's Android SDK does not include the emulator package,
+      # which a Gradle Managed Device requires. AGP auto-installs the system
+      # image but not the emulator, so without this the pixel2MinSetup task
+      # fails at VersionedSdkLoader.getEmulatorDirectoryProvider().get() with
+      # "Cannot query the value of this property because it has no value
+      # available". Install it explicitly.
+      - name: Install Android emulator
+        timeout-minutes: 5
         run: |
-          ./gradlew assembleDebug assembleAndroidTest
-      - name: Authenticate to Google Cloud for Firebase Test Lab
-        id: auth_test_lab
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
-        with:
-          create_credentials_file: true
-          project_id: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
-          service_account: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
-          workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
-          access_token_lifetime: '1200s'
-      - name: Test
-        timeout-minutes: 30
-        env:
-          # This first environment variable is used by Flank, since the temporary token is missing the project name
-          GOOGLE_CLOUD_PROJECT: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
-          ORG_GRADLE_PROJECT_ZCASH_FIREBASE_TEST_LAB_API_KEY_PATH: ${{ steps.auth_test_lab.outputs.credentials_file_path }}
-          # Because Fulladle doesn't allow Test Orchestrator to be enabled/disabled for a specific submodule, it must be enabled for all modules
-          ORG_GRADLE_PROJECT_IS_USE_TEST_ORCHESTRATOR: true
-        run: |
-          ./gradlew runFlank --parallel
-      - name: Collect Artifacts
-        if: ${{ always() }}
-        timeout-minutes: 1
-        env:
-          ARTIFACTS_DIR_PATH: ${{ format('{0}/artifacts', env.home) }}
-          TEST_RESULTS_ZIP_PATH: ${{ format('{0}/artifacts/test_results.zip', env.home) }}
-        run: |
-          mkdir ${ARTIFACTS_DIR_PATH}
-
-          zip -r ${TEST_RESULTS_ZIP_PATH} . -i build/fladle/\* \*/build/outputs/androidTest-results/\*
-      - name: Upload Artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
-        timeout-minutes: 1
-        with:
-          name: Test Android modules with FTL results
-          path: ~/artifacts
-
-  test_android_modules_wtf:
-    if: needs.check_emulator_wtf_secrets.outputs.has-secrets == 'true'
-    needs: [ validate_gradle_wrapper, check_emulator_wtf_secrets ]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        timeout-minutes: 1
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - name: Setup
-        id: setup
-        timeout-minutes: 30
-        uses: ./.github/actions/setup
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "emulator"
+      # pixel2Min is the Gradle Managed Device defined in
+      # zcash-sdk.android-conventions.gradle.kts (Pixel 2, API ANDROID_MIN_SDK_VERSION).
+      # Scoped to the same four modules the former emulator.wtf job covered;
+      # the unqualified task would also pull in darkside-test-lib (needs a live
+      # darkside server) and the demo-app modules. maxConcurrentDevices=1 keeps a
+      # single emulator booted at a time so the runner is not overwhelmed by four
+      # parallel emulators; in-runner emulators run serially, hence the higher
+      # timeout than the former cloud job.
+      # emulator.gpu=swiftshader_indirect forces software rendering. The hosted
+      # runner is headless, and AGP's default '-gpu auto-no-window' intermittently
+      # falls back to 'auto', which needs a real GPU and fails to boot the
+      # emulator (EmulatorStartFailedException during snapshot creation).
       - name: Build and test
-        timeout-minutes: 30
-        env:
-          ORG_GRADLE_PROJECT_ZCASH_EMULATOR_WTF_API_KEY: ${{ secrets.EMULATOR_WTF_API_KEY }}
+        timeout-minutes: 45
         run: |
-          ./gradlew testDebugWithEmulatorWtf
+          ./gradlew \
+            :sdk-lib:pixel2MinDebugAndroidTest \
+            :lightwallet-client-lib:pixel2MinDebugAndroidTest \
+            :sdk-incubator-lib:pixel2MinDebugAndroidTest \
+            :backend-lib:pixel2MinDebugAndroidTest \
+            -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -304,13 +421,19 @@ jobs:
         run: |
           mkdir ${ARTIFACTS_DIR_PATH}
 
-          zip -r ${TEST_RESULTS_ZIP_PATH} . -i \*/build/test-results/\*
+          # Managed-device runs write results/reports under build/outputs and
+          # build/reports/androidTests, not build/test-results, so include those
+          # too to make failures inspectable from the artifact.
+          zip -r ${TEST_RESULTS_ZIP_PATH} . \
+            -i \*/build/test-results/\* \
+            \*/build/outputs/androidTest-results/\* \
+            \*/build/reports/androidTests/\*
       - name: Upload Artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         timeout-minutes: 1
         with:
-          name: Test Android modules with WTF results
+          name: Test Android modules with emulator results
           path: ~/artifacts
 
   demo_app_release_build:

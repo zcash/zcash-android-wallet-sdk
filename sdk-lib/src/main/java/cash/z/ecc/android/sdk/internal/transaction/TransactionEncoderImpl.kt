@@ -65,6 +65,21 @@ internal class TransactionEncoderImpl(
     }
 
     @Throws(TransactionEncoderException.ProposalFromParametersException::class)
+    override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal {
+        Twig.debug { "creating proposal to migrate the Orchard balance into Ironwood" }
+
+        return runCatching {
+            backend.proposeOrchardToIronwoodMigration(account)
+        }.onSuccess {
+            Twig.info { "Result of proposeOrchardToIronwoodMigration: ${it.toPrettyString()}" }
+        }.onFailure {
+            Twig.error(it) { "Caught exception while creating the migration proposal." }
+        }.getOrElse {
+            throw TransactionEncoderException.ProposalFromParametersException(it)
+        }
+    }
+
+    @Throws(TransactionEncoderException.ProposalFromParametersException::class)
     override suspend fun proposeTransfer(
         account: Account,
         recipient: String,

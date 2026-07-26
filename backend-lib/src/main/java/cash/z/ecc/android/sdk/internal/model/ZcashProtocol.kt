@@ -13,18 +13,22 @@ enum class ZcashProtocol {
     },
     ORCHARD {
         override val poolCode = 3
+    },
+    IRONWOOD {
+        override val poolCode = 4
     };
 
     abstract val poolCode: Int
 
-    fun isShielded() = this == SAPLING || this == ORCHARD
+    fun isShielded() = this == SAPLING || this == ORCHARD || this == IRONWOOD
 
     companion object {
         fun validate(poolTypeCode: Int): Boolean =
             when (poolTypeCode) {
                 TRANSPARENT.poolCode,
                 SAPLING.poolCode,
-                ORCHARD.poolCode -> true
+                ORCHARD.poolCode,
+                IRONWOOD.poolCode -> true
 
                 else -> false
             }
@@ -34,6 +38,7 @@ enum class ZcashProtocol {
                 TRANSPARENT.poolCode -> TRANSPARENT
                 SAPLING.poolCode -> SAPLING
                 ORCHARD.poolCode -> ORCHARD
+                IRONWOOD.poolCode -> IRONWOOD
                 else -> error("Unsupported pool type: $poolCode")
             }
     }

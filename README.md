@@ -45,7 +45,7 @@ If you're building the SDK from source or modifying the SDK:
  * [CI.md](docs/CI.md) to understand the Continuous Integration build scripts
  * [PUBLISHING.md](docs/PUBLISHING.md) to understand our deployment process
 
-Note that we aim for the main branch of this repository to be stable and releasable.  We continuously deploy snapshot builds after a merge to the main branch, then manually deploy release builds.  Our continuous deployment of snapshots implies two things:
+Note that we aim for the main branch of this repository to be stable and releasable.  We continuously deploy snapshot builds from `release/**` branches, then manually deploy release builds.  Our continuous deployment of snapshots implies two things:
  * A pull request containing API changes should also bump the version
  * Each pull request should be stable and ready to be consumed, to the best of your knowledge.  Gating unstable functionality behind a flag is perfectly acceptable
 
