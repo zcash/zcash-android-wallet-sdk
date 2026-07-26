@@ -15,6 +15,13 @@ rust-version = "1.92"
 # This feature must not be enabled for production native builds.
 android-test-fixtures = []
 
+# `zcash_voting` is a bare cfg rather than a cargo feature: a feature would have to
+# name `dep:zcash_voting`, and that dependency is commented out entirely (see below),
+# so there is nothing for a feature to gate. Declaring it here keeps rustc from
+# warning that `cfg(zcash_voting)` is an unknown condition.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_voting)'] }
+
 [dependencies]
 # Zcash dependencies
 orchard = "0.15"
@@ -38,8 +45,9 @@ zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
-# Used by voting/notes.rs to construct historical Orchard witness positions.
-incrementalmerkletree = { version = "0.8", default-features = false }
+# Used by voting/notes.rs to construct historical Orchard witness positions, and
+# by nothing else -- commented out with the voting module it serves.
+# incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Infrastructure
 prost = "0.14"
@@ -105,10 +113,20 @@ xz2 = { version = "0.1", features = ["static"] }
 # Expected PIR/tree-sync networking transitives include `pir-client`, `pir-types`,
 # `valar-ypir`, `valar-spiral-rs`, `vote-commitment-tree-client`, and
 # `hyper-rustls`.
-zcash_voting = { version = "=0.11.0", default-features = false, features = [
-    "client-pir",
-    "client-tree-sync",
-] }
+# Voting is DISABLED on the Ironwood (NU6.3) deps, matching
+# zcash-swift-wallet-sdk. `zcash_voting` builds against orchard 0.14 while this
+# crate is on orchard 0.15, so the two pull in incompatible copies of the same
+# types; the pin comment above describes an invariant that no longer holds. The
+# voting sources (src/main/rust/voting/*) are gated behind `cfg(zcash_voting)`
+# and are not built.
+#
+# To re-enable once the voting crates support orchard 0.15: uncomment this
+# dependency and `incrementalmerkletree` above, add `orchard/unstable-voting-circuits`
+# to the orchard dependency, and build with `--cfg zcash_voting`.
+# zcash_voting = { version = "=0.11.0", default-features = false, features = [
+#     "client-pir",
+#     "client-tree-sync",
+# ] }
 
 ## Uncomment this to test librustzcash changes locally
 #[patch.crates-io]

@@ -105,6 +105,11 @@ mod eip681;
 mod migration;
 mod tor;
 mod utils;
+// Voting is gated off on the Ironwood (NU6.3) deps: zcash_voting builds against
+// orchard 0.14 and cannot be used alongside this crate's orchard 0.15 (see
+// Cargo.toml). Build with `--cfg zcash_voting` to re-enable once the voting
+// crates support orchard 0.15.
+#[cfg(zcash_voting)]
 mod voting;
 
 #[cfg(debug_assertions)]

@@ -10,6 +10,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
+import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -24,6 +25,11 @@ import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
 @Suppress("LargeClass", "MagicNumber")
+@Ignore(
+    "Voting is gated off behind cfg(zcash_voting) on the Ironwood (NU6.3) deps, so the native " +
+        "library exports none of the symbols these tests bind to and every one of them would fail " +
+        "with UnsatisfiedLinkError. Re-enable with the voting module."
+)
 class VotingRustBackendTest {
     companion object {
         private const val FIELD_BYTES = 32
