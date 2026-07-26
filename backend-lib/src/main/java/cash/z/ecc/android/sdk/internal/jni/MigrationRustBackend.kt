@@ -192,7 +192,7 @@ class MigrationRustBackend private constructor() {
         dbDataPath: String,
         networkId: Int,
         accountUuidBytes: ByteArray,
-        transferId: String,
+        transferId: Long,
         resultTag: Int,
         retryable: Boolean,
         txId: ByteArray
@@ -434,7 +434,7 @@ class MigrationRustBackend private constructor() {
         dbDataPath: String,
         networkId: Int,
         accountUuidBytes: ByteArray,
-        ids: Array<String>,
+        ids: LongArray,
         pcztBytesList: Array<ByteArray>
     ) = withContext(SdkDispatchers.DATABASE_IO) {
         storeSignedSchedulePcztsNative(dbDataPath, networkId, accountUuidBytes, ids, pcztBytesList)
@@ -621,7 +621,7 @@ class MigrationRustBackend private constructor() {
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray,
-            transferId: String,
+            transferId: Long,
             resultTag: Int,
             retryable: Boolean,
             txId: ByteArray
@@ -748,7 +748,7 @@ class MigrationRustBackend private constructor() {
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray,
-            ids: Array<String>,
+            ids: LongArray,
             pcztBytesList: Array<ByteArray>
         )
 

@@ -18,6 +18,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line, adapting the backend to the send-max and builder API changes.
 - Updated the librustzcash crates to their published releases,
   `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
+- Migration transfer ids are `Long` (the engine's `u32`, widened as this JNI boundary widens every
+  unsigned 32-bit value) rather than decimal strings, across `JniTransferProposal`,
+  `JniPreparedTransfer`, `JniMigrationTransferState`, `JniUnsignedTransferPczt`,
+  `JniAttentionReason.InvalidTransfer`, their `MigrationSdk` counterparts
+  (`TransferProposal`, `MigrationTransferState`, `AttentionReason.InvalidTransfer`),
+  `recordTransferResult(transferId:)`, and the `ids` array of `storeSignedSchedulePczts`
+  (now a `LongArray`). The id identifies the TRANSFER, not one broadcast attempt: a rebuilt
+  expired transfer keeps its id while getting a new transaction id, so it stays the key to
+  correlate on.
 - The native backend no longer runs any DDL or direct DML against wallet-database
   internals: the pre-release schema self-heal shim for
   `orchard_ironwood_migration_transactions` is removed (wallets created against

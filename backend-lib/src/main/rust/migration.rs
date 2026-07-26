@@ -34,7 +34,7 @@
 use anyhow::anyhow;
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use prost::Message;
@@ -511,18 +511,17 @@ fn encode_note_split_proposal<'a>(
     )
 }
 
-fn encode_transfer_id<'a>(
-    env: &mut JNIEnv<'a>,
-    id: MigrationTxId,
-) -> jni::errors::Result<JString<'a>> {
-    env.new_string(u32::from(id).to_string())
+/// A transaction id as Kotlin receives it: the engine's `u32` widened to the `Long` this JNI
+/// boundary uses for every unsigned 32-bit value (heights included), so the value survives without
+/// a sign flip and Kotlin can range-check it.
+fn encode_transfer_id(id: MigrationTxId) -> jlong {
+    jlong::from(u32::from(id))
 }
 
-fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<MigrationTxId> {
-    let raw = crate::utils::java_string_to_rust(env, id)?;
-    let idx: u32 = raw
-        .parse()
-        .map_err(|e| anyhow!("Invalid transfer id {}: {}", raw, e))?;
+/// The inverse of [`encode_transfer_id`]: a `Long` from Kotlin back to the engine's id. Rejects
+/// values outside the `u32` range rather than truncating them into a different transaction.
+fn decode_transfer_id(id: jlong) -> anyhow::Result<MigrationTxId> {
+    let idx = u32::try_from(id).map_err(|_| anyhow!("Transfer id {} is outside the u32 range", id))?;
     Ok(MigrationTxId::new(idx))
 }
 
@@ -542,12 +541,11 @@ fn encode_transfer_proposal<'a>(
     schedule_broadcast_height: BlockHeight,
     schedule_expiry_height: BlockHeight,
 ) -> jni::errors::Result<JObject<'a>> {
-    let id = encode_transfer_id(env, id)?;
     env.new_object(
         JNI_TRANSFER_PROPOSAL,
-        "(Ljava/lang/String;JJJJ)V",
+        "(JJJJJ)V",
         &[
-            JValue::Object(&id),
+            JValue::Long(encode_transfer_id(id)),
             JValue::Long(u64::from(amount) as i64),
             JValue::Long(i64::from(u32::from(anchor_height))),
             JValue::Long(i64::from(u32::from(schedule_broadcast_height))),
@@ -956,15 +954,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (proven_pczt, txid) =
             finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
-        let id = encode_transfer_id(env, split_id)?;
+        let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_obj = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_obj),
                 ],
@@ -1009,7 +1007,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    transfer_id: JString<'local>,
+    transfer_id: jlong,
     result_tag: jint,
     _retryable: jboolean,
     tx_id: JByteArray<'local>,
@@ -1017,7 +1015,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let id = decode_transfer_id(env, &transfer_id)?;
+        let id = decode_transfer_id(transfer_id)?;
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         match result_tag {
             // Success: record the broadcast txid. `mark_mined` has no old-crate equivalent call
@@ -1451,15 +1449,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
         let txid: [u8; 32] = *extracted.txid().as_ref();
 
-        let id = encode_transfer_id(env, tx.id())?;
+        let id = encode_transfer_id(tx.id());
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_obj = crate::utils::rust_bytes_to_java(env, bytes)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_obj),
                 ],
@@ -1522,12 +1520,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             transfers,
             JNI_MIGRATION_TRANSFER_STATE,
             |env, (id, is_sent, scheduled_height)| {
-                let id = encode_transfer_id(env, id)?;
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(Ljava/lang/String;ZJ)V",
+                    "(JZJ)V",
                     &[
-                        JValue::Object(&id),
+                        JValue::Long(encode_transfer_id(id)),
                         JValue::Bool(is_sent as jboolean),
                         JValue::Long(i64::from(u32::from(scheduled_height))),
                     ],
@@ -2103,15 +2100,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (proven_pczt, txid) =
             finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
-        let id = encode_transfer_id(env, split_id)?;
+        let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_bytes = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_bytes),
                 ],
@@ -2193,12 +2190,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             transfers,
             JNI_UNSIGNED_TRANSFER_PCZT,
             |env, (id, pczt_bytes)| {
-                let id = encode_transfer_id(env, id)?;
                 let pczt_bytes = crate::utils::rust_bytes_to_java(env, &pczt_bytes)?;
                 env.new_object(
                     JNI_UNSIGNED_TRANSFER_PCZT,
-                    "(Ljava/lang/String;[B)V",
-                    &[JValue::Object(&id), JValue::Object(&pczt_bytes)],
+                    "(J[B)V",
+                    &[
+                        JValue::Long(encode_transfer_id(id)),
+                        JValue::Object(&pczt_bytes),
+                    ],
                 )
             },
         )?
@@ -2216,13 +2215,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    ids: JObjectArray<'local>,
+    ids: JLongArray<'local>,
     pczt_bytes_list: JObjectArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let count = env.get_array_length(&ids)?;
+        // A `long[]` is read as a region rather than element-by-element: the ids are primitives,
+        // not objects.
+        let mut raw_ids = vec![0i64; count as usize];
+        env.get_long_array_region(&ids, 0, &mut raw_ids)?;
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let mut state = backend
             .get_migration()
@@ -2231,8 +2234,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Absorbs the new engine's per-transaction `apply_signature` into the old batch-shaped
         // call Kotlin still makes — see module doc point about the signed-PCZT return path.
         for i in 0..count {
-            let id_obj = env.get_object_array_element(&ids, i)?;
-            let id = decode_transfer_id(env, &JString::from(id_obj))?;
+            let id = decode_transfer_id(raw_ids[i as usize])?;
             let bytes_obj = env.get_object_array_element(&pczt_bytes_list, i)?;
             let pczt_bytes = crate::utils::java_bytes_to_rust(env, &JByteArray::from(bytes_obj))?;
             if !state.apply_signature(id, pczt_bytes) {

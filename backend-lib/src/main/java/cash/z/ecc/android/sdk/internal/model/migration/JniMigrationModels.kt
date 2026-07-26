@@ -41,22 +41,34 @@ class JniNoteSplitProposal(
  */
 @Keep
 class JniPreparedTransfer(
-    val id: String,
+    val id: Long,
     val txid: ByteArray,
     val pcztBytes: ByteArray
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
  */
 @Keep
 class JniTransferProposal(
-    val id: String,
+    val id: Long,
     val amountZatoshi: Long,
     val anchorHeight: Long,
     val nextExecutableAfterHeight: Long,
     val expiryHeight: Long
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
@@ -81,10 +93,16 @@ class JniMigrationSchedule(
  */
 @Keep
 class JniMigrationTransferState(
-    val id: String,
+    val id: Long,
     val isSent: Boolean,
     val scheduledHeight: Long
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The live schedule/status of every
@@ -105,9 +123,15 @@ class JniMigrationTransferStates(
  */
 @Keep
 class JniUnsignedTransferPczt(
-    val id: String,
+    val id: Long,
     val pcztBytes: ByteArray
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The result of feeding one scanned QR
@@ -145,8 +169,14 @@ class JniKeystoneBatchSignedPczts(
 sealed class JniAttentionReason {
     @Keep
     class InvalidTransfer(
-        val transferId: String
-    ) : JniAttentionReason()
+        val transferId: Long
+    ) : JniAttentionReason() {
+        init {
+            require(transferId.isInUIntRange()) {
+                "Transfer id $transferId is outside of allowed UInt range"
+            }
+        }
+    }
 
     @Keep
     class TransferExpired : JniAttentionReason()
