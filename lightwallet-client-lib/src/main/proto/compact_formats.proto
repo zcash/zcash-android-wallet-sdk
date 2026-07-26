@@ -50,11 +50,18 @@ message CompactTx {
     //    valueBalanceSapling + valueBalanceOrchard + sum(vPubNew) - sum(vPubOld) - sum(tOut)
     uint32 fee = 3;
 
-    // The field numbers below must follow lightwalletd's generated bindings:
-    // https://github.com/zcash/lightwalletd/blob/master/walletrpc/compact_formats.pb.go
+    // The field numbers below must follow the canonical definitions in
+    // zcash/lightwallet-protocol, from which lightwalletd's generated bindings are
+    // produced (lightwalletd's walletrpc/ is a symlink to that repository):
+    // https://github.com/zcash/lightwallet-protocol/blob/v0.5.0/walletrpc/compact_formats.proto
+    //
+    // Upstream assigns `repeated CompactTxIn vin = 7` and `repeated TxOut vout = 8`.
+    // This copy has no use for transparent components, so it reserves those numbers
+    // rather than reusing them, which is why the numbering skips from 6 to 9.
     repeated CompactSaplingSpend spends = 4;
     repeated CompactSaplingOutput outputs = 5;
     repeated CompactOrchardAction actions = 6;
+    reserved 7, 8;
     repeated CompactOrchardAction ironwoodActions = 9;
 }
 
