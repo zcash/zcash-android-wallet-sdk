@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0-rc.1] - 2026-07-25
+
 ### Changed
 - Shielded voting is unavailable in this release, and `VotingRustBackend` — in the
   separately published `zcash-android-backend` artifact — is now deprecated at
@@ -16,6 +18,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zcash-android-sdk` are unaffected, as the backend artifact is not on their
   compile classpath. `Synchronizer.getWalletDbPathForVoting` still returns a
   path, but nothing in this release can act on it.
+- `FiatCurrencyConversion.fiatCurrency` is now a constructor parameter rather
+  than a fixed property, and can be set to a currency other than
+  `FiatCurrency.USD`. It previously always held `USD` and took no part in the
+  generated `data class` members; it now participates in `equals`, `hashCode`,
+  `toString` and `copy`. Code comparing two conversions will now see values that
+  differ only in currency as unequal, and code that destructures gains a third
+  component. Two-argument construction still compiles unchanged and defaults to
+  `USD`.
 
 ## [2.7.0-rc.1] - 2026-07-25
 
