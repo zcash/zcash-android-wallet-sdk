@@ -1110,12 +1110,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             MigrationTxId::new(idx)
         };
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         match result_tag {
             // Success: record the broadcast txid. `mark_mined` has no old-crate equivalent call
             // site (the old crate didn't track a separate "mined" event either) — left unwired.
             0 => {
                 let txid = crate::parse_txid(env, tx_id)?;
+                let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
                 let mut state = backend
                     .get_migration()
                     .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -1137,29 +1137,55 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     "transfer_expired"
                 };
                 // Load the current state; only transition if one exists and is not already terminal.
-                let current = backend
-                    .get_migration()
-                    .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
-                if let Some(state) = current {
-                    if !state.is_terminal() {
-                        let failed = MigrationState::from_parts(
-                            engine::MigrationStatus::Failed,
-                            state.note_split().clone(),
-                            state.preparation().clone(),
-                            state.transactions().clone(),
-                            state.anchor_bucket_interval(),
-                        );
-                        backend
-                            .replace_migration(&failed)
-                            .map_err(|e| anyhow!("Error persisting failed migration: {:?}", e))?;
-                    }
+                // We scope `backend` here so it releases the `&mut store_conn` borrow before we
+                // call `record_invalidation` (which needs `&store_conn`) and before we re-create
+                // `backend` for the `replace_migration` write.
+                let failed_opt: Option<MigrationState> = {
+                    let backend_read = Backend::new(&wallet, account, None, &mut store_conn)?;
+                    let current = backend_read
+                        .get_migration()
+                        .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+                    current.and_then(|state| {
+                        if !state.is_terminal() {
+                            Some(MigrationState::from_parts(
+                                engine::MigrationStatus::Failed,
+                                state.note_split().clone(),
+                                state.preparation().clone(),
+                                state.transactions().clone(),
+                                state.anchor_bucket_interval(),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    // backend_read dropped here → &mut store_conn borrow released
+                };
+                if let Some(failed) = failed_opt {
+                    // Write the invalidation reason BEFORE persisting the Failed state.
+                    //
+                    // Ordering rationale (two separate connections, cannot be one transaction):
+                    //   reason-first  → worst case: reason row exists but state never became
+                    //                   Failed (second write failed).  The orphan row is
+                    //                   inert — `derive_migration_state` only reads it in the
+                    //                   Failed arm, and `clear_migration` will erase it on the
+                    //                   next re-proposal.
+                    //   state-first   → worst case: engine is Failed with no reason row →
+                    //                   user sees wrong reason (TransferExpired instead of
+                    //                   InvalidTransfer).
+                    // reason-first is strictly less harmful, so reason is written first.
+                    record_invalidation(
+                        &store_conn,
+                        &account_bytes,
+                        reason,
+                        Some(&transfer_id_str),
+                    )
+                    .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
+                    let mut backend_write = Backend::new(&wallet, account, None, &mut store_conn)?;
+                    backend_write
+                        .replace_migration(&failed)
+                        .map_err(|e| anyhow!("Error persisting failed migration: {:?}", e))?;
                 }
-                record_invalidation(
-                    &store_conn,
-                    &account_bytes,
-                    reason,
-                    Some(&transfer_id_str),
-                )
+                Ok(())
             }
             other => Err(anyhow!("Unknown TransferResult tag: {}", other)),
         }
@@ -4273,24 +4299,45 @@ mod record_transfer_result_tests {
 
     const ACCOUNT: &[u8] = &[1u8; 16];
 
-    /// Helper: simulate the tag=2 / tag=3 state-mutation + persistence path.
+    /// Helper: simulate the full tag dispatch from `recordTransferResultNative`.
+    ///
+    /// - tag=1  → no-op: state returned unchanged, no invalidation write.
+    /// - tag=2|3 → state set to Failed (if not already terminal) AND invalidation written
+    ///             with reason-FIRST ordering, matching production code (see ordering comment
+    ///             in `recordTransferResultNative`).
+    ///
+    /// A dispatch regression (e.g. `1 => Ok(())` removed so tag=1 falls into the `2|3` arm)
+    /// will cause the `record_transfer_result_network_error_still_noop` test to fail because
+    /// that test calls this helper and then asserts both that the state is NOT terminal and
+    /// that `read_invalidation` returns None.
     fn apply_tag(conn: &Connection, state: MigrationState, result_tag: i32, transfer_id_str: &str)
         -> anyhow::Result<MigrationState>
     {
-        let reason = if result_tag == 2 { "invalid_transfer" } else { "transfer_expired" };
-        let failed = if !state.is_terminal() {
-            MigrationState::from_parts(
-                MigrationStatus::Failed,
-                state.note_split().clone(),
-                state.preparation().clone(),
-                state.transactions().clone(),
-                state.anchor_bucket_interval(),
-            )
-        } else {
-            state
-        };
-        record_invalidation(conn, ACCOUNT, reason, Some(transfer_id_str))?;
-        Ok(failed)
+        match result_tag {
+            1 => {
+                // Tag=1 NetworkError: transient, no state mutation and no side-table write.
+                Ok(state)
+            }
+            2 | 3 => {
+                let reason = if result_tag == 2 { "invalid_transfer" } else { "transfer_expired" };
+                let failed = if !state.is_terminal() {
+                    MigrationState::from_parts(
+                        MigrationStatus::Failed,
+                        state.note_split().clone(),
+                        state.preparation().clone(),
+                        state.transactions().clone(),
+                        state.anchor_bucket_interval(),
+                    )
+                } else {
+                    state
+                };
+                // reason-first ordering mirrors production: inert-orphan worst case is less
+                // harmful than wrong-reason worst case (see comment in recordTransferResultNative).
+                record_invalidation(conn, ACCOUNT, reason, Some(transfer_id_str))?;
+                Ok(failed)
+            }
+            other => Err(anyhow::anyhow!("Unknown result tag in test helper: {}", other)),
+        }
     }
 
     // tag=2 → reason "invalid_transfer", state Failed, read back correctly.
@@ -4330,13 +4377,27 @@ mod record_transfer_result_tests {
         assert_eq!(reason, "transfer_expired");
     }
 
-    // tag=1 (NetworkError) → no side-table write, state untouched.
+    // tag=1 (NetworkError) → no side-table write, state NOT terminal.
+    //
+    // This test goes through `apply_tag` exactly like the tag=2/3 tests, so it exercises
+    // the same dispatch path.  If `1 => Ok(state)` were removed and tag=1 fell into the
+    // `2 | 3` arm, `apply_tag` would write an invalidation row AND mark the state Failed,
+    // flipping both assertions below from pass to fail.
     #[test]
     fn record_transfer_result_network_error_still_noop() {
         let conn = Connection::open_in_memory().unwrap();
-        // tag=1 is handled upstream (no persistence call); verify helpers are neutral.
+        let state = make_state(MigrationStatus::InProgress, vec![transfer(9, MigrationTxState::Proved, 500, 1500)]);
+        assert!(!state.is_terminal(), "pre-condition: state is InProgress");
+
+        let returned = apply_tag(&conn, state, 1, "9").unwrap();
+
+        // (a) state must NOT be terminal — tag=1 is transient, migration stays alive.
+        assert!(!returned.is_terminal(), "tag=1 must not mark state terminal");
+        assert_eq!(returned.status(), MigrationStatus::InProgress);
+
+        // (b) no invalidation row must exist.
         let inv = read_invalidation(&conn, ACCOUNT).unwrap();
-        assert!(inv.is_none(), "tag=1 must leave side table empty");
+        assert!(inv.is_none(), "tag=1 must leave invalidation side table empty");
     }
 
     // clear_invalidation removes the row.
