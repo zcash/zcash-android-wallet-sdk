@@ -23,8 +23,8 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
-// Kept compiling, and kept @Ignore'd, so the suite is ready to run again the moment
-// the native voting symbols come back. See the @Ignore reason below.
+// Kept compiling, and kept @Ignore'd. The native voting symbols are back, so the only
+// remaining blocker is a device to run against. See the @Ignore reason below.
 @Suppress("LargeClass", "MagicNumber")
 @Ignore(
     "Realigned with the zcash_voting 2.0 JNI boundary but not yet re-validated against it: no " +

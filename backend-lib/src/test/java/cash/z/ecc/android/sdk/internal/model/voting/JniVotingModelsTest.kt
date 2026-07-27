@@ -70,6 +70,75 @@ class JniVotingModelsTest {
         assertFalse(text.contains("7b"))
     }
 
+    // A note carries the randomness that reconstructs its spend and the account's full viewing
+    // key. A generated data-class toString() would print both into any log line that interpolates
+    // a note, so the redaction is asserted rather than left to survive by convention.
+    @Test
+    fun note_info_to_string_omits_note_secrets_and_the_viewing_key() {
+        val text =
+            JniNoteInfo(
+                commitment = byteArrayOf(1),
+                nullifier = byteArrayOf(2),
+                value = 100,
+                position = 7,
+                diversifier = byteArrayOf(3),
+                rho = byteArrayOf(4),
+                rseed = ByteArray(32) { 0x5A },
+                scope = 0,
+                ufvk = "uview1exampleviewingkey"
+            ).toString()
+
+        assertEquals("JniNoteInfo(redacted)", text)
+        assertFalse(text.contains("rseed"))
+        assertFalse(text.contains("uview1exampleviewingkey"))
+        assertFalse(text.contains("90"))
+    }
+
+    // The primary blind opens the vote commitment, so printing it would disclose the plaintext
+    // vote of an otherwise-shielded ballot.
+    @Test
+    fun share_payload_to_string_omits_the_primary_blind() {
+        val text =
+            JniSharePayload(
+                sharesHash = byteArrayOf(1),
+                proposalId = 2,
+                voteDecision = 3,
+                encShare = JniWireEncryptedShare(byteArrayOf(4), byteArrayOf(5), 0),
+                treePosition = 6,
+                allEncShares = emptyList(),
+                shareComms = emptyList(),
+                primaryBlind = ByteArray(32) { 0x6B }
+            ).toString()
+
+        assertEquals("JniSharePayload(redacted)", text)
+        assertFalse(text.contains("primaryBlind"))
+        assertFalse(text.contains("107"))
+        assertFalse(text.contains("voteDecision"))
+    }
+
+    // Logging a share nullifier next to the round and proposal it belongs to is exactly the
+    // linkage the helper-share protocol exists to prevent.
+    @Test
+    fun share_delegation_record_to_string_omits_the_share_nullifier() {
+        val text =
+            JniShareDelegationRecord(
+                roundId = "round",
+                bundleIndex = 1,
+                proposalId = 2,
+                shareIndex = 3,
+                sentToUrls = listOf("https://helper.example"),
+                nullifier = ByteArray(32) { 0x7D },
+                confirmed = false,
+                submitAt = 4,
+                createdAt = 5
+            ).toString()
+
+        assertEquals("JniShareDelegationRecord(redacted)", text)
+        assertFalse(text.contains("nullifier"))
+        assertFalse(text.contains("125"))
+        assertFalse(text.contains("round"))
+    }
+
     @Test
     fun note_info_constructor_matches_rust_jni_signature() {
         val constructor =

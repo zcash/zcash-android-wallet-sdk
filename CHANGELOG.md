@@ -23,7 +23,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Losing `storedSecret` forfeits the voting power already delegated to that hotkey** for the
     round; the delegation cannot be reissued to a new hotkey.
   `JniVotingHotkey.toString()` is redacted so the secret cannot reach a log through string
-  interpolation or the generated `data class` rendering.
+  interpolation or the generated `data class` rendering. Its constructor and `copy()` are now
+  public, where the `HotkeyPublicKey` type it replaces restricted both: the length validation that
+  guards hotkey material lives in the `sdk-lib` wrapper around `generateHotkey`, and that wrapper's
+  tests are in a different Gradle module, so they cannot fabricate the malformed hotkey the check
+  exists to reject unless the constructor is public. Constructing a `JniVotingHotkey` grants no
+  capability, because every native entry point takes the raw `storedSecret` bytes rather than this
+  carrier.
+- Shielded voting: `JniNoteInfo`, `JniSharePayload` and `JniShareDelegationRecord` now redact their
+  `toString()`, as `JniVotingHotkey`, `JniVoteCommitResult` and `JniVoteSubmission` already did.
+  The generated `data class` rendering would otherwise print note spending randomness and a full
+  unified viewing key, a vote commitment's primary blind, and a share nullifier into any log line
+  that interpolates one of them.
 - Shielded voting: `JniRoundState.hotkeyAddress` and `JniRoundState.delegatedWeight` are now
   always `null`. `zcash_voting` does not populate either field, so a caller that reads the hotkey
   address from the round state reads null regardless of what hotkey generation did. Recover the

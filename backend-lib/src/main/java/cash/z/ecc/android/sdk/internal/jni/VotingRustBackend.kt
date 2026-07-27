@@ -439,6 +439,9 @@ class VotingRustBackend private constructor() {
          * [seedFingerprint], [accountIndex] and [roundName], and validated against the stored
          * round. A raw hotkey address is not accepted: `zcash_voting` exposes no public
          * constructor that takes one.
+         *
+         * [hotkeyStoredSecret] is the persisted secret from [generateHotkey]. See
+         * [JniVotingHotkey] for why the application, not the SDK, owns that secret.
          */
         @Throws(RuntimeException::class)
         suspend fun buildAndProveDelegation(
@@ -569,7 +572,9 @@ class VotingRustBackend private constructor() {
          * and the cast-vote signer are no longer public in `zcash_voting`, and the helper-share
          * payloads now come back with the commitment rather than from a follow-up call.
          *
-         * [hotkeyStoredSecret] is the persisted secret from [generateHotkey].
+         * [hotkeyStoredSecret] is the persisted secret from [generateHotkey]. The network the
+         * vote is signed for is taken from the hotkey, so [networkId] must match the network the
+         * round was initialized with; a mismatch surfaces only as a native exception.
          */
         @Throws(RuntimeException::class)
         suspend fun commitVote(

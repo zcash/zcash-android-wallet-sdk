@@ -2,6 +2,14 @@ package cash.z.ecc.android.sdk.internal.model.voting
 
 import androidx.annotation.Keep
 
+/**
+ * Typed JNI carrier for a spendable note the voting backend may draw voting weight from.
+ *
+ * [toString] is redacted: [rseed] and [rho] reconstruct the note's spending randomness,
+ * [nullifier] links the note to its spend, and [ufvk] is a full viewing key that discloses
+ * the entire account's transaction history. The generated `data class` rendering would print
+ * all four into any log line that interpolates a note.
+ */
 @Keep
 data class JniNoteInfo(
     val commitment: ByteArray,
@@ -14,6 +22,8 @@ data class JniNoteInfo(
     val scope: Int,
     val ufvk: String
 ) {
+    override fun toString(): String = "JniNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniNoteInfo) return false
@@ -288,6 +298,12 @@ data class JniCommitmentBundleRecord(
     val vcTreePosition: Long
 )
 
+/**
+ * Typed JNI carrier for one helper-share payload of a vote commitment.
+ *
+ * [toString] is redacted: [primaryBlind] is the blinding factor that opens the vote
+ * commitment, so printing it would let a log reader recover the plaintext vote.
+ */
 @Keep
 data class JniSharePayload(
     val sharesHash: ByteArray,
@@ -319,6 +335,8 @@ data class JniSharePayload(
         primaryBlind = primaryBlind
     )
 
+    override fun toString(): String = "JniSharePayload(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniSharePayload) return false
@@ -345,6 +363,12 @@ data class JniSharePayload(
     }
 }
 
+/**
+ * Typed JNI carrier for the delegation bookkeeping of a single helper share.
+ *
+ * [toString] is redacted: [nullifier] is the share nullifier, and publishing it alongside the
+ * round and proposal it belongs to is exactly the linkage the share protocol exists to avoid.
+ */
 @Keep
 data class JniShareDelegationRecord(
     val roundId: String,
@@ -378,6 +402,8 @@ data class JniShareDelegationRecord(
         submitAt = submitAt,
         createdAt = createdAt
     )
+
+    override fun toString(): String = "JniShareDelegationRecord(redacted)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -431,6 +457,15 @@ data class JniShareDelegationRecord(
  * [toString] is redacted: this is a secret-carrying type and the generated
  * `data class` rendering would print the secret's bytes into any log that
  * interpolates it.
+ *
+ * The constructor and `copy()` are public, unlike the `@ConsistentCopyVisibility`
+ * predecessor of this type. A hotkey is now only ever produced by
+ * `generateHotkey`, whose typesafe wrapper in `sdk-lib` length-checks both byte
+ * arrays; that wrapper's own tests live in a different Gradle module and so need
+ * to fabricate a malformed hotkey to exercise the check. Constructing one here
+ * grants no capability: every native entry point takes the raw
+ * [storedSecret] bytes, not this carrier, so a fabricated instance cannot make
+ * `zcash_voting` accept a hotkey it would otherwise reject.
  */
 @Keep
 data class JniVotingHotkey(

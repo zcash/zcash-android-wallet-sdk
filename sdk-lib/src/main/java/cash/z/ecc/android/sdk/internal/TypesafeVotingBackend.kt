@@ -63,7 +63,11 @@ internal interface TypesafeVotingBackend {
     ): ByteArray
 }
 
-@Suppress("TooManyFunctions", "LongParameterList")
+// Semgrep only honours a `nosemgrep` annotation on the finding's own line or the line directly
+// above it, so the suppressions below have to sit between each KDoc block and its declaration.
+// That adjacency is what ktlint's no-consecutive-comments rule forbids, and an annotation moved
+// somewhere semgrep will not read it is worse than useless, so the rule is waived here instead.
+@Suppress("TooManyFunctions", "LongParameterList", "ktlint:standard:no-consecutive-comments")
 internal interface TypesafeVotingDb {
     suspend fun close()
 
@@ -121,10 +125,11 @@ internal interface TypesafeVotingDb {
      * cannot be re-derived from the seed phrase, restoring the wallet from its seed phrase does
      * not restore it, and losing it forfeits the voting power already delegated to the hotkey.
      */
+    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
     suspend fun generateHotkey(
         roundId: String,
         networkId: Int
-    ): JniVotingHotkey // nosemgrep: kotlin-typesafe-returns-jni-model
+    ): JniVotingHotkey
 
     /**
      * Builds a governance PCZT for hardware-wallet flows.
@@ -248,6 +253,7 @@ internal interface TypesafeVotingDb {
      * arrive on [JniVoteCommitResult.sharePayloads]. [hotkeyStoredSecret] is the persisted secret
      * from [TypesafeVotingDb.generateHotkey].
      */
+    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
     suspend fun commitVote(
         roundId: String,
         bundleIndex: Int,
@@ -260,7 +266,7 @@ internal interface TypesafeVotingDb {
         witness: JniVanWitness,
         singleShare: Boolean = false,
         proofProgress: ((Double) -> Unit)? = null
-    ): JniVoteCommitResult // nosemgrep: kotlin-typesafe-returns-jni-model
+    ): JniVoteCommitResult
 
     /**
      * Returns the chain-ready fields needed to resend a cast-vote transaction before it confirms.
@@ -268,11 +274,12 @@ internal interface TypesafeVotingDb {
      * After [recordVcPosition], use [getCommitmentBundle] instead: it also yields fresh
      * helper-share payloads.
      */
+    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
     suspend fun voteSubmission(
         roundId: String,
         bundleIndex: Int,
         proposalId: Int
-    ): JniVoteSubmission // nosemgrep: kotlin-typesafe-returns-jni-model
+    ): JniVoteSubmission
 
     /**
      * Records the confirmed position of the vote commitment in the vote commitment tree.
@@ -363,6 +370,14 @@ internal interface TypesafeVotingDb {
     )
 }
 
+/**
+ * The typesafe view of a spendable note the voting backend may draw voting weight from.
+ *
+ * [toString] is redacted: [rseed] and [rho] reconstruct the note's spending randomness,
+ * [nullifier] links the note to its spend, and [ufvk] is a full viewing key that discloses
+ * the entire account's transaction history. The generated `data class` rendering would print
+ * all four into any log line that interpolates a note.
+ */
 internal data class VotingNoteInfo(
     val commitment: ByteArray,
     val nullifier: ByteArray,
@@ -374,6 +389,8 @@ internal data class VotingNoteInfo(
     val scope: VotingNoteScope,
     val ufvk: String
 ) {
+    override fun toString(): String = "VotingNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VotingNoteInfo) return false
