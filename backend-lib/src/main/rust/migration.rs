@@ -1247,28 +1247,6 @@ fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
     Some(*extracted.txid().as_ref())
 }
 
-/// The set of txids this migration plan owns (broadcast or will broadcast), used to exclude the
-/// plan's own spends from the foreign-spend check. Composed from two sources so a crashed broadcast
-/// is never missed:
-///   1. Any transfer whose state already records a broadcast txid (`Broadcast { txid }`).
-///   2. Every transfer's PCZT-derived txid, whenever extractable — this covers `Proved` and `Mined`
-///      transfers (whose state carries no stored txid) and, critically, a transfer our own process
-///      broadcast right before crashing (its funding note is spent on-chain by US, not a foreigner).
-/// A transfer whose PCZT isn't yet extractable simply contributes nothing here; that's safe because
-/// such a transfer is `Signed`/`AwaitingSignature` and cannot have been broadcast, so its funding
-/// note being spent could only be a foreign spend anyway.
-fn plan_own_txids(state: &MigrationState) -> std::collections::HashSet<[u8; 32]> {
-    let mut set = std::collections::HashSet::new();
-    for tx in state.transactions() {
-        if let Some(txid) = tx.state().broadcast_txid() {
-            set.insert(txid);
-        }
-        if let Some(txid) = pczt_txid(tx.pczt()) {
-            set.insert(txid);
-        }
-    }
-    set
-}
 
 /// The funding nullifier of a single-Orchard-spend migration transfer, read straight from its PCZT.
 ///
@@ -1292,34 +1270,46 @@ fn transfer_funding_nullifier(bytes: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// Pure decision core of the spent-check (M6 step 3), factored out so it can be unit-tested without
-/// a wallet DB. Given, for each candidate `Signed`/`Proved` transfer, its funding nullifier; the set
-/// of nullifiers the wallet still considers unspent; and the set of txids the plan owns — decide
-/// which transfer (if any) to invalidate.
+/// a wallet DB. Given, for each candidate `Signed`/`Proved` transfer:
+///   - its funding nullifier (`Option<[u8;32]>`),
+///   - its own PCZT-derived txid (`Option<[u8;32]>`, `None` if the PCZT is not yet extractable),
 ///
-/// A candidate is a foreign spend when its funding nullifier is NOT in the unspent set (something
-/// spent it) AND that spend was not one of the plan's own transactions. The own-txid set is passed
-/// in only to document intent and keep the signature honest: by the time this runs, the caller has
-/// already reconciled every own broadcast (step 2 promotes crashed-but-mined own broadcasts to
-/// `Mined`, removing them from the candidate list), so a candidate that reaches here is by
-/// construction one the plan has NOT broadcast. Hence a spent funding note here is unambiguously
-/// foreign.
+/// plus the set of nullifiers the wallet still considers unspent and the set of own-plan txids that
+/// ARE on-chain at the time of this check — decide which transfer (if any) to invalidate.
 ///
-/// Correctness bar (per task brief): NEVER a false positive. Returns `None` (do nothing) on any
-/// ambiguity — a candidate with no readable funding nullifier is skipped, not invalidated. False
-/// negatives are acceptable: submit-time rejection remains the last line of defence.
+/// **Correctness bar: NEVER a false positive.** A candidate is invalidated ONLY when ALL three
+/// conditions hold:
+///   (a) Its funding nullifier is readable AND absent from the unspent set (something spent it).
+///   (b) Its own PCZT-derived txid IS readable (`pczt_txid` returned `Some`). If the txid is
+///       unreadable we cannot confirm the spender is foreign; the situation is ambiguous → skip.
+///   (c) That own txid is NOT in `own_txids_on_chain`. If it IS on-chain, the spender is our own
+///       crashed broadcast and pass 2 should promote it on the next reconciliation run → skip.
+///
+/// Condition (b)+(c) constitute the explicit own-spend guard. They complement the structural guard
+/// (pass 2 promotes every own-broadcast from the candidate set) with a per-candidate check so that
+/// the rare case where pass 2 fails to promote (e.g. `pczt_txid` parse returned `None` for the
+/// proved transfer) never yields a false invalidation.
+///
+/// False negatives are acceptable: submit-time rejection remains the last line of defence.
 fn decide_foreign_spend(
-    candidates: &[(MigrationTxId, Option<[u8; 32]>)],
+    candidates: &[(MigrationTxId, Option<[u8; 32]>, Option<[u8; 32]>)],
     unspent_nullifiers: &std::collections::HashSet<[u8; 32]>,
-    _plan_own_txids: &std::collections::HashSet<[u8; 32]>,
+    own_txids_on_chain: &std::collections::HashSet<[u8; 32]>,
 ) -> Option<MigrationTxId> {
-    for (id, funding_nf) in candidates {
-        // Ambiguous (couldn't read the funding nullifier) → skip, never invalidate.
+    for (id, funding_nf, own_txid) in candidates {
+        // (a) Ambiguous nullifier → skip.
         let Some(nf) = funding_nf else { continue };
-        // Still unspent → this transfer is fine.
+        // (a) Still unspent → this transfer is fine.
         if unspent_nullifiers.contains(nf) {
             continue;
         }
-        // Spent, and (by construction, see doc) not by one of the plan's own broadcasts → foreign.
+        // (b) Own txid unreadable → ambiguous; cannot confirm spender is foreign → skip.
+        let Some(own_txid_bytes) = own_txid else { continue };
+        // (c) Own txid is on-chain → our own (possibly crashed) broadcast; pass 2 should handle it.
+        if own_txids_on_chain.contains(own_txid_bytes) {
+            continue;
+        }
+        // All three conditions met: nullifier spent, own txid readable, not our on-chain tx → foreign.
         return Some(*id);
     }
     None
@@ -1392,7 +1382,11 @@ fn reconcile_invalidated(
     }
 
     // --- Pass 3: spent-check. Candidates are Signed|Proved transfers whose deps are mined. ---
-    let candidates: Vec<(MigrationTxId, Option<[u8; 32]>)> = state
+    // Each candidate carries: (id, funding nullifier, own PCZT-derived txid).
+    // The own txid is needed by decide_foreign_spend to satisfy the no-false-positive bar: if the
+    // txid is unreadable (b) or is on-chain (c), the situation is ambiguous and we skip rather than
+    // invalidate (see decide_foreign_spend's doc for the full decision rule).
+    let candidates: Vec<(MigrationTxId, Option<[u8; 32]>, Option<[u8; 32]>)> = state
         .transactions()
         .iter()
         .filter(|t| {
@@ -1400,9 +1394,15 @@ fn reconcile_invalidated(
                 && matches!(t.state(), MigrationTxState::Signed | MigrationTxState::Proved)
                 && state.deps_mined(t.depends_on())
         })
-        .map(|t| (t.id(), transfer_funding_nullifier(t.pczt())))
+        .map(|t| {
+            (
+                t.id(),
+                transfer_funding_nullifier(t.pczt()),
+                pczt_txid(t.pczt()),
+            )
+        })
         .collect();
-    if candidates.iter().all(|(_, nf)| nf.is_none()) {
+    if candidates.iter().all(|(_, nf, _)| nf.is_none()) {
         // Nothing readable to check — no invalidation.
         return Ok(false);
     }
@@ -1413,9 +1413,32 @@ fn reconcile_invalidated(
         .into_iter()
         .map(|(_account, nf)| nf.to_bytes())
         .collect();
-    let own_txids = plan_own_txids(&state);
 
-    let Some(invalid_id) = decide_foreign_spend(&candidates, &unspent, &own_txids) else {
+    // Build the set of own plan txids that are confirmed on-chain right now. This is the data
+    // decide_foreign_spend uses for condition (c): a candidate whose own txid IS on-chain is our
+    // own (possibly crashed) broadcast — not a foreign spend.
+    let own_txids_on_chain: std::collections::HashSet<[u8; 32]> = {
+        let mut set = std::collections::HashSet::new();
+        for tx in state.transactions() {
+            if let Some(txid_bytes) = pczt_txid(tx.pczt()) {
+                let txid = zcash_protocol::TxId::from_bytes(txid_bytes);
+                if wallet
+                    .get_tx_height(txid)
+                    .map_err(|e| anyhow!("Error reading tx height for own-txid check: {:?}", e))?
+                    .is_some()
+                {
+                    set.insert(txid_bytes);
+                }
+            }
+            // Also include any txid already recorded in broadcast state.
+            if let Some(recorded_txid) = tx.state().broadcast_txid() {
+                set.insert(recorded_txid);
+            }
+        }
+        set
+    };
+
+    let Some(invalid_id) = decide_foreign_spend(&candidates, &unspent, &own_txids_on_chain) else {
         return Ok(false);
     };
 
@@ -4691,44 +4714,115 @@ mod reconcile_tests {
         [byte; 32]
     }
 
-    // --- M6 test 2: funding note spent by a FOREIGN tx → invalidate that transfer. ---
-    // A single Signed transfer whose funding nullifier is absent from the unspent set, and whose
-    // spender is not one of the plan's own txids → decide_foreign_spend returns its id.
-    #[test]
-    fn reconcile_invalidates_when_funding_note_spent_by_foreign_tx() {
-        let id = MigrationTxId::new(7);
-        let candidates = vec![(id, Some(nf(0xAA)))];
-        // Unspent set does NOT contain the transfer's funding nullifier → it was spent.
-        let unspent: HashSet<[u8; 32]> = [nf(0xBB), nf(0xCC)].into_iter().collect();
-        // The plan owns some txids, but none of them spent nf(0xAA) (that's foreign).
-        let own_txids: HashSet<[u8; 32]> = [nf(0x11)].into_iter().collect();
+    fn txid(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
 
-        let decision = decide_foreign_spend(&candidates, &unspent, &own_txids);
+    // -------------------------------------------------------------------------
+    // `pczt_txid` unit tests (Finding 2: the parser must have a regression lock)
+    // -------------------------------------------------------------------------
+
+    /// Negative canary: `pczt_txid` on 32 zero bytes must return `None` because the bytes are not
+    /// a valid PCZT. If the PCZT schema changes and the parser silently accepts garbage, this test
+    /// would still pass (it's a `None` assertion), but the doc-comment below would catch the drift.
+    ///
+    /// Positive path: the full extract pipeline requires a built + proven PCZT with real keys and
+    /// a real blockchain anchor (the `TransactionExtractor` errors without a complete witness set).
+    /// That path is validated end-to-end on the emulator (search for
+    /// `reconcile_marks_proved_transfer_broadcast_when_its_txid_is_on_chain` in the fixture-gated
+    /// tests below, which relies on the same `pczt_txid` codepath via pass 2 of
+    /// `reconcile_invalidated`).
+    #[test]
+    fn pczt_txid_returns_none_for_garbage_bytes() {
         assert_eq!(
-            decision,
-            Some(id),
-            "a Signed transfer whose funding note is spent (absent from unspent) by a non-plan tx \
-             must be invalidated"
+            pczt_txid(&[0u8; 32]),
+            None,
+            "garbage bytes must not parse as a PCZT"
         );
     }
 
-    // --- M6 test 3: funding note spent, but the spender IS one of the plan's own txns → ignore. ---
-    // This models the crashed-own-broadcast case AFTER passes 1+2 have run: such a transfer would
-    // already have been promoted to Mined and removed from the candidate list, so the candidate set
-    // reaching decide_foreign_spend does NOT include it. Here we assert the complementary property:
-    // a transfer whose funding note is STILL unspent is never invalidated (state untouched → false).
+    /// Empty slice is also not a valid PCZT.
     #[test]
-    fn reconcile_ignores_spends_by_the_plans_own_transactions() {
-        let id = MigrationTxId::new(3);
-        // Funding note still unspent → the transfer is fine, regardless of any own-txid membership.
-        let candidates = vec![(id, Some(nf(0x42)))];
-        let unspent: HashSet<[u8; 32]> = [nf(0x42)].into_iter().collect();
-        let own_txids: HashSet<[u8; 32]> = [nf(0x42)].into_iter().collect();
+    fn pczt_txid_returns_none_for_empty_bytes() {
+        assert_eq!(pczt_txid(&[]), None, "empty slice must not parse as a PCZT");
+    }
 
-        let decision = decide_foreign_spend(&candidates, &unspent, &own_txids);
+    // -------------------------------------------------------------------------
+    // `decide_foreign_spend` decision-logic tests
+    // -------------------------------------------------------------------------
+
+    // --- What the test actually checks: unspent funding note → never invalidated. ---
+    // (Previously misnamed `reconcile_ignores_spends_by_the_plans_own_transactions`.)
+    #[test]
+    fn reconcile_unspent_funding_note_never_invalidated() {
+        let id = MigrationTxId::new(3);
+        // Funding note still unspent → the transfer is fine, regardless of own-txid fields.
+        let candidates = vec![(id, Some(nf(0x42)), Some(txid(0x10)))];
+        let unspent: HashSet<[u8; 32]> = [nf(0x42)].into_iter().collect();
+        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
+
+        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
         assert_eq!(
             decision, None,
             "an unspent funding note must never be invalidated (state untouched)"
+        );
+    }
+
+    // --- REAL own-spend guard (condition c): spent nullifier + own txid IS on-chain → skip. ---
+    // This is the case where our own crashed broadcast mined but pczt_txid was readable. Pass 2
+    // should have promoted it, but even if it didn't, decide_foreign_spend must not false-positive.
+    #[test]
+    fn reconcile_ignores_spends_by_the_plans_own_transactions() {
+        let id = MigrationTxId::new(5);
+        let own = txid(0xAB);
+        // Funding note IS spent (absent from unspent), but the transfer's own txid IS on-chain.
+        let candidates = vec![(id, Some(nf(0x55)), Some(own))];
+        let unspent: HashSet<[u8; 32]> = HashSet::new(); // 0x55 not present → spent
+        // own_txids_on_chain contains our txid → spender is US, not foreign.
+        let own_on_chain: HashSet<[u8; 32]> = [own].into_iter().collect();
+
+        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
+        assert_eq!(
+            decision, None,
+            "a spent nullifier whose own txid is on-chain must NOT be invalidated \
+             (the spender is our own crashed broadcast)"
+        );
+    }
+
+    // --- Ambiguity guard b: spent nullifier + own txid UNREADABLE → skip (can't confirm foreign). ---
+    // If pczt_txid returns None (PCZT not yet extractable, e.g. Signed/AwaitingSignature), we cannot
+    // confirm the spender is foreign, so we must not invalidate.
+    #[test]
+    fn reconcile_skips_when_own_txid_is_unreadable() {
+        let id = MigrationTxId::new(9);
+        // Funding note spent (not in unspent set), own txid unreadable (None).
+        let candidates = vec![(id, Some(nf(0x77)), None)];
+        let unspent: HashSet<[u8; 32]> = HashSet::new(); // 0x77 not present → spent
+        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
+
+        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
+        assert_eq!(
+            decision, None,
+            "when the own txid is unreadable the situation is ambiguous — must not invalidate"
+        );
+    }
+
+    // --- M6 test 2: genuine foreign spend → invalidate. ---
+    // Spent nullifier + own txid readable + own txid NOT on-chain → spender must be foreign.
+    #[test]
+    fn reconcile_invalidates_when_funding_note_spent_by_foreign_tx() {
+        let id = MigrationTxId::new(7);
+        let own = txid(0x11);
+        // Funding note spent (absent from unspent); own txid readable; own txid NOT on-chain.
+        let candidates = vec![(id, Some(nf(0xAA)), Some(own))];
+        let unspent: HashSet<[u8; 32]> = [nf(0xBB), nf(0xCC)].into_iter().collect();
+        let own_on_chain: HashSet<[u8; 32]> = HashSet::new(); // our txid not on-chain
+
+        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
+        assert_eq!(
+            decision,
+            Some(id),
+            "a Signed transfer whose funding note is spent by a foreign tx must be invalidated"
         );
     }
 
@@ -4737,30 +4831,30 @@ mod reconcile_tests {
     // (unknown) nullifier is trivially absent from the unspent set.
     #[test]
     fn reconcile_never_invalidates_on_unreadable_funding_nullifier() {
-        let candidates = vec![(MigrationTxId::new(1), None)];
+        let candidates = vec![(MigrationTxId::new(1), None, Some(txid(0x01)))];
         let unspent: HashSet<[u8; 32]> = HashSet::new();
-        let own_txids: HashSet<[u8; 32]> = HashSet::new();
+        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
 
         assert_eq!(
-            decide_foreign_spend(&candidates, &unspent, &own_txids),
+            decide_foreign_spend(&candidates, &unspent, &own_on_chain),
             None,
             "an unreadable funding nullifier is ambiguous and must never trigger invalidation"
         );
     }
 
-    // Multiple candidates: the FIRST foreign-spent one is reported; unspent ones are skipped.
+    // Multiple candidates: the FIRST foreign-spent one is reported; unspent/own-on-chain ones skip.
     #[test]
     fn reconcile_reports_first_foreign_spent_candidate() {
         let unspent: HashSet<[u8; 32]> = [nf(0x01)].into_iter().collect(); // only id=1 unspent
-        let own_txids: HashSet<[u8; 32]> = HashSet::new();
+        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
         let candidates = vec![
-            (MigrationTxId::new(1), Some(nf(0x01))), // unspent → skip
-            (MigrationTxId::new(2), Some(nf(0x02))), // spent → invalidate this one
-            (MigrationTxId::new(3), Some(nf(0x03))), // also spent, but id=2 wins
+            (MigrationTxId::new(1), Some(nf(0x01)), Some(txid(0x01))), // unspent → skip
+            (MigrationTxId::new(2), Some(nf(0x02)), Some(txid(0x02))), // spent, not own → invalidate
+            (MigrationTxId::new(3), Some(nf(0x03)), Some(txid(0x03))), // also spent, but id=2 wins
         ];
 
         assert_eq!(
-            decide_foreign_spend(&candidates, &unspent, &own_txids),
+            decide_foreign_spend(&candidates, &unspent, &own_on_chain),
             Some(MigrationTxId::new(2)),
             "the first foreign-spent candidate must be the one invalidated"
         );
@@ -4769,7 +4863,7 @@ mod reconcile_tests {
     // Empty candidate set → no decision.
     #[test]
     fn reconcile_no_candidates_no_invalidation() {
-        let candidates: Vec<(MigrationTxId, Option<[u8; 32]>)> = vec![];
+        let candidates: Vec<(MigrationTxId, Option<[u8; 32]>, Option<[u8; 32]>)> = vec![];
         assert_eq!(
             decide_foreign_spend(&candidates, &HashSet::new(), &HashSet::new()),
             None,
