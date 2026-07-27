@@ -639,7 +639,38 @@ mod tests {
     // `zcash_voting::action::extract_spend_auth_sig` deliberately falls back to
     // scanning every action, so extraction always succeeds. The signature check in
     // the test above is what now separates a genuinely signed governance PCZT from
-    // an unsigned one.
+    // an unsigned one, and the test below pins where that separation happens.
+
+    #[test]
+    fn unsigned_governance_pczt_yields_a_padding_sig_that_fails_verification() {
+        let spending_key = SpendingKey::from_bytes([0x42; 32]).expect("valid spending key");
+        let result = test_governance_pczt(&spending_key);
+
+        // Extraction succeeds on an unsigned governance PCZT because the builder
+        // signs the zero-value padding action and the fallback scan picks that
+        // signature up. Pinning this keeps an upstream change to the fallback --
+        // failing outright, or returning zeroes -- from surfacing as a confusing
+        // failure further downstream.
+        let sig = voting::action::extract_spend_auth_sig(&result.pczt_bytes, result.action_index)
+            .expect("padding action supplies a signature on an unsigned PCZT");
+        assert_ne!(sig, [0u8; SPEND_AUTH_SIG_BYTES]);
+
+        // Containment is the verification step: the padding signature was made
+        // under a different key, so it does not verify against the governance
+        // action's rk and the delegation is refused before submission.
+        let sighash =
+            voting::action::extract_pczt_sighash(&result.pczt_bytes).expect("pczt sighash");
+        let data = delegation_submission_data(result.rk.clone(), sig.to_vec(), sighash.to_vec());
+
+        let error = verify_delegation_submission_sig(&data)
+            .expect_err("a padding signature must not pass verification");
+        assert!(
+            error
+                .to_string()
+                .contains("spend_auth_sig does not verify against rk and sighash"),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn delegation_submission_sig_verification_checks_rk_and_sighash() {

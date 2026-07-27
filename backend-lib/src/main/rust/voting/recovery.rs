@@ -54,32 +54,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeVoteTxHashNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    proposal_id: jint,
-    tx_hash: JString<'local>,
-) -> jboolean {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let round_id = java_string_to_rust(env, &round_id)?;
-        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
-        let tx_hash = java_string_to_rust(env, &tx_hash)?;
-        voting::vote::record_submission(&db, &round_id, bundle_index, proposal_id, &tx_hash)
-            .map_err(|e| anyhow!("record_submission: {e}"))?;
-        Ok(JNI_TRUE)
-    });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
-}
-
+/// Records the transaction that carried a cast vote.
+///
+/// This is the only writer of a vote's transaction hash. It replaces the former
+/// `storeVoteTxHashNative`, which wrote the same column unconditionally: since
+/// `zcash_voting` dropped the standalone submitted flag, recording the
+/// transaction *is* what marks a vote submitted, so the two entry points had
+/// become the same operation with different conflict semantics. The surviving
+/// one is conflict-checked, because overwriting the hash of an already-submitted
+/// cast vote would lose the wallet's ability to keep polling that transaction.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_markVoteSubmittedNative<
     'local,
@@ -95,10 +78,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_mar
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        // A vote is now recorded as submitted by persisting the transaction that
-        // carried it, so a restarted wallet can resume polling for that
-        // transaction instead of rebuilding the vote. `zcash_voting` dropped the
-        // standalone submitted flag, which is why the tx hash is required here.
         db.mark_vote_submitted(
             &java_string_to_rust(env, &round_id)?,
             jint_to_u32(bundle_index, "bundle_index")?,
@@ -198,8 +177,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_rec
 
 /// Reconstructs a committed vote and its recorded tree position after a restart.
 ///
-/// Returns null until the vote's commitment tree position has been recorded, so
-/// callers cannot resubmit helper-share payloads built on a stale position.
+/// Returns null until the vote reaches [`VotePhase::Confirmed`], which is the
+/// phase in which its commitment tree position has been recorded, so callers
+/// cannot resubmit helper-share payloads built on a stale position. A vote that
+/// was never stored is likewise reported as null.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getCommitmentBundleNative<
     'local,
@@ -217,6 +198,24 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
         let round_id = java_string_to_rust(env, &round_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+        // `vote::commit` persists the recovery bundle and `vote::record_vc_position`
+        // persists the tree position, so between those two calls the bundle is
+        // stored without a position -- a state in which `get_commitment_bundle`
+        // deliberately fails rather than assume position 0. The canonical phase
+        // recognizes that in-progress state directly, so the caller sees "not
+        // ready yet" instead of an exception.
+        let phase = match db.vote_phase(&round_id, bundle_index, proposal_id) {
+            Ok(phase) => phase,
+            // The sole invalid input `vote_phase` reports is a vote that has
+            // never been stored, which for a recovery read means there is
+            // nothing to reconstruct.
+            Err(VotingError::InvalidInput { .. }) => return Ok(JObject::null().into_raw()),
+            Err(e) => return Err(anyhow!("vote_phase: {e}")),
+        };
+        if phase != VotePhase::Confirmed {
+            return Ok(JObject::null().into_raw());
+        }
+
         let record = optional_recovery_lookup(
             db.get_commitment_bundle(&round_id, bundle_index, proposal_id),
             "get_commitment_bundle",

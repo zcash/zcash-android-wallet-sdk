@@ -25,7 +25,7 @@ use voting::tree_sync::VoteTreeSync;
 use voting::types::{
     DelegationPirPrecomputeResult, DelegationProofResult, DelegationSubmissionData, GovernancePczt,
     Network as VotingNetwork, NoopProgressReporter, NoteInfo, ProgressReporter, SharePayload,
-    VoteCommitStageReporter, VotingHotkey, WireEncryptedShare, WitnessData,
+    VoteCommitStageReporter, VotingError, VotingHotkey, WireEncryptedShare, WitnessData,
 };
 
 use crate::utils::{
