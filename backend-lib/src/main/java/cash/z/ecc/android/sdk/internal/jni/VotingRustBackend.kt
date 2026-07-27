@@ -47,6 +47,19 @@ fun interface VotingProofProgressCallback {
 private const val PROOF_PROGRESS_REENTRY_ERROR =
     "This VotingDb's methods must not be called from its proof progress callback"
 
+/**
+ * Bindings to the native shielded-voting backend.
+ *
+ * Every method here binds to a JNI symbol that the native library does not export in
+ * this release: the Rust voting module is gated behind `cfg(zcash_voting)` because
+ * `zcash_voting` cannot yet be built against the Orchard version the Ironwood (NU6.3)
+ * dependency set requires. Calling any of them throws [UnsatisfiedLinkError].
+ *
+ * This is a compile error rather than a deprecation warning so that the failure lands
+ * at build time instead of at runtime in a wallet. Kotlin `internal` cannot express
+ * this: `sdk-lib` is a separate Gradle module and would lose access along with
+ * consumers.
+ */
 @Keep
 @Suppress("TooManyFunctions", "LongParameterList")
 class VotingRustBackend private constructor() {
@@ -825,6 +838,9 @@ class VotingRustBackend private constructor() {
     }
 
     companion object {
+        // The factory is part of the deprecated surface; suppressing here only lets the
+        // class construct itself, and does not reopen it to callers.
+        @Suppress("DEPRECATION_ERROR")
         suspend fun new(): VotingRustBackend {
             RustBackend.loadLibrary()
 

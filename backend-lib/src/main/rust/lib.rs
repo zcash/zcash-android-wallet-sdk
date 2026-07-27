@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use pczt::{
     Pczt,
-    roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
+    roles::{combiner::Combiner, prover::Prover},
 };
 use transparent::{
     address::{Script, TransparentAddress},
@@ -49,10 +49,10 @@ use zcash_client_backend::{
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
-            self, create_pczt_from_proposal, create_proposed_transactions,
+            self, SignerView, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
             input_selection::{GreedyInputSelector, LockFilter, LockedInputPolicy, SpendPolicy},
-            propose_shielding, propose_transfer,
+            propose_shielding, propose_transfer, redact_pczt_for_signer,
         },
     },
     encoding::AddressCodec,
@@ -79,7 +79,10 @@ use zcash_client_sqlite::{
 use zcash_primitives::{
     block::BlockHash,
     merkle_tree::HashSer,
-    transaction::{Transaction, TxId, components::orchard::bundle_version_for_branch},
+    transaction::{
+        Transaction, TxId, builder::cached_orchard_proving_key,
+        components::orchard::bundle_version_for_branch,
+    },
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
@@ -2518,26 +2521,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcz
 
         let pczt = parse_pczt(env, pczt)?;
 
-        let pczt_with_proofs = Redactor::new(pczt)
-            .redact_global_with(|mut r| r.redact_proprietary("zcash_client_backend:proposal_info"))
-            .redact_orchard_with(|mut r| {
-                r.redact_actions(|mut ar| {
-                    ar.clear_spend_witness();
-                    ar.redact_output_proprietary("zcash_client_backend:output_info");
-                })
-            })
-            .redact_sapling_with(|mut r| {
-                r.redact_spends(|mut sr| sr.clear_witness());
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .redact_transparent_with(|mut r| {
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .finish();
+        // Keystone's ordinary send flow signs the full (non-compacted) signer
+        // view: deployed firmware predates the compact view and, for v5
+        // transactions, the v2 PCZT encoding (which `Pczt::serialize` only
+        // selects when the content requires it). Do not switch this to
+        // `SignerView::Compact` without confirming the target signer supports
+        // it — the compact view caused missing-signature failures at
+        // extraction in zcash-swift-wallet-sdk#1863, which this mirrors.
+        let pczt_with_proofs = redact_pczt_for_signer(&pczt, SignerView::Full);
 
         Ok(utils::rust_bytes_to_java(
             env,
@@ -2592,24 +2583,44 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         let pczt = parse_pczt(env, pczt)?;
 
-        // The Orchard circuit version is fixed by the consensus branch under which the
-        // transaction will be mined; derive it from the branch id carried by the PCZT.
-        let orchard_circuit_version = BranchId::try_from(*pczt.global().consensus_branch_id())
-            .ok()
-            .and_then(|branch_id| bundle_version_for_branch(branch_id, orchard::ValuePool::Orchard))
-            .map(|bundle_version| bundle_version.circuit_version());
+        // The Orchard-family circuit versions are fixed by the consensus branch under
+        // which the transaction will be mined; derive them from the branch id carried by
+        // the PCZT, per value pool.
+        //
+        // `BundleVersion::circuit_version` is documented as many-to-one, deriving only
+        // from the `ProtocolVersion`, so under NU6.3 the Orchard and Ironwood pools share
+        // the post-NU6.3 circuit. Each proof still derives its circuit from its own pool:
+        // `bundle_version_for_branch(_, ValuePool::Ironwood)` is `None` before NU6.3, but
+        // an Ironwood proof is only required post-NU6.3, so the per-pool lookup is total
+        // on the branches that can actually require that proof.
+        let consensus_branch_id = BranchId::try_from(*pczt.global().consensus_branch_id()).ok();
+        let circuit_version_for = |pool: orchard::ValuePool| {
+            consensus_branch_id
+                .and_then(|branch_id| bundle_version_for_branch(branch_id, pool))
+                .map(|bundle_version| bundle_version.circuit_version())
+        };
 
         let mut prover = Prover::new(pczt);
 
         if prover.requires_orchard_proof() {
-            let circuit_version = orchard_circuit_version.ok_or_else(|| {
+            let circuit_version = circuit_version_for(orchard::ValuePool::Orchard).ok_or_else(|| {
                 anyhow!("PCZT requires an Orchard proof but its consensus branch does not support Orchard")
             })?;
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build(circuit_version))
+                .create_orchard_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
+
+        if prover.requires_ironwood_proof() {
+            let circuit_version = circuit_version_for(orchard::ValuePool::Ironwood).ok_or_else(|| {
+                anyhow!("PCZT requires an Ironwood proof but its consensus branch does not support Ironwood")
+            })?;
+            prover = prover
+                .create_ironwood_proof(cached_orchard_proving_key(circuit_version))
+                .map_err(|e| anyhow!("Failed to create Ironwood proof for PCZT: {:?}", e))?;
+        }
+        assert!(!prover.requires_ironwood_proof());
 
         if prover.requires_sapling_proofs() {
             let spend_params = path_from_jni(env, spend_params)?;

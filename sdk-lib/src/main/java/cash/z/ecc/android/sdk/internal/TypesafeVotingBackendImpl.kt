@@ -1,4 +1,8 @@
-@file:Suppress("TooManyFunctions")
+// VotingRustBackend is deprecated at ERROR level because its native symbols are not
+// built in this release. This file is the internal wrapper around that backend, so it
+// necessarily references it; the suppression is scoped here rather than relaxing the
+// deprecation, which is what keeps the failure a compile error for consumers.
+@file:Suppress("TooManyFunctions", "DEPRECATION_ERROR")
 
 package cash.z.ecc.android.sdk.internal
 
