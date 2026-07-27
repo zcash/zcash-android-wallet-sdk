@@ -481,6 +481,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createAcc
                 BirthdayError::Decode(e) => {
                     anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
                 }
+                // `BirthdayError` is `#[non_exhaustive]`; this arm is unreachable
+                // against enum versions that expose only the variants above.
+                #[allow(unreachable_patterns)]
+                _ => anyhow!("Invalid TreeState: unrecognized birthday error"),
             })?;
 
         let account_name = java_string_to_rust(env, &account_name)?;
@@ -567,6 +571,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_importAcc
                 BirthdayError::Decode(e) => {
                     anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
                 }
+                // `BirthdayError` is `#[non_exhaustive]`; this arm is unreachable
+                // against enum versions that expose only the variants above.
+                #[allow(unreachable_patterns)]
+                _ => anyhow!("Invalid TreeState: unrecognized birthday error"),
             })?;
 
         let account_name = java_string_to_rust(env, &account_name)?;
