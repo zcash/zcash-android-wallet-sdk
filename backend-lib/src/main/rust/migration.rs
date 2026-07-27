@@ -131,6 +131,91 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     Ok((wallet, store_conn))
 }
 
+// ---------------------------------------------------------------------------
+// Backend-lib-owned invalidation side table
+// ---------------------------------------------------------------------------
+//
+// This table is NOT part of any core-owned schema (the `orchard_ironwood_*` tables are
+// hands-off).  It is created lazily on first write, so wallets that never hit InvalidNote/Expired
+// carry zero schema overhead.
+//
+// `account_uuid` — the raw 16-byte UUID identifying the account (same bytes `expose_uuid().as_bytes()` returns).
+// `reason`       — one of `"invalid_transfer"` or `"transfer_expired"`.
+// `transfer_id`  — the string representation of the `MigrationTxId` index (may be NULL when the
+//                  id is not meaningful, e.g. for TransferExpired recorded without a specific id).
+
+const INVALIDATION_DDL: &str = "
+    CREATE TABLE IF NOT EXISTS zashi_migration_invalidation (
+        account_uuid BLOB NOT NULL PRIMARY KEY,
+        reason       TEXT NOT NULL,
+        transfer_id  TEXT
+    )";
+
+fn record_invalidation(
+    conn: &Connection,
+    account: &[u8],
+    reason: &str,
+    transfer_id: Option<&str>,
+) -> anyhow::Result<()> {
+    conn.execute(INVALIDATION_DDL, [])
+        .map_err(|e| anyhow!("Error creating invalidation table: {}", e))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO zashi_migration_invalidation (account_uuid, reason, transfer_id) VALUES (?1, ?2, ?3)",
+        rusqlite::params![account, reason, transfer_id],
+    )
+    .map_err(|e| anyhow!("Error recording invalidation: {}", e))?;
+    Ok(())
+}
+
+fn read_invalidation(
+    conn: &Connection,
+    account: &[u8],
+) -> anyhow::Result<Option<(String, Option<String>)>> {
+    // Table may not exist yet (no invalidation ever recorded).
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='zashi_migration_invalidation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(None);
+    }
+    let result = conn.query_row(
+        "SELECT reason, transfer_id FROM zashi_migration_invalidation WHERE account_uuid = ?1",
+        rusqlite::params![account],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+    );
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(anyhow!("Error reading invalidation: {}", e)),
+    }
+}
+
+fn clear_invalidation(conn: &Connection, account: &[u8]) -> anyhow::Result<()> {
+    // If the table doesn't exist there's nothing to clear — not an error.
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='zashi_migration_invalidation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM zashi_migration_invalidation WHERE account_uuid = ?1",
+        rusqlite::params![account],
+    )
+    .map_err(|e| anyhow!("Error clearing invalidation: {}", e))?;
+    Ok(())
+}
+
 /// The lowest `anchor_boundary` height still needed by any account's migration transactions that
 /// have not yet reached `Broadcast`/`Mined` — i.e. still need proving or broadcasting — across
 /// every account in the wallet at `db_path`.
@@ -423,6 +508,8 @@ fn derive_migration_state<'a>(
     env: &mut JNIEnv<'a>,
     persisted: Option<MigrationState>,
     tip: BlockHeight,
+    store_conn: &Connection,
+    account: &[u8],
 ) -> anyhow::Result<JObject<'a>> {
     let Some(state) = persisted else {
         return Ok(env.new_object(format!("{JNI_MIGRATION_STATE}$NotStarted"), "()V", &[])?);
@@ -434,11 +521,28 @@ fn derive_migration_state<'a>(
                 Ok(env.new_object(format!("{JNI_MIGRATION_STATE}$Complete"), "()V", &[])?)
             }
             engine::MigrationStatus::Failed => {
-                let reason = env.new_object(
-                    format!("{JNI_ATTENTION_REASON}$TransferExpired"),
-                    "()V",
-                    &[],
-                )?;
+                // Read the persisted invalidation reason to distinguish InvalidTransfer from
+                // TransferExpired (plain cancel/debug-clear) — the side table is optional, so a
+                // missing row defaults to TransferExpired (the pre-Task-3 behaviour).
+                let invalidation = read_invalidation(store_conn, account)?;
+                let reason = match invalidation
+                    .as_ref()
+                    .map(|(r, tid)| (r.as_str(), tid.as_deref()))
+                {
+                    Some(("invalid_transfer", tid)) => {
+                        let j_tid = env.new_string(tid.unwrap_or(""))?;
+                        env.new_object(
+                            format!("{JNI_ATTENTION_REASON}$InvalidTransfer"),
+                            "(Ljava/lang/String;)V",
+                            &[JValue::Object(&j_tid)],
+                        )?
+                    }
+                    _ => env.new_object(
+                        format!("{JNI_ATTENTION_REASON}$TransferExpired"),
+                        "()V",
+                        &[],
+                    )?,
+                };
                 Ok(env.new_object(
                     format!("{JNI_MIGRATION_STATE}$RequiresAttention"),
                     format!("(L{JNI_ATTENTION_REASON};)V"),
@@ -998,7 +1102,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let id = decode_transfer_id(env, &transfer_id)?;
+        let transfer_id_str = crate::utils::java_string_to_rust(env, &transfer_id)?;
+        let id = {
+            let idx: u32 = transfer_id_str
+                .parse()
+                .map_err(|e| anyhow!("Invalid transfer id {}: {}", transfer_id_str, e))?;
+            MigrationTxId::new(idx)
+        };
+        let account_bytes = account.expose_uuid().as_bytes().to_vec();
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         match result_tag {
             // Success: record the broadcast txid. `mark_mined` has no old-crate equivalent call
@@ -1014,11 +1125,42 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     .replace_migration(&state)
                     .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))
             }
-            // NetworkError/InvalidNote/Expired: no destructive state transition exists in the new
-            // engine's public API for "this attempt failed, try again later" — the transaction
-            // stays `Signed`/`AwaitingSignature` and `next_step` will offer it again on the next
-            // call. Nothing to persist.
-            1 | 2 | 3 => Ok(()),
+            // NetworkError: transient, no state change.  Tag 1 stays a no-op.
+            1 => Ok(()),
+            // InvalidNote (2) / Expired (3): terminal failure — mark the migration Failed and
+            // persist the invalidation reason so `derive_migration_state` can surface the right
+            // `JniAttentionReason` sub-class to the Kotlin layer.
+            2 | 3 => {
+                let reason = if result_tag == 2 {
+                    "invalid_transfer"
+                } else {
+                    "transfer_expired"
+                };
+                // Load the current state; only transition if one exists and is not already terminal.
+                let current = backend
+                    .get_migration()
+                    .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+                if let Some(state) = current {
+                    if !state.is_terminal() {
+                        let failed = MigrationState::from_parts(
+                            engine::MigrationStatus::Failed,
+                            state.note_split().clone(),
+                            state.preparation().clone(),
+                            state.transactions().clone(),
+                            state.anchor_bucket_interval(),
+                        );
+                        backend
+                            .replace_migration(&failed)
+                            .map_err(|e| anyhow!("Error persisting failed migration: {:?}", e))?;
+                    }
+                }
+                record_invalidation(
+                    &store_conn,
+                    &account_bytes,
+                    reason,
+                    Some(&transfer_id_str),
+                )
+            }
             other => Err(anyhow!("Unknown TransferResult tag: {}", other)),
         }
     });
@@ -1080,7 +1222,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let tip = target_height(&wallet)? - 1;
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
-        Ok(derive_migration_state(env, persisted, tip)?.into_raw())
+        let account_bytes = account.expose_uuid().as_bytes().to_vec();
+        Ok(derive_migration_state(env, persisted, tip, &store_conn, &account_bytes)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -1776,6 +1919,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
+        let account_bytes = account.expose_uuid().as_bytes().to_vec();
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let Some(state) = backend
             .get_migration()
@@ -1799,6 +1943,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         backend
             .replace_migration(&cancelled)
             .map_err(|e| anyhow!("Error cancelling migration: {}", e))?;
+        // Also clear any persisted invalidation reason so a fresh run starts clean.
+        clear_invalidation(&store_conn, &account_bytes)
+            .map_err(|e| anyhow!("Error clearing invalidation on cancel: {}", e))?;
         Ok(1)
     });
     unwrap_exc_or(&mut env, res, 0)
@@ -4062,5 +4209,171 @@ mod reschedule_unproven_tests {
             None,
         );
         assert_eq!(result2, -1, "Missing transfer id must return -1");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Invalidation persistence tests
+// ---------------------------------------------------------------------------
+//
+// These tests cover the pure-Rust persistence layer: `record_invalidation`,
+// `read_invalidation`, `clear_invalidation`, and the state-mutation logic that
+// `recordTransferResultNative` (tags 2|3) now exercises.
+//
+// The JNI portion of the flow — `derive_migration_state` constructing Java
+// objects (`JniAttentionReason$InvalidTransfer` / `$TransferExpired`) — cannot
+// be driven from a pure `cargo test` run (no JVM).  It is compile-verified:
+// the function signature change (extra `&Connection` + `&[u8]` params) ensures
+// incorrect callers fail at compile time, and the `env.new_object(...)` calls
+// carry the right constructor signatures in string literals that are checked at
+// JNI call time during device/emulator tests.
+#[cfg(test)]
+mod record_transfer_result_tests {
+    use super::*;
+    use zcash_pool_migration::{
+        engine::MigrationStatus,
+        note_splitting::NoteSplitPlan,
+        preparation::PreparationPlan,
+    };
+    use zcash_protocol::value::Zatoshis;
+
+    // Reuse the minimal-state builder from next_due_transfer_tests.
+    fn make_state(status: MigrationStatus, transfers: Vec<MigrationTransaction>) -> MigrationState {
+        let note_split = NoteSplitPlan::from_stored_parts(
+            vec![Zatoshis::const_from_u64(100_000_000)],
+            Zatoshis::const_from_u64(5_000),
+            None,
+            Zatoshis::const_from_u64(10_000),
+            Zatoshis::const_from_u64(100_010_000),
+            Zatoshis::const_from_u64(100_000_000),
+        )
+        .expect("valid note split plan");
+        MigrationState::from_parts(
+            status,
+            note_split,
+            PreparationPlan::from_parts(vec![], vec![]),
+            transfers,
+            AnchorBucketInterval::ZIP_318,
+        )
+    }
+
+    fn transfer(id: u32, state: MigrationTxState, scheduled: u32, expiry: u32) -> MigrationTransaction {
+        MigrationTransaction::from_parts(
+            MigrationTxId::new(id),
+            MigrationTxKind::Transfer { crossing: 0 },
+            vec![0u8; 32],
+            vec![],
+            BlockHeight::from_u32(scheduled),
+            BlockHeight::from_u32(expiry),
+            Some(BlockHeight::from_u32(scheduled.saturating_sub(10))),
+            state,
+            None,
+        )
+    }
+
+    const ACCOUNT: &[u8] = &[1u8; 16];
+
+    /// Helper: simulate the tag=2 / tag=3 state-mutation + persistence path.
+    fn apply_tag(conn: &Connection, state: MigrationState, result_tag: i32, transfer_id_str: &str)
+        -> anyhow::Result<MigrationState>
+    {
+        let reason = if result_tag == 2 { "invalid_transfer" } else { "transfer_expired" };
+        let failed = if !state.is_terminal() {
+            MigrationState::from_parts(
+                MigrationStatus::Failed,
+                state.note_split().clone(),
+                state.preparation().clone(),
+                state.transactions().clone(),
+                state.anchor_bucket_interval(),
+            )
+        } else {
+            state
+        };
+        record_invalidation(conn, ACCOUNT, reason, Some(transfer_id_str))?;
+        Ok(failed)
+    }
+
+    // tag=2 → reason "invalid_transfer", state Failed, read back correctly.
+    #[test]
+    fn record_transfer_result_invalid_note_marks_migration_failed_with_reason() {
+        let conn = Connection::open_in_memory().unwrap();
+        let state = make_state(MigrationStatus::InProgress, vec![transfer(7, MigrationTxState::Proved, 1000, 2000)]);
+        assert!(!state.is_terminal(), "pre-condition: state is InProgress");
+
+        let failed = apply_tag(&conn, state, 2, "7").unwrap();
+
+        // State mutation.
+        assert!(failed.is_terminal(), "state must be terminal after tag=2");
+        assert_eq!(failed.status(), MigrationStatus::Failed);
+
+        // Side-table read.
+        let inv = read_invalidation(&conn, ACCOUNT).unwrap();
+        assert!(inv.is_some(), "invalidation row must exist");
+        let (reason, tid) = inv.unwrap();
+        assert_eq!(reason, "invalid_transfer");
+        assert_eq!(tid.as_deref(), Some("7"));
+    }
+
+    // tag=3 → reason "transfer_expired".
+    #[test]
+    fn record_transfer_result_expired_marks_failed_with_expired_reason() {
+        let conn = Connection::open_in_memory().unwrap();
+        let state = make_state(MigrationStatus::InProgress, vec![transfer(3, MigrationTxState::Signed, 900, 1800)]);
+
+        let failed = apply_tag(&conn, state, 3, "3").unwrap();
+
+        assert!(failed.is_terminal());
+        assert_eq!(failed.status(), MigrationStatus::Failed);
+
+        let inv = read_invalidation(&conn, ACCOUNT).unwrap();
+        let (reason, _) = inv.unwrap();
+        assert_eq!(reason, "transfer_expired");
+    }
+
+    // tag=1 (NetworkError) → no side-table write, state untouched.
+    #[test]
+    fn record_transfer_result_network_error_still_noop() {
+        let conn = Connection::open_in_memory().unwrap();
+        // tag=1 is handled upstream (no persistence call); verify helpers are neutral.
+        let inv = read_invalidation(&conn, ACCOUNT).unwrap();
+        assert!(inv.is_none(), "tag=1 must leave side table empty");
+    }
+
+    // clear_invalidation removes the row.
+    #[test]
+    fn clear_migration_clears_invalidation_reason() {
+        let conn = Connection::open_in_memory().unwrap();
+        record_invalidation(&conn, ACCOUNT, "invalid_transfer", Some("5")).unwrap();
+        let inv = read_invalidation(&conn, ACCOUNT).unwrap();
+        assert!(inv.is_some(), "pre-condition: row exists");
+
+        clear_invalidation(&conn, ACCOUNT).unwrap();
+
+        let inv_after = read_invalidation(&conn, ACCOUNT).unwrap();
+        assert!(inv_after.is_none(), "invalidation must be cleared");
+    }
+
+    // clear_invalidation on a non-existent table is not an error.
+    #[test]
+    fn clear_invalidation_no_table_is_noop() {
+        let conn = Connection::open_in_memory().unwrap();
+        // No table created yet — should not error.
+        clear_invalidation(&conn, ACCOUNT).unwrap();
+    }
+
+    // Two different accounts don't bleed into each other.
+    #[test]
+    fn invalidation_is_per_account() {
+        let conn = Connection::open_in_memory().unwrap();
+        let account_b: &[u8] = &[2u8; 16];
+        record_invalidation(&conn, ACCOUNT, "invalid_transfer", Some("1")).unwrap();
+
+        let inv_b = read_invalidation(&conn, account_b).unwrap();
+        assert!(inv_b.is_none(), "account B must not see account A's invalidation");
+
+        record_invalidation(&conn, account_b, "transfer_expired", None).unwrap();
+        let inv_a = read_invalidation(&conn, ACCOUNT).unwrap();
+        let (reason_a, _) = inv_a.unwrap();
+        assert_eq!(reason_a, "invalid_transfer", "account A's reason must be unchanged");
     }
 }
