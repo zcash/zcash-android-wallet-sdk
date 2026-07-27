@@ -421,9 +421,125 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
             &[0xAA; PROTOCOL_FIELD_BYTES],
         )
         .map_err(|e| anyhow!("store_vote fixture: {e}"))?;
+        store_vote_recovery_bundle_fixture(
+            &conn,
+            &round_id,
+            &wallet_id,
+            bundle_index,
+            proposal_id,
+            choice,
+        )?;
         Ok(())
     });
     unwrap_exc_or(&mut env, res, ())
+}
+
+/// Persists the recovery bundle a real `vote::commit` would have written.
+///
+/// `share::record` derives the share nullifier from the vote's own recovery
+/// bundle instead of taking one from the caller, so a vote row on its own is no
+/// longer enough to record a helper share. Producing a genuine bundle means
+/// running the ZKP #2 prover, which an instrumented test cannot afford, so this
+/// stages the same shape `zcash_voting`'s own suite stages: the library-owned
+/// JSON written straight onto the vote row. Only `vote_commitment` and the
+/// per-share blind actually feed the nullifier, and both are canonical Pallas
+/// encodings here.
+///
+/// `vc_tree_position` deliberately stays NULL. That leaves the vote in
+/// `VotePhase::Committed` rather than `Confirmed`, which is what keeps
+/// `get_commitment_bundle` reporting "not ready yet" for a vote whose on-chain
+/// position has not been recorded.
+#[cfg(feature = "android-test-fixtures")]
+fn store_vote_recovery_bundle_fixture(
+    conn: &rusqlite::Connection,
+    round_id: &str,
+    wallet_id: &str,
+    bundle_index: u32,
+    proposal_id: u32,
+    choice: u32,
+) -> anyhow::Result<()> {
+    let bundle = vote_recovery_bundle_fixture(round_id, bundle_index, proposal_id, choice);
+    let json = voting::vote::serialize_recovery(&bundle)
+        .map_err(|e| anyhow!("serialize_recovery fixture: {e}"))?;
+    let rows = conn
+        .execute(
+            "UPDATE votes SET commitment_bundle_json = :json
+             WHERE round_id = :round_id
+               AND wallet_id = :wallet_id
+               AND bundle_index = :bundle_index
+               AND proposal_id = :proposal_id",
+            rusqlite::named_params! {
+                ":json": json,
+                ":round_id": round_id,
+                ":wallet_id": wallet_id,
+                ":bundle_index": bundle_index as i64,
+                ":proposal_id": proposal_id as i64,
+            },
+        )
+        .map_err(|e| anyhow!("store vote recovery bundle fixture: {e}"))?;
+    if rows != 1 {
+        return Err(anyhow!(
+            "store vote recovery bundle fixture updated {rows} rows, expected 1"
+        ));
+    }
+    Ok(())
+}
+
+/// Builds a syntactically valid vote recovery bundle for the fixture above.
+///
+/// Every helper slot gets a share so that any `share_index` the suite exercises
+/// resolves, and each carries a distinct blind so distinct slots yield distinct
+/// nullifiers.
+#[cfg(feature = "android-test-fixtures")]
+fn vote_recovery_bundle_fixture(
+    round_id: &str,
+    bundle_index: u32,
+    proposal_id: u32,
+    choice: u32,
+) -> voting::vote::VoteRecoveryBundle {
+    use voting::types::EncryptedShare;
+
+    // A one-byte little-endian value is always below the Pallas modulus, so
+    // every field element here is a canonical encoding.
+    fn field_bytes(value: u8) -> [u8; PROTOCOL_FIELD_BYTES] {
+        let mut bytes = [0u8; PROTOCOL_FIELD_BYTES];
+        bytes[0] = value;
+        bytes
+    }
+
+    voting::vote::VoteRecoveryBundle {
+        vote_round_id: round_id.to_string(),
+        bundle_index,
+        proposal_id,
+        vote_decision: choice,
+        anchor_height: 1,
+        vc_tree_position: 0,
+        single_share: false,
+        num_options: voting::types::MAX_VOTE_OPTIONS,
+        van_nullifier: field_bytes(0x10),
+        vote_authority_note_new: field_bytes(0x11),
+        vote_commitment: field_bytes(0x12),
+        proof: vec![0x13; 96],
+        shares_hash: field_bytes(0x14),
+        r_vpk: field_bytes(0x15),
+        alpha_v: field_bytes(0x16),
+        vote_auth_sig: [0x17; 64],
+        encrypted_shares: (0..VOTE_SHARE_COUNT)
+            .map(|index| EncryptedShare {
+                c1: vec![0x21; PROTOCOL_FIELD_BYTES],
+                c2: vec![0x22; PROTOCOL_FIELD_BYTES],
+                share_index: index as u32,
+                plaintext_value: index as u64,
+                randomness: vec![0x23; PROTOCOL_FIELD_BYTES],
+            })
+            .collect(),
+        share_blinds: (0..VOTE_SHARE_COUNT)
+            .map(|index| field_bytes(index as u8 + 1))
+            .collect(),
+        share_comms: (0..VOTE_SHARE_COUNT)
+            .map(|index| field_bytes(index as u8 + 0x51))
+            .collect(),
+    }
 }
 
 fn java_string_array(

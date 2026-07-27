@@ -388,10 +388,15 @@ class TypesafeVotingBackendImplTest {
                     position = 33,
                     anchorHeight = 44
                 )
+            // commitVote checks that the commitment it gets back names the bundle that was asked
+            // for, so this canned result has to carry the same bundle index the call below
+            // passes. The check itself is covered by
+            // commit_vote_rejects_a_result_for_a_different_bundle.
             val commitment =
                 jniVoteCommitResult(
                     voteCommitment = field(35),
-                    proposalId = 2
+                    proposalId = 2,
+                    bundleIndex = 3
                 )
             val backend =
                 RecordingVotingDbBackend(

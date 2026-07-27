@@ -41,7 +41,15 @@ class VotingRustBackendTest {
         private const val WALLET_ID = "wallet-1"
         private const val OTHER_WALLET_ID = "wallet-2"
         private const val ROUND_ID = "round-1"
-        private const val SNAPSHOT_HEIGHT = 123_456L
+
+        // zcash_voting builds governance PCZTs only for Ironwood / NU6.3 notes, and it resolves
+        // the consensus branch from the round's own snapshot height rather than from a
+        // caller-supplied branch id. A round snapshotted before NU6.3 activation is therefore
+        // rejected outright, so the fixture height has to sit at or above activation on both
+        // networks this suite drives: testnet 4_134_000 and mainnet 3_428_143. Testnet activates
+        // last, so its height covers both.
+        private const val TESTNET_NU6_3_ACTIVATION_HEIGHT = 4_134_000L
+        private const val SNAPSHOT_HEIGHT = TESTNET_NU6_3_ACTIVATION_HEIGHT
         private const val SESSION_JSON = "{\"round\":\"one\"}"
         private const val TESTNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_TESTNET
         private const val ACCOUNT_INDEX = 0
