@@ -32,7 +32,10 @@ readonly SRC_DIR="${PREFIX}/walletrpc"
 readonly DEST_DIR="lightwallet-client-lib/src/main/proto"
 readonly JAVA_PACKAGE="cash.z.wallet.sdk.internal.rpc"
 
-readonly REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Declared and assigned separately so a failure of git rev-parse is not masked
+# by readonly's own exit status (shellcheck SC2155).
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+readonly REPO_ROOT
 cd "${REPO_ROOT}"
 
 usage() {
