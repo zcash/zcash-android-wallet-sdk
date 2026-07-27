@@ -6,6 +6,32 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0-rc.2] - 2026-07-26
+
+### Fixed
+- Hardware-wallet signing of post-NU6.3 (v6) transactions: the wallet-controlled zero-value
+  Orchard spends that pad such transactions now carry ZIP 32 derivation metadata (via
+  `zcash_client_backend 0.24.0-rc.4`), so signers can identify and sign them. Previously these
+  actions were unsignable and v6 sends failed at finalization with
+  `Pczt(Extraction(Orchard(Extract(MissingSpendAuthSig))))` even though the device approved the
+  transaction.
+
+## [2.7.0-rc.2] - 2026-07-26
+
+### Changed
+- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
+  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
+  both Orchard and Ironwood bundles no longer constructs the key twice.
+
+### Fixed
+- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
+  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
+  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
+- Hardware-wallet (Keystone) PCZT signing now sends the full (non-compacted) signer view in the
+  minimal PCZT encoding (v1 for v5 transactions). The compact view/v2-encoding wire contract is
+  not supported by deployed firmware's ordinary signing flow, and caused finalization failures
+  with `MissingSpendAuthSig`.
+
 ## [2.7.0-rc.1] - 2026-07-25
 
 ### Added
