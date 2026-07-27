@@ -7,6 +7,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Shielded voting works again, on a source-incompatible API.** 2.8.0-rc.1 shipped with the
+  voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
+  built into the native library again and that deprecation is removed, so `VotingRustBackend` and
+  the `sdk-lib` typesafe wrapper around it are usable. The surface is not the one that existed
+  before 2.8.0-rc.1, because it is now built on `zcash_voting` 2.0.0-rc.1: the native entry points
+  went from 60 to 55, three were added, seven were removed and nine of the survivors changed their
+  parameter lists. A wallet that stayed on a pre-2.8 release to keep voting working should expect
+  to revisit every voting call site, and cannot carry a round's existing state across the upgrade —
+  in particular, hotkeys created by an earlier SDK version do not carry over, because they were
+  derived from the wallet seed and hotkeys no longer are. The entries below enumerate the delta.
 - **Shielded voting: hotkeys are no longer derived from the wallet seed, and the application must
   persist them.** `VotingRustBackend.VotingDb.generateHotkey` now takes a network id instead of a
   seed and returns `JniVotingHotkey(storedSecret, rawOrchardAddress, addressIndex)`. A voting
@@ -88,6 +98,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   say what replaces each one.
 
 ### Fixed
+- The native library no longer links two copies of the Zcash crate graph (#2056). `zcash_voting`
+  moved from its crates.io `=0.11.0` pin to a git revision at version 2.0.0-rc.1. The old pin
+  required the pre-Ironwood librustzcash family, which cargo resolved *alongside* this crate's
+  Ironwood family, so every build carried two copies each of `orchard`, `pczt`, `zcash_protocol`,
+  `zcash_keys`, `zcash_address`, `zcash_client_backend` and `zcash_client_sqlite`. Each of those
+  now resolves exactly once. Duplicated crates are not merely wasted space in the shipped `.so`:
+  two copies of a crate are unrelated types to the compiler, so a value that crosses between
+  voting and the rest of the wallet as bytes rather than as a Rust type — a note commitment, a
+  nullifier — compiles cleanly while feeding one `orchard` generation's output into another's
+  circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply rebuilt,
+  and removing it is what allows it back on.
 - The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
   helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
   paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that
