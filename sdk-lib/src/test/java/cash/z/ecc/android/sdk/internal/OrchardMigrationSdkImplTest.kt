@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
@@ -302,7 +303,7 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
-        ): JniPreparedTransfer? = error("Unused")
+        ): JniDueTransferResult = error("Unused")
 
         override suspend fun restartCurrentMigrationStep(
             dbDataPath: String,

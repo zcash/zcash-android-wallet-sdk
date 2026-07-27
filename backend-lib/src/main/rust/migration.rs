@@ -1185,6 +1185,28 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, 0)
 }
 
+/// Pure predicate used by `hasOverdueTransfersNative`.  A transaction is overdue when it is in
+/// `Proved` state, due at `effective_tip`, deps mined, and not yet expired at `scanned_tip`.
+/// Intentionally no kind filter — preparations also close the sync gate, matching the pre-tri-state
+/// `next_broadcastable`-based semantics.
+fn any_overdue(
+    state: &MigrationState,
+    scanned_tip: BlockHeight,
+    effective_tip: BlockHeight,
+) -> bool {
+    if state.is_terminal() {
+        return false;
+    }
+    let scanned_target = scanned_tip + 1;
+    state.transactions().iter().any(|t| {
+        matches!(t.state(), MigrationTxState::Proved)
+            && t.scheduled_height() <= effective_tip
+            && state.deps_mined(t.depends_on())
+            && !(u32::from(t.expiry_height()) != 0
+                && u32::from(t.expiry_height()) < u32::from(scanned_target))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_hasOverdueTransfersNative<
     'local,
@@ -1207,20 +1229,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         };
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
-        // Replicate next_due_transfer_result's filter but using effective_tip for schedule and
-        // scanned_tip for expiry (never pass the estimate into next_broadcastable itself).
-        let scanned_target = scanned_tip + 1;
         Ok(match persisted {
-            Some(state) if !state.is_terminal() => {
-                let overdue = state.transactions().iter().any(|t| {
-                    matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                        && matches!(t.state(), MigrationTxState::Proved)
-                        && t.scheduled_height() <= effective_tip
-                        && state.deps_mined(t.depends_on())
-                        && !(u32::from(t.expiry_height()) != 0
-                            && u32::from(t.expiry_height()) < u32::from(scanned_target))
-                });
-                if overdue { JNI_TRUE } else { JNI_FALSE }
+            Some(state) => {
+                if any_overdue(&state, scanned_tip, effective_tip) {
+                    JNI_TRUE
+                } else {
+                    JNI_FALSE
+                }
             }
             _ => JNI_FALSE,
         })
@@ -3377,6 +3392,25 @@ mod next_due_transfer_tests {
         )
     }
 
+    fn preparation(
+        id: u32,
+        state: MigrationTxState,
+        scheduled: u32,
+        expiry: u32,
+    ) -> MigrationTransaction {
+        MigrationTransaction::from_parts(
+            MigrationTxId::new(id),
+            MigrationTxKind::Preparation { layer: 0, index: 0 },
+            vec![0u8; 32], // dummy pczt
+            vec![],        // no deps
+            BlockHeight::from_u32(scheduled),
+            BlockHeight::from_u32(expiry),
+            Some(BlockHeight::from_u32(scheduled.saturating_sub(10))), // anchor_boundary
+            state,
+            None,
+        )
+    }
+
     /// 1. Terminal migration (Failed status) yields NothingDue even with a Proved+due transfer.
     #[test]
     fn next_due_is_nothing_when_migration_terminal() {
@@ -3431,6 +3465,31 @@ mod next_due_transfer_tests {
         assert!(
             matches!(r2, DueTransferResult::AwaitingProof(_)),
             "with estimated_tip=1006 > scheduled=1005, transfer must be AWAITING_PROOF"
+        );
+    }
+
+    /// 5. Regression: `any_overdue` must count a due Proved PREPARATION as overdue.
+    ///    The pre-tri-state `next_broadcastable`-based gate had no kind filter, so preparations
+    ///    also closed the sync gate. The Transfer-only filter introduced in commit 9f8b349b was a
+    ///    regression; this test locks in the fixed behaviour.
+    #[test]
+    fn has_overdue_counts_due_proved_preparation() {
+        let tip = BlockHeight::from_u32(1000);
+        let prep = preparation(99, MigrationTxState::Proved, 900, 2000);
+        let state = make_state(MigrationStatus::InProgress, vec![prep]);
+
+        // The preparation is Proved, due (scheduled=900 <= tip=1000), deps empty (mined), not
+        // expired (expiry=2000 > scanned_target=1001).  any_overdue must return true.
+        assert!(
+            any_overdue(&state, tip, tip),
+            "a due Proved preparation must count as overdue (sync gate must close)"
+        );
+
+        // Sanity: next_due_transfer_result (Transfer-only) correctly returns NothingDue for the
+        // same state — the two functions are complementary, not duplicated.
+        assert!(
+            matches!(next_due_transfer_result(&state, tip, tip), DueTransferResult::NothingDue),
+            "next_due_transfer_result ignores preparations — only any_overdue sees them"
         );
     }
 
