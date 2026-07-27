@@ -60,6 +60,13 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Int
 
+    suspend fun rescheduleUnprovenTransfer(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        transferId: String
+    ): Long
+
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

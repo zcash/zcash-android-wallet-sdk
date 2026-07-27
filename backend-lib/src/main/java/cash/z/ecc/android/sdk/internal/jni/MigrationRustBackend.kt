@@ -117,6 +117,17 @@ class MigrationRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
+    suspend fun rescheduleUnprovenTransfer(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        transferId: String
+    ): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            rescheduleUnprovenTransferNative(dbDataPath, networkId, accountUuidBytes, transferId)
+        }
+
+    @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         networkId: Int,
@@ -574,6 +585,15 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun rescheduleUnprovenTransferNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            transferId: String
+        ): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)
