@@ -8,17 +8,39 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.8.0-rc.1] - 2026-07-26
 
-### Fixed
-- Hardware-wallet signing of post-NU6.3 (v6) transactions: the wallet-controlled zero-value
-  Orchard spends that pad such transactions now carry ZIP 32 derivation metadata (via
-  `zcash_client_backend 0.24.0-rc.4`), so signers can identify and sign them. Previously these
-  actions were unsignable and v6 sends failed at finalization with
-  `Pczt(Extraction(Orchard(Extract(MissingSpendAuthSig))))` even though the device approved the
-  transaction.
-
-## [2.7.0-rc.2] - 2026-07-26
+### Added
+- `Synchronizer.broadcaster`, a `Broadcaster` that separates transaction creation from
+  submission. `createProposedTransactions` and `createTransactionFromPczt` create and store
+  transactions locally and return them as `CreatedTransaction`s; `submit(transaction, endpoint)`
+  sends one to a caller-chosen lightwalletd endpoint. A transaction created this way is not
+  automatically resubmitted until it has been submitted at least once through `submit`, after
+  which automatic retry uses the endpoints it was actually submitted to rather than the endpoint
+  the synchronizer was built with. The same-named `Synchronizer` methods are unchanged: they
+  still create and submit in one step, to the builder-configured endpoint.
+- `CreatedTransaction` (`txId`, `raw`, `expiryHeight`), the transaction handle that `Broadcaster`
+  returns and accepts.
+- `Synchronizer.fullyScannedHeight`, the height up to which the wallet has trial-decrypted every
+  block, and `Synchronizer.getTreeState(height)`, which returns the protobuf-encoded note
+  commitment tree state at a height so consumers can generate witnesses or verify inclusion
+  proofs without using the lightwalletd transport directly. `getTreeState` performs a live server
+  request and does not wait for local scan state; callers combining its result with local wallet
+  data at the same height should first check that `fullyScannedHeight` has reached `height`.
 
 ### Changed
+- `Synchronizer` gains three abstract members — `fullyScannedHeight`, `getTreeState` and
+  `getWalletDbPathForVoting` — so any implementer or test fake must now provide them.
+  `broadcaster` is not abstract: it defaults to an implementation whose every method throws
+  `UnsupportedOperationException`.
+- New wallets now initialize from a tree state fetched from the server 100 blocks below the chain
+  tip instead of from the bundled checkpoint, so a wallet with no transaction history starts near
+  the tip and scans far fewer blocks while staying reorg-safe. If that fetch does not complete
+  within 5 seconds, initialization falls back to the bundled checkpoint. Wallet restore is
+  unaffected.
+- `String.fromHex` now throws `IllegalArgumentException` on odd-length or non-hex input instead
+  of silently coercing malformed strings.
+- `Synchronizer.getAccounts` now rethrows `CancellationException` instead of wrapping it in
+  `InitializeException.GetAccountsException`, so cancelling the calling coroutine no longer
+  surfaces as an account-loading failure.
 - Shielded voting is unavailable in this release, and `VotingRustBackend` — in the
   separately published `zcash-android-backend` artifact — is now deprecated at
   `ERROR` level. Referencing it is a compile error rather than a runtime
@@ -36,21 +58,31 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differ only in currency as unequal, and code that destructures gains a third
   component. Two-argument construction still compiles unchanged and defaults to
   `USD`.
-- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
-  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
-  both Orchard and Ironwood bundles no longer constructs the key twice.
+- Updated checkpoints for testnet.
 
 ### Fixed
 - `CompactBlockProcessor` no longer crashes with an `IllegalArgumentException` from
   `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
   importing an account whose birthday is at the chain tip). The combined progress ratio now uses
   the same zero-denominator semantics as the individual ratios: an empty range means 100%.
+
+## [2.7.0-rc.2] - 2026-07-26
+
+### Changed
+- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
+  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
+  both Orchard and Ironwood bundles no longer constructs the key twice.
+
+### Fixed
+- Hardware-wallet signing of post-NU6.3 (v6) transactions: the wallet-controlled zero-value
+  Orchard spends that pad such transactions now carry ZIP 32 derivation metadata (via
+  `zcash_client_backend 0.24.0-rc.4`), so signers can identify and sign them. Previously these
+  actions were unsignable and v6 sends failed at finalization with
+  `Pczt(Extraction(Orchard(Extract(MissingSpendAuthSig))))` even though the device approved the
+  transaction.
 - `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
   so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
   at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
-
-## [2.7.0-rc.2] - 2026-07-25
-
 - Hardware-wallet (Keystone) PCZT signing now sends the full (non-compacted) signer view in the
   minimal PCZT encoding (v1 for v5 transactions). The compact view/v2-encoding wire contract is
   not supported by deployed firmware's ordinary signing flow, and caused finalization failures
