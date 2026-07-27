@@ -6,8 +6,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
-import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
+import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
 import org.junit.Ignore
@@ -26,11 +25,12 @@ import kotlin.time.Duration.Companion.minutes
 @OptIn(ExperimentalStdlibApi::class)
 // Kept compiling, and kept @Ignore'd, so the suite is ready to run again the moment
 // the native voting symbols come back. See the @Ignore reason below.
-@Suppress("LargeClass", "MagicNumber", "DEPRECATION_ERROR")
+@Suppress("LargeClass", "MagicNumber")
 @Ignore(
-    "Voting is gated off behind cfg(zcash_voting) on the Ironwood (NU6.3) deps, so the native " +
-        "library exports none of the symbols these tests bind to and every one of them would fail " +
-        "with UnsatisfiedLinkError. Re-enable with the voting module."
+    "Realigned with the zcash_voting 2.0 JNI boundary but not yet re-validated against it: no " +
+        "device or emulator was available when the Kotlin surface was updated, so no call in " +
+        "this suite has been executed against the ported native library. Re-enable and run on a " +
+        "device before relying on it."
 )
 class VotingRustBackendTest {
     companion object {
@@ -64,11 +64,15 @@ class VotingRustBackendTest {
         private const val LARGE_BUNDLE_WEIGHT = 62_500_000L
         private const val SMALL_BUNDLE_WEIGHT = 12_500_000L
         private const val TWO_BUNDLE_ELIGIBLE_WEIGHT = 75_000_000L
+        private const val HOTKEY_STORED_SECRET_BYTES = JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
+        private const val ORCHARD_RAW_ADDRESS_BYTES = JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE
         private val EA_PK = ByteArray(FIELD_BYTES) { 3 }
         private val NC_ROOT = ByteArray(FIELD_BYTES) { 4 }
         private val NULLIFIER_IMT_ROOT = ByteArray(FIELD_BYTES) { 5 }
-        private val HOTKEY_SEED = ByteArray(64) { 0x42 }
-        private val OTHER_HOTKEY_SEED = ByteArray(64) { 0x43 }
+        private val WALLET_SEED = ByteArray(64) { 0x42 }
+        private val OTHER_WALLET_SEED = ByteArray(64) { 0x43 }
+        private val HOTKEY_STORED_SECRET = ByteArray(HOTKEY_STORED_SECRET_BYTES) { 0x42 }
+        private val OTHER_HOTKEY_STORED_SECRET = ByteArray(HOTKEY_STORED_SECRET_BYTES) { 0x43 }
         private val SEED_FINGERPRINT = ByteArray(FIELD_BYTES) { 6 }
         private const val EMPTY_ORCHARD_NOTE_COMMITMENT =
             "0200000000000000000000000000000000000000000000000000000000000000"
@@ -138,13 +142,9 @@ class VotingRustBackendTest {
             }
         }
 
-    @Test
-    fun decompose_weight_returns_exact_shares() =
-        runTest {
-            val shares = VotingRustBackend.new().decomposeWeight(65_535).toList()
-
-            assertEquals((0 until JNI_VOTE_SHARE_COUNT).map { 1L shl it }, shares)
-        }
+    // decompose_weight_returns_exact_shares was deleted: `decompose_weight` is gone from
+    // zcash_voting 2.0 with no equivalent, so there is no longer a native entry point to
+    // exercise and no weight-decomposition behaviour on this boundary to assert.
 
     @Test
     fun warm_proving_caches_smoke() =
@@ -173,18 +173,21 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun derive_hotkey_raw_address_is_deterministic_and_rejects_short_seed() =
+    fun derive_hotkey_raw_address_is_deterministic_in_the_stored_secret() =
         runTest {
             val backend = VotingRustBackend.new()
 
-            val first = backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
-            val second = backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
-            val otherSeed = backend.deriveHotkeyRawAddress(OTHER_HOTKEY_SEED, TESTNET_NETWORK_ID)
-            val mainnet = backend.deriveHotkeyRawAddress(HOTKEY_SEED, MAINNET_NETWORK_ID)
+            val first = backend.deriveHotkeyRawAddress(HOTKEY_STORED_SECRET, TESTNET_NETWORK_ID)
+            val second = backend.deriveHotkeyRawAddress(HOTKEY_STORED_SECRET, TESTNET_NETWORK_ID)
+            val otherSecret =
+                backend.deriveHotkeyRawAddress(OTHER_HOTKEY_STORED_SECRET, TESTNET_NETWORK_ID)
+            val mainnet = backend.deriveHotkeyRawAddress(HOTKEY_STORED_SECRET, MAINNET_NETWORK_ID)
 
-            assertEquals(DIVERSIFIER_BYTES + FIELD_BYTES, first.size)
+            // Recovering the address from the persisted secret is the only route back to it:
+            // the round state never reports it and the wallet seed cannot produce it.
+            assertEquals(ORCHARD_RAW_ADDRESS_BYTES, first.size)
             assertContentEquals(first, second)
-            assertFalse(first.contentEquals(otherSeed))
+            assertFalse(first.contentEquals(otherSecret))
             assertFalse(first.contentEquals(mainnet))
             assertFailsWith<RuntimeException> {
                 backend.deriveHotkeyRawAddress(SHORT_FIELD, TESTNET_NETWORK_ID)
@@ -234,6 +237,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = SESSION_JSON
                 )
 
@@ -276,6 +280,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
@@ -300,6 +305,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
                 firstWallet.initRound(
@@ -308,6 +314,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
@@ -334,6 +341,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
             }
@@ -344,6 +352,7 @@ class VotingRustBackendTest {
                     eaPK = SHORT_FIELD,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
             }
@@ -402,6 +411,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
@@ -432,6 +442,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
@@ -455,6 +466,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
@@ -478,6 +490,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
@@ -501,6 +514,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
@@ -577,6 +591,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = backend.extractNcRoot(treeState),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
                 db.setupBundles(PCZT_ROUND_ID, notes)
@@ -615,6 +630,7 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
                 db.setupBundles(PCZT_ROUND_ID, notes)
@@ -636,8 +652,53 @@ class VotingRustBackendTest {
             }
         }
 
+    // Replaces generate_hotkey_is_deterministic_and_rejects_short_seed. Determinism in a
+    // caller-supplied seed is structurally impossible now: a voting hotkey is app-owned random
+    // material generated inside zcash_voting, not a seed derivation, so there is no seed
+    // parameter to be deterministic in and no short seed to reject. The property that replaces
+    // it is the one a wallet actually depends on — every call yields fresh, unrecoverable key
+    // material whose address agrees with what deriveHotkeyRawAddress recomputes from the
+    // persisted secret.
     @Test
-    fun generate_hotkey_is_deterministic_and_rejects_short_seed() =
+    fun generate_hotkey_returns_fresh_material_recoverable_from_its_stored_secret() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val db = backend.openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
+                    sessionJson = null
+                )
+
+                val first = db.generateHotkey(ROUND_ID, TESTNET_NETWORK_ID)
+                val second = db.generateHotkey(ROUND_ID, TESTNET_NETWORK_ID)
+
+                assertEquals(HOTKEY_STORED_SECRET_BYTES, first.storedSecret.size)
+                assertEquals(ORCHARD_RAW_ADDRESS_BYTES, first.rawOrchardAddress.size)
+                assertFalse(first.storedSecret.contentEquals(second.storedSecret))
+                assertFalse(first.rawOrchardAddress.contentEquals(second.rawOrchardAddress))
+                assertContentEquals(
+                    first.rawOrchardAddress,
+                    backend.deriveHotkeyRawAddress(first.storedSecret, TESTNET_NETWORK_ID)
+                )
+                assertEquals(
+                    JniRoundPhase.HOTKEY_GENERATED,
+                    assertNotNull(db.getRoundState(ROUND_ID)).roundPhase
+                )
+            } finally {
+                db.close()
+            }
+        }
+
+    // The hotkey secret is the one piece of wallet state a seed-phrase restore cannot
+    // reproduce, so nothing may render it into a string that could reach a log.
+    @Test
+    fun generated_hotkey_does_not_render_its_stored_secret() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
@@ -647,26 +708,39 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
 
-                val first = db.generateHotkey(ROUND_ID, HOTKEY_SEED)
-                val second = db.generateHotkey(ROUND_ID, HOTKEY_SEED)
-                val other = db.generateHotkey(ROUND_ID, OTHER_HOTKEY_SEED)
+                val hotkey: JniVotingHotkey = db.generateHotkey(ROUND_ID, TESTNET_NETWORK_ID)
 
-                assertContentEquals(first.publicKey.value, second.publicKey.value)
-                assertEquals(first.address, second.address)
-                assertFalse(first.publicKey.value.contentEquals(other.publicKey.value))
-                assertEquals(FIELD_BYTES, first.publicKey.value.size)
-                assertTrue(first.address.startsWith("sv1"))
-                assertEquals(
-                    JniRoundPhase.HOTKEY_GENERATED,
-                    assertNotNull(db.getRoundState(ROUND_ID)).roundPhase
+                assertEquals("JniVotingHotkey(redacted)", hotkey.toString())
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun round_state_never_reports_the_hotkey_address() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
+            try {
+                db.initRound(
+                    roundId = ROUND_ID,
+                    snapshotHeight = SNAPSHOT_HEIGHT,
+                    eaPK = EA_PK,
+                    ncRoot = NC_ROOT,
+                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
+                    sessionJson = null
                 )
+                db.generateHotkey(ROUND_ID, TESTNET_NETWORK_ID)
 
-                assertFailsWith<RuntimeException> {
-                    db.generateHotkey(ROUND_ID, SHORT_FIELD)
-                }
+                // zcash_voting hardcodes both fields to None, so generating a hotkey does not
+                // make them observable. A caller that reads the address from here reads null.
+                val state = assertNotNull(db.getRoundState(ROUND_ID))
+                assertNull(state.hotkeyAddress)
+                assertNull(state.delegatedWeight)
             } finally {
                 db.close()
             }
@@ -684,20 +758,24 @@ class VotingRustBackendTest {
                 val mismatchedSamePositionNotesJson =
                     notes(noteCount = 6, value = PCZT_NOTE_VALUE, ufvkString = "different")
                 val ufvk = deriveTestUfvk()
-                val mismatchedUfvk = deriveTestUfvk(seed = OTHER_HOTKEY_SEED)
-                db.initPcztRoundWithBundles(notes)
+                val mismatchedUfvk = deriveTestUfvk(seed = OTHER_WALLET_SEED)
+                val hotkey = db.initPcztRoundWithBundles(notes)
 
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, mismatchedNotesJson)
+                    db.buildTestGovernancePczt(ufvk, mismatchedNotesJson, hotkey.storedSecret)
                 }
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, mismatchedSameIndexNotesJson)
+                    db.buildTestGovernancePczt(ufvk, mismatchedSameIndexNotesJson, hotkey.storedSecret)
                 }
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, mismatchedSamePositionNotesJson)
+                    db.buildTestGovernancePczt(
+                        ufvk,
+                        mismatchedSamePositionNotesJson,
+                        hotkey.storedSecret
+                    )
                 }
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztFromSeed(mismatchedUfvk, notes)
+                    db.buildTestGovernancePcztFromSeed(mismatchedUfvk, notes, hotkey.storedSecret)
                 }
             } finally {
                 db.close()
@@ -717,12 +795,13 @@ class VotingRustBackendTest {
                     eaPK = EA_PK,
                     ncRoot = NC_ROOT,
                     nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+                    networkId = TESTNET_NETWORK_ID,
                     sessionJson = null
                 )
                 db.setupBundles(PCZT_ROUND_ID, notes)
 
                 assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, notes)
+                    db.buildTestGovernancePczt(ufvk, notes, HOTKEY_STORED_SECRET)
                 }
                 assertEquals(
                     JniRoundPhase.INITIALIZED,
@@ -741,9 +820,9 @@ class VotingRustBackendTest {
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
-                db.initPcztRoundWithBundles(notes)
+                val hotkey = db.initPcztRoundWithBundles(notes)
 
-                val pczt = db.buildTestGovernancePczt(ufvk, notes)
+                val pczt = db.buildTestGovernancePczt(ufvk, notes, hotkey.storedSecret)
                 val extractedSighash = backend.extractPcztSighash(pczt.pcztBytes)
 
                 assertTrue(pczt.pcztBytes.isNotEmpty())
@@ -756,7 +835,7 @@ class VotingRustBackendTest {
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
                 )
                 assertFailsWith<RuntimeException> {
-                    db.generateHotkey(PCZT_ROUND_ID, HOTKEY_SEED)
+                    db.generateHotkey(PCZT_ROUND_ID, TESTNET_NETWORK_ID)
                 }
                 assertFailsWith<RuntimeException> {
                     backend.extractSpendAuthSig(pczt.pcztBytes, pczt.actionIndex)
@@ -775,11 +854,13 @@ class VotingRustBackendTest {
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
-                explicitDb.initPcztRoundWithBundles(notes)
-                seedDb.initPcztRoundWithBundles(notes)
+                val explicitHotkey = explicitDb.initPcztRoundWithBundles(notes)
+                val seedHotkey = seedDb.initPcztRoundWithBundles(notes)
 
-                val explicitPczt = explicitDb.buildTestGovernancePczt(ufvk, notes)
-                val seedPczt = seedDb.buildTestGovernancePcztFromSeed(ufvk, notes)
+                val explicitPczt =
+                    explicitDb.buildTestGovernancePczt(ufvk, notes, explicitHotkey.storedSecret)
+                val seedPczt =
+                    seedDb.buildTestGovernancePcztFromSeed(ufvk, notes, seedHotkey.storedSecret)
 
                 assertValidGovernancePczt(backend, explicitDb, explicitPczt)
                 assertValidGovernancePczt(backend, seedDb, seedPczt)
@@ -789,65 +870,45 @@ class VotingRustBackendTest {
             }
         }
 
+    // build_governance_pczt_from_seed_uses_wallet_account_but_hotkey_account_zero was deleted.
+    // It asserted that the hotkey address is derived at account 0 even when the wallet account
+    // index differs, by comparing deriveHotkeyRawAddressForAccountFixture at two account
+    // indices. Both halves of that comparison are gone: the hotkey account index is no longer
+    // caller-selectable in zcash_voting 2.0, so the fixture entry point that took one was
+    // removed, and a hotkey is random material rather than an account derivation, so "the
+    // address at account N" is not a thing the boundary can produce. The recipient half of the
+    // property — that the PCZT pays the round's own hotkey — is covered by
+    // build_governance_pczt_pays_the_rounds_hotkey below.
+
     @Test
-    fun build_governance_pczt_from_seed_uses_wallet_account_but_hotkey_account_zero() =
+    fun build_governance_pczt_pays_the_rounds_hotkey() =
         runTest {
             val backend = VotingRustBackend.new()
-            val explicitDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             val seedDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
                 val accountIndex = 1
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk(accountIndex = accountIndex)
-                val hotkeyAccountZero =
-                    backend.deriveHotkeyRawAddressForAccountFixture(
-                        HOTKEY_SEED,
-                        TESTNET_NETWORK_ID,
-                        ACCOUNT_INDEX
-                    )
-                val hotkeyWalletAccount =
-                    backend.deriveHotkeyRawAddressForAccountFixture(
-                        HOTKEY_SEED,
-                        TESTNET_NETWORK_ID,
-                        accountIndex
-                    )
-                explicitDb.initPcztRoundWithBundles(notes)
-                seedDb.initPcztRoundWithBundles(notes)
+                val hotkey = seedDb.initPcztRoundWithBundles(notes)
 
-                assertContentEquals(
-                    hotkeyAccountZero,
-                    backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
-                )
-                assertFalse(hotkeyAccountZero.contentEquals(hotkeyWalletAccount))
-
-                val explicitPczt =
-                    explicitDb.buildTestGovernancePczt(
-                        ufvk = ufvk,
-                        notes = notes,
-                        options =
-                            GovernancePcztOptions(
-                                hotkeyRawAddress = hotkeyAccountZero,
-                                accountIndex = accountIndex
-                            )
-                    )
                 val seedPczt =
                     seedDb.buildTestGovernancePcztFromSeed(
                         ufvk = ufvk,
                         notes = notes,
+                        hotkeyStoredSecret = hotkey.storedSecret,
                         options = GovernancePcztOptions(accountIndex = accountIndex)
                     )
 
-                assertValidGovernancePczt(backend, explicitDb, explicitPczt)
                 assertValidGovernancePczt(backend, seedDb, seedPczt)
                 val seedPcztRecipient =
                     backend.extractPcztOutputRecipientFixture(
                         seedPczt.pcztBytes,
                         seedPczt.actionIndex
                     )
-                assertContentEquals(hotkeyAccountZero, seedPcztRecipient)
-                assertFalse(seedPcztRecipient.contentEquals(hotkeyWalletAccount))
+                // The recipient is the generated hotkey's own address, not anything derived
+                // from the wallet account the delegation spends from.
+                assertContentEquals(hotkey.rawOrchardAddress, seedPcztRecipient)
             } finally {
-                explicitDb.close()
                 seedDb.close()
             }
         }
@@ -859,14 +920,15 @@ class VotingRustBackendTest {
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
-                db.initPcztRoundWithBundles(notes)
+                val hotkey = db.initPcztRoundWithBundles(notes)
 
                 val error =
                     assertFailsWith<RuntimeException> {
                         db.buildTestGovernancePcztFromSeed(
                             ufvk = ufvk,
                             notes = notes,
-                            options = GovernancePcztOptions(walletSeed = OTHER_HOTKEY_SEED)
+                            hotkeyStoredSecret = hotkey.storedSecret,
+                            options = GovernancePcztOptions(walletSeed = OTHER_WALLET_SEED)
                         )
                     }
 
@@ -887,12 +949,16 @@ class VotingRustBackendTest {
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk(networkId = MAINNET_NETWORK_ID)
-                db.initPcztRoundWithBundles(notes)
+                // The round is bound to its network at init_round, so a mainnet PCZT needs a
+                // mainnet round; the network id can no longer differ between the two calls.
+                val hotkey =
+                    db.initPcztRoundWithBundles(notes, networkId = MAINNET_NETWORK_ID)
 
                 val pczt =
                     db.buildTestGovernancePczt(
                         ufvk = ufvk,
                         notes = notes,
+                        hotkeyStoredSecret = hotkey.storedSecret,
                         options = GovernancePcztOptions(networkId = MAINNET_NETWORK_ID)
                     )
 
@@ -1015,7 +1081,11 @@ class VotingRustBackendTest {
                         pirServerUrl = "http://127.0.0.1:1",
                         networkId = TESTNET_NETWORK_ID,
                         notes = notes,
-                        hotkeyRawAddress = SHORT_FIELD,
+                        fvkBytes = SHORT_FIELD,
+                        hotkeyStoredSecret = HOTKEY_STORED_SECRET,
+                        seedFingerprint = SEED_FINGERPRINT,
+                        accountIndex = ACCOUNT_INDEX,
+                        roundName = ROUND_NAME,
                         proofProgress = null
                     )
                 }
@@ -1023,17 +1093,8 @@ class VotingRustBackendTest {
                     db.getDelegationSubmission(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 1,
-                        senderSeed = SHORT_FIELD,
-                        networkId = TESTNET_NETWORK_ID,
-                        accountIndex = ACCOUNT_INDEX
-                    )
-                }
-                assertFailsWith<RuntimeException> {
-                    db.getDelegationSubmissionWithKeystoneSig(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        keystoneSig = ByteArray(FIELD_BYTES),
-                        keystoneSighash = ByteArray(FIELD_BYTES)
+                        spendAuthSig = SHORT_FIELD,
+                        sighash = ByteArray(FIELD_BYTES)
                     )
                 }
             } finally {
@@ -1041,107 +1102,19 @@ class VotingRustBackendTest {
             }
         }
 
-    @Test
-    fun build_share_payloads_round_trips_commitment_fields() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val commitment = jniVoteCommitmentResult()
+    // build_share_payloads_round_trips_commitment_fields,
+    // build_share_payloads_single_share_mode_keeps_commitment_context and
+    // build_share_payloads_rejects_malformed_share_counts were deleted along with
+    // buildSharePayloadsNative. Building payloads from a caller-supplied commitment is
+    // structurally impossible: VotingDb::build_share_payloads needs a VoteCommitmentBundle,
+    // which no public zcash_voting API hands out, so the payloads now come back from
+    // commitVote itself and there is no standalone entry point left to test.
 
-            val payloads =
-                backend.buildSharePayloads(
-                    commitment = commitment,
-                    voteDecision = 1,
-                    numOptions = 2,
-                    vcTreePosition = 42,
-                    singleShareMode = false
-                )
-
-            assertEquals(JNI_VOTE_SHARE_COUNT, payloads.size)
-            assertContentEquals(commitment.sharesHash, payloads.first().sharesHash)
-            assertEquals(commitment.proposalId, payloads.first().proposalId)
-            assertEquals(1, payloads.first().voteDecision)
-            assertEquals(42, payloads.first().treePosition)
-            assertEquals(commitment.encShares.first(), payloads.first().encShare)
-            assertEquals(commitment.encShares, payloads.first().allEncShares)
-            assertContentEquals(commitment.shareComms.first(), payloads.first().shareComms.first())
-            assertContentEquals(commitment.shareBlinds.first(), payloads.first().primaryBlind)
-        }
-
-    @Test
-    fun build_share_payloads_single_share_mode_keeps_commitment_context() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val commitment = jniVoteCommitmentResult()
-
-            val payloads =
-                backend.buildSharePayloads(
-                    commitment = commitment,
-                    voteDecision = 1,
-                    numOptions = 2,
-                    vcTreePosition = 42,
-                    singleShareMode = true
-                )
-
-            assertEquals(1, payloads.size)
-            val payload = payloads.single()
-            assertContentEquals(commitment.sharesHash, payload.sharesHash)
-            assertEquals(commitment.proposalId, payload.proposalId)
-            assertEquals(1, payload.voteDecision)
-            assertEquals(42, payload.treePosition)
-            assertEquals(0, payload.encShare.shareIndex)
-            assertEquals(commitment.encShares.first(), payload.encShare)
-            assertEquals(commitment.encShares, payload.allEncShares)
-            assertEquals(JNI_VOTE_SHARE_COUNT, payload.allEncShares.size)
-            assertContentEquals(commitment.shareComms.first(), payload.shareComms.first())
-            assertContentEquals(commitment.shareBlinds.first(), payload.primaryBlind)
-        }
-
-    @Test
-    fun build_share_payloads_rejects_malformed_share_counts() =
-        runTest {
-            val backend = VotingRustBackend.new()
-
-            assertFailsWith<RuntimeException> {
-                backend.buildSharePayloads(
-                    commitment = jniVoteCommitmentResult(encShares = emptyList()),
-                    voteDecision = 1,
-                    numOptions = 2,
-                    vcTreePosition = 42,
-                    singleShareMode = false
-                )
-            }
-        }
-
-    @Test
-    fun sign_cast_vote_returns_signature_for_account_zero() =
-        runTest {
-            val backend = VotingRustBackend.new()
-
-            val signature =
-                backend.signCastVote(
-                    hotkeySeed = HOTKEY_SEED,
-                    networkId = TESTNET_NETWORK_ID,
-                    accountIndex = ACCOUNT_INDEX,
-                    commitment = jniVoteCommitmentResult(alphaV = ByteArray(FIELD_BYTES))
-                )
-
-            assertEquals(JNI_SPEND_AUTH_SIG_BYTES_SIZE, signature.size)
-        }
-
-    @Test
-    fun sign_cast_vote_rejects_unsupported_account_index() =
-        runTest {
-            val backend = VotingRustBackend.new()
-
-            assertFailsWith<RuntimeException> {
-                backend.signCastVote(
-                    hotkeySeed = HOTKEY_SEED,
-                    networkId = TESTNET_NETWORK_ID,
-                    accountIndex = 1,
-                    commitment = jniVoteCommitmentResult()
-                )
-            }
-        }
+    // sign_cast_vote_returns_signature_for_account_zero and
+    // sign_cast_vote_rejects_unsupported_account_index were deleted along with
+    // signCastVoteNative. vote_commitment::sign_cast_vote is pub(crate) now; signing happens
+    // inside commitVote, so there is neither a standalone signer to call nor a caller-selectable
+    // account index to reject.
 
     @Test
     fun sync_vote_tree_reaches_native_boundary() =
@@ -1198,20 +1171,20 @@ class VotingRustBackendTest {
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
-                db.initPcztRoundWithBundles(notes)
-                db.buildTestGovernancePczt(ufvk, notes)
+                val hotkey = db.initPcztRoundWithBundles(notes)
+                db.buildTestGovernancePczt(ufvk, notes, hotkey.storedSecret)
 
                 assertFailsWith<RuntimeException> {
-                    db.buildVoteCommitment(
+                    db.commitVote(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 1,
-                        hotkeySeed = HOTKEY_SEED,
+                        hotkeyStoredSecret = hotkey.storedSecret,
+                        networkId = TESTNET_NETWORK_ID,
                         proposalId = 1,
                         choice = 0,
                         numOptions = 2,
+                        vcTreePosition = 0,
                         witness = jniVanWitness(),
-                        networkId = TESTNET_NETWORK_ID,
-                        accountIndex = ACCOUNT_INDEX,
                         singleShare = false,
                         proofProgress = null
                     )
@@ -1241,7 +1214,7 @@ class VotingRustBackendTest {
                 )
 
                 db.assertStoredTxHashesRoundTrip()
-                db.assertStoredCommitmentBundleRoundTrips()
+                db.assertUnconfirmedVoteHasNoCommitmentBundle()
                 db.assertShareDelegationRecoveryStateRoundTrips()
                 db.clearRecoveryState(PCZT_ROUND_ID)
                 db.assertRecoveryStateCleared()
@@ -1268,7 +1241,6 @@ class VotingRustBackendTest {
                     proposalId = 1,
                     shareIndex = SHARE_INDEX,
                     sentToUrls = listOf("https://helper-1.example"),
-                    nullifier = ByteArray(FIELD_BYTES) { 0x55 },
                     submitAt = 123
                 )
 
@@ -1343,59 +1315,37 @@ class VotingRustBackendTest {
             assertContentEquals(ByteArray(FIELD_BYTES) { 0x20 }, witness.authPath.first())
         }
 
+    // get_delegation_submission_returns_success_result_through_jni was deleted. It obtained a
+    // valid submission by handing the wallet seed to getDelegationSubmission and letting
+    // zcash_voting derive the account key and sign. That path is gone: software and hardware
+    // signing converged on "the caller supplies a SpendAuth signature over the ZIP-244
+    // sighash", and no JNI entry point signs a governance PCZT, so this suite can no longer
+    // produce a signature that verifies. The success path is now only reachable with a real
+    // signer and belongs in an end-to-end test. What remains testable here — that an invalid
+    // signature is rejected rather than stored — is asserted below.
     @Test
-    fun get_delegation_submission_returns_success_result_through_jni() =
+    fun get_delegation_submission_rejects_a_signature_that_does_not_verify() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID)
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
                 val ufvk = deriveTestUfvk()
-                val proof = ByteArray(96) { 0x7A }
-                db.initPcztRoundWithBundles(notes)
-                db.buildTestGovernancePczt(ufvk, notes)
+                val hotkey = db.initPcztRoundWithBundles(notes)
+                val pczt = db.buildTestGovernancePczt(ufvk, notes, hotkey.storedSecret)
                 db.storeDelegationProofFixtureForTesting(
                     roundId = PCZT_ROUND_ID,
                     bundleIndex = 1,
-                    proof = proof
+                    proof = ByteArray(96) { 0x7A }
                 )
-
-                val submission =
-                    db.getDelegationSubmission(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        senderSeed = HOTKEY_SEED,
-                        networkId = TESTNET_NETWORK_ID,
-                        accountIndex = ACCOUNT_INDEX
-                    )
-
-                assertContentEquals(proof, submission.proof)
-                assertEquals(FIELD_BYTES, submission.rk.size)
-                assertEquals(64, submission.spendAuthSig.size)
-                assertEquals(FIELD_BYTES, submission.sighash.size)
-                assertEquals(5, submission.govNullifiers.size)
-                assertEquals(PCZT_ROUND_ID, submission.voteRoundId)
 
                 assertFailsWith<RuntimeException> {
                     db.getDelegationSubmission(
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 1,
-                        senderSeed = OTHER_HOTKEY_SEED,
-                        networkId = TESTNET_NETWORK_ID,
-                        accountIndex = ACCOUNT_INDEX
+                        spendAuthSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE) { 0x11 },
+                        sighash = pczt.sighash
                     )
                 }
-
-                val keystoneSubmission =
-                    db.getDelegationSubmissionWithKeystoneSig(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        keystoneSig = submission.spendAuthSig,
-                        keystoneSighash = submission.sighash
-                    )
-                assertContentEquals(submission.proof, keystoneSubmission.proof)
-                assertContentEquals(submission.spendAuthSig, keystoneSubmission.spendAuthSig)
-                assertContentEquals(submission.sighash, keystoneSubmission.sighash)
-                assertEquals(PCZT_ROUND_ID, keystoneSubmission.voteRoundId)
             } finally {
                 db.close()
             }
@@ -1411,53 +1361,50 @@ class VotingRustBackendTest {
         storeDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1, txHash = "delegation-tx")
         assertEquals("delegation-tx", getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
 
-        storeVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1, txHash = "vote-tx")
+        // storeVoteTxHash and markVoteSubmitted collapsed into one conflict-checked call: a
+        // vote is submitted by having a recorded transaction hash, not by a separate flag.
+        markVoteSubmitted(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1, txHash = "vote-tx")
         assertEquals("vote-tx", getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
-
-        markVoteSubmitted(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1)
         assertTrue(
             getVotes(PCZT_ROUND_ID)
                 .single { vote ->
                     vote.bundleIndex == 1 && vote.proposalId == 1
                 }.submitted
         )
+
+        // Recording the same hash again is idempotent; a different hash is now rejected, so a
+        // wallet keeps polling the transaction it first submitted.
+        markVoteSubmitted(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1, txHash = "vote-tx")
+        assertFailsWith<RuntimeException> {
+            markVoteSubmitted(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1, txHash = "other-tx")
+        }
+        assertEquals("vote-tx", getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
     }
 
-    private suspend fun VotingRustBackend.VotingDb.assertStoredCommitmentBundleRoundTrips() {
+    /**
+     * Replaces assertStoredCommitmentBundleRoundTrips.
+     *
+     * Seeding a commitment bundle and reading it back is structurally impossible now: the
+     * recovery bundle is library-owned and `storeCommitmentBundleNative` is gone, so the only
+     * writer is a real `commitVote` proving run. What is still assertable at this boundary is
+     * the documented gate — a vote that has not reached the confirmed phase reports null rather
+     * than throwing.
+     */
+    private suspend fun VotingRustBackend.VotingDb.assertUnconfirmedVoteHasNoCommitmentBundle() {
         assertNull(getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
-
-        val commitment = jniVoteCommitmentResult()
-        storeCommitmentBundle(
-            roundId = PCZT_ROUND_ID,
-            bundleIndex = 1,
-            proposalId = 1,
-            commitment = commitment,
-            vcTreePosition = 42
-        )
-        val recoveredCommitment =
-            assertNotNull(
-                getCommitmentBundle(
-                    PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = 1
-                )
-            )
-        assertEquals(commitment, recoveredCommitment.commitment)
-        assertEquals(42, recoveredCommitment.vcTreePosition)
+        assertNull(getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 9, proposalId = 9))
     }
 
     private suspend fun VotingRustBackend.VotingDb.assertShareDelegationRecoveryStateRoundTrips() {
-        val nullifier = ByteArray(FIELD_BYTES) { 0x55 }
         recordShareDelegation(
             roundId = PCZT_ROUND_ID,
             bundleIndex = 1,
             proposalId = 1,
             shareIndex = SHARE_INDEX,
             sentToUrls = listOf("https://helper-1.example"),
-            nullifier = nullifier,
             submitAt = 123
         )
-        assertRecordedShareDelegation(nullifier)
+        assertRecordedShareDelegation()
 
         addSentServers(
             roundId = PCZT_ROUND_ID,
@@ -1481,13 +1428,13 @@ class VotingRustBackendTest {
         assertEquals(emptyList(), getUnconfirmedDelegations(PCZT_ROUND_ID).asList())
     }
 
-    private suspend fun VotingRustBackend.VotingDb.assertRecordedShareDelegation(
-        nullifier: ByteArray
-    ) {
+    private suspend fun VotingRustBackend.VotingDb.assertRecordedShareDelegation() {
         val recordedShare = getShareDelegations(PCZT_ROUND_ID).single()
         assertEquals(SHARE_INDEX, recordedShare.shareIndex)
         assertEquals(listOf("https://helper-1.example"), recordedShare.sentToUrls)
-        assertContentEquals(nullifier, recordedShare.nullifier)
+        // The nullifier is no longer caller-supplied — share::record derives it from the vote's
+        // own recovery state — so only its shape is assertable here.
+        assertEquals(FIELD_BYTES, recordedShare.nullifier.size)
         assertFalse(recordedShare.confirmed)
         assertEquals(123, recordedShare.submitAt)
         assertEquals(1, getUnconfirmedDelegations(PCZT_ROUND_ID).size)
@@ -1519,13 +1466,13 @@ class VotingRustBackendTest {
                         .toFile(),
                 zcashNetworkId = TESTNET_NETWORK_ID
             )
-        assertEquals(0, rustBackend.initDataDb(HOTKEY_SEED))
+        assertEquals(0, rustBackend.initDataDb(WALLET_SEED))
 
         val account =
             rustBackend.createAccount(
                 accountName = "account",
                 keySource = null,
-                seed = HOTKEY_SEED,
+                seed = WALLET_SEED,
                 treeState = VotingRustBackend.new().treeStateFixtureForTesting(),
                 recoverUntil = null
             )
@@ -1615,7 +1562,7 @@ class VotingRustBackendTest {
     }
 
     private suspend fun deriveTestUfvk(
-        seed: ByteArray = HOTKEY_SEED,
+        seed: ByteArray = WALLET_SEED,
         networkId: Int = TESTNET_NETWORK_ID,
         accountIndex: Int = ACCOUNT_INDEX
     ): String =
@@ -1624,26 +1571,36 @@ class VotingRustBackendTest {
             .deriveUnifiedFullViewingKeys(seed, networkId, accountIndex + 1)
             .last()
 
+    /**
+     * Initialises a round through hotkey generation and returns the generated hotkey.
+     *
+     * The hotkey's stored secret has to be threaded into every later call for the round —
+     * governance PCZT construction, delegation proving and vote commitment all take it — because
+     * nothing can re-derive it.
+     */
     private suspend fun VotingRustBackend.VotingDb.initPcztRoundWithBundles(
         notes: List<JniNoteInfo>,
         roundId: String = PCZT_ROUND_ID,
-        ncRoot: ByteArray = NC_ROOT
-    ) {
+        ncRoot: ByteArray = NC_ROOT,
+        networkId: Int = TESTNET_NETWORK_ID
+    ): JniVotingHotkey {
         initRound(
             roundId = roundId,
             snapshotHeight = SNAPSHOT_HEIGHT,
             eaPK = EA_PK,
             ncRoot = ncRoot,
             nullifierIMTRoot = NULLIFIER_IMT_ROOT,
+            networkId = networkId,
             sessionJson = null
         )
         setupBundles(roundId, notes)
-        generateHotkey(roundId, HOTKEY_SEED)
+        return generateHotkey(roundId, networkId)
     }
 
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePczt(
         ufvk: String,
         notes: List<JniNoteInfo>,
+        hotkeyStoredSecret: ByteArray,
         options: GovernancePcztOptions = GovernancePcztOptions()
     ): JniGovernancePczt {
         val backend = VotingRustBackend.new()
@@ -1651,9 +1608,7 @@ class VotingRustBackendTest {
             roundId = options.roundId,
             bundleIndex = 1,
             fvkBytes = backend.extractOrchardFvkFromUfvk(ufvk, options.networkId),
-            hotkeyRawAddress =
-                options.hotkeyRawAddress
-                    ?: backend.deriveHotkeyRawAddress(options.hotkeySeed, options.networkId),
+            hotkeyStoredSecret = hotkeyStoredSecret,
             networkId = options.networkId,
             accountIndex = options.accountIndex,
             notes = notes,
@@ -1665,6 +1620,7 @@ class VotingRustBackendTest {
     private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePcztFromSeed(
         ufvk: String,
         notes: List<JniNoteInfo>,
+        hotkeyStoredSecret: ByteArray,
         options: GovernancePcztOptions = GovernancePcztOptions()
     ) = buildGovernancePcztFromSeed(
         roundId = options.roundId,
@@ -1674,7 +1630,7 @@ class VotingRustBackendTest {
         accountIndex = options.accountIndex,
         notes = notes,
         walletSeed = options.walletSeed,
-        hotkeySeed = options.hotkeySeed,
+        hotkeyStoredSecret = hotkeyStoredSecret,
         seedFingerprint = SEED_FINGERPRINT,
         roundName = ROUND_NAME
     )
@@ -1696,11 +1652,9 @@ class VotingRustBackendTest {
     }
 
     private class GovernancePcztOptions(
-        val hotkeySeed: ByteArray = HOTKEY_SEED,
-        val walletSeed: ByteArray = HOTKEY_SEED,
+        val walletSeed: ByteArray = WALLET_SEED,
         val networkId: Int = TESTNET_NETWORK_ID,
         val roundId: String = PCZT_ROUND_ID,
-        val hotkeyRawAddress: ByteArray? = null,
         val accountIndex: Int = ACCOUNT_INDEX
     )
 
@@ -1771,43 +1725,10 @@ class VotingRustBackendTest {
         anchorHeight = anchorHeight
     )
 
-    private fun jniVoteCommitmentResult(
-        encShares: List<JniWireEncryptedShare> = wireShares(),
-        shareBlinds: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 5),
-        shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 6),
-        bundleIndex: Int = 1,
-        alphaV: ByteArray = ByteArray(FIELD_BYTES) { 8 }
-    ) = JniVoteCommitmentResult(
-        vanNullifier = ByteArray(FIELD_BYTES) { 1 },
-        voteAuthorityNoteNew = ByteArray(FIELD_BYTES) { 2 },
-        voteCommitment = ByteArray(FIELD_BYTES) { 3 },
-        proposalId = 1,
-        bundleIndex = bundleIndex,
-        proof = byteArrayOf(4),
-        encShares = encShares,
-        anchorHeight = SNAPSHOT_HEIGHT,
-        voteRoundId = PCZT_ROUND_ID,
-        sharesHash = ByteArray(FIELD_BYTES) { 4 },
-        shareBlinds = shareBlinds,
-        shareComms = shareComms,
-        rVpk = ByteArray(FIELD_BYTES) { 7 },
-        alphaV = alphaV
-    )
-
-    private fun wireShares(
-        count: Int = JNI_VOTE_SHARE_COUNT
-    ) = List(count) { index ->
-        JniWireEncryptedShare(
-            c1 = ByteArray(FIELD_BYTES) { (index + 1).toByte() },
-            c2 = ByteArray(FIELD_BYTES) { (index + 2).toByte() },
-            shareIndex = index
-        )
-    }
-
-    private fun fieldElements(
-        count: Int,
-        byteValue: Int
-    ) = List(count) { ByteArray(FIELD_BYTES) { byteValue.toByte() } }
+    // jniVoteCommitmentResult, wireShares and fieldElements were deleted along with the tests
+    // that used them. A commitment result can no longer be synthesised in Kotlin and handed
+    // back across the boundary: nothing in the JNI surface accepts one any more, since
+    // buildSharePayloads, signCastVote and storeCommitmentBundle are all gone.
 
     private fun repeatedHex(
         byteValue: Int,

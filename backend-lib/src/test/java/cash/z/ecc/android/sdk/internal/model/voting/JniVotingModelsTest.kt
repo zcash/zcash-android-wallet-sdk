@@ -6,34 +6,68 @@ import kotlin.test.assertFalse
 
 class JniVotingModelsTest {
     @Test
-    fun vote_commitment_result_to_string_omits_commitment_details() {
+    fun vote_commit_result_to_string_omits_commitment_details() {
         val text =
-            JniVoteCommitmentResult(
+            JniVoteCommitResult(
                 vanNullifier = byteArrayOf(1),
                 voteAuthorityNoteNew = byteArrayOf(2),
                 voteCommitment = byteArrayOf(3),
                 proposalId = 4,
                 bundleIndex = 5,
                 proof = byteArrayOf(5),
-                encShares = listOf(JniWireEncryptedShare(byteArrayOf(6), byteArrayOf(7), 0)),
                 anchorHeight = 8,
-                voteRoundId = "round",
-                sharesHash = byteArrayOf(9),
-                shareBlinds = listOf(byteArrayOf(101)),
-                shareComms = listOf(byteArrayOf(10)),
                 rVpk = byteArrayOf(102),
-                alphaV = byteArrayOf(103)
+                voteAuthSig = byteArrayOf(103),
+                encShares = listOf(JniWireEncryptedShare(byteArrayOf(6), byteArrayOf(7), 0)),
+                sharePayloads = emptyList()
             ).toString()
 
-        assertEquals("JniVoteCommitmentResult(redacted)", text)
-        assertFalse(text.contains("round"))
+        assertEquals("JniVoteCommitResult(redacted)", text)
         assertFalse(text.contains("proposalId"))
-        assertFalse(text.contains("shareBlinds"))
         assertFalse(text.contains("rVpk"))
-        assertFalse(text.contains("alphaV"))
-        assertFalse(text.contains("101"))
+        assertFalse(text.contains("voteAuthSig"))
         assertFalse(text.contains("102"))
         assertFalse(text.contains("103"))
+    }
+
+    @Test
+    fun vote_submission_to_string_omits_submission_details() {
+        val text =
+            JniVoteSubmission(
+                voteRoundId = "round",
+                proposalId = 1,
+                bundleIndex = 2,
+                vanNullifier = byteArrayOf(3),
+                voteAuthorityNoteNew = byteArrayOf(4),
+                voteCommitment = byteArrayOf(5),
+                proof = byteArrayOf(6),
+                rVpk = byteArrayOf(102),
+                voteAuthSig = byteArrayOf(103),
+                anchorHeight = 7
+            ).toString()
+
+        assertEquals("JniVoteSubmission(redacted)", text)
+        assertFalse(text.contains("round"))
+        assertFalse(text.contains("rVpk"))
+        assertFalse(text.contains("102"))
+        assertFalse(text.contains("103"))
+    }
+
+    // The stored secret is unrecoverable app-owned key material. A generated data-class
+    // toString() would print its bytes into any log line that interpolates the hotkey.
+    @Test
+    fun voting_hotkey_to_string_omits_the_stored_secret() {
+        val text =
+            JniVotingHotkey(
+                storedSecret = ByteArray(64) { 0x7B },
+                rawOrchardAddress = ByteArray(43) { 0x2C },
+                addressIndex = 0
+            ).toString()
+
+        assertEquals("JniVotingHotkey(redacted)", text)
+        assertFalse(text.contains("storedSecret"))
+        assertFalse(text.contains("123"))
+        assertFalse(text.contains("7b"))
     }
 
     @Test
@@ -89,28 +123,63 @@ class JniVotingModelsTest {
     }
 
     @Test
-    fun vote_commitment_result_constructor_matches_rust_jni_signature() {
+    fun vote_commit_result_constructor_matches_rust_jni_signature() {
         val constructor =
-            JniVoteCommitmentResult::class.java.getDeclaredConstructor(
+            JniVoteCommitResult::class.java.getDeclaredConstructor(
                 ByteArray::class.java,
                 ByteArray::class.java,
                 ByteArray::class.java,
                 Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                Long::class.javaPrimitiveType,
+                ByteArray::class.java,
                 ByteArray::class.java,
                 Array<JniWireEncryptedShare>::class.java,
-                Long::class.javaPrimitiveType,
-                String::class.java,
-                ByteArray::class.java,
-                Array<ByteArray>::class.java,
-                Array<ByteArray>::class.java,
-                ByteArray::class.java,
-                ByteArray::class.java
+                Array<JniSharePayload>::class.java
             )
 
         assertEquals(
-            "([B[B[BII[B[Lcash/z/ecc/android/sdk/internal/model/voting/" +
-                "JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V",
+            "([B[B[BII[BJ[B[B[Lcash/z/ecc/android/sdk/internal/model/voting/" +
+                "JniWireEncryptedShare;[Lcash/z/ecc/android/sdk/internal/model/voting/" +
+                "JniSharePayload;)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    @Test
+    fun vote_submission_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniVoteSubmission::class.java.getDeclaredConstructor(
+                String::class.java,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                Long::class.javaPrimitiveType
+            )
+
+        assertEquals(
+            "(Ljava/lang/String;II[B[B[B[B[B[BJ)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    @Test
+    fun voting_hotkey_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniVotingHotkey::class.java.getDeclaredConstructor(
+                ByteArray::class.java,
+                ByteArray::class.java,
+                Int::class.javaPrimitiveType
+            )
+
+        assertEquals(
+            "([B[BI)V",
             constructor.jniDescriptor()
         )
     }
@@ -119,12 +188,12 @@ class JniVotingModelsTest {
     fun commitment_bundle_record_constructor_matches_rust_jni_signature() {
         val constructor =
             JniCommitmentBundleRecord::class.java.getDeclaredConstructor(
-                JniVoteCommitmentResult::class.java,
+                JniVoteCommitResult::class.java,
                 Long::class.javaPrimitiveType
             )
 
         assertEquals(
-            "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitmentResult;J)V",
+            "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult;J)V",
             constructor.jniDescriptor()
         )
     }

@@ -6,6 +6,76 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Shielded voting: hotkeys are no longer derived from the wallet seed, and the application must
+  persist them.** `VotingRustBackend.VotingDb.generateHotkey` now takes a network id instead of a
+  seed and returns `JniVotingHotkey(storedSecret, rawOrchardAddress, addressIndex)`. A voting
+  hotkey is app-owned random material generated inside `zcash_voting`, so every call returns a
+  different one and **`storedSecret` cannot be recovered or re-derived from anything else** — not
+  from the wallet seed phrase, not from the wallet database, not from the chain. Consequences a
+  wallet must design around:
+  - The application must store `storedSecret` in platform secure storage, keyed by round, before
+    the delegation transaction is broadcast, and hand it back to `buildGovernancePczt`,
+    `buildGovernancePcztFromSeed`, `buildAndProveDelegation`, `commitVote` and
+    `deriveHotkeyRawAddress` for the rest of the round.
+  - **Restoring a wallet from its seed phrase does not restore the ability to vote** in a round
+    whose hotkey secret was not separately backed up.
+  - **Losing `storedSecret` forfeits the voting power already delegated to that hotkey** for the
+    round; the delegation cannot be reissued to a new hotkey.
+  `JniVotingHotkey.toString()` is redacted so the secret cannot reach a log through string
+  interpolation or the generated `data class` rendering.
+- Shielded voting: `JniRoundState.hotkeyAddress` and `JniRoundState.delegatedWeight` are now
+  always `null`. `zcash_voting` does not populate either field, so a caller that reads the hotkey
+  address from the round state reads null regardless of what hotkey generation did. Recover the
+  address with `deriveHotkeyRawAddress` from the persisted `storedSecret`, and read the delegated
+  weight from the bundle weights `setupBundles` returned.
+- Shielded voting: a vote is "submitted" by having a recorded transaction hash rather than by a
+  separate flag. `storeVoteTxHash` and `markVoteSubmitted` collapsed into a single
+  conflict-checked `markVoteSubmitted(roundId, bundleIndex, proposalId, txHash)`. Recording the
+  same hash twice is idempotent; recording a *different* hash for a vote that already has one now
+  **fails** instead of silently overwriting, so a wallet keeps polling the transaction it
+  originally submitted.
+- Shielded voting: `buildVoteCommitment`, `signCastVote` and `buildSharePayloads` collapsed into a
+  single `commitVote`, which builds, signs and stores the commitment and returns the helper-share
+  payloads on `JniVoteCommitResult.sharePayloads`. `JniVoteCommitmentResult` is renamed to
+  `JniVoteCommitResult`; it no longer carries `voteRoundId`, `sharesHash`, `shareBlinds`,
+  `shareComms` or `alphaV` — that recovery material is owned by `zcash_voting` now and never
+  crosses the JNI boundary — and it gains `voteAuthSig` and `sharePayloads`.
+- Shielded voting: `getDelegationSubmission` now takes a caller-supplied `spendAuthSig` (64 bytes)
+  over the ZIP-244 `sighash` (32 bytes), and `getDelegationSubmissionWithKeystoneSig` is removed.
+  Software and hardware signing have converged: `zcash_voting` no longer derives account keys or
+  signs, so every signer hands back a signature.
+- Shielded voting: `initRound` takes a `networkId` and binds the round to that network, and a
+  round id must be 64 lowercase hex characters encoding a canonical Pallas field element.
+  `buildGovernancePczt`, `buildGovernancePcztFromSeed` and `buildAndProveDelegation` take
+  `hotkeyStoredSecret` in place of `hotkeyRawAddress` / `hotkeySeed`, and `buildAndProveDelegation`
+  additionally takes `fvkBytes`, `seedFingerprint`, `accountIndex` and `roundName`, because the
+  only public constructor for the delegation keys requires the whole hotkey.
+- Shielded voting: `recordShareDelegation` no longer takes a `nullifier`; it is derived natively
+  from the vote's own recovery state.
+- Shielded voting: `setupBundles` rejects an empty note set instead of returning a zero-bundle
+  result.
+- Shielded voting: `getCommitmentBundle` returns null until the vote is confirmed — its
+  transaction hash recorded via `markVoteSubmitted` *and* its vote-commitment tree position
+  recorded via the new `recordVcPosition` — and for a vote that was never stored. Use the new
+  `voteSubmission` for a pre-confirmation resend, then `recordVcPosition`, then
+  `getCommitmentBundle` for fresh helper-share payloads.
+
+### Added
+- Shielded voting: `voteSubmission(roundId, bundleIndex, proposalId)` returns `JniVoteSubmission`,
+  the chain-ready fields needed to resend a cast-vote transaction before it confirms, without the
+  helper-share payloads that go stale once the tree position is recorded.
+- Shielded voting: `recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)` records
+  the confirmed position of the vote commitment in the vote commitment tree.
+
+### Removed
+- Shielded voting: `decomposeWeight`, `buildSharePayloads`, `signCastVote`, `buildVoteCommitment`,
+  `storeCommitmentBundle`, `storeVoteTxHash` and `getDelegationSubmissionWithKeystoneSig`, along
+  with the `HotkeyPublicKey` type and `JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE` (replaced by
+  `JNI_HOTKEY_STORED_SECRET_BYTES_SIZE` and `JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE`). The underlying
+  `zcash_voting` entry points are either gone or no longer public; the `### Changed` entries above
+  say what replaces each one.
+
 ### Fixed
 - The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
   helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
