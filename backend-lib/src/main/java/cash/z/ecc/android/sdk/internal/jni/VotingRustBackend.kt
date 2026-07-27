@@ -854,9 +854,6 @@ class VotingRustBackend private constructor() {
     }
 
     companion object {
-        // The factory is part of the deprecated surface; suppressing here only lets the
-        // class construct itself, and does not reopen it to callers.
-        @Suppress("DEPRECATION_ERROR")
         suspend fun new(): VotingRustBackend {
             RustBackend.loadLibrary()
 
