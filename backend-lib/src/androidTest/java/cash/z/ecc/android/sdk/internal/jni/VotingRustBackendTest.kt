@@ -9,7 +9,6 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
-import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -23,15 +22,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
-// Kept compiling, and kept @Ignore'd. The native voting symbols are back, so the only
-// remaining blocker is a device to run against. See the @Ignore reason below.
 @Suppress("LargeClass", "MagicNumber")
-@Ignore(
-    "Realigned with the zcash_voting 2.0 JNI boundary but not yet re-validated against it: no " +
-        "device or emulator was available when the Kotlin surface was updated, so no call in " +
-        "this suite has been executed against the ported native library. Re-enable and run on a " +
-        "device before relying on it."
-)
 class VotingRustBackendTest {
     companion object {
         private const val FIELD_BYTES = 32

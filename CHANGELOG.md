@@ -12,11 +12,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built into the native library again and that deprecation is removed, so `VotingRustBackend` and
   the `sdk-lib` typesafe wrapper around it are usable. The surface is not the one that existed
   before 2.8.0-rc.1, because it is now built on `zcash_voting` 2.0.0-rc.1: the native entry points
-  went from 60 to 55, three were added, seven were removed and nine of the survivors changed their
-  parameter lists. A wallet that stayed on a pre-2.8 release to keep voting working should expect
-  to revisit every voting call site, and cannot carry a round's existing state across the upgrade —
-  in particular, hotkeys created by an earlier SDK version do not carry over, because they were
-  derived from the wallet seed and hotkeys no longer are. The entries below enumerate the delta.
+  went from 60 to 55, because three were added and eight were removed — seven of them public API,
+  the eighth a test fixture — and nine of the survivors changed their parameter lists, one of them
+  without changing its signature. A wallet that stayed on a pre-2.8 release to keep voting working
+  should expect to revisit every voting call site, and cannot carry a round's existing state across
+  the upgrade — in particular, hotkeys created by an earlier SDK version do not carry over,
+  because they were derived from the wallet seed and hotkeys no longer are. The entries below
+  enumerate the delta.
 - **Shielded voting: hotkeys are no longer derived from the wallet seed, and the application must
   persist them.** `VotingRustBackend.VotingDb.generateHotkey` now takes a network id instead of a
   seed and returns `JniVotingHotkey(storedSecret, rawOrchardAddress, addressIndex)`. A voting
@@ -60,8 +62,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single `commitVote`, which builds, signs and stores the commitment and returns the helper-share
   payloads on `JniVoteCommitResult.sharePayloads`. `JniVoteCommitmentResult` is renamed to
   `JniVoteCommitResult`; it no longer carries `voteRoundId`, `sharesHash`, `shareBlinds`,
-  `shareComms` or `alphaV` — that recovery material is owned by `zcash_voting` now and never
-  crosses the JNI boundary — and it gains `voteAuthSig` and `sharePayloads`.
+  `shareComms` or `alphaV`, and it gains `voteAuthSig` and `sharePayloads`. Of the five dropped
+  fields, `shareBlinds` and `alphaV` stop crossing the JNI boundary altogether — that recovery
+  material is owned by `zcash_voting` now. The other three merely moved: `sharesHash` and
+  `shareComms` are on `JniSharePayload`, and `voteRoundId` is on `JniVoteSubmission`.
 - Shielded voting: `getDelegationSubmission` now takes a caller-supplied `spendAuthSig` (64 bytes)
   over the ZIP-244 `sighash` (32 bytes), and `getDelegationSubmissionWithKeystoneSig` is removed.
   Software and hardware signing have converged: `zcash_voting` no longer derives account keys or
@@ -72,6 +76,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hotkeyStoredSecret` in place of `hotkeyRawAddress` / `hotkeySeed`, and `buildAndProveDelegation`
   additionally takes `fvkBytes`, `seedFingerprint`, `accountIndex` and `roundName`, because the
   only public constructor for the delegation keys requires the whole hotkey.
+- **Shielded voting: `deriveHotkeyRawAddress(ByteArray, Int)` kept its signature and changed its
+  meaning.** The first parameter was `hotkeySeed`, derived from the wallet seed; it is now
+  `hotkeyStoredSecret`, the app-owned random secret `generateHotkey` returns. Because the
+  signature is byte-identical, **every existing call site compiles unchanged**, and a compiler
+  error will not point at this one. Worse, it does not fail at run time either: a BIP-39 seed is
+  64 bytes and the stored secret is required to be 64 bytes, so a wallet that keeps passing its
+  wallet seed is accepted without error, silently returns the address of a hotkey nobody
+  delegated to, and turns the wallet seed into per-round hotkey material held in whatever storage
+  the caller used for a value that was previously derivable. Audit every `deriveHotkeyRawAddress`
+  call by hand and pass the persisted `storedSecret`.
 - Shielded voting: `recordShareDelegation` no longer takes a `nullifier`; it is derived natively
   from the vote's own recovery state.
 - Shielded voting: `setupBundles` rejects an empty note set instead of returning a zero-bundle
@@ -101,14 +115,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The native library no longer links two copies of the Zcash crate graph (#2056). `zcash_voting`
   moved from its crates.io `=0.11.0` pin to a git revision at version 2.0.0-rc.1. The old pin
   required the pre-Ironwood librustzcash family, which cargo resolved *alongside* this crate's
-  Ironwood family, so every build carried two copies each of `orchard`, `pczt`, `zcash_protocol`,
-  `zcash_keys`, `zcash_address`, `zcash_client_backend` and `zcash_client_sqlite`. Each of those
-  now resolves exactly once. Duplicated crates are not merely wasted space in the shipped `.so`:
-  two copies of a crate are unrelated types to the compiler, so a value that crosses between
-  voting and the rest of the wallet as bytes rather than as a Rust type — a note commitment, a
-  nullifier — compiles cleanly while feeding one `orchard` generation's output into another's
-  circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply rebuilt,
-  and removing it is what allows it back on.
+  Ironwood family, so every build carried two copies each of `orchard`, `pczt`, `shardtree`,
+  `zcash_address`, `zcash_keys`, `zcash_primitives`, `zcash_protocol` and `zcash_transparent`.
+  Each of those now resolves exactly once. Duplicated crates are not merely wasted space in the
+  shipped `.so`: two copies of a crate are unrelated types to the compiler, so a value that crosses
+  between voting and the rest of the wallet as bytes rather than as a Rust type — a note
+  commitment, a nullifier — compiles cleanly while feeding one `orchard` generation's output into
+  another's circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply
+  rebuilt, and removing it is what allows it back on.
 - The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
   helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
   paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that

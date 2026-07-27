@@ -63,8 +63,6 @@ jni = { version = "0.21", default-features = false }
 uuid = "1"
 bitflags = "2"
 hex = "0.4"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 # lightwalletd
 tonic = "0.14"
@@ -94,8 +92,8 @@ xz2 = { version = "0.1", features = ["static"] }
 #
 # This is taken from git rather than crates.io. The published 0.11 and 1.0
 # releases pin the pre-Ironwood librustzcash family, which cargo resolves
-# alongside this crate's Ironwood family and duplicates six Zcash crates in the
-# native library (issue #2056). The revision patched in below is 2.0.0-rc.1,
+# alongside this crate's Ironwood family and duplicates eight Zcash crates in
+# the native library (issue #2056). The revision patched in below is 2.0.0-rc.1,
 # whose pins match this crate's, so each Zcash crate resolves exactly once.
 #
 # The version requirement here must keep matching the patched revision's own
