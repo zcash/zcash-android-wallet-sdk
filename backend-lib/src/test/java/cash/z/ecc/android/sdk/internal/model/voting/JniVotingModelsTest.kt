@@ -2,7 +2,9 @@ package cash.z.ecc.android.sdk.internal.model.voting
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class JniVotingModelsTest {
     @Test
@@ -68,6 +70,37 @@ class JniVotingModelsTest {
         assertFalse(text.contains("storedSecret"))
         assertFalse(text.contains("123"))
         assertFalse(text.contains("7b"))
+    }
+
+    // Both widths are fixed by zcash_voting, so a malformed hotkey should not be
+    // representable rather than merely rejected downstream. JNI's NewObject runs this
+    // init block too, so the check also covers a hotkey built by the native layer.
+    @Test
+    fun voting_hotkey_rejects_a_stored_secret_of_the_wrong_length() {
+        val error =
+            assertFailsWith<IllegalArgumentException> {
+                JniVotingHotkey(
+                    storedSecret = byteArrayOf(1, 2, 3),
+                    rawOrchardAddress = ByteArray(43) { 0x2C },
+                    addressIndex = 0
+                )
+            }
+
+        assertTrue(error.message.orEmpty().contains("storedSecret"))
+    }
+
+    @Test
+    fun voting_hotkey_rejects_a_raw_orchard_address_of_the_wrong_length() {
+        val error =
+            assertFailsWith<IllegalArgumentException> {
+                JniVotingHotkey(
+                    storedSecret = ByteArray(64) { 0x7B },
+                    rawOrchardAddress = byteArrayOf(1, 2, 3),
+                    addressIndex = 0
+                )
+            }
+
+        assertTrue(error.message.orEmpty().contains("rawOrchardAddress"))
     }
 
     // A note carries the randomness that reconstructs its spend and the account's full viewing
