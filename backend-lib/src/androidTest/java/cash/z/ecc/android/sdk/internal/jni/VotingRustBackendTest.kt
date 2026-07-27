@@ -836,9 +836,16 @@ class VotingRustBackendTest {
                 assertFailsWith<RuntimeException> {
                     db.generateHotkey(PCZT_ROUND_ID, TESTNET_NETWORK_ID)
                 }
-                assertFailsWith<RuntimeException> {
-                    backend.extractSpendAuthSig(pczt.pcztBytes, pczt.actionIndex)
-                }
+                // Extraction no longer fails on an unsigned governance PCZT. zcash_voting
+                // falls back to scanning every action for a signature, and the Ironwood
+                // builder's IO finalizer signs the zero-value padding action, so the scan
+                // finds that one. The signature is therefore real but wrong, and it is
+                // caught a step later when it is verified against rk and the sighash --
+                // see get_delegation_submission_rejects_a_signature_that_does_not_verify.
+                // Asserting the shape here keeps an upstream change to that fallback from
+                // passing silently.
+                val paddingSig = backend.extractSpendAuthSig(pczt.pcztBytes, pczt.actionIndex)
+                assertEquals(JNI_SPEND_AUTH_SIG_BYTES_SIZE, paddingSig.size)
             } finally {
                 db.close()
             }
