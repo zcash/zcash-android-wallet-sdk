@@ -57,8 +57,27 @@ private const val PROOF_PROGRESS_REENTRY_ERROR =
  */
 private const val SCHEDULED_SHARE_SUBMIT_AT_ENTROPY_BYTES = 32
 
+/**
+ * Bindings to the native shielded-voting backend.
+ *
+ * Every method here binds to a JNI symbol that the native library does not export on this
+ * branch: the Rust voting module is gated behind `cfg(zcash_voting)` and the `zcash_voting`
+ * dependency is commented out of `backend-lib/Cargo.toml`. Calling any of them throws
+ * [UnsatisfiedLinkError].
+ *
+ * This is a compile error rather than a deprecation warning so that the failure lands
+ * at build time instead of at runtime in a wallet. Kotlin `internal` cannot express
+ * this: `sdk-lib` is a separate Gradle module and would lose access along with
+ * consumers.
+ */
 @Keep
 @Suppress("TooManyFunctions", "LongParameterList")
+@Deprecated(
+    message =
+        "Shielded voting is unavailable in this release: the native library exports none of " +
+            "these symbols, so every call throws UnsatisfiedLinkError. Do not call this class.",
+    level = DeprecationLevel.ERROR
+)
 class VotingRustBackend private constructor() {
     @Throws(RuntimeException::class)
     suspend fun computeShareNullifier(
@@ -882,6 +901,9 @@ class VotingRustBackend private constructor() {
     }
 
     companion object {
+        // The factory is part of the deprecated surface; suppressing here only lets the
+        // class construct itself, and does not reopen it to callers.
+        @Suppress("DEPRECATION_ERROR")
         suspend fun new(): VotingRustBackend {
             RustBackend.loadLibrary()
 

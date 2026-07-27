@@ -12,6 +12,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
+import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -25,7 +26,16 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
-@Suppress("LargeClass", "MagicNumber")
+// Kept compiling, and kept @Ignore'd, so the suite is ready to run again the moment the
+// native voting symbols come back. The fixtures here are already updated for the
+// zcash_voting 1.0 / NU6.3 API, so re-enabling voting should not need to touch them.
+@Suppress("LargeClass", "MagicNumber", "DEPRECATION_ERROR")
+@Ignore(
+    "Voting is gated off behind cfg(zcash_voting) on this branch and its dependency is " +
+        "commented out of Cargo.toml, so the native library exports none of the symbols these " +
+        "tests bind to and every one of them would fail with UnsatisfiedLinkError. Voting is " +
+        "re-enabled against main by zcash/zcash-android-wallet-sdk#2075."
+)
 class VotingRustBackendTest {
     companion object {
         private const val FIELD_BYTES = 32

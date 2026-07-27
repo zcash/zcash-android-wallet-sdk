@@ -62,6 +62,21 @@ android {
     }
 }
 
+// lightwallet-protocol v0.5.0 marks GetBlockNullifiers and GetBlockRangeNullifiers
+// deprecated in favour of GetBlockRange with `poolTypes`. The grpckt generator emits
+// stubs for them and calls them from its own generated code, so the warnings arise
+// entirely within build/generated/ and cannot be annotated away at the source. The
+// module-wide `allWarningsAsErrors` would otherwise fail the build on them.
+//
+// Scoped to DEPRECATION rather than disabling warnings-as-errors for the module, so
+// every other warning class is still an error here. Remove this once the deprecated
+// RPCs are dropped upstream and the generated stubs go with them.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    compilerOptions {
+        freeCompilerArgs.add("-Xwarning-level=DEPRECATION:disabled")
+    }
+}
+
 tasks.dokkaHtml.configure {
     dokkaSourceSets {
         configureEach {

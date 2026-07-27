@@ -58,8 +58,9 @@ use zcash_protocol::{PoolType, ShieldedPool};
 use zcash_pool_migration::wallet::{WalletMigrationProver, WalletProveError};
 use zcash_pool_migration::{
     engine::{
-        self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction, MigrationTxId,
-        MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
+        self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction,
+        MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead,
+        PoolMigrationWrite, ProveError,
     },
     scheduling::AnchorBucketInterval,
 };
@@ -345,7 +346,7 @@ fn plan(
 /// A migration state paired with the transactions it left awaiting signature, each as its
 /// id and PCZT bytes. Named because both the commit entry point and every `sign` closure it
 /// dispatches to return this same shape.
-type MigrationCommitOutcome = (MigrationState, Vec<(MigrationTxId, Vec<u8>)>);
+type MigrationCommitOutcome = (MigrationState, Vec<(MigrationTransferId, Vec<u8>)>);
 
 /// The wallet-side context a commit runs against: which network and account, the store
 /// connection it writes through, and the target height the cached plan was built for. Grouped
@@ -490,7 +491,7 @@ fn encode_note_split_proposal<'a>(
     plan: &MigrationPlan,
     plan_handle: crate::migration_plan_cache::PlanHandle,
 ) -> jni::errors::Result<JObject<'a>> {
-    let split = plan.note_split();
+    let split = plan.denominations();
     let values: Vec<i64> = split
         .crossing_values()
         .iter()
@@ -513,17 +514,17 @@ fn encode_note_split_proposal<'a>(
 
 fn encode_transfer_id<'a>(
     env: &mut JNIEnv<'a>,
-    id: MigrationTxId,
+    id: MigrationTransferId,
 ) -> jni::errors::Result<JString<'a>> {
     env.new_string(u32::from(id).to_string())
 }
 
-fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<MigrationTxId> {
+fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<MigrationTransferId> {
     let raw = crate::utils::java_string_to_rust(env, id)?;
     let idx: u32 = raw
         .parse()
         .map_err(|e| anyhow!("Invalid transfer id {}: {}", raw, e))?;
-    Ok(MigrationTxId::new(idx))
+    Ok(MigrationTransferId::new(idx))
 }
 
 /// `anchor_height` here is NOT a real commitment-tree anchor (ZIP 374 defers that to proving time
@@ -536,7 +537,7 @@ fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<Migratio
 /// correctly spread out (see the `MIGRATION_DIAG plan:` log in `plan()` above).
 fn encode_transfer_proposal<'a>(
     env: &mut JNIEnv<'a>,
-    id: MigrationTxId,
+    id: MigrationTransferId,
     amount: Zatoshis,
     anchor_height: BlockHeight,
     schedule_broadcast_height: BlockHeight,
@@ -577,7 +578,7 @@ fn encode_migration_schedule<'a>(
     // displaying the received amount, fee visible only in the transaction detail), so subtract the
     // constant fee buffer back out to recover the round `{1,2,5}×10ⁿ` crossing value per note.
     let funding_notes = plan.funding_notes();
-    let note_fee_buffer = plan.note_split().note_fee_buffer();
+    let note_fee_buffer = plan.denominations().note_fee_buffer();
     let schedule = plan.schedule();
     if funding_notes.len() != schedule.len() {
         return Err(anyhow!(
@@ -594,7 +595,7 @@ fn encode_migration_schedule<'a>(
         })
         .collect();
 
-    // The real `MigrationTxId` the engine will assign at commit time numbers every preparation
+    // The real `MigrationTransferId` the engine will assign at commit time numbers every preparation
     // transaction (across all layers) first, THEN transfers in `schedule()` order (confirmed
     // directly against `commit_preparation_inner` in `zcash_pool_migration::engine`) — so
     // transfer `i`'s id is `prep_tx_count + i`, not `i`. Getting this wrong doesn't affect Kotlin
@@ -612,7 +613,7 @@ fn encode_migration_schedule<'a>(
     let mut proposals = Vec::with_capacity(schedule.len());
     for (i, (amount, entry)) in crossings.iter().zip(schedule.iter()).enumerate() {
         proposals.push((
-            MigrationTxId::new(prep_tx_count + i as u32),
+            MigrationTransferId::new(prep_tx_count + i as u32),
             *amount,
             entry.broadcast_height(),
             entry.expiry_height(),
@@ -697,7 +698,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// The new engine plans the note split and the transfer schedule together in one
-/// `plan_migration()` call (the split's realized output values ARE `plan.note_split()
+/// `plan_migration()` call (the split's realized output values ARE `plan.denominations()
 /// .crossing_values()`, which is exactly what `encode_migration_schedule` already derives the
 /// schedule from) — so unlike `proposeMigrationTransfersNative` above, this does NOT plan afresh:
 /// it encodes the schedule of the exact cached plan `proposal_handle` identifies (the one whose
@@ -810,7 +811,7 @@ fn try_prove(
     account: AccountUuid,
     fvk: orchard::keys::FullViewingKey,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
     kind: MigrationTxKind,
 ) -> anyhow::Result<bool> {
     let anchor = match kind {
@@ -853,7 +854,7 @@ fn finalize_note_split(
     account: AccountUuid,
     store_conn: &mut Connection,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
 ) -> anyhow::Result<(Vec<u8>, [u8; 32])> {
     let fvk = {
         let backend = Backend::new(wallet, account, None, store_conn)?;
@@ -1348,7 +1349,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Collect ready ids/kinds up front (not while iterating `state.transactions()`) since
         // `try_prove` needs `&mut state` — see `is_prove_ready`'s doc comment for why this doesn't
         // just loop `MigrationState::next_provable`.
-        let ready: Vec<(MigrationTxId, MigrationTxKind)> = state
+        let ready: Vec<(MigrationTransferId, MigrationTxKind)> = state
             .transactions()
             .iter()
             .filter(|t| {
@@ -1497,14 +1498,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             return Ok(ptr::null_mut());
         };
 
-        // Keyed by the transfer's real, stable MigrationTxId — NOT `transfer_crossing()` (the
+        // Keyed by the transfer's real, stable MigrationTransferId — NOT `transfer_crossing()` (the
         // funding-note/crossing index). The app's displayed "Transfer N" position comes from
         // sorting the ORIGINAL proposal by broadcast_height (see `encode_migration_schedule`),
         // while the engine assigns real tx ids in crossing/schedule() order at commit time —
         // ZIP 318 deliberately shuffles those two orderings apart, so they permanently disagree.
         // The app now carries this same id on its cached `MigrationTransfer.id` (see
         // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
-        let transfers: Vec<(MigrationTxId, bool, BlockHeight)> = state
+        let transfers: Vec<(MigrationTransferId, bool, BlockHeight)> = state
             .transactions()
             .iter()
             .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
@@ -1708,7 +1709,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // transfer anchors lie on.
         let cancelled = MigrationState::from_parts(
             engine::MigrationStatus::Failed,
-            state.note_split().clone(),
+            state.denominations().clone(),
             state.preparation().clone(),
             state.transactions().clone(),
             state.anchor_bucket_interval(),
@@ -1835,7 +1836,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
         // The new (scheduled_height, anchor_boundary) for each pending transfer, keyed by its
         // stable id so the full transactions vec can be rebuilt in its original order below.
-        let mut reschedule: HashMap<MigrationTxId, (BlockHeight, Option<BlockHeight>)> =
+        let mut reschedule: HashMap<MigrationTransferId, (BlockHeight, Option<BlockHeight>)> =
             HashMap::with_capacity(pending.len());
         for (i, tx) in pending.iter().enumerate() {
             let new_height = BlockHeight::from(
@@ -1884,7 +1885,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
         let new_state = MigrationState::from_parts(
             state.status(),
-            state.note_split().clone(),
+            state.denominations().clone(),
             state.preparation().clone(),
             new_transactions,
             match network {
@@ -2167,7 +2168,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 ))
             },
         )?;
-        let transfer_ids: std::collections::HashSet<MigrationTxId> = state
+        let transfer_ids: std::collections::HashSet<MigrationTransferId> = state
             .transactions()
             .iter()
             .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
@@ -2557,7 +2558,7 @@ mod live_wallet_signing_tests {
             backend.orchard_fvk().expect("fvk")
         };
 
-        let ids_and_kinds: Vec<(MigrationTxId, MigrationTxKind)> = state
+        let ids_and_kinds: Vec<(MigrationTransferId, MigrationTxKind)> = state
             .transactions()
             .iter()
             .map(|t| (t.id(), t.kind()))
@@ -3168,7 +3169,7 @@ mod live_wallet_edge_case_tests {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
 
-        let committed_ids: Vec<MigrationTxId> = {
+        let committed_ids: Vec<MigrationTransferId> = {
             let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
             let account = first_account(&wallet);
             let (plan, tip, _handle) =
@@ -3192,7 +3193,7 @@ mod live_wallet_edge_case_tests {
             .get_migration()
             .expect("read migration state")
             .expect("migration state must persist across a fresh connection to the same DB file");
-        let reloaded_ids: Vec<MigrationTxId> =
+        let reloaded_ids: Vec<MigrationTransferId> =
             reloaded.transactions().iter().map(|t| t.id()).collect();
         assert_eq!(
             committed_ids, reloaded_ids,
