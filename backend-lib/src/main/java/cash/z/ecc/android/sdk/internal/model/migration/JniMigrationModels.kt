@@ -48,6 +48,24 @@ class JniPreparedTransfer(
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
+ *
+ * Tri-state result of the next-due-transfer query.
+ *   status 0 = NOTHING_DUE   — migration terminal, no state, or nothing due yet
+ *   status 1 = READY          — a proven transfer is ready to broadcast ([prepared] is non-null)
+ *   status 2 = AWAITING_PROOF — a transfer is due but still needs proving ([awaitingProofTransferId] non-null)
+ */
+@Keep
+class JniDueTransferResult(
+    /** 0 = NOTHING_DUE, 1 = READY, 2 = AWAITING_PROOF */
+    val status: Int,
+    /** Non-null when status == 2 (the due-but-unproven transfer). */
+    val awaitingProofTransferId: String?,
+    /** Non-null when status == 1. */
+    val prepared: JniPreparedTransfer?,
+)
+
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class.
  */
 @Keep
 class JniTransferProposal(

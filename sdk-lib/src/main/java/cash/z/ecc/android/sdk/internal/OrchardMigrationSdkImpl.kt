@@ -27,6 +27,7 @@ import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.migration.JniAttentionReason
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -414,8 +415,18 @@ internal class OrchardMigrationSdkImpl(
             // now' resume" signal for the post-broadcast privacy buffer below. next_due_transfer()'s
             // PreparedTransfer carries no schedule window of its own to check per-transfer, so this
             // uses the aggregate hasOverdueTransfers() signal as the best available proxy.
+            // NOTE: estimatedTip gate MUST stay at -1L permanently at this layer (TypesafeMigrationBackend
+            // does not expose it). The Rust layer receives -1L from TypesafeMigrationBackendImpl.
             val wasOverdue = migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
-            val prepared = migrationBackend.nextDueTransfer(dbDataPath, network, account) ?: return@logged null
+            // nextDueTransfer returns a tri-state: NOTHING_DUE (0), READY (1), or AWAITING_PROOF (2).
+            // Only status==1 (READY) has a prepared transfer to broadcast; the other states are no-ops.
+            // NOTE: estimatedTip gate MUST stay at -1L permanently at this layer (TypesafeMigrationBackend
+            // does not expose it). The Rust layer receives -1L from TypesafeMigrationBackendImpl.
+            val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account)
+            val prepared = when (dueResult.status) {
+                1 -> dueResult.prepared ?: return@logged null
+                else -> return@logged null // NOTHING_DUE (0) or AWAITING_PROOF (2) — nothing to broadcast
+            }
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
             val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)

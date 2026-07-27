@@ -2,6 +2,7 @@
 
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -167,7 +168,7 @@ internal interface TypesafeMigrationBackend {
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
-    ): JniPreparedTransfer?
+    ): JniDueTransferResult
 
     suspend fun restartCurrentMigrationStep(
         dbDataPath: String,

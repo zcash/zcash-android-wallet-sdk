@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -69,7 +70,7 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
-    ): Boolean = rustBackend().hasOverdueTransfers(dbDataPath, network.id, account.value)
+    ): Boolean = rustBackend().hasOverdueTransfers(dbDataPath, network.id, account.value, -1L)
 
     override suspend fun hasInvalidTransfers(
         dbDataPath: String,
@@ -162,7 +163,7 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
-    ): JniPreparedTransfer? = rustBackend().nextDueTransfer(dbDataPath, network.id, account.value)
+    ): JniDueTransferResult = rustBackend().nextDueTransfer(dbDataPath, network.id, account.value, -1L)
 
     override suspend fun restartCurrentMigrationStep(
         dbDataPath: String,

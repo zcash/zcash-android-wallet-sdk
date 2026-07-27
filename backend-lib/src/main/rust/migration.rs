@@ -77,6 +77,8 @@ const JNI_NOTE_SPLIT_PROPOSAL: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniNoteSplitProposal";
 const JNI_PREPARED_TRANSFER: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniPreparedTransfer";
+const JNI_DUE_TRANSFER_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniDueTransferResult";
 const JNI_TRANSFER_PROPOSAL: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniTransferProposal";
 const JNI_MIGRATION_SCHEDULE: &str =
@@ -1192,20 +1194,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
+    estimated_tip: jlong,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let tip = target_height(&wallet)? - 1;
+        let scanned_tip = target_height(&wallet)? - 1;
+        let effective_tip = if estimated_tip >= 0 {
+            std::cmp::max(scanned_tip, BlockHeight::from(estimated_tip as u32))
+        } else {
+            scanned_tip
+        };
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
+        // Replicate next_due_transfer_result's filter but using effective_tip for schedule and
+        // scanned_tip for expiry (never pass the estimate into next_broadcastable itself).
+        let scanned_target = scanned_tip + 1;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
-                if state.next_broadcastable(tip).is_some() {
-                    JNI_TRUE
-                } else {
-                    JNI_FALSE
-                }
+                let overdue = state.transactions().iter().any(|t| {
+                    matches!(t.kind(), MigrationTxKind::Transfer { .. })
+                        && matches!(t.state(), MigrationTxState::Proved)
+                        && t.scheduled_height() <= effective_tip
+                        && state.deps_mined(t.depends_on())
+                        && !(u32::from(t.expiry_height()) != 0
+                            && u32::from(t.expiry_height()) < u32::from(scanned_target))
+                });
+                if overdue { JNI_TRUE } else { JNI_FALSE }
             }
             _ => JNI_FALSE,
         })
@@ -1365,9 +1380,55 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, 0)
 }
 
-/// The next transfer that's due, deps-mined, and already proven (see
-/// `finalizeReadyTransfersNative`, which must have run first this session for anything to be
-/// ready) — or `null` if nothing qualifies yet.
+/// Tri-state result of next-due-transfer lookup.
+enum DueTransferResult<'a> {
+    /// No migration is in progress, it's terminal, or nothing is due right now.
+    NothingDue,
+    /// A transfer is due but still in `Signed` state (not yet proven) — cannot broadcast yet.
+    AwaitingProof(MigrationTxId),
+    /// A transfer is proven and ready to broadcast.
+    Ready(&'a MigrationTransaction),
+}
+
+/// Core filtering logic for next_due_transfer: given a reconciled state and two height sentinels,
+/// returns the tri-state result. `scanned_tip` is used for expiry checks (never the estimate);
+/// `effective_tip` (may equal `scanned_tip` when no estimate) is used for schedule due-ness.
+fn next_due_transfer_result<'a>(
+    state: &'a MigrationState,
+    scanned_tip: BlockHeight,
+    effective_tip: BlockHeight,
+) -> DueTransferResult<'a> {
+    if state.is_terminal() {
+        return DueTransferResult::NothingDue;
+    }
+    let scanned_target = scanned_tip + 1;
+    let mut due: Vec<&MigrationTransaction> = state
+        .transactions()
+        .iter()
+        .filter(|t| {
+            matches!(t.kind(), MigrationTxKind::Transfer { .. })
+                && matches!(t.state(), MigrationTxState::Proved | MigrationTxState::Signed)
+                && t.scheduled_height() <= effective_tip
+                && state.deps_mined(t.depends_on())
+                // Expiry always uses scanned_tip, never the estimate.
+                && !(u32::from(t.expiry_height()) != 0
+                    && u32::from(t.expiry_height()) < u32::from(scanned_target))
+        })
+        .collect();
+    due.sort_by_key(|t| t.scheduled_height());
+    // First Proved -> READY; else first Signed -> AWAITING_PROOF; else NOTHING_DUE.
+    if let Some(tx) = due.iter().find(|t| matches!(t.state(), MigrationTxState::Proved)) {
+        return DueTransferResult::Ready(tx);
+    }
+    if let Some(tx) = due.iter().find(|t| matches!(t.state(), MigrationTxState::Signed)) {
+        return DueTransferResult::AwaitingProof(tx.id());
+    }
+    DueTransferResult::NothingDue
+}
+
+/// The next due, deps-mined transfer: tri-state (NOTHING_DUE=0, READY=1, AWAITING_PROOF=2).
+/// `estimated_tip` (pass -1 for none) may only ACCELERATE due-ness; expiry is always checked
+/// against the scanned tip. A terminal migration always returns NOTHING_DUE.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_nextDueTransferNative<
     'local,
@@ -1377,72 +1438,101 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
+    estimated_tip: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let tip = target_height(&wallet)? - 1;
+        let scanned_tip = target_height(&wallet)? - 1;
+        let effective_tip = if estimated_tip >= 0 {
+            std::cmp::max(scanned_tip, BlockHeight::from(estimated_tip as u32))
+        } else {
+            scanned_tip
+        };
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let Some(state) = read_reconciled(&wallet, &mut backend)? else {
-            return Ok(ptr::null_mut());
+            // No migration: status=0, both nullable fields null.
+            return Ok(env.new_object(
+                JNI_DUE_TRANSFER_RESULT,
+                format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                &[
+                    JValue::Int(0),
+                    JValue::Object(&JObject::null()),
+                    JValue::Object(&JObject::null()),
+                ],
+            )?.into_raw());
         };
 
-        let mut due: Vec<_> = state
-            .transactions()
-            .iter()
-            .filter(|t| {
-                matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                    && matches!(t.state(), MigrationTxState::Proved)
-                    && t.scheduled_height() <= tip
-                    && state.deps_mined(t.depends_on())
-            })
-            .collect();
-        due.sort_by_key(|t| t.scheduled_height());
         tracing::debug!(
-            "MIGRATION_DIAG nextDueTransfer: tip={:?}, {} transfer(s) total, states={:?}, {} due now",
-            tip,
-            state
-                .transactions()
-                .iter()
-                .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
-                .count(),
-            state
-                .transactions()
-                .iter()
+            "MIGRATION_DIAG nextDueTransfer: scanned_tip={:?} effective_tip={:?} estimated_tip={} \
+             transfers={} states={:?}",
+            scanned_tip,
+            effective_tip,
+            estimated_tip,
+            state.transactions().iter().filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. })).count(),
+            state.transactions().iter()
                 .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
                 .map(|t| (t.id(), t.state(), t.scheduled_height()))
                 .collect::<Vec<_>>(),
-            due.len(),
         );
 
-        let Some(tx) = due.into_iter().next() else {
-            return Ok(ptr::null_mut());
-        };
-        // `Proved` carries the fully witnessed/anchored/proven PCZT bytes (installed by
-        // `finalizeReadyTransfersNative`'s `try_prove`) — extract the txid directly from them, no
-        // separate cache lookup needed.
-        let bytes = tx.pczt();
-        let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
-            pczt::Pczt::parse(bytes).map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
-        )
-        .extract()
-        .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
-        let txid: [u8; 32] = *extracted.txid().as_ref();
-
-        let id = encode_transfer_id(env, tx.id())?;
-        let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
-        let pczt_obj = crate::utils::rust_bytes_to_java(env, bytes)?;
-        Ok(env
-            .new_object(
-                JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
-                &[
-                    JValue::Object(&id),
-                    JValue::Object(&txid_obj),
-                    JValue::Object(&pczt_obj),
-                ],
-            )?
-            .into_raw())
+        match next_due_transfer_result(&state, scanned_tip, effective_tip) {
+            DueTransferResult::NothingDue => {
+                Ok(env.new_object(
+                    JNI_DUE_TRANSFER_RESULT,
+                    format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                    &[
+                        JValue::Int(0),
+                        JValue::Object(&JObject::null()),
+                        JValue::Object(&JObject::null()),
+                    ],
+                )?.into_raw())
+            }
+            DueTransferResult::AwaitingProof(id) => {
+                let id_obj = encode_transfer_id(env, id)?;
+                Ok(env.new_object(
+                    JNI_DUE_TRANSFER_RESULT,
+                    format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                    &[
+                        JValue::Int(2),
+                        JValue::Object(&id_obj),
+                        JValue::Object(&JObject::null()),
+                    ],
+                )?.into_raw())
+            }
+            DueTransferResult::Ready(tx) => {
+                // `Proved` carries the fully witnessed/anchored/proven PCZT bytes (installed by
+                // `finalizeReadyTransfersNative`'s `try_prove`) — extract the txid directly from them.
+                let bytes = tx.pczt();
+                let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
+                    pczt::Pczt::parse(bytes).map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
+                )
+                .extract()
+                .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
+                let txid: [u8; 32] = *extracted.txid().as_ref();
+                let id_obj = encode_transfer_id(env, tx.id())?;
+                let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
+                let pczt_obj = crate::utils::rust_bytes_to_java(env, bytes)?;
+                let prepared = env.new_object(
+                    JNI_PREPARED_TRANSFER,
+                    "(Ljava/lang/String;[B[B)V",
+                    &[
+                        JValue::Object(&id_obj),
+                        JValue::Object(&txid_obj),
+                        JValue::Object(&pczt_obj),
+                    ],
+                )?;
+                Ok(env.new_object(
+                    JNI_DUE_TRANSFER_RESULT,
+                    format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                    &[
+                        JValue::Int(1),
+                        JValue::Object(&JObject::null()),
+                        JValue::Object(&prepared),
+                    ],
+                )?.into_raw())
+            }
+        }
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -3231,5 +3321,148 @@ mod live_wallet_edge_case_tests {
             "an account with zero spendable Orchard notes must fail cleanly with \
              NothingToMigrate, not panic or return a bogus plan: got {result:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod next_due_transfer_tests {
+    use super::*;
+    use zcash_pool_migration::{
+        engine::{
+            MigrationState, MigrationStatus, MigrationTransaction, MigrationTxId, MigrationTxKind,
+            MigrationTxState,
+        },
+        note_splitting::NoteSplitPlan,
+        preparation::PreparationPlan,
+        scheduling::AnchorBucketInterval,
+    };
+    use zcash_protocol::{consensus::BlockHeight, value::Zatoshis};
+
+    /// Builds a minimal `MigrationState` with the given transactions (all transfers, no prep).
+    fn make_state(status: MigrationStatus, transfers: Vec<MigrationTransaction>) -> MigrationState {
+        let note_split = NoteSplitPlan::from_stored_parts(
+            vec![Zatoshis::const_from_u64(100_000_000)],
+            Zatoshis::const_from_u64(5_000),
+            None,
+            Zatoshis::const_from_u64(10_000),
+            Zatoshis::const_from_u64(100_010_000),
+            Zatoshis::const_from_u64(100_000_000),
+        )
+        .expect("valid note split plan");
+        MigrationState::from_parts(
+            status,
+            note_split,
+            PreparationPlan::from_parts(vec![], vec![]),
+            transfers,
+            AnchorBucketInterval::ZIP_318,
+        )
+    }
+
+    fn transfer(
+        id: u32,
+        state: MigrationTxState,
+        scheduled: u32,
+        expiry: u32,
+    ) -> MigrationTransaction {
+        MigrationTransaction::from_parts(
+            MigrationTxId::new(id),
+            MigrationTxKind::Transfer { crossing: 0 },
+            vec![0u8; 32], // dummy pczt
+            vec![],        // no deps
+            BlockHeight::from_u32(scheduled),
+            BlockHeight::from_u32(expiry),
+            Some(BlockHeight::from_u32(scheduled.saturating_sub(10))), // anchor_boundary
+            state,
+            None,
+        )
+    }
+
+    /// 1. Terminal migration (Failed status) yields NothingDue even with a Proved+due transfer.
+    #[test]
+    fn next_due_is_nothing_when_migration_terminal() {
+        let tip = BlockHeight::from_u32(1000);
+        // A Proved transfer that would normally be due
+        let tx = transfer(0, MigrationTxState::Proved, 900, 2000);
+        let state = make_state(MigrationStatus::Failed, vec![tx]);
+        let result = next_due_transfer_result(&state, tip, tip);
+        assert!(
+            matches!(result, DueTransferResult::NothingDue),
+            "terminal migration must return NothingDue, got non-NothingDue"
+        );
+    }
+
+    /// 2. Signed (unproven) transfer whose scheduled_height <= tip -> AWAITING_PROOF with its id.
+    #[test]
+    fn next_due_reports_awaiting_proof_for_due_signed_transfer() {
+        let tip = BlockHeight::from_u32(1000);
+        let tx = transfer(42, MigrationTxState::Signed, 900, 2000);
+        let state = make_state(MigrationStatus::InProgress, vec![tx]);
+        let result = next_due_transfer_result(&state, tip, tip);
+        match result {
+            DueTransferResult::AwaitingProof(id) => {
+                assert_eq!(id, MigrationTxId::new(42), "id must match the signed transfer");
+            }
+            other => panic!(
+                "expected AwaitingProof, got NothingDue: {}",
+                matches!(other, DueTransferResult::NothingDue)
+            ),
+        }
+    }
+
+    /// 3. estimated_tip accelerates due-ness: scheduled at scanned+5, estimated=scanned+6 -> AWAITING_PROOF;
+    ///    estimated=-1 (meaning use scanned) -> NothingDue.
+    #[test]
+    fn estimated_tip_accelerates_due_ness_only() {
+        let scanned = BlockHeight::from_u32(1000);
+        let scheduled = 1005u32; // scanned + 5, not due at scanned
+        let tx = transfer(1, MigrationTxState::Signed, scheduled, 3000);
+        let state = make_state(MigrationStatus::InProgress, vec![tx]);
+
+        // No estimate -> NothingDue (scanned=1000 < scheduled=1005)
+        let r1 = next_due_transfer_result(&state, scanned, scanned);
+        assert!(
+            matches!(r1, DueTransferResult::NothingDue),
+            "without estimate (scanned tip), transfer not due yet"
+        );
+
+        // With estimate=1006 (> scheduled=1005) -> AWAITING_PROOF
+        let estimated = BlockHeight::from_u32(1006);
+        let r2 = next_due_transfer_result(&state, scanned, estimated);
+        assert!(
+            matches!(r2, DueTransferResult::AwaitingProof(_)),
+            "with estimated_tip=1006 > scheduled=1005, transfer must be AWAITING_PROOF"
+        );
+    }
+
+    /// 4. A transfer past expiry at the SCANNED tip is never returned, even when the ESTIMATE is huge.
+    ///    Conversely, expiry between scanned and a huge estimate must NOT hide a transfer unexpired
+    ///    at the scanned tip.
+    #[test]
+    fn expiry_is_evaluated_against_scanned_tip_never_estimate() {
+        let scanned = BlockHeight::from_u32(1000);
+        // expiry=999 means expired at scanned tip (expiry < scanned_target=1001)
+        let expired_tx = transfer(10, MigrationTxState::Proved, 900, 999);
+        // expiry=1500 means NOT expired at scanned (1500 >= 1001), but would be if we used estimate=2000
+        let valid_tx = transfer(11, MigrationTxState::Proved, 900, 1500);
+
+        let state = make_state(MigrationStatus::InProgress, vec![expired_tx, valid_tx]);
+
+        // Even with a huge estimate, expired transfer (id=10) must never appear
+        let huge_estimate = BlockHeight::from_u32(99_999_999);
+        let result = next_due_transfer_result(&state, scanned, huge_estimate);
+
+        match &result {
+            DueTransferResult::Ready(tx) => {
+                assert_eq!(
+                    tx.id(),
+                    MigrationTxId::new(11),
+                    "only the unexpired transfer (id=11) may be returned"
+                );
+            }
+            other => panic!(
+                "expected Ready(id=11), got NothingDue or AwaitingProof: {}",
+                matches!(other, DueTransferResult::NothingDue)
+            ),
+        }
     }
 }

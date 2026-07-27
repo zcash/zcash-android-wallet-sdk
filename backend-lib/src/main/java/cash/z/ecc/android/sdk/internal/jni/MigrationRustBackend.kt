@@ -4,6 +4,7 @@ package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -119,10 +120,11 @@ class MigrationRustBackend private constructor() {
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         networkId: Int,
-        accountUuidBytes: ByteArray
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
     ): Boolean =
         withContext(SdkDispatchers.DATABASE_IO) {
-            hasOverdueTransfersNative(dbDataPath, networkId, accountUuidBytes)
+            hasOverdueTransfersNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
         }
 
     @Throws(RuntimeException::class)
@@ -298,10 +300,11 @@ class MigrationRustBackend private constructor() {
     suspend fun nextDueTransfer(
         dbDataPath: String,
         networkId: Int,
-        accountUuidBytes: ByteArray
-    ): JniPreparedTransfer? =
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
+    ): JniDueTransferResult =
         withContext(SdkDispatchers.DATABASE_IO) {
-            nextDueTransferNative(dbDataPath, networkId, accountUuidBytes)
+            nextDueTransferNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
         }
 
     /**
@@ -577,7 +580,8 @@ class MigrationRustBackend private constructor() {
         private external fun hasOverdueTransfersNative(
             dbDataPath: String,
             networkId: Int,
-            accountUuidBytes: ByteArray
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
         ): Boolean
 
         @JvmStatic
@@ -676,8 +680,9 @@ class MigrationRustBackend private constructor() {
         private external fun nextDueTransferNative(
             dbDataPath: String,
             networkId: Int,
-            accountUuidBytes: ByteArray
-        ): JniPreparedTransfer?
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
+        ): JniDueTransferResult
 
         @JvmStatic
         @Throws(RuntimeException::class)
