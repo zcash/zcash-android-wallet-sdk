@@ -1810,6 +1810,49 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ///
 /// `new_schedule` and `new_boundary` are pre-computed by the caller (the JNI wrapper draws
 /// an exponential delay and candidate boundary; tests supply deterministic values).
+/// Pure boundary-selection helper for `rescheduleUnprovenTransferNative`.
+///
+/// Given the funding height of the dependency, the current tip, and the bucket interval,
+/// computes the candidate grid range `[lowest, highest]` and either:
+/// - returns `old_boundary` unchanged when the candidate set is empty (lowest > highest), or
+/// - calls `pick(count)` with the number of candidates and uses the returned index (0-based) to
+///   select a grid multiple, returning `Some(lowest + pick_idx * interval_u32)`.
+///
+/// This is the load-bearing "empty candidate set → keep old boundary" decision (spec M4).
+/// The JNI wrapper passes `OsRng.gen_range(0..count)` as the pick closure; tests pass a
+/// deterministic function so the boundary selection is fully exercised without any RNG.
+fn select_shift_boundary(
+    funding_height: u32,
+    tip_u32: u32,
+    interval_u32: u32,
+    old_boundary: Option<BlockHeight>,
+    pick: impl FnOnce(u32) -> u32,
+) -> Option<BlockHeight> {
+    // highest = most recent settled grid point one interval back from tip.
+    // Guard: if tip < interval, set highest = 0 (conservative; triggers no-candidate below).
+    let highest = if tip_u32 >= interval_u32 {
+        (tip_u32 / interval_u32) * interval_u32 - interval_u32
+    } else {
+        0u32
+    };
+    // lowest = first grid multiple >= funding_height (ceiling division).
+    // If funding_height == 0 (unknown dep), use interval_u32 as a conservative floor.
+    let lowest = if funding_height == 0 {
+        interval_u32
+    } else {
+        ((funding_height + interval_u32 - 1) / interval_u32) * interval_u32
+    };
+
+    if lowest > highest {
+        // No candidate in range: keep old boundary unchanged (spec M4, testnet load-bearing)
+        old_boundary
+    } else {
+        let count = (highest - lowest) / interval_u32 + 1;
+        let pick_idx = pick(count);
+        Some(BlockHeight::from(lowest + pick_idx * interval_u32))
+    }
+}
+
 fn reschedule_unproven_transfer_inner(
     state: MigrationState,
     transfer_id: MigrationTxId,
@@ -1941,25 +1984,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .map(u32::from)
             .unwrap_or(0);
 
-        let highest = if tip_u32 >= interval_u32 {
-            (tip_u32 / interval_u32) * interval_u32 - interval_u32
-        } else {
-            0u32
-        };
-        let lowest = if funding_height == 0 {
-            interval_u32
-        } else {
-            ((funding_height + interval_u32 - 1) / interval_u32) * interval_u32
-        };
-
-        let new_boundary = if lowest > highest {
-            // No candidate in range: keep the old boundary (spec M4, testnet load-bearing)
-            old_boundary
-        } else {
+        let new_boundary = {
             use rand::Rng;
-            let count = (highest - lowest) / interval_u32 + 1;
-            let pick = rand::rngs::OsRng.gen_range(0..count);
-            Some(BlockHeight::from(lowest + pick * interval_u32))
+            select_shift_boundary(
+                funding_height,
+                tip_u32,
+                interval_u32,
+                old_boundary,
+                |count| rand::rngs::OsRng.gen_range(0..count),
+            )
         };
 
         let (result, new_state) =
@@ -3792,30 +3825,90 @@ mod reschedule_unproven_tests {
         );
     }
 
+    /// Helper: calls `select_shift_boundary` with a deterministic pick (always index 0 = lowest).
+    /// This lets tests assert boundary selection logic without RNG.
+    fn select_boundary_det(
+        funding_height: u32,
+        tip_u32: u32,
+        interval_u32: u32,
+        old_boundary: Option<BlockHeight>,
+    ) -> Option<BlockHeight> {
+        super::select_shift_boundary(
+            funding_height,
+            tip_u32,
+            interval_u32,
+            old_boundary,
+            |_count| 0, // always pick lowest candidate
+        )
+    }
+
+    /// Helper: calls `select_shift_boundary` with a pick that always selects the highest candidate.
+    fn select_boundary_det_high(
+        funding_height: u32,
+        tip_u32: u32,
+        interval_u32: u32,
+        old_boundary: Option<BlockHeight>,
+    ) -> Option<BlockHeight> {
+        super::select_shift_boundary(
+            funding_height,
+            tip_u32,
+            interval_u32,
+            old_boundary,
+            |count| count - 1, // always pick highest candidate
+        )
+    }
+
     #[test]
     fn reschedule_unproven_redraws_boundary_when_candidates_exist() {
+        // Mainnet interval=144: tip=2000, funding=0 (unknown dep → lowest=144)
+        // highest=(2000/144)*144-144 = 13*144-144 = 1728; lowest=144; candidates exist
+        // pick=0 → lowest=144, pick=highest_idx → 1728; both must be on-grid.
         let interval: u32 = 144;
-        let tip = BlockHeight::from_u32(2000);
-        let old_boundary = BlockHeight::from_u32(500);
+        let tip: u32 = 2000;
+        let old_boundary = Some(BlockHeight::from_u32(500));
+
+        let boundary_low = select_boundary_det(0, tip, interval, old_boundary);
+        let boundary_high = select_boundary_det_high(0, tip, interval, old_boundary);
+
+        let b_low = boundary_low.expect("must be Some when candidates exist");
+        let b_high = boundary_high.expect("must be Some when candidates exist");
+        assert_eq!(u32::from(b_low) % interval, 0, "lowest pick must be on grid");
+        assert_eq!(u32::from(b_high) % interval, 0, "highest pick must be on grid");
+        // lowest candidate = 144, highest candidate = 1728
+        assert_eq!(u32::from(b_low), 144, "lowest pick must equal first candidate");
+        assert_eq!(u32::from(b_high), 1728, "highest pick must equal last candidate");
+        assert!(u32::from(b_low) <= u32::from(b_high), "low <= high");
+
+        // Testnet interval=12: tip=200, funding=0 → lowest=12, highest=(200/12)*12-12=192-12=180
+        let interval12: u32 = 12;
+        let tip12: u32 = 200;
+        let boundary12_low = select_boundary_det(0, tip12, interval12, old_boundary);
+        let boundary12_high = select_boundary_det_high(0, tip12, interval12, old_boundary);
+        let bl12 = boundary12_low.expect("testnet: must be Some");
+        let bh12 = boundary12_high.expect("testnet: must be Some");
+        assert_eq!(u32::from(bl12) % interval12, 0, "testnet lowest pick on grid");
+        assert_eq!(u32::from(bh12) % interval12, 0, "testnet highest pick on grid");
+        assert_eq!(u32::from(bl12), 12, "testnet: lowest candidate = 12");
+        assert_eq!(u32::from(bh12), 180, "testnet: highest candidate = 180");
+
+        // Cross-check: the inner reschedule with the boundary-helper result persists it correctly.
         let tx = MigrationTransaction::from_parts(
             MigrationTxId::new(2),
             MigrationTxKind::Transfer { crossing: 0 },
             vec![0u8; 32],
             vec![],
-            tip,
+            BlockHeight::from_u32(tip),
             BlockHeight::from_u32(10000),
-            Some(old_boundary),
+            old_boundary,
             MigrationTxState::Signed,
             None,
         );
         let state = make_state(MigrationStatus::InProgress, vec![tx]);
-        // highest = (2000/144)*144 - 144 = 13*144 - 144 = 1872 - 144 = 1728
-        let new_boundary = BlockHeight::from_u32(1728);
         let (result, new_state) = reschedule(
             state,
             MigrationTxId::new(2),
             BlockHeight::from_u32(2144),
-            Some(new_boundary),
+            boundary_low, // already verified to be on-grid
         );
         assert!(result > 0);
         let tx = new_state
@@ -3823,38 +3916,93 @@ mod reschedule_unproven_tests {
             .iter()
             .find(|t| t.id() == MigrationTxId::new(2))
             .unwrap();
-        let boundary = tx.anchor_boundary().expect("boundary must be Some");
+        let persisted = tx.anchor_boundary().expect("boundary must be Some after reschedule");
         assert_eq!(
-            u32::from(boundary) % interval,
+            u32::from(persisted) % interval,
             0,
-            "new boundary must be on bucket grid (multiple of {}), got {}",
+            "persisted boundary must be on bucket grid (multiple of {}), got {}",
             interval,
-            u32::from(boundary)
+            u32::from(persisted)
         );
     }
 
+    /// Tests the load-bearing "empty candidate set → keep old boundary" decision in
+    /// `select_shift_boundary`. This is the logic that lives in the JNI wrapper (previously
+    /// untested because the old test bypassed it by passing `old_boundary` directly into
+    /// `reschedule_unproven_transfer_inner`).
     #[test]
     fn reschedule_unproven_keeps_old_boundary_when_no_candidate() {
-        // tip=200, interval=144: highest=(200/144)*144-144=144-144=0, lowest=144 → no candidates
-        let tip = BlockHeight::from_u32(200);
-        let old_boundary = BlockHeight::from_u32(100);
+        let old_boundary = Some(BlockHeight::from_u32(100));
+
+        // --- Mainnet interval=144 ---
+        // tip=200: highest=(200/144)*144-144 = 144-144=0; lowest=144 → 144>0 → no candidates
+        let result_144 = select_boundary_det(0, 200, 144, old_boundary);
+        assert_eq!(
+            result_144, old_boundary,
+            "mainnet tip=200: no candidates → old boundary unchanged"
+        );
+
+        // tip=143: highest=0 (tip<interval); lowest=144 → no candidates
+        let result_143 = select_boundary_det(0, 143, 144, old_boundary);
+        assert_eq!(
+            result_143, old_boundary,
+            "mainnet tip=143: tip<interval → no candidates → old boundary unchanged"
+        );
+
+        // funding_height set to tip-interval+1 (barely too recent for candidates):
+        // tip=300, interval=144: highest=(300/144)*144-144=2*144-144=144;
+        // funding=157 → lowest=ceil(157/144)*144=2*144=288; 288>144 → no candidates
+        let result_recent = select_boundary_det(157, 300, 144, old_boundary);
+        assert_eq!(
+            result_recent, old_boundary,
+            "funding too recent: no candidates → old boundary unchanged"
+        );
+
+        // --- Testnet interval=12 ---
+        // tip=20: highest=(20/12)*12-12=12-12=0; lowest=12 → 12>0 → no candidates
+        let result_t12 = select_boundary_det(0, 20, 12, old_boundary);
+        assert_eq!(
+            result_t12, old_boundary,
+            "testnet tip=20: no candidates → old boundary unchanged"
+        );
+
+        // tip=11: tip<interval → highest=0; lowest=12 → no candidates
+        let result_t11 = select_boundary_det(0, 11, 12, old_boundary);
+        assert_eq!(
+            result_t11, old_boundary,
+            "testnet tip=11 (tip<interval): no candidates → old boundary unchanged"
+        );
+
+        // Confirm the boundary IS updated when there ARE candidates (tip=2000, mainnet):
+        // This ensures the above assertions are actually the no-candidate branch, not a bug
+        // that always returns old_boundary.
+        let result_candidates = select_boundary_det(0, 2000, 144, old_boundary);
+        assert_ne!(
+            result_candidates, old_boundary,
+            "when candidates exist (tip=2000, interval=144), boundary must change from old={:?}",
+            old_boundary
+        );
+
+        // Also cross-check via the inner fn that it faithfully stores what we give it.
+        let tip_bh = BlockHeight::from_u32(200);
         let tx = MigrationTransaction::from_parts(
             MigrationTxId::new(3),
             MigrationTxKind::Transfer { crossing: 0 },
             vec![0u8; 32],
             vec![],
-            tip,
+            tip_bh,
             BlockHeight::from_u32(10000),
-            Some(old_boundary),
+            old_boundary,
             MigrationTxState::Signed,
             None,
         );
         let state = make_state(MigrationStatus::InProgress, vec![tx]);
+        // Use the helper result (verified above = old_boundary) so the test reflects real JNI flow.
         let (result, new_state) = reschedule(
             state,
             MigrationTxId::new(3),
             BlockHeight::from_u32(344),
-            Some(old_boundary), // no-candidate path: pass old boundary unchanged
+            result_144, // == old_boundary — as select_shift_boundary would return
         );
         assert!(result > 0);
         let tx = new_state
@@ -3864,8 +4012,8 @@ mod reschedule_unproven_tests {
             .unwrap();
         assert_eq!(
             tx.anchor_boundary(),
-            Some(old_boundary),
-            "boundary must be unchanged when no candidates exist"
+            old_boundary,
+            "inner fn must persist exactly what select_shift_boundary returned"
         );
     }
 
