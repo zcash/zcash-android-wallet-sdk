@@ -73,8 +73,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
         let tx_hash = java_string_to_rust(env, &tx_hash)?;
-        db.store_vote_tx_hash(&round_id, bundle_index, proposal_id, &tx_hash)
-            .map_err(|e| anyhow!("store_vote_tx_hash: {e}"))?;
+        voting::vote::record_submission(&db, &round_id, bundle_index, proposal_id, &tx_hash)
+            .map_err(|e| anyhow!("record_submission: {e}"))?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -90,14 +90,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_mar
     round_id: JString<'local>,
     bundle_index: jint,
     proposal_id: jint,
+    tx_hash: JString<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
+        // A vote is now recorded as submitted by persisting the transaction that
+        // carried it, so a restarted wallet can resume polling for that
+        // transaction instead of rebuilding the vote. `zcash_voting` dropped the
+        // standalone submitted flag, which is why the tx hash is required here.
         db.mark_vote_submitted(
             &java_string_to_rust(env, &round_id)?,
             jint_to_u32(bundle_index, "bundle_index")?,
             jint_to_u32(proposal_id, "proposal_id")?,
+            &java_string_to_rust(env, &tx_hash)?,
         )
         .map_err(|e| anyhow!("mark_vote_submitted: {e}"))?;
         Ok(JNI_TRUE)
@@ -156,8 +162,14 @@ fn is_query_returned_no_rows(error: &impl std::fmt::Display) -> bool {
         .contains("query returned no rows")
 }
 
+/// Records the on-chain vote commitment tree position of a confirmed vote.
+///
+/// This replaces the former `storeCommitmentBundleNative`, which also took the
+/// commitment bundle itself. `zcash_voting` now owns that recovery material: it
+/// is written when the vote is committed and has no public writer, so the caller
+/// has nothing left to supply beyond the confirmed tree position.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeCommitmentBundleNative<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordVcPositionNative<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -166,61 +178,28 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
     round_id: JString<'local>,
     bundle_index: jint,
     proposal_id: jint,
-    commitment: JObject<'local>,
     vc_tree_position: jlong,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let round_id = java_string_to_rust(env, &round_id)?;
-        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
-        let vc_tree_position = jlong_to_u64(vc_tree_position, "vc_tree_position")?;
-        let commitment = java_vote_commitment_bundle(env, &commitment)?;
-        require_commitment_matches_key(&commitment, &round_id, bundle_index, proposal_id)?;
-        let commitment = StoredVoteCommitmentBundle::try_from(commitment)?.to_storage_json()?;
-        db.store_commitment_bundle(
-            &round_id,
-            bundle_index,
-            proposal_id,
-            &commitment,
-            vc_tree_position,
+        voting::vote::record_vc_position(
+            &db,
+            &java_string_to_rust(env, &round_id)?,
+            jint_to_u32(bundle_index, "bundle_index")?,
+            jint_to_u32(proposal_id, "proposal_id")?,
+            jlong_to_u64(vc_tree_position, "vc_tree_position")?,
         )
-        .map_err(|e| anyhow!("store_commitment_bundle: {e}"))?;
+        .map_err(|e| anyhow!("record_vc_position: {e}"))?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
-/// Requires the commitment payload identity to match the recovery storage key.
-/// Rejects mismatched round or proposal data before it can be persisted.
-fn require_commitment_matches_key(
-    commitment: &JavaVoteCommitmentBundle,
-    round_id: &str,
-    bundle_index: u32,
-    proposal_id: u32,
-) -> anyhow::Result<()> {
-    if commitment.bundle.vote_round_id != round_id {
-        return Err(anyhow!(
-            "commitment voteRoundId {} does not match roundId {round_id}",
-            commitment.bundle.vote_round_id
-        ));
-    }
-    if commitment.bundle.proposal_id != proposal_id {
-        return Err(anyhow!(
-            "commitment proposalId {} does not match proposalId {proposal_id}",
-            commitment.bundle.proposal_id
-        ));
-    }
-    if commitment.bundle_index != bundle_index {
-        return Err(anyhow!(
-            "commitment bundleIndex {} does not match bundleIndex {bundle_index}",
-            commitment.bundle_index
-        ));
-    }
-    Ok(())
-}
-
+/// Reconstructs a committed vote and its recorded tree position after a restart.
+///
+/// Returns null until the vote's commitment tree position has been recorded, so
+/// callers cannot resubmit helper-share payloads built on a stale position.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getCommitmentBundleNative<
     'local,
@@ -235,23 +214,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
         let record = optional_recovery_lookup(
-            db.get_commitment_bundle(
-                &java_string_to_rust(env, &round_id)?,
-                jint_to_u32(bundle_index, "bundle_index")?,
-                jint_to_u32(proposal_id, "proposal_id")?,
-            ),
+            db.get_commitment_bundle(&round_id, bundle_index, proposal_id),
             "get_commitment_bundle",
         )?;
         match record {
-            Some((commitment, vc_tree_position)) => {
-                let commitment = StoredVoteCommitmentBundle::from_storage_json(&commitment)?;
-                make_jni_commitment_bundle_record(
-                    env,
-                    commitment,
-                    jint_to_u32(bundle_index, "bundle_index")?,
-                    vc_tree_position,
-                )
+            Some((_, vc_tree_position)) => {
+                // The stored recovery JSON is library-owned and opaque, so the
+                // typed commitment comes back through the crate's own reader
+                // rather than being parsed here.
+                let commit =
+                    voting::vote::recover_commit(&db, &round_id, bundle_index, proposal_id)
+                        .map_err(|e| anyhow!("recover_commit: {e}"))?;
+                make_jni_commitment_bundle_record(env, commit, bundle_index, vc_tree_position)
             }
             None => Ok(JObject::null().into_raw()),
         }
@@ -290,23 +268,26 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_rec
     proposal_id: jint,
     share_index: jint,
     sent_to_urls: JObjectArray<'local>,
-    nullifier: JByteArray<'local>,
     submit_at: jlong,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let sent_to_urls = java_string_array(env, &sent_to_urls, "sentToUrls")?;
-        db.record_share_delegation(
+        // The nullifier is derived from the vote's persisted recovery state
+        // rather than supplied by the caller, so a caller cannot record a
+        // nullifier that disagrees with the share it belongs to. That is why the
+        // former `nullifier` parameter is gone.
+        voting::share::record(
+            &db,
             &java_string_to_rust(env, &round_id)?,
             jint_to_u32(bundle_index, "bundle_index")?,
             jint_to_u32(proposal_id, "proposal_id")?,
             require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?,
             &sent_to_urls,
-            &java_bytes_exact(env, &nullifier, "nullifier", SHARE_NULLIFIER_BYTES)?,
             jlong_to_u64(submit_at, "submit_at")?,
         )
-        .map_err(|e| anyhow!("record_share_delegation: {e}"))?;
+        .map_err(|e| anyhow!("share::record: {e}"))?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -483,50 +464,9 @@ mod tests {
         assert!(error.contains("database is locked"));
     }
 
-    #[test]
-    fn commitment_store_key_must_match_payload() {
-        let commitment = commitment_bundle("round-1", 7);
-
-        require_commitment_matches_key(&commitment, "round-1", 1, 7).unwrap();
-        assert!(
-            require_commitment_matches_key(&commitment, "round-2", 1, 7)
-                .unwrap_err()
-                .to_string()
-                .contains("voteRoundId")
-        );
-        assert!(
-            require_commitment_matches_key(&commitment, "round-1", 1, 8)
-                .unwrap_err()
-                .to_string()
-                .contains("proposalId")
-        );
-        assert!(
-            require_commitment_matches_key(&commitment, "round-1", 2, 7)
-                .unwrap_err()
-                .to_string()
-                .contains("bundleIndex")
-        );
-    }
-
-    fn commitment_bundle(round_id: &str, proposal_id: u32) -> JavaVoteCommitmentBundle {
-        JavaVoteCommitmentBundle {
-            bundle_index: 1,
-            enc_shares: vec![],
-            bundle: VoteCommitmentBundle {
-                van_nullifier: vec![1; PROTOCOL_FIELD_BYTES],
-                vote_authority_note_new: vec![2; PROTOCOL_FIELD_BYTES],
-                vote_commitment: vec![3; PROTOCOL_FIELD_BYTES],
-                proposal_id,
-                proof: vec![4; PROTOCOL_FIELD_BYTES],
-                enc_shares: vec![],
-                anchor_height: 5,
-                vote_round_id: round_id.to_string(),
-                shares_hash: vec![6; PROTOCOL_FIELD_BYTES],
-                share_blinds: vec![vec![7; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
-                share_comms: vec![vec![8; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
-                r_vpk_bytes: vec![9; PROTOCOL_FIELD_BYTES],
-                alpha_v: vec![10; PROTOCOL_FIELD_BYTES],
-            },
-        }
-    }
+    // The former `commitment_store_key_must_match_payload` test is gone. It
+    // asserted that a caller-supplied commitment payload agreed with the storage
+    // key it was being written under. `zcash_voting` now owns that payload
+    // entirely -- it is written by `vote::commit` and has no public writer -- so
+    // there is no caller-supplied payload left to disagree with the key.
 }

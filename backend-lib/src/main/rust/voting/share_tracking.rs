@@ -16,13 +16,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_com
     blind: JByteArray<'local>,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let nullifier = voting::share_tracking::compute_share_nullifier(
+        let nullifier = voting::share::compute_nullifier(
             &java_fixed_bytes::<VOTE_COMMITMENT_BYTES>(env, &vote_commitment, "voteCommitment")?,
             jint_to_u32(share_index, "share_index")?,
             &java_fixed_bytes::<BLIND_BYTES>(env, &blind, "blind")?,
         )
-        .map_err(|e| anyhow!("compute_share_nullifier: {}", e))?;
-        let nullifier = fixed_bytes::<SHARE_NULLIFIER_BYTES>(nullifier, "shareNullifier")?;
+        .map_err(|e| anyhow!("compute_nullifier: {}", e))?;
         Ok(env.byte_array_from_slice(&nullifier)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
