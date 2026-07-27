@@ -237,6 +237,12 @@ class OrchardMigrationSdkImplTest {
             account: AccountUuid
         ): Boolean = error("Unused")
 
+        override suspend fun reconcileInvalidatedTransfers(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid
+        ): Boolean = error("Unused")
+
         override suspend fun prepareNoteSplit(
             dbDataPath: String,
             network: ZcashNetwork,

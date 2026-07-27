@@ -79,6 +79,12 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Boolean
 
+    suspend fun reconcileInvalidatedTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Boolean
+
     suspend fun prepareNoteSplit(
         dbDataPath: String,
         network: ZcashNetwork,

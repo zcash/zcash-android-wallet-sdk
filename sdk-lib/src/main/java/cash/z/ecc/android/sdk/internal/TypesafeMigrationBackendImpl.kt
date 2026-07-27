@@ -85,6 +85,12 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Boolean = rustBackend().hasInvalidTransfers(dbDataPath, network.id, account.value)
 
+    override suspend fun reconcileInvalidatedTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Boolean = rustBackend().reconcileInvalidatedTransfers(dbDataPath, network.id, account.value)
+
     override suspend fun prepareNoteSplit(
         dbDataPath: String,
         network: ZcashNetwork,

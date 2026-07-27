@@ -149,6 +149,16 @@ class MigrationRustBackend private constructor() {
         }
 
     @Throws(RuntimeException::class)
+    suspend fun reconcileInvalidatedTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            reconcileInvalidatedTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
     suspend fun prepareNoteSplit(
         dbDataPath: String,
         networkId: Int,
@@ -607,6 +617,14 @@ class MigrationRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun hasInvalidTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun reconcileInvalidatedTransfersNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray
