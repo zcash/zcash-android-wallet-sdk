@@ -14,7 +14,7 @@
 //! hazard).
 //!
 //! Unlike this file's neighbors, this is NOT backed by the wallet SQLite database: the new
-//! engine's `MigrationPlan` (and its `NoteSplitPlan`/`PreparationPlan` fields) has no `serde`
+//! engine's `MigrationPlan` (and its `DenominationPlan`/`PreparationPlan` fields) has no `serde`
 //! support and no public constructor — the only way to obtain one is calling `plan_migration()`
 //! itself (verified directly against `zcash_pool_migration`'s source, not assumed), so it
 //! can't be round-tripped through our own persistence the way `migration_finalize`'s proven-pczt

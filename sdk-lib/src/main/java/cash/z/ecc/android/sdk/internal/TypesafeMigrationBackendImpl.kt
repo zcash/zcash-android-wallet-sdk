@@ -103,7 +103,7 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        transferId: String,
+        transferId: Long,
         resultTag: Int,
         retryable: Boolean,
         txId: ByteArray
@@ -219,7 +219,7 @@ internal class TypesafeMigrationBackendImpl(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        ids: Array<String>,
+        ids: LongArray,
         pcztBytesList: Array<ByteArray>
     ) = rustBackend().storeSignedSchedulePczts(dbDataPath, network.id, account.value, ids, pcztBytesList)
 

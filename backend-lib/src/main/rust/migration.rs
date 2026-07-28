@@ -34,7 +34,7 @@
 use anyhow::anyhow;
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use prost::Message;
@@ -58,8 +58,9 @@ use zcash_protocol::{PoolType, ShieldedPool};
 use zcash_pool_migration::wallet::{WalletMigrationProver, WalletProveError};
 use zcash_pool_migration::{
     engine::{
-        self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction, MigrationTxId,
-        MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
+        self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction,
+        MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead,
+        PoolMigrationWrite, ProveError,
     },
     scheduling::AnchorBucketInterval,
 };
@@ -345,7 +346,7 @@ fn plan(
 /// A migration state paired with the transactions it left awaiting signature, each as its
 /// id and PCZT bytes. Named because both the commit entry point and every `sign` closure it
 /// dispatches to return this same shape.
-type MigrationCommitOutcome = (MigrationState, Vec<(MigrationTxId, Vec<u8>)>);
+type MigrationCommitOutcome = (MigrationState, Vec<(MigrationTransferId, Vec<u8>)>);
 
 /// The wallet-side context a commit runs against: which network and account, the store
 /// connection it writes through, and the target height the cached plan was built for. Grouped
@@ -490,7 +491,7 @@ fn encode_note_split_proposal<'a>(
     plan: &MigrationPlan,
     plan_handle: crate::migration_plan_cache::PlanHandle,
 ) -> jni::errors::Result<JObject<'a>> {
-    let split = plan.note_split();
+    let split = plan.denominations();
     let values: Vec<i64> = split
         .crossing_values()
         .iter()
@@ -511,19 +512,19 @@ fn encode_note_split_proposal<'a>(
     )
 }
 
-fn encode_transfer_id<'a>(
-    env: &mut JNIEnv<'a>,
-    id: MigrationTxId,
-) -> jni::errors::Result<JString<'a>> {
-    env.new_string(u32::from(id).to_string())
+/// A transaction id as Kotlin receives it: the engine's `u32` widened to the `Long` this JNI
+/// boundary uses for every unsigned 32-bit value (heights included), so the value survives without
+/// a sign flip and Kotlin can range-check it.
+fn encode_transfer_id(id: MigrationTransferId) -> jlong {
+    jlong::from(u32::from(id))
 }
 
-fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<MigrationTxId> {
-    let raw = crate::utils::java_string_to_rust(env, id)?;
-    let idx: u32 = raw
-        .parse()
-        .map_err(|e| anyhow!("Invalid transfer id {}: {}", raw, e))?;
-    Ok(MigrationTxId::new(idx))
+/// The inverse of [`encode_transfer_id`]: a `Long` from Kotlin back to the engine's id. Rejects
+/// values outside the `u32` range rather than truncating them into a different transaction.
+fn decode_transfer_id(id: jlong) -> anyhow::Result<MigrationTransferId> {
+    let idx =
+        u32::try_from(id).map_err(|_| anyhow!("Transfer id {} is outside the u32 range", id))?;
+    Ok(MigrationTransferId::new(idx))
 }
 
 /// `anchor_height` here is NOT a real commitment-tree anchor (ZIP 374 defers that to proving time
@@ -536,18 +537,17 @@ fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<Migratio
 /// correctly spread out (see the `MIGRATION_DIAG plan:` log in `plan()` above).
 fn encode_transfer_proposal<'a>(
     env: &mut JNIEnv<'a>,
-    id: MigrationTxId,
+    id: MigrationTransferId,
     amount: Zatoshis,
     anchor_height: BlockHeight,
     schedule_broadcast_height: BlockHeight,
     schedule_expiry_height: BlockHeight,
 ) -> jni::errors::Result<JObject<'a>> {
-    let id = encode_transfer_id(env, id)?;
     env.new_object(
         JNI_TRANSFER_PROPOSAL,
-        "(Ljava/lang/String;JJJJ)V",
+        "(JJJJJ)V",
         &[
-            JValue::Object(&id),
+            JValue::Long(encode_transfer_id(id)),
             JValue::Long(u64::from(amount) as i64),
             JValue::Long(i64::from(u32::from(anchor_height))),
             JValue::Long(i64::from(u32::from(schedule_broadcast_height))),
@@ -577,7 +577,7 @@ fn encode_migration_schedule<'a>(
     // displaying the received amount, fee visible only in the transaction detail), so subtract the
     // constant fee buffer back out to recover the round `{1,2,5}×10ⁿ` crossing value per note.
     let funding_notes = plan.funding_notes();
-    let note_fee_buffer = plan.note_split().note_fee_buffer();
+    let note_fee_buffer = plan.denominations().note_fee_buffer();
     let schedule = plan.schedule();
     if funding_notes.len() != schedule.len() {
         return Err(anyhow!(
@@ -594,7 +594,7 @@ fn encode_migration_schedule<'a>(
         })
         .collect();
 
-    // The real `MigrationTxId` the engine will assign at commit time numbers every preparation
+    // The real `MigrationTransferId` the engine will assign at commit time numbers every preparation
     // transaction (across all layers) first, THEN transfers in `schedule()` order (confirmed
     // directly against `commit_preparation_inner` in `zcash_pool_migration::engine`) — so
     // transfer `i`'s id is `prep_tx_count + i`, not `i`. Getting this wrong doesn't affect Kotlin
@@ -612,7 +612,7 @@ fn encode_migration_schedule<'a>(
     let mut proposals = Vec::with_capacity(schedule.len());
     for (i, (amount, entry)) in crossings.iter().zip(schedule.iter()).enumerate() {
         proposals.push((
-            MigrationTxId::new(prep_tx_count + i as u32),
+            MigrationTransferId::new(prep_tx_count + i as u32),
             *amount,
             entry.broadcast_height(),
             entry.expiry_height(),
@@ -697,7 +697,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// The new engine plans the note split and the transfer schedule together in one
-/// `plan_migration()` call (the split's realized output values ARE `plan.note_split()
+/// `plan_migration()` call (the split's realized output values ARE `plan.denominations()
 /// .crossing_values()`, which is exactly what `encode_migration_schedule` already derives the
 /// schedule from) — so unlike `proposeMigrationTransfersNative` above, this does NOT plan afresh:
 /// it encodes the schedule of the exact cached plan `proposal_handle` identifies (the one whose
@@ -810,7 +810,7 @@ fn try_prove(
     account: AccountUuid,
     fvk: orchard::keys::FullViewingKey,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
     kind: MigrationTxKind,
 ) -> anyhow::Result<bool> {
     let anchor = match kind {
@@ -853,7 +853,7 @@ fn finalize_note_split(
     account: AccountUuid,
     store_conn: &mut Connection,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
 ) -> anyhow::Result<(Vec<u8>, [u8; 32])> {
     let fvk = {
         let backend = Backend::new(wallet, account, None, store_conn)?;
@@ -956,15 +956,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (proven_pczt, txid) =
             finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
-        let id = encode_transfer_id(env, split_id)?;
+        let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_obj = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_obj),
                 ],
@@ -1009,7 +1009,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    transfer_id: JString<'local>,
+    transfer_id: jlong,
     result_tag: jint,
     _retryable: jboolean,
     tx_id: JByteArray<'local>,
@@ -1017,7 +1017,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let id = decode_transfer_id(env, &transfer_id)?;
+        let id = decode_transfer_id(transfer_id)?;
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         match result_tag {
             // Success: record the broadcast txid. `mark_mined` has no old-crate equivalent call
@@ -1348,7 +1348,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Collect ready ids/kinds up front (not while iterating `state.transactions()`) since
         // `try_prove` needs `&mut state` — see `is_prove_ready`'s doc comment for why this doesn't
         // just loop `MigrationState::next_provable`.
-        let ready: Vec<(MigrationTxId, MigrationTxKind)> = state
+        let ready: Vec<(MigrationTransferId, MigrationTxKind)> = state
             .transactions()
             .iter()
             .filter(|t| {
@@ -1451,15 +1451,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
         let txid: [u8; 32] = *extracted.txid().as_ref();
 
-        let id = encode_transfer_id(env, tx.id())?;
+        let id = encode_transfer_id(tx.id());
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_obj = crate::utils::rust_bytes_to_java(env, bytes)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_obj),
                 ],
@@ -1497,14 +1497,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             return Ok(ptr::null_mut());
         };
 
-        // Keyed by the transfer's real, stable MigrationTxId — NOT `transfer_crossing()` (the
+        // Keyed by the transfer's real, stable MigrationTransferId — NOT `transfer_crossing()` (the
         // funding-note/crossing index). The app's displayed "Transfer N" position comes from
         // sorting the ORIGINAL proposal by broadcast_height (see `encode_migration_schedule`),
         // while the engine assigns real tx ids in crossing/schedule() order at commit time —
         // ZIP 318 deliberately shuffles those two orderings apart, so they permanently disagree.
         // The app now carries this same id on its cached `MigrationTransfer.id` (see
         // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
-        let transfers: Vec<(MigrationTxId, bool, BlockHeight)> = state
+        let transfers: Vec<(MigrationTransferId, bool, BlockHeight)> = state
             .transactions()
             .iter()
             .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
@@ -1522,12 +1522,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             transfers,
             JNI_MIGRATION_TRANSFER_STATE,
             |env, (id, is_sent, scheduled_height)| {
-                let id = encode_transfer_id(env, id)?;
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(Ljava/lang/String;ZJ)V",
+                    "(JZJ)V",
                     &[
-                        JValue::Object(&id),
+                        JValue::Long(encode_transfer_id(id)),
                         JValue::Bool(is_sent as jboolean),
                         JValue::Long(i64::from(u32::from(scheduled_height))),
                     ],
@@ -1708,7 +1707,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // transfer anchors lie on.
         let cancelled = MigrationState::from_parts(
             engine::MigrationStatus::Failed,
-            state.note_split().clone(),
+            state.denominations().clone(),
             state.preparation().clone(),
             state.transactions().clone(),
             state.anchor_bucket_interval(),
@@ -1835,7 +1834,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
         // The new (scheduled_height, anchor_boundary) for each pending transfer, keyed by its
         // stable id so the full transactions vec can be rebuilt in its original order below.
-        let mut reschedule: HashMap<MigrationTxId, (BlockHeight, Option<BlockHeight>)> =
+        let mut reschedule: HashMap<MigrationTransferId, (BlockHeight, Option<BlockHeight>)> =
             HashMap::with_capacity(pending.len());
         for (i, tx) in pending.iter().enumerate() {
             let new_height = BlockHeight::from(
@@ -1884,7 +1883,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
         let new_state = MigrationState::from_parts(
             state.status(),
-            state.note_split().clone(),
+            state.denominations().clone(),
             state.preparation().clone(),
             new_transactions,
             match network {
@@ -2103,15 +2102,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (proven_pczt, txid) =
             finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
-        let id = encode_transfer_id(env, split_id)?;
+        let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_bytes = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_bytes),
                 ],
@@ -2167,7 +2166,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 ))
             },
         )?;
-        let transfer_ids: std::collections::HashSet<MigrationTxId> = state
+        let transfer_ids: std::collections::HashSet<MigrationTransferId> = state
             .transactions()
             .iter()
             .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
@@ -2193,12 +2192,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             transfers,
             JNI_UNSIGNED_TRANSFER_PCZT,
             |env, (id, pczt_bytes)| {
-                let id = encode_transfer_id(env, id)?;
                 let pczt_bytes = crate::utils::rust_bytes_to_java(env, &pczt_bytes)?;
                 env.new_object(
                     JNI_UNSIGNED_TRANSFER_PCZT,
-                    "(Ljava/lang/String;[B)V",
-                    &[JValue::Object(&id), JValue::Object(&pczt_bytes)],
+                    "(J[B)V",
+                    &[
+                        JValue::Long(encode_transfer_id(id)),
+                        JValue::Object(&pczt_bytes),
+                    ],
                 )
             },
         )?
@@ -2216,13 +2217,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    ids: JObjectArray<'local>,
+    ids: JLongArray<'local>,
     pczt_bytes_list: JObjectArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let count = env.get_array_length(&ids)?;
+        // A `long[]` is read as a region rather than element-by-element: the ids are primitives,
+        // not objects.
+        let mut raw_ids = vec![0i64; count as usize];
+        env.get_long_array_region(&ids, 0, &mut raw_ids)?;
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let mut state = backend
             .get_migration()
@@ -2231,8 +2236,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Absorbs the new engine's per-transaction `apply_signature` into the old batch-shaped
         // call Kotlin still makes — see module doc point about the signed-PCZT return path.
         for i in 0..count {
-            let id_obj = env.get_object_array_element(&ids, i)?;
-            let id = decode_transfer_id(env, &JString::from(id_obj))?;
+            let id = decode_transfer_id(raw_ids[i as usize])?;
             let bytes_obj = env.get_object_array_element(&pczt_bytes_list, i)?;
             let pczt_bytes = crate::utils::java_bytes_to_rust(env, &JByteArray::from(bytes_obj))?;
             if !state.apply_signature(id, pczt_bytes) {
@@ -2557,7 +2561,7 @@ mod live_wallet_signing_tests {
             backend.orchard_fvk().expect("fvk")
         };
 
-        let ids_and_kinds: Vec<(MigrationTxId, MigrationTxKind)> = state
+        let ids_and_kinds: Vec<(MigrationTransferId, MigrationTxKind)> = state
             .transactions()
             .iter()
             .map(|t| (t.id(), t.kind()))
@@ -3168,7 +3172,7 @@ mod live_wallet_edge_case_tests {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
 
-        let committed_ids: Vec<MigrationTxId> = {
+        let committed_ids: Vec<MigrationTransferId> = {
             let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
             let account = first_account(&wallet);
             let (plan, tip, _handle) =
@@ -3192,7 +3196,7 @@ mod live_wallet_edge_case_tests {
             .get_migration()
             .expect("read migration state")
             .expect("migration state must persist across a fresh connection to the same DB file");
-        let reloaded_ids: Vec<MigrationTxId> =
+        let reloaded_ids: Vec<MigrationTransferId> =
             reloaded.transactions().iter().map(|t| t.id()).collect();
         assert_eq!(
             committed_ids, reloaded_ids,
