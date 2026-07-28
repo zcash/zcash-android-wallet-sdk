@@ -1,11 +1,6 @@
 name: 'Setup Java, Rust, and Dependency Cache'
 description: "Configures the build environment and caches Gradle, dependencies, and build outputs."
 inputs:
-  # rust-toolchain.toml must be in sync with this default.
-  rust-version:
-    description: "Rust toolchain version to install."
-    required: false
-    default: "1.92.0"
   rust-cache:
     description: "Whether to restore and save the Rust build cache for jobs that compile Rust."
     required: false
@@ -30,11 +25,20 @@ runs:
         SDKMANAGER=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager
         echo "y" | $SDKMANAGER "ndk;27.0.12077973"
     - name: Setup Rust
-      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-      with:
-        toolchain: ${{ inputs.rust-version }}
-        targets: armv7-linux-androideabi,aarch64-linux-android,i686-linux-android,x86_64-linux-android
-        components: clippy
+      shell: bash
+      # Use the channel pinned in rust-toolchain.toml (the single source of truth) rather than a
+      # hardcoded version. rustup honors the toolchain file in-repo regardless, so a hardcoded
+      # version here installs components onto a toolchain the build never runs: that is why
+      # `cargo clippy` failed with "'cargo-clippy' is not installed for the toolchain 1.92.0"
+      # while clippy had been installed for 1.84.1.
+      run: |
+        # `sed` rather than `grep -oP`: -P is a GNU extension, and this composite action
+        # should keep working if it is ever reused from a macOS/BSD runner.
+        CHANNEL="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+        rustup toolchain install "${CHANNEL}"
+        rustup default "${CHANNEL}"
+        rustup target add --toolchain "${CHANNEL}" armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        rustup component add --toolchain "${CHANNEL}" clippy rustfmt
     - name: Configure Gradle
       shell: bash
       run: |

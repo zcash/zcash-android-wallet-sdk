@@ -6,20 +6,123 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Ironwood (NU6.3) shielded pool support: the SDK now exposes the Ironwood pool
-  (balance, subtree roots, sync) alongside Sapling and Orchard.
-- `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that
-  moves the account's entire Orchard balance across the NU6.3 turnstile into the
-  Ironwood pool.
-
 ### Changed
-- Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
-  line, adapting the backend to the send-max and builder API changes.
-- Updated the librustzcash crates to their published releases,
-  `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
+- **Shielded voting works again, on a source-incompatible API.** 2.8.0-rc.1 shipped with the
+  voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
+  built into the native library again and that deprecation is removed, so `VotingRustBackend` and
+  the `sdk-lib` typesafe wrapper around it are usable. The surface is not the one that existed
+  before 2.8.0-rc.1, because it is now built on `zcash_voting` 2.0.0-rc.1: the native entry points
+  went from 60 to 55, because three were added and eight were removed — seven of them public API,
+  the eighth a test fixture — and nine of the survivors changed their parameter lists, one of them
+  without changing its signature. A wallet that stayed on a pre-2.8 release to keep voting working
+  should expect to revisit every voting call site, and cannot carry a round's existing state across
+  the upgrade — in particular, hotkeys created by an earlier SDK version do not carry over,
+  because they were derived from the wallet seed and hotkeys no longer are. The entries below
+  enumerate the delta.
+- **Shielded voting: hotkeys are no longer derived from the wallet seed, and the application must
+  persist them.** `VotingRustBackend.VotingDb.generateHotkey` now takes a network id instead of a
+  seed and returns `JniVotingHotkey(storedSecret, rawOrchardAddress, addressIndex)`. A voting
+  hotkey is app-owned random material generated inside `zcash_voting`, so every call returns a
+  different one and **`storedSecret` cannot be recovered or re-derived from anything else** — not
+  from the wallet seed phrase, not from the wallet database, not from the chain. Consequences a
+  wallet must design around:
+  - The application must store `storedSecret` in platform secure storage, keyed by round, before
+    the delegation transaction is broadcast, and hand it back to `buildGovernancePczt`,
+    `buildGovernancePcztFromSeed`, `buildAndProveDelegation`, `commitVote` and
+    `deriveHotkeyRawAddress` for the rest of the round.
+  - **Restoring a wallet from its seed phrase does not restore the ability to vote** in a round
+    whose hotkey secret was not separately backed up.
+  - **Losing `storedSecret` forfeits the voting power already delegated to that hotkey** for the
+    round; the delegation cannot be reissued to a new hotkey.
+  `JniVotingHotkey.toString()` is redacted so the secret cannot reach a log through string
+  interpolation or the generated `data class` rendering. Its constructor and `copy()` are now
+  public, where the `HotkeyPublicKey` type it replaces restricted both: the length validation that
+  guards hotkey material lives in the `sdk-lib` wrapper around `generateHotkey`, and that wrapper's
+  tests are in a different Gradle module, so they cannot fabricate the malformed hotkey the check
+  exists to reject unless the constructor is public. Constructing a `JniVotingHotkey` grants no
+  capability, because every native entry point takes the raw `storedSecret` bytes rather than this
+  carrier.
+- Shielded voting: `JniNoteInfo`, `JniSharePayload` and `JniShareDelegationRecord` now redact their
+  `toString()`, as `JniVotingHotkey`, `JniVoteCommitResult` and `JniVoteSubmission` already did.
+  The generated `data class` rendering would otherwise print note spending randomness and a full
+  unified viewing key, a vote commitment's primary blind, and a share nullifier into any log line
+  that interpolates one of them.
+- Shielded voting: `JniRoundState.hotkeyAddress` and `JniRoundState.delegatedWeight` are now
+  always `null`. `zcash_voting` does not populate either field, so a caller that reads the hotkey
+  address from the round state reads null regardless of what hotkey generation did. Recover the
+  address with `deriveHotkeyRawAddress` from the persisted `storedSecret`, and read the delegated
+  weight from the bundle weights `setupBundles` returned.
+- Shielded voting: a vote is "submitted" by having a recorded transaction hash rather than by a
+  separate flag. `storeVoteTxHash` and `markVoteSubmitted` collapsed into a single
+  conflict-checked `markVoteSubmitted(roundId, bundleIndex, proposalId, txHash)`. Recording the
+  same hash twice is idempotent; recording a *different* hash for a vote that already has one now
+  **fails** instead of silently overwriting, so a wallet keeps polling the transaction it
+  originally submitted.
+- Shielded voting: `buildVoteCommitment`, `signCastVote` and `buildSharePayloads` collapsed into a
+  single `commitVote`, which builds, signs and stores the commitment and returns the helper-share
+  payloads on `JniVoteCommitResult.sharePayloads`. `JniVoteCommitmentResult` is renamed to
+  `JniVoteCommitResult`; it no longer carries `voteRoundId`, `sharesHash`, `shareBlinds`,
+  `shareComms` or `alphaV`, and it gains `voteAuthSig` and `sharePayloads`. Of the five dropped
+  fields, `shareBlinds` and `alphaV` stop crossing the JNI boundary altogether — that recovery
+  material is owned by `zcash_voting` now. The other three merely moved: `sharesHash` and
+  `shareComms` are on `JniSharePayload`, and `voteRoundId` is on `JniVoteSubmission`.
+- Shielded voting: `getDelegationSubmission` now takes a caller-supplied `spendAuthSig` (64 bytes)
+  over the ZIP-244 `sighash` (32 bytes), and `getDelegationSubmissionWithKeystoneSig` is removed.
+  Software and hardware signing have converged: `zcash_voting` no longer derives account keys or
+  signs, so every signer hands back a signature.
+- Shielded voting: `initRound` takes a `networkId` and binds the round to that network, and a
+  round id must be 64 lowercase hex characters encoding a canonical Pallas field element.
+  `buildGovernancePczt`, `buildGovernancePcztFromSeed` and `buildAndProveDelegation` take
+  `hotkeyStoredSecret` in place of `hotkeyRawAddress` / `hotkeySeed`, and `buildAndProveDelegation`
+  additionally takes `fvkBytes`, `seedFingerprint`, `accountIndex` and `roundName`, because the
+  only public constructor for the delegation keys requires the whole hotkey.
+- **Shielded voting: `deriveHotkeyRawAddress(ByteArray, Int)` kept its signature and changed its
+  meaning.** The first parameter was `hotkeySeed`, derived from the wallet seed; it is now
+  `hotkeyStoredSecret`, the app-owned random secret `generateHotkey` returns. Because the
+  signature is byte-identical, **every existing call site compiles unchanged**, and a compiler
+  error will not point at this one. Worse, it does not fail at run time either: a BIP-39 seed is
+  64 bytes and the stored secret is required to be 64 bytes, so a wallet that keeps passing its
+  wallet seed is accepted without error, silently returns the address of a hotkey nobody
+  delegated to, and turns the wallet seed into per-round hotkey material held in whatever storage
+  the caller used for a value that was previously derivable. Audit every `deriveHotkeyRawAddress`
+  call by hand and pass the persisted `storedSecret`.
+- Shielded voting: `recordShareDelegation` no longer takes a `nullifier`; it is derived natively
+  from the vote's own recovery state.
+- Shielded voting: `setupBundles` rejects an empty note set instead of returning a zero-bundle
+  result.
+- Shielded voting: `getCommitmentBundle` returns null until the vote is confirmed — its
+  transaction hash recorded via `markVoteSubmitted` *and* its vote-commitment tree position
+  recorded via the new `recordVcPosition` — and for a vote that was never stored. Use the new
+  `voteSubmission` for a pre-confirmation resend, then `recordVcPosition`, then
+  `getCommitmentBundle` for fresh helper-share payloads.
+
+### Added
+- Shielded voting: `voteSubmission(roundId, bundleIndex, proposalId)` returns `JniVoteSubmission`,
+  the chain-ready fields needed to resend a cast-vote transaction before it confirms, without the
+  helper-share payloads that go stale once the tree position is recorded.
+- Shielded voting: `recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)` records
+  the confirmed position of the vote commitment in the vote commitment tree.
+
+### Removed
+- Shielded voting: `decomposeWeight`, `buildSharePayloads`, `signCastVote`, `buildVoteCommitment`,
+  `storeCommitmentBundle`, `storeVoteTxHash` and `getDelegationSubmissionWithKeystoneSig`, along
+  with the `HotkeyPublicKey` type and `JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE` (replaced by
+  `JNI_HOTKEY_STORED_SECRET_BYTES_SIZE` and `JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE`). The underlying
+  `zcash_voting` entry points are either gone or no longer public; the `### Changed` entries above
+  say what replaces each one.
 
 ### Fixed
+- The native library no longer links two copies of the Zcash crate graph (#2056). `zcash_voting`
+  moved from its crates.io `=0.11.0` pin to a git revision at version 2.0.0-rc.1. The old pin
+  required the pre-Ironwood librustzcash family, which cargo resolved *alongside* this crate's
+  Ironwood family, so every build carried two copies each of `orchard`, `pczt`, `shardtree`,
+  `zcash_address`, `zcash_keys`, `zcash_primitives`, `zcash_protocol` and `zcash_transparent`.
+  Each of those now resolves exactly once. Duplicated crates are not merely wasted space in the
+  shipped `.so`: two copies of a crate are unrelated types to the compiler, so a value that crosses
+  between voting and the rest of the wallet as bytes rather than as a Rust type — a note
+  commitment, a nullifier — compiles cleanly while feeding one `orchard` generation's output into
+  another's circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply
+  rebuilt, and removing it is what allows it back on.
 - The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
   helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
   paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that
@@ -42,6 +145,167 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's
   `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
   backend-specific error codes or message text.
+
+## [2.8.0-rc.1] - 2026-07-26
+
+### Added
+- `Synchronizer.broadcaster`, a `Broadcaster` that separates transaction creation from
+  submission. `createProposedTransactions` and `createTransactionFromPczt` create and store
+  transactions locally and return them as `CreatedTransaction`s; `submit(transaction, endpoint)`
+  sends one to a caller-chosen lightwalletd endpoint. A transaction created this way is not
+  automatically resubmitted until it has been submitted at least once through `submit`, after
+  which automatic retry uses the endpoints it was actually submitted to rather than the endpoint
+  the synchronizer was built with. The same-named `Synchronizer` methods are unchanged: they
+  still create and submit in one step, to the builder-configured endpoint.
+- `CreatedTransaction` (`txId`, `raw`, `expiryHeight`), the transaction handle that `Broadcaster`
+  returns and accepts.
+- `Synchronizer.fullyScannedHeight`, the height up to which the wallet has trial-decrypted every
+  block, and `Synchronizer.getTreeState(height)`, which returns the protobuf-encoded note
+  commitment tree state at a height so consumers can generate witnesses or verify inclusion
+  proofs without using the lightwalletd transport directly. `getTreeState` performs a live server
+  request and does not wait for local scan state; callers combining its result with local wallet
+  data at the same height should first check that `fullyScannedHeight` has reached `height`.
+
+### Changed
+- `Synchronizer` gains three abstract members — `fullyScannedHeight`, `getTreeState` and
+  `getWalletDbPathForVoting` — so any implementer or test fake must now provide them.
+  `broadcaster` is not abstract: it defaults to an implementation whose every method throws
+  `UnsupportedOperationException`.
+- New wallets now initialize from a tree state fetched from the server 100 blocks below the chain
+  tip instead of from the bundled checkpoint, so a wallet with no transaction history starts near
+  the tip and scans far fewer blocks while staying reorg-safe. If that fetch does not complete
+  within 5 seconds, initialization falls back to the bundled checkpoint. Wallet restore is
+  unaffected.
+- `String.fromHex` now throws `IllegalArgumentException` on odd-length or non-hex input instead
+  of silently coercing malformed strings.
+- `Synchronizer.getAccounts` now rethrows `CancellationException` instead of wrapping it in
+  `InitializeException.GetAccountsException`, so cancelling the calling coroutine no longer
+  surfaces as an account-loading failure.
+- Shielded voting is unavailable in this release, and `VotingRustBackend` — in the
+  separately published `zcash-android-backend` artifact — is now deprecated at
+  `ERROR` level. Referencing it is a compile error rather than a runtime
+  `UnsatisfiedLinkError`, because the native library exports none of the symbols
+  its methods bind to. There is no alternative code path: callers must remove
+  every use for this release. Consumers who depend only on
+  `zcash-android-sdk` are unaffected, as the backend artifact is not on their
+  compile classpath. `Synchronizer.getWalletDbPathForVoting` still returns a
+  path, but nothing in this release can act on it.
+- `FiatCurrencyConversion.fiatCurrency` is now a constructor parameter rather
+  than a fixed property, and can be set to a currency other than
+  `FiatCurrency.USD`. It previously always held `USD` and took no part in the
+  generated `data class` members; it now participates in `equals`, `hashCode`,
+  `toString` and `copy`. Code comparing two conversions will now see values that
+  differ only in currency as unequal, and code that destructures gains a third
+  component. Two-argument construction still compiles unchanged and defaults to
+  `USD`.
+- Updated checkpoints for testnet.
+
+### Fixed
+- `CompactBlockProcessor` no longer crashes with an `IllegalArgumentException` from
+  `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
+  importing an account whose birthday is at the chain tip). The combined progress ratio now uses
+  the same zero-denominator semantics as the individual ratios: an empty range means 100%.
+
+## [2.7.0-rc.2] - 2026-07-26
+
+### Changed
+- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
+  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
+  both Orchard and Ironwood bundles no longer constructs the key twice.
+
+### Fixed
+- Hardware-wallet signing of post-NU6.3 (v6) transactions: the wallet-controlled zero-value
+  Orchard spends that pad such transactions now carry ZIP 32 derivation metadata (via
+  `zcash_client_backend 0.24.0-rc.4`), so signers can identify and sign them. Previously these
+  actions were unsignable and v6 sends failed at finalization with
+  `Pczt(Extraction(Orchard(Extract(MissingSpendAuthSig))))` even though the device approved the
+  transaction.
+- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
+  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
+  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
+- Hardware-wallet (Keystone) PCZT signing now sends the full (non-compacted) signer view in the
+  minimal PCZT encoding (v1 for v5 transactions). The compact view/v2-encoding wire contract is
+  not supported by deployed firmware's ordinary signing flow, and caused finalization failures
+  with `MissingSpendAuthSig`.
+
+## [2.7.0-rc.1] - 2026-07-25
+
+### Added
+- Ironwood (NU6.3) shielded pool support: the SDK now exposes the Ironwood pool
+  (balance, subtree roots, sync) alongside Sapling and Orchard.
+- `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that
+  moves the account's entire Orchard balance across the NU6.3 turnstile into the
+  Ironwood pool.
+
+  **This migration is not private.** It produces a single transaction whose value
+  is the account's entire Orchard balance, so any chain observer can read that
+  balance off the chain. The SDK deliberately does not split the crossing into
+  less-identifying denominations. Wallets should surface this in the confirmation
+  UI rather than presenting the migration as a routine self-send.
+- `CompactBlockProcessorException.MismatchedConsensusBranch`, `MismatchedNetwork`
+  and `MismatchedSaplingActivationHeight` now expose their constructor arguments
+  as public `val`s (`clientBranchId`/`serverBranchId`,
+  `clientNetwork`/`serverNetwork`, `clientHeight`/`serverHeight`). Previously the
+  mismatched values were reachable only by parsing the exception's `message`, so
+  consumers had to either scrape English prose or surface it verbatim. Wallets
+  can now render a localized, structured explanation of why a server is
+  incompatible. Note that consensus branch IDs are opaque unordered constants:
+  neither the SDK nor a consumer can infer from them alone which side is stale.
+
+### Breaking changes
+
+Adding the Ironwood pool changes several public types. Downstream consumers will
+need source changes:
+
+- `AccountBalance` gains a required `ironwood: WalletBalance` property, in third
+  position, before `unshielded`. Positional construction will not compile.
+- `CompactBlockUnsafe` gains a required `ironwoodOutputsCount: UInt` constructor
+  parameter, before `compactBlockBytes`.
+- `TransactionPool` and `ShieldedProtocolEnum` each gain an `IRONWOOD` case, so
+  exhaustive `when` expressions over them stop compiling until the new case is
+  handled.
+- `Synchronizer` gains an abstract `proposeOrchardToIronwoodMigration`, which any
+  implementer or test fake must now provide.
+
+The lightwallet protocol definitions are now vendored from
+[zcash/lightwallet-protocol](https://github.com/zcash/lightwallet-protocol) at
+v0.5.0 rather than maintained by hand, which changes the generated
+`cash.z.wallet.sdk.internal.rpc` types. The SDK itself uses none of the
+following, but consumers touching the generated gRPC types directly will:
+
+- `CompactTx.hash` is renamed to `CompactTx.txid`, so `getHash()`/`setHash()`
+  become `getTxid()`/`setTxid()`.
+- `CompactBlock.protoVersion` is removed; field 1 is now reserved.
+- The `Exclude` message is replaced by `GetMempoolTxRequest`, changing the
+  `GetMempoolTx` RPC signature.
+
+Additive in the same update: a `PoolType` enum, `BlockRange.poolTypes`, the
+`CompactTxIn` and `TxOut` messages with `CompactTx.vin`/`vout`, four new
+`LightdInfo` fields, and a `GetTaddressTransactions` RPC. `GetBlockNullifiers`
+and `GetBlockRangeNullifiers` are now deprecated upstream in favour of
+`GetBlockRange` with `poolTypes`.
+
+### Changed
+- Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
+  line, adapting the backend to the send-max and builder API changes.
+- Updated the librustzcash crates to their published releases,
+  `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
+
+## [2.6.6] - 2026-07-25
+
+### Added
+- Support for the Ironwood (NU6.3) shielded pool: per-pool balances, output counts and
+  subtree roots, and the Ironwood `ShieldedProtocol` variant.
+
+### Changed
+- Migrated to `zcash_client_backend 0.24`, `zcash_client_sqlite 0.22`, `zcash_protocol 0.10`,
+  `zcash_primitives`/`zcash_proofs 0.29`, `orchard 0.15`, `pczt 0.8`, `zcash_transparent 0.9`.
+- Updated checkpoints for mainnet and testnet.
+
+### Internal
+- The shielded-voting native surface (`zcash_voting`, the `chp-voting` feature and `mod voting`)
+  is commented out, so no `Java_..._VotingRustBackend_*` JNI symbols are emitted.
+
 
 ## [2.6.5] - 2026-06-19
 

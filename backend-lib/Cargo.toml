@@ -1,6 +1,6 @@
 [package]
 name = "zcash-android-wallet-sdk"
-version = "2.6.5"
+version = "2.8.0-rc.1"
 authors = [
     "Jack Grigg <jack@z.cash>",
     "Kevin Gorham <kevin.gorham@z.cash>",
@@ -17,12 +17,12 @@ android-test-fixtures = []
 
 [dependencies]
 # Zcash dependencies
-orchard = "0.15"
-pczt = { version = "0.8.0", features = ["prover", "orchard", "sapling"] }
+orchard = { version = "0.15", features = ["unstable-voting-circuits"] }
+pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.2", features = [
+zcash_client_backend = { version = "0.24.0-rc.4", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -30,7 +30,7 @@ zcash_client_backend = { version = "0.24.0-rc.2", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.4", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
@@ -38,7 +38,8 @@ zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
-# Used by voting/notes.rs to construct historical Orchard witness positions.
+# Used by voting/notes.rs to construct historical Orchard witness positions, and
+# by nothing else -- commented out with the voting module it serves.
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Infrastructure
@@ -62,8 +63,6 @@ jni = { version = "0.21", default-features = false }
 uuid = "1"
 bitflags = "2"
 hex = "0.4"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 # lightwalletd
 tonic = "0.14"
@@ -87,39 +86,36 @@ xz2 = { version = "0.1", features = ["static"] }
 
 # Shielded voting
 #
-# `zcash_voting` provides client-side primitives for shielded voting. It depends
-# on Orchard's unstable voting-circuits APIs, so the direct Orchard dependency is
-# pinned to the same version and enables the same feature. Revisit the exact pin
-# if the upstream voting crates relax their Orchard requirement.
-# The Android JNI boundary for voting code is `src/main/rust/voting.rs`.
-# Its share-nullifier entry point forwards to
-# `zcash_voting::share_tracking::compute_share_nullifier`:
-# https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.11.0/zcash_voting/src/share_tracking.rs
+# `zcash_voting` provides client-side primitives for shielded voting, built on
+# Orchard's unstable voting-circuits APIs, so the orchard dependency above
+# enables that feature. The Android JNI boundary is `src/main/rust/voting.rs`.
 #
-# The transitive `voting-circuits` dependency contains the share-reveal circuit
-# and the Poseidon-based `share_nullifier_hash` implementation:
-# https://github.com/valargroup/voting-circuits/blob/v0.8.0/voting-circuits/src/share_reveal/circuit.rs
-# Default features stay disabled. The `client-pir` feature is needed for
-# delegation proof precompute and proof generation. The `client-tree-sync`
-# feature is needed for vote commitment tree sync and VAN witnesses.
-# Expected PIR/tree-sync networking transitives include `pir-client`, `pir-types`,
-# `valar-ypir`, `valar-spiral-rs`, `vote-commitment-tree-client`, and
-# `hyper-rustls`.
-zcash_voting = { version = "=0.11.0", default-features = false, features = [
-    "client-pir",
-    "client-tree-sync",
-] }
+# This is taken from git rather than crates.io. The published 0.11 and 1.0
+# releases pin the pre-Ironwood librustzcash family, which cargo resolves
+# alongside this crate's Ironwood family and duplicates eight Zcash crates in
+# the native library (issue #2056). The revision patched in below is 2.0.0-rc.1,
+# whose pins match this crate's, so each Zcash crate resolves exactly once.
+#
+# The version requirement here must keep matching the patched revision's own
+# version. A `[patch.crates-io]` entry only applies when it satisfies the
+# requirement: if the two drift apart, cargo silently ignores the patch, falls
+# back to the crates.io release, and the build still succeeds while linking the
+# duplicated pre-Ironwood stack. Cargo reports this only as a warning.
+zcash_voting = { version = "2.0.0-rc.1" }
 
-## Uncomment this to test librustzcash changes locally
-#[patch.crates-io]
-#pczt = { package = "pczt", path = '../../clones/librustzcash/pczt' }
-#transparent = { package = "zcash_transparent", path = '../../clones/librustzcash/zcash_protocol' }
-#zcash_address = { path = '../../clones/librustzcash/components/zcash_address' }
-#zcash_client_backend = { path = '../../clones/librustzcash/zcash_client_backend' }
-#zcash_client_sqlite = { path = '../../clones/librustzcash/zcash_client_sqlite' }
-#zcash_primitives = { path = '../../clones/librustzcash/zcash_primitives' }
-#zcash_proofs = { path = '../../clones/librustzcash/zcash_proofs' }
-#zcash_protocol = { path = '../../clones/librustzcash/zcash_protocol' }
+[patch.crates-io]
+zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting", rev = "bde9ee0283ff3e23995bd6996dff3ba1f8969076" }
+
+## Uncomment these to test librustzcash changes locally
+# pczt = { package = "pczt", git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
+# zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "REPLACE_ME_GIT_SHA" }
 
 ## Uncomment this to test someone else's librustzcash changes in a branch
 #[patch.crates-io]

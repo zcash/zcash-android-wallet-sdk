@@ -5,6 +5,14 @@ use super::*;
 use orchard::primitives::redpallas::{Signature, SpendAuth, VerificationKey};
 use std::collections::HashMap;
 
+/// Builds a governance PCZT for one bundle from an explicitly supplied Orchard FVK.
+///
+/// `hotkeyStoredSecret` replaces the former `hotkeyRawAddress` parameter.
+/// `zcash_voting` now takes a typed `DelegationKeys` whose only public
+/// constructor is built from a `VotingHotkey`, and the raw address is derived
+/// from the hotkey rather than supplied alongside it. Passing the address alone
+/// can no longer reach that constructor.
+#[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_buildGovernancePcztNative<
     'local,
@@ -15,7 +23,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     round_id: JString<'local>,
     bundle_index: jint,
     fvk_bytes: JByteArray<'local>,
-    hotkey_raw_address: JByteArray<'local>,
+    hotkey_stored_secret: JByteArray<'local>,
     network_id: jint,
     account_index: jint,
     notes: JObjectArray<'local>,
@@ -25,39 +33,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let network = network_from_id(network_id)?;
+        let network = voting_network_from_id(network_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let account_index = jint_to_u32(account_index, "account_index")?;
         let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
-        let hotkey_raw_address = java_bytes_exact(
-            env,
-            &hotkey_raw_address,
-            "hotkeyRawAddress",
-            ORCHARD_RAW_ADDRESS_BYTES,
-        )?;
+        let hotkey = java_voting_hotkey(env, &hotkey_stored_secret, network)?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
 
         let notes = java_note_info_array(env, &notes, "notes")?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let round_name = java_string_to_rust(env, &round_name)?;
-        let pczt = build_governance_pczt_for_bundle(
-            &db,
-            &round_id,
-            bundle_index,
-            &notes,
-            &fvk_bytes,
-            &hotkey_raw_address,
-            network.coin_type(),
+        let keys = delegation_keys(
+            fvk_bytes,
+            &hotkey,
+            seed_fingerprint,
             account_index,
-            &seed_fingerprint,
-            &round_name,
+            round_name,
         )?;
+        let pczt =
+            build_governance_pczt_for_bundle(&db, &round_id, bundle_index, &notes, network, &keys)?;
 
         make_jni_governance_pczt(env, pczt)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
 
+/// Builds a governance PCZT for one bundle, validating the UFVK against the wallet seed.
+#[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_buildGovernancePcztFromSeedNative<
     'local,
@@ -72,7 +74,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     account_index: jint,
     notes: JObjectArray<'local>,
     wallet_seed: JByteArray<'local>,
-    hotkey_seed: JByteArray<'local>,
+    hotkey_stored_secret: JByteArray<'local>,
     seed_fingerprint: JByteArray<'local>,
     round_name: JString<'local>,
 ) -> jobject {
@@ -80,14 +82,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let network = network_from_id(network_id)?;
+        let voting_network = voting_network_from_id(network_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let account_index = jint_to_u32(account_index, "account_index")?;
         let ufvk_str = java_string_to_rust(env, &ufvk)?;
         let fvk_bytes = orchard_fvk_bytes(&ufvk_str, network)?;
         let wallet_seed =
             java_secret_bytes_at_least(env, &wallet_seed, "walletSeed", PROTOCOL_FIELD_BYTES)?;
-        let hotkey_seed =
-            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
         let derived_fvk_bytes = orchard_fvk_bytes_from_wallet_seed(
             wallet_seed.expose_secret(),
             network,
@@ -98,23 +99,25 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 "ufvk does not match walletSeed for network_id={network_id} account_index={account_index}"
             ));
         }
-        let hotkey_raw_address =
-            hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, HOTKEY_ACCOUNT_INDEX)?;
+        let hotkey = java_voting_hotkey(env, &hotkey_stored_secret, voting_network)?;
         let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
         let notes = java_note_info_array(env, &notes, "notes")?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let round_name = java_string_to_rust(env, &round_name)?;
+        let keys = delegation_keys(
+            fvk_bytes,
+            &hotkey,
+            seed_fingerprint,
+            account_index,
+            round_name,
+        )?;
         let pczt = build_governance_pczt_for_bundle(
             &db,
             &round_id,
             bundle_index,
             &notes,
-            &fvk_bytes,
-            &hotkey_raw_address,
-            network.coin_type(),
-            account_index,
-            &seed_fingerprint,
-            &round_name,
+            voting_network,
+            &keys,
         )?;
 
         make_jni_governance_pczt(env, pczt)
@@ -122,43 +125,66 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
 
+/// Assembles the typed delegation key material both PCZT paths and the prover need.
+fn delegation_keys(
+    fvk_bytes: Vec<u8>,
+    hotkey: &VotingHotkey,
+    seed_fingerprint: [u8; PROTOCOL_FIELD_BYTES],
+    account_index: u32,
+    round_name: String,
+) -> anyhow::Result<voting::delegate::DelegationKeys> {
+    voting::delegate::DelegationKeys::with_voting_hotkey(
+        fvk_bytes,
+        hotkey,
+        seed_fingerprint,
+        account_index,
+        round_name,
+    )
+    .map_err(|e| anyhow!("failed to build delegation keys: {}", e))
+}
+
 /// Builds a governance PCZT for one deterministic bundle from the full snapshot note set.
 ///
 /// Shared by the explicit-FVK Keystone path and the seed-validated software path. Callers must
 /// provide already validated signer material; this helper verifies the bundle index, enforces the
 /// round phase, persists the constructed delegation state, and advances the phase on success.
-#[allow(clippy::too_many_arguments)]
 fn build_governance_pczt_for_bundle(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     notes: &[NoteInfo],
-    fvk_bytes: &[u8],
-    hotkey_raw_address: &[u8],
-    coin_type: u32,
-    account_index: u32,
-    seed_fingerprint: &[u8; PROTOCOL_FIELD_BYTES],
-    round_name: &str,
+    network: VotingNetwork,
+    keys: &voting::delegate::DelegationKeys,
 ) -> anyhow::Result<GovernancePczt> {
     let bundle_notes = bundled_notes_for_index(notes, bundle_index)?;
     require_round_phase_for_delegation_construction(db, round_id)?;
+    let branch_id = round_consensus_branch_id(db, round_id, network)?;
     let pczt = db
-        .build_governance_pczt(
-            round_id,
-            bundle_index,
-            &bundle_notes,
-            fvk_bytes,
-            hotkey_raw_address,
-            nu6_branch_id(),
-            coin_type,
-            seed_fingerprint,
-            account_index,
-            round_name,
-            HOTKEY_ADDRESS_INDEX,
-        )
+        .build_governance_pczt(round_id, bundle_index, &bundle_notes, keys, branch_id)
         .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
     update_round_phase_forward(db, round_id, RoundPhase::DelegationConstructed)?;
     Ok(pczt)
+}
+
+/// Resolves the consensus branch active at the round's snapshot height.
+///
+/// `zcash_voting` now checks the supplied branch id against the stored round, so
+/// a branch id pinned to one network upgrade would silently break every round
+/// snapshotted after the next one. The branch is derived from the round instead.
+fn round_consensus_branch_id(
+    db: &VotingDb,
+    round_id: &str,
+    network: VotingNetwork,
+) -> anyhow::Result<u32> {
+    let snapshot_height = {
+        let conn = db.conn();
+        let wallet_id = db.wallet_id();
+        voting::storage::queries::load_round_params(&conn, round_id, &wallet_id)
+            .map_err(|e| anyhow!("load_round_params: {}", e))?
+            .snapshot_height
+    };
+    voting::delegate::branch_id_for_height(network, snapshot_height)
+        .map_err(|e| anyhow!("branch_id_for_height: {}", e))
 }
 
 #[unsafe(no_mangle)]
@@ -190,7 +216,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
     let res = catch_unwind(&mut env, |env| {
         let bytes = java_bytes(env, &signed_pczt_bytes, "signedPcztBytes")?;
         let action_index = jint_to_usize(action_index, "action_index")?;
-        let sig = extract_indexed_spend_auth_sig(&bytes, action_index)?;
+        // zcash_voting owns the search: NU6.3 governance actions live in the
+        // Ironwood bundle, not the Orchard one, and the PCZT builder shuffles
+        // action order, so the crate falls back to scanning when the expected
+        // index does not hold the signed action.
+        let sig = voting::action::extract_spend_auth_sig(&bytes, action_index)
+            .map_err(|e| anyhow!("extract_spend_auth_sig: {}", e))?;
         Ok(env.byte_array_from_slice(&sig)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
@@ -210,44 +241,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
         let bytes = java_bytes(env, &pczt_bytes, "pcztBytes")?;
         let action_index = jint_to_usize(action_index, "action_index")?;
         let pczt = pczt::Pczt::parse(&bytes).map_err(|e| anyhow!("parse PCZT: {:?}", e))?;
-        let action = pczt.orchard().actions().get(action_index).ok_or_else(|| {
+        // Governance actions are Ironwood/V3 under NU6.3; the Orchard bundle of a
+        // governance PCZT is empty.
+        let action = pczt.ironwood().actions().get(action_index).ok_or_else(|| {
             anyhow!(
-                "PCZT Orchard action index {action_index} out of range; action_count={}",
-                pczt.orchard().actions().len()
+                "PCZT Ironwood action index {action_index} out of range; action_count={}",
+                pczt.ironwood().actions().len()
             )
         })?;
         let recipient = action.output().recipient().as_ref().ok_or_else(|| {
-            anyhow!("PCZT Orchard action {action_index} output missing recipient")
+            anyhow!("PCZT Ironwood action {action_index} output missing recipient")
         })?;
         Ok(env.byte_array_from_slice(recipient)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
-}
-
-fn extract_indexed_spend_auth_sig(
-    signed_pczt_bytes: &[u8],
-    action_index: usize,
-) -> anyhow::Result<[u8; SPEND_AUTH_SIG_BYTES]> {
-    let pczt = pczt::Pczt::parse(signed_pczt_bytes).map_err(|e| {
-        anyhow!(
-            "extract_spend_auth_sig: failed to parse signed PCZT: {:?}",
-            e
-        )
-    })?;
-    let actions = pczt.orchard().actions();
-    if action_index < actions.len() {
-        if let Some(sig) = actions[action_index].spend().spend_auth_sig() {
-            return Ok(*sig);
-        }
-
-        return Err(anyhow!(
-            "extract_spend_auth_sig: action {action_index} has no spend_auth_sig"
-        ));
-    }
-    Err(anyhow!(
-        "extract_spend_auth_sig: action_index {action_index} out of bounds for {} actions",
-        actions.len()
-    ))
 }
 
 fn connect_pir_client(pir_url: &str) -> anyhow::Result<voting::PirClientBlocking> {
@@ -299,8 +306,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        network_from_id(network_id)?;
-        let network_id = jint_to_u32(network_id, "network_id")?;
+        let network = voting_network_from_id(network_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
@@ -309,13 +315,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_client = connect_pir_client(&pir_url)?;
         let result = db
-            .precompute_delegation_pir(
-                &round_id,
-                bundle_index,
-                &bundle_notes,
-                &pir_client,
-                network_id,
-            )
+            .precompute_delegation_pir(&round_id, bundle_index, &bundle_notes, &pir_client, network)
             .map_err(|e| anyhow!("precompute_delegation_pir: {}", e))?;
 
         make_jni_delegation_pir_precompute_result(env, result)
@@ -323,6 +323,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Builds and proves the delegation ZKP for one bundle. Long-running.
+///
+/// The former `hotkeyRawAddress` parameter is replaced by the full delegation
+/// key material (`fvkBytes`, `hotkeyStoredSecret`, `seedFingerprint`,
+/// `accountIndex`, `roundName`): `zcash_voting` now takes the same typed
+/// `DelegationKeys` the PCZT builder takes, and validates it against the stored
+/// round rather than re-reading pieces of it from the database.
+#[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_buildAndProveDelegationNative<
     'local,
@@ -335,37 +343,45 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     pir_server_url: JString<'local>,
     network_id: jint,
     notes: JObjectArray<'local>,
-    hotkey_raw_address: JByteArray<'local>,
+    fvk_bytes: JByteArray<'local>,
+    hotkey_stored_secret: JByteArray<'local>,
+    seed_fingerprint: JByteArray<'local>,
+    account_index: jint,
+    round_name: JString<'local>,
     progress_callback: JObject<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        network_from_id(network_id)?;
-        let network_id = jint_to_u32(network_id, "network_id")?;
+        let network = voting_network_from_id(network_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let account_index = jint_to_u32(account_index, "account_index")?;
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
-        let hotkey_raw_address = java_bytes_exact(
-            env,
-            &hotkey_raw_address,
-            "hotkeyRawAddress",
-            ORCHARD_RAW_ADDRESS_BYTES,
+        let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
+        let hotkey = java_voting_hotkey(env, &hotkey_stored_secret, network)?;
+        let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
+        let round_name = java_string_to_rust(env, &round_name)?;
+        let keys = delegation_keys(
+            fvk_bytes,
+            &hotkey,
+            seed_fingerprint,
+            account_index,
+            round_name,
         )?;
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_client = connect_pir_client(&pir_url)?;
-        let reporter = progress_reporter_from_callback(env, &progress_callback)?;
+        let reporter = delegation_progress_reporter_from_callback(env, &progress_callback)?;
         let result = db
             .build_and_prove_delegation(
                 &round_id,
                 bundle_index,
                 &bundle_notes,
-                &hotkey_raw_address,
+                &keys,
                 &pir_client,
-                network_id,
                 reporter.as_ref(),
             )
             .map_err(|e| anyhow!("build_and_prove_delegation: {}", e))?;
@@ -375,6 +391,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Assembles the delegation transaction payload from an externally produced signature.
+///
+/// This replaces both the former seed-signing entry point and its Keystone twin.
+/// `zcash_voting` no longer derives account keys or signs on the caller's behalf:
+/// every signer, software or hardware, now hands back a SpendAuth signature over
+/// the ZIP-244 sighash, and the crate verifies it against the stored PCZT sighash.
+/// The `senderSeed` / `networkId` / `accountIndex` parameters have no remaining
+/// role, and the Keystone path needs no separate entry point.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getDelegationSubmissionNative<
     'local,
@@ -384,62 +408,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     db_handle: jlong,
     round_id: JString<'local>,
     bundle_index: jint,
-    sender_seed: JByteArray<'local>,
-    network_id: jint,
-    account_index: jint,
-) -> jobject {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        network_from_id(network_id)?;
-        let seed =
-            java_secret_bytes_at_least(env, &sender_seed, "senderSeed", PROTOCOL_FIELD_BYTES)?;
-        let data = db
-            .get_delegation_submission(
-                &java_string_to_rust(env, &round_id)?,
-                jint_to_u32(bundle_index, "bundle_index")?,
-                seed.expose_secret(),
-                jint_to_u32(network_id, "network_id")?,
-                jint_to_u32(account_index, "account_index")?,
-            )
-            .map_err(|e| anyhow!("get_delegation_submission: {}", e))?;
-
-        verify_delegation_submission_sig(&data)?;
-        make_jni_delegation_submission_result(env, data)
-    });
-    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getDelegationSubmissionWithKeystoneSigNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    keystone_sig: JByteArray<'local>,
-    keystone_sighash: JByteArray<'local>,
+    spend_auth_sig: JByteArray<'local>,
+    sighash: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let data = db
-            .get_delegation_submission_with_keystone_sig(
+            .get_delegation_submission_with_signature(
                 &java_string_to_rust(env, &round_id)?,
                 jint_to_u32(bundle_index, "bundle_index")?,
-                &java_bytes_exact(env, &keystone_sig, "keystoneSig", SPEND_AUTH_SIG_BYTES)?,
-                &java_bytes_exact(
-                    env,
-                    &keystone_sighash,
-                    "keystoneSighash",
-                    PROTOCOL_FIELD_BYTES,
-                )?,
+                &java_bytes_exact(env, &spend_auth_sig, "spendAuthSig", SPEND_AUTH_SIG_BYTES)?,
+                &java_bytes_exact(env, &sighash, "sighash", PROTOCOL_FIELD_BYTES)?,
             )
-            .map_err(|e| anyhow!("get_delegation_submission_with_keystone_sig: {}", e))?;
+            .map_err(|e| anyhow!("get_delegation_submission_with_signature: {}", e))?;
 
-        // Keystone signatures are supplied externally; verify them at the bridge boundary.
+        // Signatures are supplied externally; verify them at the bridge boundary.
         verify_delegation_submission_sig(&data)?;
         make_jni_delegation_submission_result(env, data)
     });
@@ -619,53 +603,73 @@ fn fixed_field_vec(start: u8, count: usize) -> Vec<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchard::keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey};
+    use orchard::keys::{FullViewingKey, SpendAuthorizingKey, SpendingKey};
     use orchard::primitives::redpallas::SigningKey;
     use rand::rngs::OsRng;
     use voting::types::VotingRoundParams;
 
     #[test]
-    fn extract_spend_auth_sig_accepts_signed_governance_pczt() {
+    fn extract_spend_auth_sig_yields_a_signature_over_the_governance_rk_and_sighash() {
         let spending_key = SpendingKey::from_bytes([0x42; 32]).expect("valid spending key");
-        let fvk = FullViewingKey::from(&spending_key);
-        let hotkey_spending_key = SpendingKey::from_bytes([0x43; 32]).expect("valid hotkey");
-        let hotkey_fvk = FullViewingKey::from(&hotkey_spending_key);
-        let hotkey_address = hotkey_fvk
-            .address_at(0u32, Scope::External)
-            .to_raw_address_bytes()
-            .to_vec();
-        let result = voting::action::build_governance_pczt(
-            &[note_info()],
-            &round_params(),
-            fvk.to_bytes().as_ref(),
-            &hotkey_address,
-            nu6_branch_id(),
-            Network::TestNetwork.coin_type(),
-            &[0xAA; 32],
-            0,
-            "Test Round",
-        )
-        .expect("governance PCZT");
+        let result = test_governance_pczt(&spending_key);
 
         let pczt = pczt::Pczt::parse(&result.pczt_bytes).expect("parse PCZT");
         let mut signer = pczt::roles::signer::Signer::new(pczt).expect("signer");
         let spend_authorizing_key = SpendAuthorizingKey::from(&spending_key);
         signer
-            .sign_orchard(result.action_index, &spend_authorizing_key)
-            .expect("sign orchard action");
+            .sign_ironwood(result.action_index, &spend_authorizing_key)
+            .expect("sign ironwood action");
         let signed_pczt = signer.finish().serialize().expect("serialize signed PCZT");
-        let sig = extract_indexed_spend_auth_sig(&signed_pczt, result.action_index).unwrap();
 
-        assert_ne!(sig, [0u8; 64]);
+        let sig =
+            voting::action::extract_spend_auth_sig(&signed_pczt, result.action_index).unwrap();
+        let sighash = voting::action::extract_pczt_sighash(&signed_pczt).expect("pczt sighash");
+        let data = delegation_submission_data(result.rk.clone(), sig.to_vec(), sighash.to_vec());
+
+        // Asserting the signature is non-zero would prove nothing: the builder
+        // already signs the zero-value padding action, so an unsigned governance
+        // PCZT also yields bytes here. What distinguishes a signed one is that the
+        // extracted signature verifies against the governance action's own rk.
+        verify_delegation_submission_sig(&data).expect("governance signature verifies");
     }
 
-    #[test]
-    fn extract_spend_auth_sig_rejects_unsigned_governance_pczt() {
-        let result = test_governance_pczt();
-        let err =
-            extract_indexed_spend_auth_sig(&result.pczt_bytes, result.action_index).unwrap_err();
+    // The former `extract_spend_auth_sig_rejects_unsigned_governance_pczt` test is
+    // gone. It asserted that extraction fails on an unsigned PCZT, which the
+    // Ironwood builder made unreachable: it signs the padding action itself, and
+    // `zcash_voting::action::extract_spend_auth_sig` deliberately falls back to
+    // scanning every action, so extraction always succeeds. The signature check in
+    // the test above is what now separates a genuinely signed governance PCZT from
+    // an unsigned one, and the test below pins where that separation happens.
 
-        assert!(err.to_string().contains("has no spend_auth_sig"));
+    #[test]
+    fn unsigned_governance_pczt_yields_a_padding_sig_that_fails_verification() {
+        let spending_key = SpendingKey::from_bytes([0x42; 32]).expect("valid spending key");
+        let result = test_governance_pczt(&spending_key);
+
+        // Extraction succeeds on an unsigned governance PCZT because the builder
+        // signs the zero-value padding action and the fallback scan picks that
+        // signature up. Pinning this keeps an upstream change to the fallback --
+        // failing outright, or returning zeroes -- from surfacing as a confusing
+        // failure further downstream.
+        let sig = voting::action::extract_spend_auth_sig(&result.pczt_bytes, result.action_index)
+            .expect("padding action supplies a signature on an unsigned PCZT");
+        assert_ne!(sig, [0u8; SPEND_AUTH_SIG_BYTES]);
+
+        // Containment is the verification step: the padding signature was made
+        // under a different key, so it does not verify against the governance
+        // action's rk and the delegation is refused before submission.
+        let sighash =
+            voting::action::extract_pczt_sighash(&result.pczt_bytes).expect("pczt sighash");
+        let data = delegation_submission_data(result.rk.clone(), sig.to_vec(), sighash.to_vec());
+
+        let error = verify_delegation_submission_sig(&data)
+            .expect_err("a padding signature must not pass verification");
+        assert!(
+            error
+                .to_string()
+                .contains("spend_auth_sig does not verify against rk and sighash"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -691,25 +695,37 @@ mod tests {
         assert!(verify_delegation_submission_sig(&bad_sighash).is_err());
     }
 
-    fn test_governance_pczt() -> GovernancePczt {
-        let spending_key = SpendingKey::from_bytes([0x42; 32]).expect("valid spending key");
-        let fvk = FullViewingKey::from(&spending_key);
-        let hotkey_spending_key = SpendingKey::from_bytes([0x43; 32]).expect("valid hotkey");
-        let hotkey_fvk = FullViewingKey::from(&hotkey_spending_key);
-        let hotkey_address = hotkey_fvk
-            .address_at(0u32, Scope::External)
-            .to_raw_address_bytes()
-            .to_vec();
-        voting::action::build_governance_pczt(
-            &[note_info()],
-            &round_params(),
-            fvk.to_bytes().as_ref(),
-            &hotkey_address,
-            nu6_branch_id(),
-            Network::TestNetwork.coin_type(),
-            &[0xAA; 32],
+    // `zcash_voting` made the standalone governance PCZT builder crate-private,
+    // so a test PCZT now has to come from a real round: the builder validates the
+    // bundle notes and the consensus branch against persisted round state.
+    fn test_governance_pczt(spending_key: &SpendingKey) -> GovernancePczt {
+        let fvk = FullViewingKey::from(spending_key);
+        let hotkey = voting::hotkey::generate_random_voting_hotkey(VotingNetwork::Regtest)
+            .expect("voting hotkey");
+        let keys = delegation_keys(
+            fvk.to_bytes().to_vec(),
+            &hotkey,
+            [0xAA; PROTOCOL_FIELD_BYTES],
             0,
-            "Test Round",
+            "Test Round".to_string(),
+        )
+        .expect("delegation keys");
+
+        let db = VotingDb::open(":memory:").expect("test DB");
+        db.set_wallet_id("wallet-id");
+        db.init_round(VotingNetwork::Regtest, &round_params(), None)
+            .expect("round initialized");
+        let notes = [note_info()];
+        db.ensure_bundles(&round_params().vote_round_id, &notes)
+            .expect("bundles");
+
+        db.build_governance_pczt(
+            &round_params().vote_round_id,
+            0,
+            &notes,
+            &keys,
+            round_consensus_branch_id(&db, &round_params().vote_round_id, VotingNetwork::Regtest)
+                .expect("branch id"),
         )
         .expect("governance PCZT")
     }
@@ -732,6 +748,9 @@ mod tests {
         VotingRoundParams {
             vote_round_id: "0101010101010101010101010101010101010101010101010101010101010101"
                 .to_string(),
+            // zcash_voting builds Ironwood/V3 governance actions only, so the
+            // round snapshot must sit at or after NU6.3 activation. Regtest is
+            // the network whose NU6.3 activation this crate pins outright.
             snapshot_height: 100_000,
             ea_pk: vec![0xEA; PROTOCOL_FIELD_BYTES],
             nc_root: vec![0x01; PROTOCOL_FIELD_BYTES],

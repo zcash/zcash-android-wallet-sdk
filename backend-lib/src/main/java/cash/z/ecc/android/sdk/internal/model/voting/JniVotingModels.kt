@@ -1,8 +1,15 @@
 package cash.z.ecc.android.sdk.internal.model.voting
 
 import androidx.annotation.Keep
-import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE
 
+/**
+ * Typed JNI carrier for a spendable note the voting backend may draw voting weight from.
+ *
+ * [toString] is redacted: [rseed] and [rho] reconstruct the note's spending randomness,
+ * [nullifier] links the note to its spend, and [ufvk] is a full viewing key that discloses
+ * the entire account's transaction history. The generated `data class` rendering would print
+ * all four into any log line that interpolates a note.
+ */
 @Keep
 data class JniNoteInfo(
     val commitment: ByteArray,
@@ -15,6 +22,8 @@ data class JniNoteInfo(
     val scope: Int,
     val ufvk: String
 ) {
+    override fun toString(): String = "JniNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniNoteInfo) return false
@@ -135,31 +144,30 @@ data class JniWireEncryptedShare(
 }
 
 /**
- * Typed JNI carrier for vote commitment outputs.
+ * Typed JNI carrier for the outputs of a completed vote commitment.
  *
- * `shareBlinds`, `rVpk`, and `alphaV` are sensitive reveal/signing inputs.
- * They must not be logged or exposed outside the voting recovery path. They are
- * carried here because follow-up JNI calls consume the typed commitment result,
- * and recovery persistence needs them to resume after restart. Encrypted-share
- * plaintext and encryption randomness remain Rust-only and are not included in
- * [encShares].
+ * `rVpk` and `voteAuthSig` are signing material for the cast-vote transaction and
+ * must not be logged; [toString] is redacted for that reason. The blinds, share
+ * commitments and per-vote randomness that earlier releases carried here are now
+ * owned by `zcash_voting` and are never exposed across JNI — recovery reads them
+ * back through `getCommitmentBundle`, not from a caller-held copy.
+ *
+ * [sharePayloads] arrives with the commitment rather than from a separate call:
+ * the payloads are derived from the same commitment the native side just built.
  */
 @Keep
-data class JniVoteCommitmentResult(
+data class JniVoteCommitResult(
     val vanNullifier: ByteArray,
     val voteAuthorityNoteNew: ByteArray,
     val voteCommitment: ByteArray,
     val proposalId: Int,
     val bundleIndex: Int,
     val proof: ByteArray,
-    val encShares: List<JniWireEncryptedShare>,
     val anchorHeight: Long,
-    val voteRoundId: String,
-    val sharesHash: ByteArray,
-    val shareBlinds: List<ByteArray>,
-    val shareComms: List<ByteArray>,
     val rVpk: ByteArray,
-    val alphaV: ByteArray
+    val voteAuthSig: ByteArray,
+    val encShares: List<JniWireEncryptedShare>,
+    val sharePayloads: List<JniSharePayload>
 ) {
     internal constructor(
         vanNullifier: ByteArray,
@@ -168,14 +176,11 @@ data class JniVoteCommitmentResult(
         proposalId: Int,
         bundleIndex: Int,
         proof: ByteArray,
-        encShares: Array<JniWireEncryptedShare>,
         anchorHeight: Long,
-        voteRoundId: String,
-        sharesHash: ByteArray,
-        shareBlinds: Array<ByteArray>,
-        shareComms: Array<ByteArray>,
         rVpk: ByteArray,
-        alphaV: ByteArray
+        voteAuthSig: ByteArray,
+        encShares: Array<JniWireEncryptedShare>,
+        sharePayloads: Array<JniSharePayload>
     ) : this(
         vanNullifier = vanNullifier,
         voteAuthorityNoteNew = voteAuthorityNoteNew,
@@ -183,45 +188,39 @@ data class JniVoteCommitmentResult(
         proposalId = proposalId,
         bundleIndex = bundleIndex,
         proof = proof,
-        encShares = encShares.toList(),
         anchorHeight = anchorHeight,
-        voteRoundId = voteRoundId,
-        sharesHash = sharesHash,
-        shareBlinds = shareBlinds.toList(),
-        shareComms = shareComms.toList(),
         rVpk = rVpk,
-        alphaV = alphaV
+        voteAuthSig = voteAuthSig,
+        encShares = encShares.toList(),
+        sharePayloads = sharePayloads.toList()
     )
 
-    override fun toString(): String = "JniVoteCommitmentResult(redacted)"
+    override fun toString(): String = "JniVoteCommitResult(redacted)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other !is JniVoteCommitmentResult) return false
+        if (other !is JniVoteCommitResult) return false
         return scalarFieldsEqual(other) &&
             byteFieldsEqual(other) &&
             listFieldsEqual(other)
     }
 
-    private fun scalarFieldsEqual(other: JniVoteCommitmentResult) =
+    private fun scalarFieldsEqual(other: JniVoteCommitResult) =
         proposalId == other.proposalId &&
             bundleIndex == other.bundleIndex &&
-            anchorHeight == other.anchorHeight &&
-            voteRoundId == other.voteRoundId
+            anchorHeight == other.anchorHeight
 
-    private fun byteFieldsEqual(other: JniVoteCommitmentResult) =
+    private fun byteFieldsEqual(other: JniVoteCommitResult) =
         vanNullifier.contentEquals(other.vanNullifier) &&
             voteAuthorityNoteNew.contentEquals(other.voteAuthorityNoteNew) &&
             voteCommitment.contentEquals(other.voteCommitment) &&
             proof.contentEquals(other.proof) &&
-            sharesHash.contentEquals(other.sharesHash) &&
             rVpk.contentEquals(other.rVpk) &&
-            alphaV.contentEquals(other.alphaV)
+            voteAuthSig.contentEquals(other.voteAuthSig)
 
-    private fun listFieldsEqual(other: JniVoteCommitmentResult) =
+    private fun listFieldsEqual(other: JniVoteCommitResult) =
         encShares == other.encShares &&
-            shareBlinds.contentDeepEquals(other.shareBlinds) &&
-            shareComms.contentDeepEquals(other.shareComms)
+            sharePayloads == other.sharePayloads
 
     override fun hashCode(): Int {
         var result = vanNullifier.contentHashCode()
@@ -230,24 +229,81 @@ data class JniVoteCommitmentResult(
         result = 31 * result + proposalId
         result = 31 * result + bundleIndex
         result = 31 * result + proof.contentHashCode()
-        result = 31 * result + encShares.hashCode()
         result = 31 * result + anchorHeight.hashCode()
-        result = 31 * result + voteRoundId.hashCode()
-        result = 31 * result + sharesHash.contentHashCode()
-        result = 31 * result + shareBlinds.contentDeepHashCode()
-        result = 31 * result + shareComms.contentDeepHashCode()
         result = 31 * result + rVpk.contentHashCode()
-        result = 31 * result + alphaV.contentHashCode()
+        result = 31 * result + voteAuthSig.contentHashCode()
+        result = 31 * result + encShares.hashCode()
+        result = 31 * result + sharePayloads.hashCode()
+        return result
+    }
+}
+
+/**
+ * Typed JNI carrier for the chain-ready fields of a cast-vote transaction.
+ *
+ * This is the pre-confirmation resend view: it carries everything needed to
+ * rebuild and resubmit the cast-vote transaction, and deliberately omits the
+ * helper-share payloads, which go stale once the vote commitment tree position
+ * has been recorded. After confirmation, use `getCommitmentBundle` instead to
+ * obtain fresh payloads.
+ */
+@Keep
+data class JniVoteSubmission(
+    val voteRoundId: String,
+    val proposalId: Int,
+    val bundleIndex: Int,
+    val vanNullifier: ByteArray,
+    val voteAuthorityNoteNew: ByteArray,
+    val voteCommitment: ByteArray,
+    val proof: ByteArray,
+    val rVpk: ByteArray,
+    val voteAuthSig: ByteArray,
+    val anchorHeight: Long
+) {
+    override fun toString(): String = "JniVoteSubmission(redacted)"
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniVoteSubmission) return false
+        return voteRoundId == other.voteRoundId &&
+            proposalId == other.proposalId &&
+            bundleIndex == other.bundleIndex &&
+            anchorHeight == other.anchorHeight &&
+            vanNullifier.contentEquals(other.vanNullifier) &&
+            voteAuthorityNoteNew.contentEquals(other.voteAuthorityNoteNew) &&
+            voteCommitment.contentEquals(other.voteCommitment) &&
+            proof.contentEquals(other.proof) &&
+            rVpk.contentEquals(other.rVpk) &&
+            voteAuthSig.contentEquals(other.voteAuthSig)
+    }
+
+    override fun hashCode(): Int {
+        var result = voteRoundId.hashCode()
+        result = 31 * result + proposalId
+        result = 31 * result + bundleIndex
+        result = 31 * result + anchorHeight.hashCode()
+        result = 31 * result + vanNullifier.contentHashCode()
+        result = 31 * result + voteAuthorityNoteNew.contentHashCode()
+        result = 31 * result + voteCommitment.contentHashCode()
+        result = 31 * result + proof.contentHashCode()
+        result = 31 * result + rVpk.contentHashCode()
+        result = 31 * result + voteAuthSig.contentHashCode()
         return result
     }
 }
 
 @Keep
 data class JniCommitmentBundleRecord(
-    val commitment: JniVoteCommitmentResult,
+    val commitment: JniVoteCommitResult,
     val vcTreePosition: Long
 )
 
+/**
+ * Typed JNI carrier for one helper-share payload of a vote commitment.
+ *
+ * [toString] is redacted: [primaryBlind] is the blinding factor that opens the vote
+ * commitment, so printing it would let a log reader recover the plaintext vote.
+ */
 @Keep
 data class JniSharePayload(
     val sharesHash: ByteArray,
@@ -279,6 +335,8 @@ data class JniSharePayload(
         primaryBlind = primaryBlind
     )
 
+    override fun toString(): String = "JniSharePayload(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniSharePayload) return false
@@ -305,6 +363,12 @@ data class JniSharePayload(
     }
 }
 
+/**
+ * Typed JNI carrier for the delegation bookkeeping of a single helper share.
+ *
+ * [toString] is redacted: [nullifier] is the share nullifier, and publishing it alongside the
+ * round and proposal it belongs to is exactly the linkage the share protocol exists to avoid.
+ */
 @Keep
 data class JniShareDelegationRecord(
     val roundId: String,
@@ -339,6 +403,8 @@ data class JniShareDelegationRecord(
         createdAt = createdAt
     )
 
+    override fun toString(): String = "JniShareDelegationRecord(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniShareDelegationRecord) return false
@@ -367,41 +433,62 @@ data class JniShareDelegationRecord(
     }
 }
 
-@ConsistentCopyVisibility
-data class HotkeyPublicKey internal constructor(
-    val value: ByteArray
+/**
+ * A voting hotkey: the identity a round's voting power is delegated to.
+ *
+ * **The application must persist [storedSecret], and must persist it before the
+ * delegation transaction is broadcast.** A voting hotkey is app-owned random
+ * material generated by `zcash_voting`; it is *not* derived from the wallet seed.
+ * That has three consequences a wallet has to design around:
+ *
+ * - [storedSecret] cannot be recovered or re-derived from anything else. Not from
+ *   the wallet seed phrase, not from the wallet database, not from the chain.
+ * - Restoring a wallet from its seed phrase does **not** restore the ability to
+ *   vote in a round whose hotkey secret was not separately backed up.
+ * - Losing [storedSecret] forfeits the voting power already delegated to this
+ *   hotkey for the round. The delegation cannot be reissued to a new hotkey.
+ *
+ * Store it in platform secure storage (Android Keystore-wrapped, or equivalent),
+ * keyed by round, alongside the wallet's other secrets. Hand it back to
+ * `buildGovernancePczt`, `buildAndProveDelegation` and `commitVote` for the rest
+ * of the round's lifecycle, and to `deriveHotkeyRawAddress` to recover
+ * [rawOrchardAddress] if it was not retained.
+ *
+ * [toString] is redacted: this is a secret-carrying type and the generated
+ * `data class` rendering would print the secret's bytes into any log that
+ * interpolates it.
+ *
+ * The constructor and `copy()` are public, unlike the `@ConsistentCopyVisibility`
+ * predecessor of this type. A hotkey is now only ever produced by
+ * `generateHotkey`, whose typesafe wrapper in `sdk-lib` length-checks both byte
+ * arrays; that wrapper's own tests live in a different Gradle module and so need
+ * to fabricate a malformed hotkey to exercise the check. Constructing one here
+ * grants no capability: every native entry point takes the raw
+ * [storedSecret] bytes, not this carrier, so a fabricated instance cannot make
+ * `zcash_voting` accept a hotkey it would otherwise reject.
+ */
+@Keep
+data class JniVotingHotkey(
+    val storedSecret: ByteArray,
+    val rawOrchardAddress: ByteArray,
+    val addressIndex: Int
 ) {
-    init {
-        require(value.size == JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE) {
-            "HotkeyPublicKey must be $JNI_HOTKEY_PUBLIC_KEY_BYTES_SIZE bytes, got ${value.size}"
-        }
-    }
+    override fun toString(): String = "JniVotingHotkey(redacted)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other !is HotkeyPublicKey) return false
-        return value.contentEquals(other.value)
+        if (other !is JniVotingHotkey) return false
+        return storedSecret.contentEquals(other.storedSecret) &&
+            rawOrchardAddress.contentEquals(other.rawOrchardAddress) &&
+            addressIndex == other.addressIndex
     }
 
-    override fun hashCode(): Int = value.contentHashCode()
-
-    override fun toString(): String = "HotkeyPublicKey(${value.toHexString()})"
-
-    companion object {
-        internal fun new(bytes: ByteArray) = HotkeyPublicKey(bytes)
+    override fun hashCode(): Int {
+        var result = storedSecret.contentHashCode()
+        result = 31 * result + rawOrchardAddress.contentHashCode()
+        result = 31 * result + addressIndex
+        return result
     }
-}
-
-private fun ByteArray.toHexString() = joinToString("") { "%02x".format(it) }
-
-@Keep
-@ConsistentCopyVisibility
-data class JniVotingHotkey internal constructor(
-    val publicKey: HotkeyPublicKey,
-    val address: String
-) {
-    internal constructor(pk: ByteArray, addr: String) :
-        this(HotkeyPublicKey.new(pk), addr)
 }
 
 // Must match PHASE_* constants in backend-lib/src/main/rust/voting/helpers.rs.
@@ -446,6 +533,17 @@ data class JniGovernancePczt(
     }
 }
 
+/**
+ * Round lifecycle state as reported by the native voting database.
+ *
+ * [hotkeyAddress] and [delegatedWeight] are **always null**. `zcash_voting` does
+ * not populate either field on the round state it returns, regardless of what
+ * hotkey generation or delegation did, so neither can be read back from here.
+ * Obtain the hotkey's address by calling `deriveHotkeyRawAddress` with the
+ * secret the application persisted (see [JniVotingHotkey]); obtain the delegated
+ * weight from the bundle weights `setupBundles` returned. Both fields are kept
+ * because the native constructor signature still passes them.
+ */
 @Keep
 data class JniRoundState(
     val roundId: String,

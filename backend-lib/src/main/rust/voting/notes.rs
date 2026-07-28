@@ -318,25 +318,38 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
         let notes = java_note_info_array(env, &notes, "notes")?;
         let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        let (count, weight) = db
-            .setup_bundles(&round_id, &notes)
-            .map_err(|e| anyhow!("setup_bundles: {}", e))?;
-        if count != expected_count || weight != expected_weight {
-            // setup_bundles has already persisted the round's bundles. Treat a
+        let layout = db
+            .ensure_bundles(&round_id, &notes)
+            .map_err(|e| anyhow!("ensure_bundles: {}", e))?;
+        if layout.bundle_count != expected_count || layout.eligible_weight != expected_weight {
+            // ensure_bundles has already persisted the round's bundles. Treat a
             // mismatch as an internal bug; callers must clear the round before retrying.
             return Err(anyhow!(
-                "setup_bundles result mismatch after persisting bundles; call clearRound before retrying: db=({}, {}) chunk=({}, {})",
-                count,
-                weight,
+                "ensure_bundles result mismatch after persisting bundles; call clearRound before retrying: db=({}, {}) local=({}, {})",
+                layout.bundle_count,
+                layout.eligible_weight,
                 expected_count,
                 expected_weight
             ));
         }
-        make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
+        make_jni_bundle_setup_result(
+            env,
+            layout.bundle_count,
+            layout.eligible_weight,
+            &bundle_weights,
+        )
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
 
+/// Generates a new voting hotkey for `networkId` and advances the round phase.
+///
+/// Voting hotkeys are app-owned random values, not wallet-seed derivations, so
+/// the caller must persist the returned `storedSecret`. It cannot be recovered
+/// from the wallet seed, and losing it forfeits the voting power delegated to
+/// that hotkey. Every other field is derived from the secret. This is why the
+/// former `seed` parameter is gone: there is nothing for the wallet seed to
+/// contribute.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_generateHotkeyNative<
     'local,
@@ -345,16 +358,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
     _: JClass<'local>,
     db_handle: jlong,
     round_id: JString<'local>,
-    seed: JByteArray<'local>,
+    network_id: jint,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let seed = java_secret_bytes_at_least(env, &seed, "seed", PROTOCOL_FIELD_BYTES)?;
+        let network = voting_network_from_id(network_id)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        let hotkey = db
-            .generate_hotkey(seed.expose_secret())
-            .map_err(|e| anyhow!("generate_hotkey: {}", e))?;
+        let hotkey = voting::hotkey::generate_random_voting_hotkey(network)
+            .map_err(|e| anyhow!("generate_random_voting_hotkey: {}", e))?;
         update_round_phase_forward(&db, &round_id, RoundPhase::HotkeyGenerated)?;
         make_jni_voting_hotkey(env, hotkey)
     });
