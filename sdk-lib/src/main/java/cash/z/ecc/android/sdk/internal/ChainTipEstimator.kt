@@ -4,6 +4,7 @@ import android.content.Context
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.db.ReadOnlySupportSqliteOpenHelper
 import cash.z.ecc.android.sdk.internal.db.derived.BlockTable
+import cash.z.ecc.android.sdk.internal.db.derived.DerivedDataDb
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -42,8 +43,8 @@ internal class ChainTipEstimatorImpl(
  * queries the [BlockTable] for the latest scanned block. Safe to construct eagerly — the DB is
  * only opened on the first [estimatedTip] call, and the same open handle is reused from then on.
  *
- * DATABASE_VERSION must match the version the Rust backend wrote — currently 8 (see
- * `DerivedDataDb.DATABASE_VERSION`). The open helper bypasses Room migration checks and just opens
+ * DATABASE_VERSION must match the version the Rust backend wrote — references the authoritative
+ * `DerivedDataDb.DATABASE_VERSION`. The open helper bypasses Room migration checks and just opens
  * the existing file read-only, so a version mismatch would surface as a SQLite error at open time
  * rather than a silent schema divergence.
  */
@@ -62,7 +63,7 @@ internal class LazyDataDbChainTipEstimator(
                     ReadOnlySupportSqliteOpenHelper.openExistingDatabaseAsReadOnly(
                         NoBackupContextWrapper(context, dbFile.parentFile!!),
                         dbFile,
-                        DATA_DB_VERSION,
+                        DerivedDataDb.DATABASE_VERSION,
                     )
                 BlockTable(db)
             }
@@ -80,9 +81,4 @@ internal class LazyDataDbChainTipEstimator(
             Twig.warn(e) { "ChainTipEstimator: could not read latest block — returning -1" }
             -1L
         }
-
-    private companion object {
-        // Matches DerivedDataDb.DATABASE_VERSION — the version the Rust backend writes.
-        const val DATA_DB_VERSION = 8
-    }
 }

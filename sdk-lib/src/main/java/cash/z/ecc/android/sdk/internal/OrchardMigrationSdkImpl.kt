@@ -428,7 +428,7 @@ internal class OrchardMigrationSdkImpl(
                 0 -> return@logged TransferAttemptOutcome.NothingDue
                 2 -> return@logged TransferAttemptOutcome.AwaitingProof(
                     dueResult.awaitingProofTransferId
-                        ?: return@logged TransferAttemptOutcome.NothingDue
+                        ?: error("nextDueTransfer returned status=2 (AwaitingProof) with null transferId — Rust contract violation")
                 )
                 else -> Unit // status 1: fall through to broadcast
             }
