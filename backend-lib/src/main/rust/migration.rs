@@ -125,10 +125,16 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     wallet_conn
         .busy_timeout(std::time::Duration::from_secs(15))
         .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
-    // mmap disabled on BOTH connections: a WAL checkpoint TRUNCATE by any other connection on
-    // this file shrinks the mapped region under a concurrent mmap reader, which the kernel
-    // reports as SIGBUS (observed live 2026-07-28: BUS_ADRERR read fault on the zc-io thread
-    // during a signAndStore retry racing the synchronizer). Plain read()/write() I/O is immune,
+    // mmap disabled on BOTH connections: shrinking a file under a live mmap reader is reported
+    // by the kernel as SIGBUS (observed live 2026-07-28: BUS_ADRERR read fault on the zc-io
+    // thread during a signAndStore retry racing the synchronizer). The canonical producer of
+    // that state is a SECOND SQLite library instance on the same file (framework SQLiteDatabase
+    // next to the bundled one — POSIX close() drops the whole process's fcntl locks, letting the
+    // WAL/-shm index be truncated under the engine's mapping; see Milan's slipstream host-read
+    // incident, FFI_JNI_CONTRACT.md). This build graph has exactly one libsqlite3-sys node and
+    // no framework access to this file (verify: `cargo tree -i libsqlite3-sys` = one node), so
+    // this pragma is defense-in-depth for these short-lived per-call connections, not the
+    // primary guarantee. Plain read()/write() I/O is immune,
     // and these short-lived per-call connections gain nothing measurable from mmap.
     wallet_conn
         .pragma_update(None, "mmap_size", 0)
