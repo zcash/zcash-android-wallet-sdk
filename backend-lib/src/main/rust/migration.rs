@@ -44,7 +44,7 @@ use std::ptr;
 use std::{collections::HashMap, num::NonZeroU32};
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
-use zcash_client_backend::data_api::{InputSource, WalletRead, WalletWrite};
+use zcash_client_backend::data_api::{InputSource, OutputLockStore, WalletRead};
 use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;

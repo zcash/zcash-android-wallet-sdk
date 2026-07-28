@@ -34,6 +34,7 @@ use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 
 use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
+use zcash_pool_migration::build::AccountDerivation;
 use zcash_pool_migration::engine::{
     MigrationBackend, MigrationCrypto, MigrationState, MigrationTransferId, MigrationTxState,
     PoolMigrationRead, PoolMigrationWrite,
@@ -184,6 +185,24 @@ where
             .and_then(|ufvk| ufvk.orchard())
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("account has no Orchard full viewing key"))
+    }
+
+    /// The account's ZIP 32 derivation as the wallet records it, or `None` for an account held
+    /// only as a viewing key. The builders stamp this onto every spend still awaiting a
+    /// signature, which is how the Keystone signer recognizes those spends as this account's;
+    /// returning it unconditionally (rather than only when signing is delegated) keeps the
+    /// in-process and hardware-wallet paths producing identical PCZTs.
+    fn account_derivation(&self) -> Result<Option<AccountDerivation>, Self::Error> {
+        Ok(self
+            .wallet
+            .get_account(self.account)
+            .map_err(|e| anyhow::anyhow!("account lookup failed: {e}"))?
+            .and_then(|account| {
+                account
+                    .source()
+                    .key_derivation()
+                    .map(AccountDerivation::from)
+            }))
     }
 
     fn resolve_wallet_note(&self, index: usize) -> Result<OrchardNote, Self::Error> {

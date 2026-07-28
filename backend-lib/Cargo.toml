@@ -186,23 +186,23 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 tracing-android = { version = "0.2", optional = true }
 
 [patch.crates-io]
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "dd11d093500aa32826bed54995e0fa6e7d1784c7" }
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "f134aa625a92c5085f1e42d5f75d7178a1ea9999" }
 # Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
 # entry for a crate that is not in the graph. Uncomment together with it.
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
 
 ## Uncomment and modify the following block to use librustzcash crates at a pinned revision.
-#[patch.crates-io]
-#pczt = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
 
 [dev-dependencies]
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
