@@ -32,6 +32,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_voting)'] }
 
 [dependencies]
 # Zcash dependencies
+
 # Ironwood (NU6.3): resolves from crates.io — the published 0.15.4 carries the ZIP 374 support
 # the old git pin provided, so no orchard [patch] entry is needed (and slipstream-core requires
 # ^0.15.4, which it satisfies).
@@ -140,6 +141,7 @@ xz2 = { version = "0.1", features = ["static"] }
 # crate), and build with `--cfg zcash_voting`. `incrementalmerkletree` above stays
 # uncommented either way -- the migration engine uses it too.
 # zcash_voting = { version = "1.0.0" }
+
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
 # orchard already carry transitively; pin to the versions already resolved for them

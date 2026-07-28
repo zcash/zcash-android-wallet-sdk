@@ -106,7 +106,7 @@ internal interface TypesafeMigrationBackend {
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        transferId: String,
+        transferId: Long,
         resultTag: Int,
         retryable: Boolean,
         txId: ByteArray
@@ -243,7 +243,7 @@ internal interface TypesafeMigrationBackend {
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid,
-        ids: Array<String>,
+        ids: LongArray,
         pcztBytesList: Array<ByteArray>
     )
 
