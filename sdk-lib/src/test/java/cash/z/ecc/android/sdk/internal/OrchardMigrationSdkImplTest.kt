@@ -243,7 +243,8 @@ class OrchardMigrationSdkImplTest {
         override suspend fun hasOverdueTransfers(
             dbDataPath: String,
             network: ZcashNetwork,
-            account: AccountUuid
+            account: AccountUuid,
+            estimatedTip: Long
         ): Boolean = error("Unused")
 
         override suspend fun hasInvalidTransfers(
@@ -330,7 +331,8 @@ class OrchardMigrationSdkImplTest {
         override suspend fun nextDueTransfer(
             dbDataPath: String,
             network: ZcashNetwork,
-            account: AccountUuid
+            account: AccountUuid,
+            estimatedTip: Long
         ): JniDueTransferResult = error("Unused")
 
         override suspend fun restartCurrentMigrationStep(

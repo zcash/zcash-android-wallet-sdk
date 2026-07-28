@@ -70,7 +70,8 @@ internal interface TypesafeMigrationBackend {
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
+        account: AccountUuid,
+        estimatedTip: Long = -1L
     ): Boolean
 
     suspend fun hasInvalidTransfers(
@@ -180,7 +181,8 @@ internal interface TypesafeMigrationBackend {
     suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
+        account: AccountUuid,
+        estimatedTip: Long = -1L
     ): JniDueTransferResult
 
     suspend fun restartCurrentMigrationStep(

@@ -76,8 +76,9 @@ internal class TypesafeMigrationBackendImpl(
     override suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): Boolean = rustBackend().hasOverdueTransfers(dbDataPath, network.id, account.value, -1L)
+        account: AccountUuid,
+        estimatedTip: Long
+    ): Boolean = rustBackend().hasOverdueTransfers(dbDataPath, network.id, account.value, estimatedTip)
 
     override suspend fun hasInvalidTransfers(
         dbDataPath: String,
@@ -175,8 +176,9 @@ internal class TypesafeMigrationBackendImpl(
     override suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): JniDueTransferResult = rustBackend().nextDueTransfer(dbDataPath, network.id, account.value, -1L)
+        account: AccountUuid,
+        estimatedTip: Long
+    ): JniDueTransferResult = rustBackend().nextDueTransfer(dbDataPath, network.id, account.value, estimatedTip)
 
     override suspend fun restartCurrentMigrationStep(
         dbDataPath: String,

@@ -22,9 +22,9 @@ import kotlin.time.Duration
  * note (Rust bridge, ...)" comments below for what changed and why:
  * - [proposeMigrationTransfers] / [restartCurrentMigrationStep] gained an `includeResidual`
  *   parameter (pass `false` until the opt-in UI exists).
- * - [rescheduleOverdueTransfer] needs no Rust call at all — a pre-signed transfer stays due until
- *   broadcast or expiry, so "rescheduling" is a purely local decision; its old doc incorrectly
- *   implied SDK-side persistence.
+ * - [rescheduleUnprovenTransfer] persists the new schedule height for a not-yet-proven transfer;
+ *   [reconcileInvalidations] is the replacement for the old non-persisting rescheduleOverdueTransfer
+ *   stub that had a units bug — both are now backed by real Rust calls.
  * - `initializePostUpgrade()` was removed — unused anywhere in the app, and `MigrationContext`
  *   has no corresponding "post-upgrade init" step (everything is computed live from wallet state).
  * - [submitNoteSplit] / [executeNextPendingTransfer] are each a composition of several Rust calls
@@ -53,7 +53,7 @@ import kotlin.time.Duration
  *   parameter — sdk-lib never stores/derives a spending key itself (see
  *   [Synchronizer.createProposedTransactions]), and the Rust calls they wrap require one.
  * - [getMigrationState] / [getMigrationProgress] / [isNoteSplitNeeded] / [hasOverdueTransfers] /
- *   [hasInvalidTransfers] became `suspend` — each opens a `MigrationContext` against the wallet's
+ *   [hasInvalidTransfers] are `suspend` — each opens a `MigrationContext` against the wallet's
  *   SQLite database, unlike the mock's free in-memory answers.
  *
  * Reconciled 2026-07-23 removing a dead gate: `isSyncRequiredBeforeNextTransfer()` — a real Rust
@@ -295,6 +295,12 @@ sealed class TransferResult {
      * Call restartCurrentMigrationStep().
      */
     object Expired : TransferResult()
+}
+
+sealed class TransferAttemptOutcome {
+    object NothingDue : TransferAttemptOutcome()
+    data class AwaitingProof(val transferId: String) : TransferAttemptOutcome()
+    data class Executed(val result: TransferResult) : TransferAttemptOutcome()
 }
 
 // ─── Main interface ───────────────────────────────────────────────────────────
@@ -593,7 +599,7 @@ interface OrchardMigrationSdk {
      * every call — there is no separate "claim" step, so a retried/interrupted call is safe to
      * simply call again.
      */
-    suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions): TransferResult?
+    suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions, useEstimatedTip: Boolean): TransferAttemptOutcome
 
     // ── Sync coordination ────────────────────────────────────────────────────
 
@@ -638,29 +644,36 @@ interface OrchardMigrationSdk {
      * but have not been broadcast yet. App shows the fallback prompt on launch.
      *
      * This is the primary catch-up mechanism — do not rely on notification delivery.
+     *
+     * [useEstimatedTip] — when true, supplies an estimated current chain tip height computed from
+     * the latest scanned block + elapsed wall-clock time (75 s/block), so a transfer whose
+     * `nextExecutableAfterHeight` was crossed after the last sync is correctly detected as overdue
+     * even before the next sync updates the tip. Pass `false` to use only the synced tip (-1L),
+     * which avoids false positives but may miss transfers that became due since the last sync.
      */
-    suspend fun hasOverdueTransfers(): Boolean
+    suspend fun hasOverdueTransfers(useEstimatedTip: Boolean = false): Boolean
 
     /**
-     * Defers the current overdue transfer to a later execution window, instead of broadcasting it
-     * right now via [executeNextPendingTransfer]. Unlike [restartCurrentMigrationStep], the
-     * transfer itself is still validly signed (its note hasn't been spent, its anchor hasn't
-     * expired) — only its window was missed — so this does not invalidate or re-sign anything.
-     *
-     * Implementation note (Rust bridge, 2026-07-10): there is **no Rust-side call** for this —
-     * `MigrationContext` has no "reschedule" operation, because it doesn't need one. A pre-signed
-     * transfer is due-and-broadcastable for as long as `TransferProposal.expiryHeight` allows;
-     * `next_due_transfer()`/`executeNextPendingTransfer` will simply keep returning the *same*
-     * transfer on every call until it's either broadcast or its expiry passes. "Rescheduling" is
-     * therefore purely a local decision not to call [executeNextPendingTransfer] yet — the SDK
-     * persists nothing new, it only computes and returns a later target time (e.g. the next
-     * natural anchor-bucket boundary) for the app's WorkManager job. **The chosen time must still
-     * be before the transfer's `expiryHeight`** — pushing past it isn't a valid reschedule; that
-     * case is [hasInvalidTransfers]/[restartCurrentMigrationStep]'s job instead. (The previous
-     * revision of this doc said the SDK "persists the new schedule" — that described the mock's
-     * behavior, not the real bridge; callers relying on that persistence will need updating.)
+     * Reschedules a not-yet-proven transfer to a new broadcast window, returning the new
+     * `nextExecutableAfterHeight` (epoch-seconds). The transfer is still validly signed;
+     * only its proof is missing — this shifts it to a later slot so the WorkManager scheduler
+     * can skip the current window and retry when proving is expected to be complete.
      */
-    suspend fun rescheduleOverdueTransfer(): TransferProposal
+    suspend fun rescheduleUnprovenTransfer(transferId: String): Long
+
+    /**
+     * Reconciles any transfers whose input notes have been invalidated (double-spent or expired)
+     * against the engine's persisted state. Returns `true` if any transfer was invalidated and
+     * the migration state transitioned to [MigrationState.RequiresAttention].
+     */
+    suspend fun reconcileInvalidations(): Boolean
+
+    /**
+     * Returns the estimated current chain tip height, computed from the latest scanned block
+     * plus elapsed wall-clock time at a 75-second average block interval. Returns -1 when no
+     * block has been scanned yet.
+     */
+    suspend fun estimatedChainTip(): Long
 
     /**
      * True if any stored transfer is in an invalid state (spent note or expired anchor).
@@ -689,7 +702,7 @@ interface OrchardMigrationSdk {
 
     /**
      * The live, persisted status of every committed transfer transaction — reflects any
-     * reschedule (production [rescheduleOverdueTransfer], or the debug-only
+     * reschedule (production [rescheduleUnprovenTransfer], or the debug-only
      * [debugRescheduleTransfers]) immediately, unlike an app-side cache populated once at
      * propose/commit time. Returns `null` if there's no in-progress migration.
      */
@@ -783,20 +796,28 @@ interface OrchardMigrationSdk {
             lightWalletEndpoint: co.electriccoin.lightwallet.client.model.LightWalletEndpoint,
             account: cash.z.ecc.android.sdk.model.AccountUuid?,
             alias: String = cash.z.ecc.android.sdk.ext.ZcashSdk.DEFAULT_ALIAS
-        ): OrchardMigrationSdk =
-            cash.z.ecc.android.sdk.internal.OrchardMigrationSdkImpl(
-                context = appContext.applicationContext,
+        ): OrchardMigrationSdk {
+            val ctx = appContext.applicationContext
+            return cash.z.ecc.android.sdk.internal.OrchardMigrationSdkImpl(
+                context = ctx,
                 network = zcashNetwork,
                 alias = alias,
                 account = account,
                 migrationBackend =
                     cash.z.ecc.android.sdk.internal
                         .TypesafeMigrationBackendImpl(),
+                chainTipEstimator =
+                    cash.z.ecc.android.sdk.internal.LazyDataDbChainTipEstimator(
+                        context = ctx,
+                        network = zcashNetwork,
+                        alias = alias,
+                    ),
                 defaultSubmitEndpoint = lightWalletEndpoint,
                 preferenceProviderHolder =
                     cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider(
-                        appContext.applicationContext
+                        ctx
                     )
             )
+        }
     }
 }

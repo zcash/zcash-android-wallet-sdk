@@ -20,6 +20,7 @@ import cash.z.ecc.android.sdk.MigrationTransferStates
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
+import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
@@ -97,6 +98,7 @@ internal class OrchardMigrationSdkImpl(
     private val alias: String,
     private val account: AccountUuid?,
     private val migrationBackend: TypesafeMigrationBackend,
+    private val chainTipEstimator: ChainTipEstimator = ChainTipEstimator { -1L },
     private val defaultSubmitEndpoint: LightWalletEndpoint,
     private val preferenceProviderHolder: EncryptedPreferenceProvider,
 ) : OrchardMigrationSdk {
@@ -407,26 +409,30 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.finalizeReadyTransfers(dbDataPath, network, account)
         }
 
-    override suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions): TransferResult? =
+    override suspend fun executeNextPendingTransfer(
+        options: NetworkPrivacyOptions,
+        useEstimatedTip: Boolean,
+    ): TransferAttemptOutcome =
         logged("executeNextPendingTransfer") {
             val dbDataPath = dbDataPath()
-            val account = account ?: return@logged null
+            val account = account ?: return@logged TransferAttemptOutcome.NothingDue
+            val est = if (useEstimatedTip) chainTipEstimator.estimatedTip() else -1L
             // Checked before broadcasting: this is the "was this call itself an out-of-band 'send
             // now' resume" signal for the post-broadcast privacy buffer below. next_due_transfer()'s
             // PreparedTransfer carries no schedule window of its own to check per-transfer, so this
             // uses the aggregate hasOverdueTransfers() signal as the best available proxy.
-            // NOTE: estimatedTip gate MUST stay at -1L permanently at this layer (TypesafeMigrationBackend
-            // does not expose it). The Rust layer receives -1L from TypesafeMigrationBackendImpl.
-            val wasOverdue = migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
+            val wasOverdue = migrationBackend.hasOverdueTransfers(dbDataPath, network, account, est)
             // nextDueTransfer returns a tri-state: NOTHING_DUE (0), READY (1), or AWAITING_PROOF (2).
-            // Only status==1 (READY) has a prepared transfer to broadcast; the other states are no-ops.
-            // NOTE: estimatedTip gate MUST stay at -1L permanently at this layer (TypesafeMigrationBackend
-            // does not expose it). The Rust layer receives -1L from TypesafeMigrationBackendImpl.
-            val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account)
-            val prepared = when (dueResult.status) {
-                1 -> dueResult.prepared ?: return@logged null
-                else -> return@logged null // NOTHING_DUE (0) or AWAITING_PROOF (2) — nothing to broadcast
+            val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account, est)
+            when (dueResult.status) {
+                0 -> return@logged TransferAttemptOutcome.NothingDue
+                2 -> return@logged TransferAttemptOutcome.AwaitingProof(
+                    dueResult.awaitingProofTransferId
+                        ?: return@logged TransferAttemptOutcome.NothingDue
+                )
+                else -> Unit // status 1: fall through to broadcast
             }
+            val prepared = dueResult.prepared ?: return@logged TransferAttemptOutcome.NothingDue
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
             // Mark the broadcast as in-flight before attempting the network call so the sync engine
@@ -455,7 +461,7 @@ internal class OrchardMigrationSdkImpl(
                     (Clock.System.now().epochSeconds + privacySyncBufferDuration().inWholeSeconds).toString(),
                 )
             }
-            mapped.transferResult
+            TransferAttemptOutcome.Executed(mapped.transferResult)
         }
 
     // ── Sync coordination ────────────────────────────────────────────────────
@@ -478,34 +484,29 @@ internal class OrchardMigrationSdkImpl(
 
     // ── On-launch reconciliation ─────────────────────────────────────────────
 
-    override suspend fun hasOverdueTransfers(): Boolean =
+    override suspend fun hasOverdueTransfers(useEstimatedTip: Boolean): Boolean =
         logged("hasOverdueTransfers") {
             val dbDataPath = dbDataPath()
             val account = account ?: return@logged false
-            migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
+            val est = if (useEstimatedTip) chainTipEstimator.estimatedTip() else -1L
+            migrationBackend.hasOverdueTransfers(dbDataPath, network, account, est)
         }
 
-    override suspend fun rescheduleOverdueTransfer(): TransferProposal =
-        logged("rescheduleOverdueTransfer") {
-            // No Rust call backs the reschedule decision itself (see the interface doc) — but the
-            // pending transfer's own fields (amount/anchorHeight/expiryHeight) come from
-            // pendingTransferProposal(), a dedicated MigrationContext accessor added specifically for
-            // this: next_due_transfer() only returns an opaque, already-signed PreparedTransfer
-            // (id/txid/pcztBytes), not the proposal it was signed from.
+    override suspend fun rescheduleUnprovenTransfer(transferId: String): Long =
+        logged("rescheduleUnprovenTransfer") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            val pending =
-                migrationBackend.pendingTransferProposal(dbDataPath, network, account)?.toPublic()
-                    ?: error("OrchardMigrationSdk: no pending transfer to reschedule")
-            val nowSeconds = Clock.System.now().epochSeconds
-            // Target the same natural cadence the engine schedules by default; if that would land at
-            // or past the transfer's own expiry, target just short of it instead — pushing past
-            // expiry isn't a valid reschedule (hasInvalidTransfers/restartCurrentMigrationStep is the
-            // recovery path once even that isn't possible).
-            val newNextExecutableAfterHeight =
-                minOf(nowSeconds + RESCHEDULE_INTERVAL_SECONDS, pending.expiryHeight - 1)
-            pending.copy(nextExecutableAfterHeight = newNextExecutableAfterHeight)
+            migrationBackend.rescheduleUnprovenTransfer(dbDataPath, network, account, transferId)
         }
+
+    override suspend fun reconcileInvalidations(): Boolean =
+        logged("reconcileInvalidations") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged false
+            migrationBackend.reconcileInvalidatedTransfers(dbDataPath, network, account)
+        }
+
+    override suspend fun estimatedChainTip(): Long = chainTipEstimator.estimatedTip()
 
     override suspend fun hasInvalidTransfers(): Boolean =
         logged("hasInvalidTransfers") {
@@ -653,11 +654,6 @@ internal class OrchardMigrationSdkImpl(
         // preferences immediately before calling broadcast(); cleared (written as "0") right after
         // recordTransferResult(). A stale mark from a crash self-expires within this window.
         const val BROADCAST_IN_FLIGHT_WINDOW_SECONDS = 120L
-
-        // Matches the engine's own default target cadence between scheduled transfers (~6h) —
-        // rescheduling to roughly one more natural interval out, same as the cadence a fresh
-        // schedule would already have used.
-        const val RESCHEDULE_INTERVAL_SECONDS = 6 * 60 * 60L
 
         // Separate from Files.TOR_SUBDIR (the main Synchronizer's shared Tor directory) — a
         // distinct on-disk Tor client/circuit state for migration broadcasts, per NetworkPrivacyOptions.useTor
