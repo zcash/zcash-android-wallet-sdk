@@ -54,6 +54,32 @@ class JniPreparedTransfer(
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
+ *
+ * Tri-state result of the next-due-transfer query.
+ *   status 0 = NOTHING_DUE   — migration terminal, no state, or nothing due yet
+ *   status 1 = READY          — a proven transfer is ready to broadcast ([prepared] is non-null)
+ *   status 2 = AWAITING_PROOF — a transfer is due but still needs proving ([awaitingProofTransferId] non-null)
+ */
+@Keep
+class JniDueTransferResult(
+    /** 0 = NOTHING_DUE, 1 = READY, 2 = AWAITING_PROOF */
+    val status: Int,
+    /** Non-null when status == 2 (the due-but-unproven transfer). */
+    val awaitingProofTransferId: Long?,
+    /** Non-null when status == 1. */
+    val prepared: JniPreparedTransfer?,
+) {
+    init {
+        awaitingProofTransferId?.let {
+            require(it.isInUIntRange()) {
+                "Transfer id $it is outside of allowed UInt range"
+            }
+        }
+    }
+}
+
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class.
  */
 @Keep
 class JniTransferProposal(
@@ -85,17 +111,26 @@ class JniMigrationSchedule(
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The live, persisted status of one
- * committed transfer transaction — [id] is its real, stable `MigrationTxId` (same format/value as
- * `JniTransferProposal.id`), NOT its pool-crossing/funding-note index. ZIP 318 deliberately shuffles
- * crossing order away from the broadcast-height order the app displays transfers in, so [id] is the
- * only key that reliably correlates back to a specific `MigrationPlan.transfers` entry (via that
- * entry's own `id` field).
+ * committed migration transaction (transfer or preparation) — [id] is its real, stable
+ * `MigrationTransferId` (same format/value as `JniTransferProposal.id`), NOT its pool-crossing/
+ * funding-note index. ZIP 318 deliberately shuffles crossing order away from the broadcast-height
+ * order the app displays transfers in, so [id] is the only key that reliably correlates back to a
+ * specific `MigrationPlan.transfers` entry (via that entry's own `id` field).
+ *
+ * [isTransfer] is false for preparation (note-split layer) transactions — display-facing
+ * consumers filter on it or correlate by id (prep ids match no display row). [isProved] is true
+ * once the engine holds a proof (`Proved`/`Broadcast`/`Mined`). [anchorBoundaryHeight] is the
+ * committed ZIP 318 bucket boundary the transaction proves against, or `-1` when the engine
+ * committed none (preparations prove at their natural anchor).
  */
 @Keep
 class JniMigrationTransferState(
     val id: Long,
+    val isTransfer: Boolean,
     val isSent: Boolean,
-    val scheduledHeight: Long
+    val isProved: Boolean,
+    val scheduledHeight: Long,
+    val anchorBoundaryHeight: Long
 ) {
     init {
         require(id.isInUIntRange()) {
@@ -106,9 +141,10 @@ class JniMigrationTransferState(
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The live schedule/status of every
- * committed transfer transaction, read directly from the persisted migration store — unlike
- * [JniMigrationSchedule] (a one-time proposal snapshot), this reflects whatever the store's
- * `scheduled_height`/state columns hold right now, including any later reschedule.
+ * committed migration transaction (transfers AND preparations), read directly from the persisted
+ * migration store — unlike [JniMigrationSchedule] (a one-time proposal snapshot), this reflects
+ * whatever the engine's store holds right now. The engine is the single source of truth for the
+ * plan; this type only surfaces it.
  */
 @Keep
 class JniMigrationTransferStates(

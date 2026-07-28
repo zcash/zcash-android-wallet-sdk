@@ -452,6 +452,25 @@ fn min_pending_migration_anchor_boundary(db_path: &str) -> anyhow::Result<Option
     }
 }
 
+/// The wallet's max scanned block height, for the always-on anchor-retention baseline below —
+/// `None` on a fresh wallet with no scanned blocks (nothing to baseline against yet).
+fn max_scanned_height(db_path: &str) -> anyhow::Result<Option<u32>> {
+    let conn = read_query::open_read_only(db_path)?;
+    let h = conn.query_row("SELECT MAX(height) FROM blocks", [], |row| {
+        row.get::<_, Option<i64>>(0)
+    });
+    match h {
+        Ok(Some(h)) => Ok(Some(
+            u32::try_from(h).map_err(|_| anyhow!("scanned height {h} out of u32 range"))?,
+        )),
+        Ok(None) => Ok(None),
+        Err(rusqlite::Error::SqliteFailure(_, Some(ref msg))) if msg.contains("no such table") => {
+            Ok(None)
+        }
+        Err(e) => Err(anyhow!("reading max scanned height: {e}")),
+    }
+}
+
 /// Spawns a sync session (initial pass → follow + mempool). Aborts any in-flight pass,
 /// performs the quiescence drains, then spawns `run_session` under the panic
 /// supervisor. Behavior matches the iOS/macOS reference wrapper.
@@ -503,11 +522,12 @@ fn start_session(
     // failure must never block sync from starting: fall back to no retention floor (the
     // pre-fix behavior) and log loudly enough to notice, since silently reverting to "no
     // protection" is itself worth knowing about.
-    let anchor_retention_floor = h
-        .wallet_db_path
-        .to_str()
-        .ok_or_else(|| anyhow!("wallet_db_path is not valid UTF-8"))
-        .and_then(min_pending_migration_anchor_boundary)
+    let db_path_str: Option<&str> = h.wallet_db_path.to_str();
+    if db_path_str.is_none() {
+        tracing::warn!("wallet_db_path is not valid UTF-8 — starting sync without anchor retention");
+    }
+    let pending_floor = db_path_str
+        .map_or(Ok(None), min_pending_migration_anchor_boundary)
         .unwrap_or_else(|e| {
             tracing::warn!(
                 error = %e,
@@ -515,6 +535,30 @@ fn start_session(
             );
             None
         });
+    // ALWAYS-ON retention baseline: ZIP 318 draws anchor boundaries in the recent PAST (age >= 1
+    // bucket, up to ANCHOR_AGE_CAP = 16 buckets below the tip observed at draw time), assuming
+    // the wallet retained grid checkpoints continuously since NU6.3. Retention gated on "a
+    // migration is already pending" (the original MOB-1455 shape) therefore loses the very
+    // checkpoints the NEXT plan will draw against — observed live 2026-07-28 as a permanent
+    // AnchorNotFound on a boundary 5 blocks below the commit tip. Baseline the floor a full
+    // draw-window (16 + slack) of buckets below the current scanned tip so every future scan
+    // creates and retains the grid checkpoints any later commit can draw; the pending-plan floor
+    // still applies when it is lower (protecting an in-flight plan's older boundaries).
+    let interval =
+        crate::anchor_retention_interval(zcash_protocol::consensus::Parameters::network_type(
+            &h.network,
+        ));
+    let baseline_floor = db_path_str
+        .map_or(Ok(None), max_scanned_height)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "scanned-tip lookup for retention baseline failed");
+            None
+        })
+        .map(|tip| tip.saturating_sub(18 * interval.block_count().get()));
+    let anchor_retention_floor = match (pending_floor, baseline_floor) {
+        (Some(p), Some(b)) => Some(p.min(b)),
+        (p, b) => p.or(b),
+    };
     // The grid must be the one this crate configures on the wallet (see
     // `crate::anchor_retention_interval`): the engine runs its own tree-update path, so a
     // boundary it does not retain is one a migration transfer cannot later be proved against.

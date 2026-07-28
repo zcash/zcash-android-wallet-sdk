@@ -2,6 +2,7 @@
 
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -53,19 +54,31 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Int
 
-    suspend fun debugRescheduleTransfers(
+    suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): Int
+        account: AccountUuid,
+        estimatedTip: Long = -1L
+    ): Boolean
 
-    suspend fun hasOverdueTransfers(
+    suspend fun hasInvalidTransfers(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
     ): Boolean
 
-    suspend fun hasInvalidTransfers(
+    /**
+     * The mined block height of [txId] (internal byte order), or `-1` if unknown. See
+     * [cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend.transactionMinedHeight]. No account
+     * is needed — a txid is globally unique.
+     */
+    suspend fun transactionMinedHeight(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        txId: ByteArray
+    ): Long
+
+    suspend fun reconcileInvalidatedTransfers(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
@@ -166,8 +179,9 @@ internal interface TypesafeMigrationBackend {
     suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): JniPreparedTransfer?
+        account: AccountUuid,
+        estimatedTip: Long = -1L
+    ): JniDueTransferResult
 
     suspend fun restartCurrentMigrationStep(
         dbDataPath: String,
@@ -185,6 +199,15 @@ internal interface TypesafeMigrationBackend {
         network: ZcashNetwork,
         account: AccountUuid
     ): JniMigrationTransferStates?
+
+    /**
+     * The completed migration's summary from the engine's persisted migration data, as
+     * `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds, lastMinedEpochSeconds]`, or an
+     * EMPTY array when there is no migration data / no mined transfer yet. No account is needed —
+     * the migration tables are wallet-scoped. See
+     * [cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend.migrationSummary].
+     */
+    suspend fun migrationSummary(dbDataPath: String): LongArray
 
     /**
      * Lists every account's UUID in the wallet database, independent of any live `Synchronizer`.

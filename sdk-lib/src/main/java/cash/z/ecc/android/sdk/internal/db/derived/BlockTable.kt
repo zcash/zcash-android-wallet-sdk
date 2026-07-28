@@ -50,6 +50,31 @@ internal class BlockTable(
                     blockTimeEpochSeconds = time
                 )
             }.firstOrNull()
+
+    suspend fun findLatestBlock(): DbBlock? =
+        sqliteDatabase
+            .queryAndMap(
+                table = BlockTableDefinition.TABLE_NAME,
+                columns = PROJECTION_BLOCK_SIMPLE,
+                selection = null,
+                selectionArgs = null,
+                orderBy = "${BlockTableDefinition.COLUMN_INTEGER_HEIGHT} DESC",
+                limit = "1"
+            ) { cursor ->
+                val heightIndex = cursor.getColumnIndexOrThrow(BlockTableDefinition.COLUMN_INTEGER_HEIGHT)
+                val hashIndex = cursor.getColumnIndexOrThrow(BlockTableDefinition.COLUMN_BLOB_HASH)
+                val timeIndex = cursor.getColumnIndexOrThrow(BlockTableDefinition.COLUMN_INTEGER_TIME)
+
+                val height = cursor.getLong(heightIndex)
+                val hash = cursor.getBlob(hashIndex)
+                val time = cursor.getLong(timeIndex)
+
+                DbBlock(
+                    height = BlockHeight(height),
+                    hash = FirstClassByteArray(hash),
+                    blockTimeEpochSeconds = time
+                )
+            }.firstOrNull()
 }
 
 internal object BlockTableDefinition {

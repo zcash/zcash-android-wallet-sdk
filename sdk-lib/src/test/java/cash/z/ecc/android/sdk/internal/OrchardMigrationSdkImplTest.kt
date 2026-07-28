@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
@@ -27,8 +28,49 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 
 class OrchardMigrationSdkImplTest {
+    @Test
+    fun `privacy buffer is 10 minutes on mainnet and 3 on testnet`() {
+        assertEquals(10.minutes, privacySyncBufferFor(ZcashNetwork.Mainnet))
+        assertEquals(3.minutes, privacySyncBufferFor(ZcashNetwork.Testnet))
+    }
+
+    @Test
+    fun `sync is blocked while broadcast in flight mark is in the future`() {
+        // pure helper: isBroadcastInFlight(nowEpoch, markEpoch) -> Boolean
+        assertTrue(isBroadcastInFlight(nowEpochSeconds = 100, inFlightUntilEpochSeconds = 160))
+        assertFalse(isBroadcastInFlight(nowEpochSeconds = 200, inFlightUntilEpochSeconds = 160))
+    }
+
+    // ── F2: non-gRPC submit-failure classification ──────────────────────────
+    // classifyNonGrpcFailure(description, minedHeight) == true means "treat as Success" (our tx is
+    // already on-chain / in the mempool); false means "genuinely unknown rejection" (record tag=2).
+
+    @Test
+    fun `a mined txid makes a non-gRPC failure a success regardless of text`() {
+        assertTrue(classifyNonGrpcFailure(description = null, minedHeight = 0L))
+        assertTrue(classifyNonGrpcFailure(description = "some unknown reason", minedHeight = 1_234_567L))
+    }
+
+    @Test
+    fun `duplicate rejection strings are treated as success even without a mined height`() {
+        assertTrue(classifyNonGrpcFailure("tx already in mempool", minedHeight = -1L))
+        assertTrue(classifyNonGrpcFailure("Duplicate transaction", minedHeight = -1L))
+        assertTrue(classifyNonGrpcFailure("txid ABC already known to node", minedHeight = -1L))
+        // Case-insensitive.
+        assertTrue(classifyNonGrpcFailure("ALREADY IN MEMPOOL", minedHeight = -1L))
+    }
+
+    @Test
+    fun `a genuinely unknown rejection with no mined height stays a failure`() {
+        assertFalse(classifyNonGrpcFailure("insufficient fee", minedHeight = -1L))
+        assertFalse(classifyNonGrpcFailure(null, minedHeight = -1L))
+        assertFalse(classifyNonGrpcFailure("", minedHeight = -1L))
+    }
+
+
     @Test
     fun `proposeImmediateMigration delegates to the send-max native call and returns an ordinary Proposal`() =
         runBlocking {
@@ -84,6 +126,64 @@ class OrchardMigrationSdkImplTest {
             val result = sdk.migrationDustThresholdZatoshi()
 
             assertEquals(100_000L, result)
+        }
+
+    /**
+     * `getMigrationSummary()` decodes the native `[totalMigratedZatoshi, transferCount,
+     * firstMinedEpochSeconds, lastMinedEpochSeconds]` array into a typed [MigrationSummary]. Uses
+     * the same crossing-values total / mined-transfer count / block-time bounds the Migration
+     * Complete screen shows.
+     */
+    @Test
+    fun `getMigrationSummary decodes the native array into a typed summary`() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    migrationSummaryResult = longArrayOf(9_779_000_000L, 10L, 1_785_281_502L, 1_785_283_542L)
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
+                )
+
+            val result = sdk.getMigrationSummary()
+
+            assertEquals(9_779_000_000L, result?.totalMigratedZatoshi)
+            assertEquals(10, result?.transferCount)
+            assertEquals(1_785_281_502L, result?.firstMinedEpochSeconds)
+            assertEquals(1_785_283_542L, result?.lastMinedEpochSeconds)
+            // No account is needed — the migration tables are wallet-scoped.
+            assertTrue(fakeBackend.migrationSummaryDbDataPath != null)
+        }
+
+    /**
+     * An EMPTY native array (no migration data / no mined transfer yet) maps to `null`, so the
+     * Migration Complete screen falls back to zeros rather than showing garbage.
+     */
+    @Test
+    fun `getMigrationSummary maps an empty native array to null`() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend = FakeTypesafeMigrationBackend(migrationSummaryResult = LongArray(0))
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
+                )
+
+            assertEquals(null, sdk.getMigrationSummary())
         }
 
     @Test
@@ -168,10 +268,12 @@ class OrchardMigrationSdkImplTest {
     @Suppress("TooManyFunctions")
     private class FakeTypesafeMigrationBackend(
         private val proposeImmediateSendMaxResult: ByteArray = ByteArray(0),
-        private val migrationDustThresholdZatoshiResult: Long = 100_000L
+        private val migrationDustThresholdZatoshiResult: Long = 100_000L,
+        private val migrationSummaryResult: LongArray = LongArray(0)
     ) : TypesafeMigrationBackend {
         var proposeImmediateSendMaxCalled = false
         var lastAccount: AccountUuid? = null
+        var migrationSummaryDbDataPath: String? = null
 
         override suspend fun migrationDustThresholdZatoshi(): Long = migrationDustThresholdZatoshiResult
 
@@ -211,19 +313,26 @@ class OrchardMigrationSdkImplTest {
             account: AccountUuid
         ): Int = error("Unused")
 
-        override suspend fun debugRescheduleTransfers(
+        override suspend fun hasOverdueTransfers(
             dbDataPath: String,
             network: ZcashNetwork,
-            account: AccountUuid
-        ): Int = error("Unused")
+            account: AccountUuid,
+            estimatedTip: Long
+        ): Boolean = error("Unused")
 
-        override suspend fun hasOverdueTransfers(
+        override suspend fun hasInvalidTransfers(
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
         ): Boolean = error("Unused")
 
-        override suspend fun hasInvalidTransfers(
+        override suspend fun transactionMinedHeight(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            txId: ByteArray
+        ): Long = error("Unused")
+
+        override suspend fun reconcileInvalidatedTransfers(
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
@@ -301,8 +410,9 @@ class OrchardMigrationSdkImplTest {
         override suspend fun nextDueTransfer(
             dbDataPath: String,
             network: ZcashNetwork,
-            account: AccountUuid
-        ): JniPreparedTransfer? = error("Unused")
+            account: AccountUuid,
+            estimatedTip: Long
+        ): JniDueTransferResult = error("Unused")
 
         override suspend fun restartCurrentMigrationStep(
             dbDataPath: String,
@@ -316,6 +426,11 @@ class OrchardMigrationSdkImplTest {
             network: ZcashNetwork,
             account: AccountUuid
         ): JniMigrationTransferStates? = error("Unused")
+
+        override suspend fun migrationSummary(dbDataPath: String): LongArray {
+            migrationSummaryDbDataPath = dbDataPath
+            return migrationSummaryResult
+        }
 
         override suspend fun getAccountUuids(
             dbDataPath: String,

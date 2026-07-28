@@ -333,6 +333,24 @@ class SlipstreamSynchronizer internal constructor(
      * whatever outcome the caller was already returning or throwing. [operation] is a short,
      * human-readable name for the log message only (e.g. "account import", "rewind").
      */
+    /**
+     * [MOB-1455 follow-up] The engine session's anchor-retention floor
+     * (`min_pending_migration_anchor_boundary` → `EngineConfig.anchor_retention`) is computed once,
+     * at `start_session`. A session that was already live when a migration plan committed has NO
+     * retention for the new plan's boundaries — and on the compressed testnet grid the plan's
+     * first boundary is drawn blocks from the tip, so the live session scans past it within
+     * minutes, permanently losing the checkpoint the transfer must later be proved against
+     * (observed live 2026-07-28: boundary 4211652 crossed by the pre-commit session →
+     * `AnchorNotFound` forever). Stop-then-restart recomputes the floor; the restart itself
+     * follows every other stop-then-restart call site here (see [restartEngineAfter]).
+     */
+    override suspend fun restartSyncSession(): Boolean {
+        if (closed.get()) return false
+        engine.stop()
+        restartEngineAfter("migration-plan commit (anchor-retention floor refresh)")
+        return true
+    }
+
     @Suppress("TooGenericExceptionCaught")
     private suspend fun restartEngineAfter(operation: String) {
         withContext(NonCancellable) {

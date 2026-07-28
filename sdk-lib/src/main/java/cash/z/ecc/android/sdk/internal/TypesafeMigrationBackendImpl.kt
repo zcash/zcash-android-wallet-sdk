@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -59,23 +60,30 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Int = rustBackend().clearMigration(dbDataPath, network.id, account.value)
 
-    override suspend fun debugRescheduleTransfers(
-        dbDataPath: String,
-        network: ZcashNetwork,
-        account: AccountUuid
-    ): Int = rustBackend().debugRescheduleTransfers(dbDataPath, network.id, account.value)
-
     override suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): Boolean = rustBackend().hasOverdueTransfers(dbDataPath, network.id, account.value)
+        account: AccountUuid,
+        estimatedTip: Long
+    ): Boolean = rustBackend().hasOverdueTransfers(dbDataPath, network.id, account.value, estimatedTip)
 
     override suspend fun hasInvalidTransfers(
         dbDataPath: String,
         network: ZcashNetwork,
         account: AccountUuid
     ): Boolean = rustBackend().hasInvalidTransfers(dbDataPath, network.id, account.value)
+
+    override suspend fun transactionMinedHeight(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        txId: ByteArray
+    ): Long = rustBackend().transactionMinedHeight(dbDataPath, network.id, txId)
+
+    override suspend fun reconcileInvalidatedTransfers(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Boolean = rustBackend().reconcileInvalidatedTransfers(dbDataPath, network.id, account.value)
 
     override suspend fun prepareNoteSplit(
         dbDataPath: String,
@@ -161,8 +169,9 @@ internal class TypesafeMigrationBackendImpl(
     override suspend fun nextDueTransfer(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): JniPreparedTransfer? = rustBackend().nextDueTransfer(dbDataPath, network.id, account.value)
+        account: AccountUuid,
+        estimatedTip: Long
+    ): JniDueTransferResult = rustBackend().nextDueTransfer(dbDataPath, network.id, account.value, estimatedTip)
 
     override suspend fun restartCurrentMigrationStep(
         dbDataPath: String,
@@ -177,6 +186,9 @@ internal class TypesafeMigrationBackendImpl(
         network: ZcashNetwork,
         account: AccountUuid
     ): JniMigrationTransferStates? = rustBackend().migrationTransferStates(dbDataPath, network.id, account.value)
+
+    override suspend fun migrationSummary(dbDataPath: String): LongArray =
+        rustBackend().migrationSummary(dbDataPath)
 
     override suspend fun getAccountUuids(
         dbDataPath: String,

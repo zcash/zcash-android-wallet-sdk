@@ -786,6 +786,36 @@ interface Synchronizer {
     ): SyncBurstResult = SyncBurstResult.UNAVAILABLE
 
     /**
+     * Drives a bounded sync pass until the engine reaches the current network tip (i.e.
+     * [SyncBurstResult.SYNCED_TO_TIP]), then returns. Unlike [syncBurst] with a caller-supplied
+     * target, this never returns [SyncBurstResult.TARGET_REACHED] — callers that only need to
+     * be sure the wallet is up to date (Lane A in the migration two-lane model) use this instead
+     * of supplying their own [isTargetReached] predicate.
+     *
+     * Delegates to [syncBurst] with `isTargetReached = { false }`, so all of [syncBurst]'s
+     * guarantees apply: privacy pauses are respected, the timeout bounds the call, and a
+     * [SyncBurstResult.UNAVAILABLE] is returned by implementations that cannot drive a real burst.
+     */
+    suspend fun syncToTip(timeout: Duration): SyncBurstResult =
+        syncBurst(timeout = timeout, isTargetReached = { false })
+
+    /**
+     * Restarts the underlying sync-engine session so session-scoped configuration is recomputed.
+     *
+     * The migration anchor-retention floor (the lowest boundary height whose commitment-tree
+     * checkpoints must be created and retained on the anchor grid) is read ONCE, when a sync
+     * session starts. A session that was already live when a migration plan committed therefore
+     * runs WITHOUT retention for that plan's boundaries — and the first boundary it scans past
+     * loses its checkpoint permanently (checkpoints cannot be created retroactively), making the
+     * transfer anchored to it unprovable forever. Callers that commit a migration plan MUST call
+     * this immediately afterwards, before the chain crosses the plan's first boundary.
+     *
+     * Returns `false` when the implementation has no restartable session (or is closed); the
+     * default implementation is a no-op returning `false`.
+     */
+    suspend fun restartSyncSession(): Boolean = false
+
+    /**
      *
      * @param config to configure [HttpClient]
      *
@@ -996,6 +1026,9 @@ interface Synchronizer {
             isExchangeRateEnabled: Boolean
         ): CloseableSynchronizer {
             val applicationContext = context.applicationContext
+            // Populates Twig's process/tag columns — without this every SDK log line renders a
+            // 27-space empty process field (nothing else ever calls initialize).
+            Twig.initialize(applicationContext)
 
             val sdkFlags =
                 SdkFlags(

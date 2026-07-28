@@ -22,9 +22,10 @@ import kotlin.time.Duration
  * note (Rust bridge, ...)" comments below for what changed and why:
  * - [proposeMigrationTransfers] / [restartCurrentMigrationStep] gained an `includeResidual`
  *   parameter (pass `false` until the opt-in UI exists).
- * - [rescheduleOverdueTransfer] needs no Rust call at all — a pre-signed transfer stays due until
- *   broadcast or expiry, so "rescheduling" is a purely local decision; its old doc incorrectly
- *   implied SDK-side persistence.
+ * - [reconcileInvalidations] is the replacement for the old non-persisting rescheduleOverdueTransfer
+ *   stub that had a units bug — backed by a real Rust call. (The `rescheduleUnprovenTransfer` shift
+ *   API that once lived alongside it was deleted 2026-07-28: rescheduling is the ENGINE's semantics
+ *   — unexpired transfers prove late and broadcast late; this layer never mutates the plan.)
  * - `initializePostUpgrade()` was removed — unused anywhere in the app, and `MigrationContext`
  *   has no corresponding "post-upgrade init" step (everything is computed live from wallet state).
  * - [submitNoteSplit] / [executeNextPendingTransfer] are each a composition of several Rust calls
@@ -53,7 +54,7 @@ import kotlin.time.Duration
  *   parameter — sdk-lib never stores/derives a spending key itself (see
  *   [Synchronizer.createProposedTransactions]), and the Rust calls they wrap require one.
  * - [getMigrationState] / [getMigrationProgress] / [isNoteSplitNeeded] / [hasOverdueTransfers] /
- *   [hasInvalidTransfers] became `suspend` — each opens a `MigrationContext` against the wallet's
+ *   [hasInvalidTransfers] are `suspend` — each opens a `MigrationContext` against the wallet's
  *   SQLite database, unlike the mock's free in-memory answers.
  *
  * Reconciled 2026-07-23 removing a dead gate: `isSyncRequiredBeforeNextTransfer()` — a real Rust
@@ -175,27 +176,56 @@ data class KeystoneBatchSignedPczts(
 )
 
 /**
- * The live, persisted status of one committed transfer transaction — [id] matches
- * [TransferProposal.id] (the real, stable `MigrationTxId`), NOT its position in
+ * The live, persisted status of one committed migration transaction (transfer or preparation) —
+ * [id] matches [TransferProposal.id] (the real, stable `MigrationTransferId`), NOT its position in
  * [MigrationSchedule.transfers]: the engine assigns real transfer ids in its own funding-note/
  * crossing order, while array position there is sorted by broadcast height — ZIP 318 deliberately
  * shuffles those two orderings apart, so a caller must correlate by [id], never by array index.
+ *
+ * [isTransfer] is false for preparation (note-split layer) transactions — display-facing
+ * consumers filter on it or correlate by id (prep ids simply match no display row); scheduling
+ * consumers stay kind-agnostic, because the engine serves due preparations for broadcast exactly
+ * like transfers. [isProved] is true once the engine holds a proof (Proved/Broadcast/Mined).
  */
 data class MigrationTransferState(
     val id: Long,
+    val isTransfer: Boolean,
     val isSent: Boolean,
-    val scheduledHeight: Long
+    val isProved: Boolean,
+    val scheduledHeight: Long,
+    /** Committed ZIP 318 anchor bucket boundary; null for preparations (natural anchor). */
+    val anchorBoundaryHeight: Long?,
 )
 
 /**
- * The live schedule/status of every committed transfer transaction, read straight from the
- * persisted migration store — see [OrchardMigrationSdk.getMigrationTransferStates].
- * [tipHeight] is the wallet's current tip at the time of the read, for converting
- * [MigrationTransferState.scheduledHeight] into a wall-clock estimate.
+ * The live schedule/status of every committed migration transaction — transfers AND preparations,
+ * distinguished by [MigrationTransferState.isTransfer] — read straight from the engine's
+ * persisted migration store (the single source of truth for the plan); see
+ * [OrchardMigrationSdk.getMigrationTransferStates]. [tipHeight] is the wallet's current tip at
+ * the time of the read, for converting [MigrationTransferState.scheduledHeight] into a wall-clock
+ * estimate.
  */
 data class MigrationTransferStates(
     val transfers: List<MigrationTransferState>,
     val tipHeight: Long
+)
+
+/**
+ * The completed migration's summary, read straight from the ENGINE's persisted migration data (the
+ * single source of truth), for the Migration Complete screen — see
+ * [OrchardMigrationSdk.getMigrationSummary]. Unlike the app-side plan (cleared on completion), this
+ * survives the migration finishing.
+ *
+ * [totalMigratedZatoshi] is the sum of every per-transfer CROSSING value — what actually arrived in
+ * Ironwood. It is LESS than the balance that left Orchard, by the migration fees. [transferCount] is
+ * the number of MINED transfers. [firstMinedEpochSeconds]/[lastMinedEpochSeconds] bound their mined
+ * blocks' timestamps, for the elapsed-duration display.
+ */
+data class MigrationSummary(
+    val totalMigratedZatoshi: Long,
+    val transferCount: Int,
+    val firstMinedEpochSeconds: Long,
+    val lastMinedEpochSeconds: Long,
 )
 
 /**
@@ -295,6 +325,12 @@ sealed class TransferResult {
      * Call restartCurrentMigrationStep().
      */
     object Expired : TransferResult()
+}
+
+sealed class TransferAttemptOutcome {
+    object NothingDue : TransferAttemptOutcome()
+    data class AwaitingProof(val transferId: Long) : TransferAttemptOutcome()
+    data class Executed(val result: TransferResult) : TransferAttemptOutcome()
 }
 
 // ─── Main interface ───────────────────────────────────────────────────────────
@@ -593,7 +629,7 @@ interface OrchardMigrationSdk {
      * every call — there is no separate "claim" step, so a retried/interrupted call is safe to
      * simply call again.
      */
-    suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions): TransferResult?
+    suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions, useEstimatedTip: Boolean): TransferAttemptOutcome
 
     // ── Sync coordination ────────────────────────────────────────────────────
 
@@ -638,29 +674,35 @@ interface OrchardMigrationSdk {
      * but have not been broadcast yet. App shows the fallback prompt on launch.
      *
      * This is the primary catch-up mechanism — do not rely on notification delivery.
+     *
+     * [useEstimatedTip] — when true, supplies an estimated current chain tip height computed from
+     * the latest scanned block + elapsed wall-clock time (75 s/block), so a transfer whose
+     * `nextExecutableAfterHeight` was crossed after the last sync is correctly detected as overdue
+     * even before the next sync updates the tip. Pass `false` to use only the synced tip (-1L),
+     * which avoids false positives but may miss transfers that became due since the last sync.
      */
-    suspend fun hasOverdueTransfers(): Boolean
+    suspend fun hasOverdueTransfers(useEstimatedTip: Boolean = false): Boolean
 
     /**
-     * Defers the current overdue transfer to a later execution window, instead of broadcasting it
-     * right now via [executeNextPendingTransfer]. Unlike [restartCurrentMigrationStep], the
-     * transfer itself is still validly signed (its note hasn't been spent, its anchor hasn't
-     * expired) — only its window was missed — so this does not invalidate or re-sign anything.
-     *
-     * Implementation note (Rust bridge, 2026-07-10): there is **no Rust-side call** for this —
-     * `MigrationContext` has no "reschedule" operation, because it doesn't need one. A pre-signed
-     * transfer is due-and-broadcastable for as long as `TransferProposal.expiryHeight` allows;
-     * `next_due_transfer()`/`executeNextPendingTransfer` will simply keep returning the *same*
-     * transfer on every call until it's either broadcast or its expiry passes. "Rescheduling" is
-     * therefore purely a local decision not to call [executeNextPendingTransfer] yet — the SDK
-     * persists nothing new, it only computes and returns a later target time (e.g. the next
-     * natural anchor-bucket boundary) for the app's WorkManager job. **The chosen time must still
-     * be before the transfer's `expiryHeight`** — pushing past it isn't a valid reschedule; that
-     * case is [hasInvalidTransfers]/[restartCurrentMigrationStep]'s job instead. (The previous
-     * revision of this doc said the SDK "persists the new schedule" — that described the mock's
-     * behavior, not the real bridge; callers relying on that persistence will need updating.)
+     * Reconciles any transfers whose input notes have been invalidated (double-spent or expired)
+     * against the engine's persisted state. Returns `true` if any transfer was invalidated and
+     * the migration state transitioned to [MigrationState.RequiresAttention].
      */
-    suspend fun rescheduleOverdueTransfer(): TransferProposal
+    suspend fun reconcileInvalidations(): Boolean
+
+    /**
+     * Returns the estimated current chain tip height, computed from the latest scanned block
+     * plus elapsed wall-clock time at a 75-second average block interval. Returns -1 when no
+     * block has been scanned yet.
+     */
+    suspend fun estimatedChainTip(): Long
+
+    /**
+     * Measured average seconds-per-block over the recently scanned window (clamped; 75s fallback).
+     * Use for every height-to-wall-clock projection — testnet's minimum-difficulty bursts make
+     * the 75s constant a large overestimate there.
+     */
+    suspend fun estimatedSecondsPerBlock(): Long
 
     /**
      * True if any stored transfer is in an invalid state (spent note or expired anchor).
@@ -688,12 +730,24 @@ interface OrchardMigrationSdk {
     suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationSchedule
 
     /**
-     * The live, persisted status of every committed transfer transaction — reflects any
-     * reschedule (production [rescheduleOverdueTransfer], or the debug-only
-     * [debugRescheduleTransfers]) immediately, unlike an app-side cache populated once at
-     * propose/commit time. Returns `null` if there's no in-progress migration.
+     * The live, persisted status of EVERY committed migration transaction — transfers AND
+     * preparations, distinguished by [MigrationTransferState.isTransfer] — read straight from the
+     * engine's migration store, the single source of truth for the plan (unlike an app-side cache
+     * populated once at propose/commit time). Display-facing consumers filter on `isTransfer` or
+     * correlate by stable id; scheduling consumers stay kind-agnostic, since the engine serves due
+     * preparations for broadcast exactly like transfers. Returns `null` if there's no in-progress
+     * migration.
      */
     suspend fun getMigrationTransferStates(): MigrationTransferStates?
+
+    /**
+     * The completed migration's real summary — total migrated (crossing values), mined-transfer
+     * count, and first/last mined block times — read straight from the ENGINE's persisted migration
+     * data, the single source of truth that survives completion (unlike the app-side plan, which is
+     * cleared once migration finishes). Used by the Migration Complete screen. Returns `null` when
+     * there is no migration data or no mined transfer yet (the screen then falls back to zeros).
+     */
+    suspend fun getMigrationSummary(): MigrationSummary?
 
     // ── Dust locking ─────────────────────────────────────────────────────────
 
@@ -733,24 +787,6 @@ interface OrchardMigrationSdk {
      */
     suspend fun clearMigration()
 
-    /**
-     * DEBUG ONLY: reschedules every not-yet-broadcast transfer in this account's migration to
-     * become due in quick succession (first ~2.5 min out, then ~5 min apart), instead of ZIP
-     * 318's normal privacy-motivated schedule (mean ~3h between transfers). Both the persisted
-     * `scheduled_height` (broadcast eligibility) and `anchor_boundary` (proving eligibility) are
-     * rewritten — the original `anchor_boundary` is drawn relative to the chain tip at commit
-     * time and can still be far in the *future* of the current synced tip, which would otherwise
-     * leave every rescheduled transfer stuck un-provable regardless of how soon it's due. Any real
-     * mining dependency a transfer has is unaffected, since transfers never depend on each other
-     * (only, at most, on the single preparation transaction that minted their own funding note).
-     * Not for production use.
-     *
-     * @return the number of transfer rows actually rescheduled (0 if there's no in-progress
-     * migration, or every transfer is already broadcast/mined) — surface this to whoever is
-     * testing with it, since a silent 0 looks identical to a successful reschedule otherwise.
-     */
-    suspend fun debugRescheduleTransfers(): Int
-
     companion object {
         /**
          * Constructs the real, Rust-backed [OrchardMigrationSdk].
@@ -783,20 +819,28 @@ interface OrchardMigrationSdk {
             lightWalletEndpoint: co.electriccoin.lightwallet.client.model.LightWalletEndpoint,
             account: cash.z.ecc.android.sdk.model.AccountUuid?,
             alias: String = cash.z.ecc.android.sdk.ext.ZcashSdk.DEFAULT_ALIAS
-        ): OrchardMigrationSdk =
-            cash.z.ecc.android.sdk.internal.OrchardMigrationSdkImpl(
-                context = appContext.applicationContext,
+        ): OrchardMigrationSdk {
+            val ctx = appContext.applicationContext
+            return cash.z.ecc.android.sdk.internal.OrchardMigrationSdkImpl(
+                context = ctx,
                 network = zcashNetwork,
                 alias = alias,
                 account = account,
                 migrationBackend =
                     cash.z.ecc.android.sdk.internal
                         .TypesafeMigrationBackendImpl(),
+                chainTipEstimator =
+                    cash.z.ecc.android.sdk.internal.LazyDataDbChainTipEstimator(
+                        context = ctx,
+                        network = zcashNetwork,
+                        alias = alias,
+                    ),
                 defaultSubmitEndpoint = lightWalletEndpoint,
                 preferenceProviderHolder =
                     cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider(
-                        appContext.applicationContext
+                        ctx
                     )
             )
+        }
     }
 }

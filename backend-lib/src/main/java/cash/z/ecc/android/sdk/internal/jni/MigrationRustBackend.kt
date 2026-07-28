@@ -4,6 +4,7 @@ package cash.z.ecc.android.sdk.internal.jni
 
 import androidx.annotation.Keep
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -99,30 +100,64 @@ class MigrationRustBackend private constructor() {
             clearMigrationNative(dbDataPath, networkId, accountUuidBytes)
         }
 
-    /**
-     * DEBUG ONLY: reschedules every not-yet-broadcast transfer in this account's migration to
-     * become due in quick succession (first ~2.5 min out, then ~5 min apart), for manually testing
-     * real broadcast execution without waiting out ZIP 318's privacy delay. Not exposed to
-     * production users. Returns the number of transfers rescheduled.
-     */
-    @Throws(RuntimeException::class)
-    suspend fun debugRescheduleTransfers(
-        dbDataPath: String,
-        networkId: Int,
-        accountUuidBytes: ByteArray
-    ): Int =
-        withContext(SdkDispatchers.DATABASE_IO) {
-            debugRescheduleTransfersNative(dbDataPath, networkId, accountUuidBytes)
-        }
-
     @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         networkId: Int,
-        accountUuidBytes: ByteArray
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
     ): Boolean =
         withContext(SdkDispatchers.DATABASE_IO) {
-            hasOverdueTransfersNative(dbDataPath, networkId, accountUuidBytes)
+            hasOverdueTransfersNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
+        }
+
+    /**
+     * The mined block height of the transaction with the given [txId], or `-1` if the wallet does
+     * not (yet) know a height for it. [txId] is the 32-byte transaction id in internal byte order
+     * (as carried by `JniPreparedTransfer.txid`), NOT the display-hex reversal.
+     *
+     * Used by the F2 broadcast path to disambiguate a non-gRPC submit failure that is actually a
+     * duplicate rejection of an already-on-chain transaction (submit-then-crash) from a genuine
+     * invalidation.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun transactionMinedHeight(
+        dbDataPath: String,
+        networkId: Int,
+        txId: ByteArray
+    ): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            transactionMinedHeightNative(dbDataPath, networkId, txId)
+        }
+
+    /**
+     * Latest scanned block and the block [windowBlocks] below it, read via the BUNDLED SQLite the
+     * engine uses (never framework SQLite — see blockRateSamplesNative's Rust doc for the SIGBUS
+     * dual-instance hazard that forbids it). Returns `[latestHeight, latestTime, olderHeight,
+     * olderTime]`, `[latestHeight, latestTime]` when no older sample exists, or an EMPTY array when
+     * nothing has been scanned yet. Powers the measured-block-rate ChainTipEstimator.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun blockRateSamples(
+        dbDataPath: String,
+        windowBlocks: Long
+    ): LongArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            blockRateSamplesNative(dbDataPath, windowBlocks)
+        }
+
+    /**
+     * The ENGINE's persisted migration outcome for the Migration Complete screen's real summary,
+     * read via the BUNDLED SQLite the engine uses (never framework SQLite — see
+     * blockRateSamplesNative's Rust doc for the SIGBUS dual-instance hazard that forbids it).
+     * Returns `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds, lastMinedEpochSeconds]`,
+     * or an EMPTY array when there is no migration data / no mined transfer yet. Best-effort: any
+     * read failure swallows to an empty array on the Rust side.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationSummary(dbDataPath: String): LongArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationSummaryNative(dbDataPath)
         }
 
     @Throws(RuntimeException::class)
@@ -133,6 +168,16 @@ class MigrationRustBackend private constructor() {
     ): Boolean =
         withContext(SdkDispatchers.DATABASE_IO) {
             hasInvalidTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun reconcileInvalidatedTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            reconcileInvalidatedTransfersNative(dbDataPath, networkId, accountUuidBytes)
         }
 
     @Throws(RuntimeException::class)
@@ -298,17 +343,18 @@ class MigrationRustBackend private constructor() {
     suspend fun nextDueTransfer(
         dbDataPath: String,
         networkId: Int,
-        accountUuidBytes: ByteArray
-    ): JniPreparedTransfer? =
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
+    ): JniDueTransferResult =
         withContext(SdkDispatchers.DATABASE_IO) {
-            nextDueTransferNative(dbDataPath, networkId, accountUuidBytes)
+            nextDueTransferNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
         }
 
     /**
-     * The live, persisted status (broadcast/mined vs. still pending, plus current
-     * `scheduled_height`) of every committed transfer transaction, read straight from the
-     * migration store — reflects any reschedule immediately, unlike the app's own cached plan.
-     * Returns `null` if there's no in-progress migration.
+     * The live, persisted status (sent/proved flags plus current `scheduled_height` and committed
+     * `anchor_boundary`) of EVERY committed migration transaction — transfers AND preparations,
+     * distinguished by `isTransfer` — read straight from the engine's migration store (the single
+     * source of truth for the plan). Returns `null` if there's no in-progress migration.
      */
     @Throws(RuntimeException::class)
     suspend fun migrationTransferStates(
@@ -566,15 +612,35 @@ class MigrationRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun debugRescheduleTransfersNative(
+        private external fun hasOverdueTransfersNative(
             dbDataPath: String,
             networkId: Int,
-            accountUuidBytes: ByteArray
-        ): Int
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun hasOverdueTransfersNative(
+        private external fun transactionMinedHeightNative(
+            dbDataPath: String,
+            networkId: Int,
+            txId: ByteArray
+        ): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun blockRateSamplesNative(
+            dbDataPath: String,
+            windowBlocks: Long
+        ): LongArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationSummaryNative(dbDataPath: String): LongArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun hasInvalidTransfersNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray
@@ -582,7 +648,7 @@ class MigrationRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun hasInvalidTransfersNative(
+        private external fun reconcileInvalidatedTransfersNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray
@@ -676,8 +742,9 @@ class MigrationRustBackend private constructor() {
         private external fun nextDueTransferNative(
             dbDataPath: String,
             networkId: Int,
-            accountUuidBytes: ByteArray
-        ): JniPreparedTransfer?
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
+        ): JniDueTransferResult
 
         @JvmStatic
         @Throws(RuntimeException::class)
