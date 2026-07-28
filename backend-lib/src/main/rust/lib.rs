@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use pczt::{
     Pczt,
-    roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
+    roles::{combiner::Combiner, prover::Prover},
 };
 use transparent::{
     address::{Script, TransparentAddress},
@@ -50,10 +50,10 @@ use zcash_client_backend::{
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
-            self, create_pczt_from_proposal, create_proposed_transactions,
+            self, SignerView, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
             input_selection::{GreedyInputSelector, LockFilter, SpendPolicy},
-            propose_shielding, propose_transfer,
+            propose_shielding, propose_transfer, redact_pczt_for_signer,
         },
     },
     encoding::AddressCodec,
@@ -80,7 +80,11 @@ use zcash_client_sqlite::{
 use zcash_primitives::{
     block::BlockHash,
     merkle_tree::HashSer,
-    transaction::{Transaction, TxId, builder::BundlePadding},
+    transaction::{
+        Transaction, TxId,
+        builder::{BundlePadding, cached_orchard_proving_key},
+        components::orchard::bundle_version_for_branch,
+    },
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
@@ -110,7 +114,12 @@ mod migration_plan_cache;
 mod migration_send_max;
 mod tor;
 mod utils;
-#[cfg(feature = "chp-voting")]
+// Voting is disabled on this branch: the `zcash_voting` dependency these sources need is
+// commented out in Cargo.toml, so they are gated off entirely rather than behind a cargo
+// feature (a feature would have to name `dep:zcash_voting`). Build with `--cfg zcash_voting`
+// to compile them locally. Voting is re-enabled separately, against `main`, by
+// https://github.com/zcash/zcash-android-wallet-sdk/pull/2075.
+#[cfg(zcash_voting)]
 mod voting;
 
 /// The Slipstream sync engine's JNI binding, folded in as a module so its
@@ -515,6 +524,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createAcc
                 BirthdayError::Decode(e) => {
                     anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
                 }
+                // `BirthdayError` is `#[non_exhaustive]`; this arm is unreachable
+                // against enum versions that expose only the variants above.
+                #[allow(unreachable_patterns)]
+                _ => anyhow!("Invalid TreeState: unrecognized birthday error"),
             })?;
 
         let account_name = java_string_to_rust(env, &account_name)?;
@@ -632,6 +645,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_importAcc
                 BirthdayError::Decode(e) => {
                     anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
                 }
+                // `BirthdayError` is `#[non_exhaustive]`; this arm is unreachable
+                // against enum versions that expose only the variants above.
+                #[allow(unreachable_patterns)]
+                _ => anyhow!("Invalid TreeState: unrecognized birthday error"),
             })?;
 
         let account_name = java_string_to_rust(env, &account_name)?;
@@ -2540,26 +2557,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcz
 
         let pczt = parse_pczt(env, pczt)?;
 
-        let pczt_with_proofs = Redactor::new(pczt)
-            .redact_global_with(|mut r| r.redact_proprietary("zcash_client_backend:proposal_info"))
-            .redact_orchard_with(|mut r| {
-                r.redact_actions(|mut ar| {
-                    ar.clear_spend_witness();
-                    ar.redact_output_proprietary("zcash_client_backend:output_info");
-                })
-            })
-            .redact_sapling_with(|mut r| {
-                r.redact_spends(|mut sr| sr.clear_witness());
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .redact_transparent_with(|mut r| {
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .finish();
+        // Keystone's ordinary send flow signs the full (non-compacted) signer
+        // view: deployed firmware predates the compact view and, for v5
+        // transactions, the v2 PCZT encoding (which `Pczt::serialize` only
+        // selects when the content requires it). Do not switch this to
+        // `SignerView::Compact` without confirming the target signer supports
+        // it — the compact view caused missing-signature failures at
+        // extraction in zcash-swift-wallet-sdk#1863, which this mirrors.
+        let pczt_with_proofs = redact_pczt_for_signer(&pczt, SignerView::Full);
 
         Ok(utils::rust_bytes_to_java(
             env,
@@ -2614,43 +2619,44 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
 
         let pczt = parse_pczt(env, pczt)?;
 
-        // The Orchard proving key must match the circuit governing the Orchard pool under the
-        // consensus branch this PCZT was created for; derive it from the PCZT's branch id before
-        // the PCZT is consumed by the prover. The Ironwood bundle always uses PostNu6_3.
-        let pczt_branch_id = BranchId::try_from(*pczt.global().consensus_branch_id())
-            .map_err(|_| anyhow!("PCZT has an invalid consensus branch id"))?;
+        // The Orchard-family circuit versions are fixed by the consensus branch under
+        // which the transaction will be mined; derive them from the branch id carried by
+        // the PCZT, per value pool.
+        //
+        // `BundleVersion::circuit_version` is documented as many-to-one, deriving only
+        // from the `ProtocolVersion`, so under NU6.3 the Orchard and Ironwood pools share
+        // the post-NU6.3 circuit. Each proof still derives its circuit from its own pool:
+        // `bundle_version_for_branch(_, ValuePool::Ironwood)` is `None` before NU6.3, but
+        // an Ironwood proof is only required post-NU6.3, so the per-pool lookup is total
+        // on the branches that can actually require that proof.
+        let consensus_branch_id = BranchId::try_from(*pczt.global().consensus_branch_id()).ok();
+        let circuit_version_for = |pool: orchard::ValuePool| {
+            consensus_branch_id
+                .and_then(|branch_id| bundle_version_for_branch(branch_id, pool))
+                .map(|bundle_version| bundle_version.circuit_version())
+        };
 
         let mut prover = Prover::new(pczt);
 
         if prover.requires_orchard_proof() {
-            let orchard_circuit_version =
-                zcash_primitives::transaction::components::orchard::bundle_version_for_branch(
-                    pczt_branch_id,
-                    orchard::ValuePool::Orchard,
-                )
-                .ok_or_else(|| {
-                    anyhow!("PCZT's consensus branch does not support the Orchard pool")
-                })?
-                .circuit_version();
-            // Process-wide cached proving key (`zcash_primitives`, adopted 2026-07-23) — building
-            // one is expensive, and this JNI entry point is called on every ordinary shielded
-            // send, not just migrations, so rebuilding it per call was wasted work on every
-            // proof. Still keyed on the branch-derived circuit version above, since this block
-            // also has to prove legacy (pre-Ironwood) Orchard PCZTs during the migration window.
-            let pk = zcash_primitives::transaction::builder::cached_orchard_proving_key(
-                orchard_circuit_version,
-            );
+            let circuit_version = circuit_version_for(orchard::ValuePool::Orchard).ok_or_else(|| {
+                anyhow!("PCZT requires an Orchard proof but its consensus branch does not support Orchard")
+            })?;
+            // `cached_orchard_proving_key` is a process-wide cache keyed on the circuit
+            // version: building a proving key is expensive, and this entry point runs on
+            // every ordinary shielded send, not only on migrations.
             prover = prover
-                .create_orchard_proof(pk)
+                .create_orchard_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
 
         if prover.requires_ironwood_proof() {
+            let circuit_version = circuit_version_for(orchard::ValuePool::Ironwood).ok_or_else(|| {
+                anyhow!("PCZT requires an Ironwood proof but its consensus branch does not support Ironwood")
+            })?;
             prover = prover
-                .create_ironwood_proof(&orchard::circuit::ProvingKey::build(
-                    orchard::circuit::OrchardCircuitVersion::PostNu6_3,
-                ))
+                .create_ironwood_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Ironwood proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_ironwood_proof());

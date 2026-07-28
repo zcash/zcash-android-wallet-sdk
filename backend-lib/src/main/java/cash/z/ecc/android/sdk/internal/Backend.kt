@@ -43,6 +43,7 @@ interface Backend {
      * @throws RuntimeException if NU6.3 is not active, if any Orchard note is not yet
      * spendable, or as a common indicator of the operation failure
      */
+    @Throws(RuntimeException::class)
     suspend fun proposeOrchardToIronwoodMigration(accountUuid: ByteArray): ProposalUnsafe
 
     /**

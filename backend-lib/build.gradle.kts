@@ -131,10 +131,10 @@ cargo {
         // `Java_com_zodl_slipstream_*` exports remain in libzcashwalletsdk.so.
         val features = mutableListOf("slipstream")
         if (enableAndroidTestNativeFixtures) {
-            // VotingRustBackendTest exercises the off-by-default CHP voting JNI surface in
-            // addition to its test-only fixture exports. Instrumentation builds therefore need
-            // both features, while production artifacts continue to ship without either one.
-            features.addAll(listOf("android-test-fixtures", "chp-voting"))
+            // Test-only fixture exports. The voting JNI surface is NOT enabled here: it is
+            // gated off behind `cfg(zcash_voting)` on this branch and its dependency is
+            // commented out of Cargo.toml, so VotingRustBackendTest stays @Ignore'd.
+            features.add("android-test-fixtures")
         }
         listOf("--features", features.joinToString(","))
     }
