@@ -680,6 +680,13 @@ interface OrchardMigrationSdk {
     suspend fun estimatedChainTip(): Long
 
     /**
+     * Measured average seconds-per-block over the recently scanned window (clamped; 75s fallback).
+     * Use for every height-to-wall-clock projection — testnet's minimum-difficulty bursts make
+     * the 75s constant a large overestimate there.
+     */
+    suspend fun estimatedSecondsPerBlock(): Long
+
+    /**
      * True if any stored transfer is in an invalid state (spent note or expired anchor).
      * App shows the RequiresAttention screen. Call restartCurrentMigrationStep() after
      * user acknowledges.

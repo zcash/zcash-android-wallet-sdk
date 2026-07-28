@@ -984,6 +984,9 @@ interface Synchronizer {
             isExchangeRateEnabled: Boolean
         ): CloseableSynchronizer {
             val applicationContext = context.applicationContext
+            // Populates Twig's process/tag columns — without this every SDK log line renders a
+            // 27-space empty process field (nothing else ever calls initialize).
+            Twig.initialize(applicationContext)
 
             val sdkFlags =
                 SdkFlags(

@@ -167,6 +167,19 @@ tracing-android = { version = "0.2", optional = true }
 [patch.crates-io]
 slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "35faa0c2f2095704c53d79849d2ef547c4ce2cad" }
 zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
+# librustzcash mapped to the sibling worktree checkout (z/wt/migration/librustzcash, tracking
+# origin/main — includes zcash/librustzcash#2801 sync_wakeup_schedule). Swap back to published
+# crates (or a git rev pin) before any release build.
+pczt = { path = "../../librustzcash/pczt" }
+zcash_client_backend = { path = "../../librustzcash/zcash_client_backend" }
+zcash_client_sqlite = { path = "../../librustzcash/zcash_client_sqlite" }
+zcash_primitives = { path = "../../librustzcash/zcash_primitives" }
+zcash_proofs = { path = "../../librustzcash/zcash_proofs" }
+zcash_protocol = { path = "../../librustzcash/components/zcash_protocol" }
+zcash_address = { path = "../../librustzcash/components/zcash_address" }
+zcash_transparent = { path = "../../librustzcash/zcash_transparent" }
+zcash_pool_migration = { path = "../../librustzcash/zcash_pool_migration" }
+zip321 = { path = "../../librustzcash/components/zip321" }
 
 ## Uncomment and modify the following block to use librustzcash crates at a pinned revision.
 #[patch.crates-io]

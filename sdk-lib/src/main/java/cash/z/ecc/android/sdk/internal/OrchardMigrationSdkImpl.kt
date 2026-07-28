@@ -62,6 +62,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -99,7 +100,7 @@ internal class OrchardMigrationSdkImpl(
     private val alias: String,
     private val account: AccountUuid?,
     private val migrationBackend: TypesafeMigrationBackend,
-    private val chainTipEstimator: ChainTipEstimator = ChainTipEstimator { -1L },
+    private val chainTipEstimator: ChainTipEstimator = NoOpChainTipEstimator,
     private val defaultSubmitEndpoint: LightWalletEndpoint,
     private val preferenceProviderHolder: EncryptedPreferenceProvider,
 ) : OrchardMigrationSdk {
@@ -501,7 +502,14 @@ internal class OrchardMigrationSdkImpl(
                     preferenceProvider.observe(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key),
                     preferenceProvider.observe(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key),
                 ) { _, _, _ -> }
-                    .map { isSyncBlockedNow(preferenceProvider) }
+                    .mapNotNull {
+                        // Resilient per-tick read: a transient SQLite lock (racing the sync
+                        // engine's block writes) must skip this tick, not crash the collecting
+                        // scope — crashed live 2026-07-28 during a testnet min-difficulty burst.
+                        runCatching { isSyncBlockedNow(preferenceProvider) }
+                            .onFailure { Twig.warn(it) { "isSyncBlocked tick failed (transient) — skipping" } }
+                            .getOrNull()
+                    }
                     .distinctUntilChanged()
             )
         }
@@ -533,6 +541,8 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun estimatedChainTip(): Long = chainTipEstimator.estimatedTip()
+
+    override suspend fun estimatedSecondsPerBlock(): Long = chainTipEstimator.estimatedSecondsPerBlock()
 
     override suspend fun hasInvalidTransfers(): Boolean =
         logged("hasInvalidTransfers") {

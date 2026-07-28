@@ -116,11 +116,24 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     // migration draws its transfer anchors from are exactly the ones the scanning path retains
     // checkpoints for.
     let retention_interval = crate::anchor_retention_interval(network.network_type());
-    let wallet = Wallet::for_path(db_path.to_path_buf(), network, SystemClock, OsRng)
-        .map(|wallet| wallet.with_anchor_retention_interval(retention_interval))
+    // Both connections get a busy_timeout: these JNI entry points race the synchronizer engine's
+    // block-write bursts on the same SQLite file, and rusqlite's default (0) turns a transient
+    // write lock into an instant "database is locked" error — observed live 2026-07-28 as an
+    // app crash from the 15s isSyncBlocked gate tick during a testnet min-difficulty burst.
+    let wallet_conn = Connection::open(db_path)
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
+    rusqlite::vtab::array::load_module(&wallet_conn)
+        .map_err(|e| anyhow!("Error loading SQLite array module: {}", e))?;
+    wallet_conn
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
+    let wallet = Wallet::from_connection(wallet_conn, network, SystemClock, OsRng)
+        .with_anchor_retention_interval(retention_interval);
     let store_conn = Connection::open(db_path)
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
+    store_conn
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| anyhow!("Error setting store busy_timeout: {}", e))?;
     // The pool-migration tables are created by `zcash_client_sqlite`'s own schema migrations
     // (`orchard_ironwood_migration_tables`, run as part of the wallet's normal `init_wallet_db`
     // call, see `lib.rs`), not by this crate — no separate init call needed here. All schema
@@ -1814,6 +1827,28 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 Ok((state, Vec::new()))
             },
         )?;
+        // MIGRATION_DIAG: dump the committed schedule with the REAL drawn anchor boundaries
+        // (the proposal's `anchorHeight` shown to the app is only a duration-display reference —
+        // the per-transfer bucket boundaries exist first here, post-commit).
+        {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            if let Some(state) = backend
+                .get_migration()
+                .map_err(|e| anyhow!("Error re-reading committed migration state: {:?}", e))?
+            {
+                for t in state.transactions() {
+                    tracing::debug!(
+                        "MIGRATION_DIAG committedPlan: {:?} kind={:?} scheduled={:?} boundary={:?} expiry={:?} state={:?}",
+                        t.id(),
+                        t.kind(),
+                        t.scheduled_height(),
+                        t.anchor_boundary(),
+                        t.expiry_height(),
+                        t.state(),
+                    );
+                }
+            }
+        }
         Ok(())
     });
     unwrap_exc_or(&mut env, res, ())
@@ -1884,10 +1919,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 
         let mut finalized_count = 0;
         for (id, kind) in ready {
+            let (boundary, scheduled) = state
+                .transactions()
+                .iter()
+                .find(|t| t.id() == id)
+                .map(|t| (t.anchor_boundary(), Some(t.scheduled_height())))
+                .unwrap_or((None, None));
             if try_prove(&mut wallet, account, fvk.clone(), &mut state, id, kind)
                 .map_err(|e| anyhow!("Error proving transfer {:?}: {}", id, e))?
             {
                 finalized_count += 1;
+                tracing::debug!(
+                    "MIGRATION_DIAG finalizeReadyTransfers: PROVED {:?} kind={:?} boundary={:?} scheduled={:?}",
+                    id,
+                    kind,
+                    boundary,
+                    scheduled,
+                );
             }
         }
         if finalized_count > 0 {
@@ -1927,8 +1975,12 @@ fn next_due_transfer_result<'a>(
         .transactions()
         .iter()
         .filter(|t| {
-            matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                && matches!(t.state(), MigrationTxState::Proved | MigrationTxState::Signed)
+            // Deliberately kind-AGNOSTIC, matching the engine's own `next_broadcastable`:
+            // multi-transaction preparation layers (latest-main engine) are broadcast by the
+            // same driving loop as transfers. A Transfer-only filter here deadlocked a live
+            // plan (2026-07-28): a proved, due preparation had no broadcaster, while the
+            // (also kind-agnostic) overdue gate held sync blocked forever.
+            matches!(t.state(), MigrationTxState::Proved | MigrationTxState::Signed)
                 && t.scheduled_height() <= effective_tip
                 && state.deps_mined(t.depends_on())
                 // Expiry always uses scanned_tip, never the estimate.
@@ -4199,11 +4251,12 @@ mod next_due_transfer_tests {
             "a due Proved preparation must count as overdue (sync gate must close)"
         );
 
-        // Sanity: next_due_transfer_result (Transfer-only) correctly returns NothingDue for the
-        // same state — the two functions are complementary, not duplicated.
+        // A due Proved preparation is served as READY too — the driving loop broadcasts
+        // multi-transaction preparation layers just like transfers (kind-agnostic, matching
+        // the engine's next_broadcastable; a Transfer-only filter deadlocked a live plan).
         assert!(
-            matches!(next_due_transfer_result(&state, tip, tip), DueTransferResult::NothingDue),
-            "next_due_transfer_result ignores preparations — only any_overdue sees them"
+            matches!(next_due_transfer_result(&state, tip, tip), DueTransferResult::Ready(_)),
+            "next_due_transfer_result must serve due Proved preparations"
         );
     }
 
