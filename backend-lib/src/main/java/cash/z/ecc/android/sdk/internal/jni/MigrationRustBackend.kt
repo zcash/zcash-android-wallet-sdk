@@ -100,33 +100,6 @@ class MigrationRustBackend private constructor() {
             clearMigrationNative(dbDataPath, networkId, accountUuidBytes)
         }
 
-    /**
-     * DEBUG ONLY: reschedules every not-yet-broadcast transfer in this account's migration to
-     * become due in quick succession (first ~2.5 min out, then ~5 min apart), for manually testing
-     * real broadcast execution without waiting out ZIP 318's privacy delay. Not exposed to
-     * production users. Returns the number of transfers rescheduled.
-     */
-    @Throws(RuntimeException::class)
-    suspend fun debugRescheduleTransfers(
-        dbDataPath: String,
-        networkId: Int,
-        accountUuidBytes: ByteArray
-    ): Int =
-        withContext(SdkDispatchers.DATABASE_IO) {
-            debugRescheduleTransfersNative(dbDataPath, networkId, accountUuidBytes)
-        }
-
-    @Throws(RuntimeException::class)
-    suspend fun rescheduleUnprovenTransfer(
-        dbDataPath: String,
-        networkId: Int,
-        accountUuidBytes: ByteArray,
-        transferId: String
-    ): Long =
-        withContext(SdkDispatchers.DATABASE_IO) {
-            rescheduleUnprovenTransferNative(dbDataPath, networkId, accountUuidBytes, transferId)
-        }
-
     @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
@@ -348,10 +321,10 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
-     * The live, persisted status (broadcast/mined vs. still pending, plus current
-     * `scheduled_height`) of every committed transfer transaction, read straight from the
-     * migration store — reflects any reschedule immediately, unlike the app's own cached plan.
-     * Returns `null` if there's no in-progress migration.
+     * The live, persisted status (sent/proved flags plus current `scheduled_height` and committed
+     * `anchor_boundary`) of EVERY committed migration transaction — transfers AND preparations,
+     * distinguished by `isTransfer` — read straight from the engine's migration store (the single
+     * source of truth for the plan). Returns `null` if there's no in-progress migration.
      */
     @Throws(RuntimeException::class)
     suspend fun migrationTransferStates(
@@ -606,23 +579,6 @@ class MigrationRustBackend private constructor() {
             networkId: Int,
             accountUuidBytes: ByteArray
         ): Int
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun debugRescheduleTransfersNative(
-            dbDataPath: String,
-            networkId: Int,
-            accountUuidBytes: ByteArray
-        ): Int
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun rescheduleUnprovenTransferNative(
-            dbDataPath: String,
-            networkId: Int,
-            accountUuidBytes: ByteArray,
-            transferId: String
-        ): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)

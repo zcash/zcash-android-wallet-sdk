@@ -22,9 +22,10 @@ import kotlin.time.Duration
  * note (Rust bridge, ...)" comments below for what changed and why:
  * - [proposeMigrationTransfers] / [restartCurrentMigrationStep] gained an `includeResidual`
  *   parameter (pass `false` until the opt-in UI exists).
- * - [rescheduleUnprovenTransfer] persists the new schedule height for a not-yet-proven transfer;
- *   [reconcileInvalidations] is the replacement for the old non-persisting rescheduleOverdueTransfer
- *   stub that had a units bug — both are now backed by real Rust calls.
+ * - [reconcileInvalidations] is the replacement for the old non-persisting rescheduleOverdueTransfer
+ *   stub that had a units bug — backed by a real Rust call. (The `rescheduleUnprovenTransfer` shift
+ *   API that once lived alongside it was deleted 2026-07-28: rescheduling is the ENGINE's semantics
+ *   — unexpired transfers prove late and broadcast late; this layer never mutates the plan.)
  * - `initializePostUpgrade()` was removed — unused anywhere in the app, and `MigrationContext`
  *   has no corresponding "post-upgrade init" step (everything is computed live from wallet state).
  * - [submitNoteSplit] / [executeNextPendingTransfer] are each a composition of several Rust calls
@@ -175,23 +176,34 @@ data class KeystoneBatchSignedPczts(
 )
 
 /**
- * The live, persisted status of one committed transfer transaction — [id] matches
- * [TransferProposal.id] (the real, stable `MigrationTxId`), NOT its position in
+ * The live, persisted status of one committed migration transaction (transfer or preparation) —
+ * [id] matches [TransferProposal.id] (the real, stable `MigrationTxId`), NOT its position in
  * [MigrationSchedule.transfers]: the engine assigns real transfer ids in its own funding-note/
  * crossing order, while array position there is sorted by broadcast height — ZIP 318 deliberately
  * shuffles those two orderings apart, so a caller must correlate by [id], never by array index.
+ *
+ * [isTransfer] is false for preparation (note-split layer) transactions — display-facing
+ * consumers filter on it or correlate by id (prep ids simply match no display row); scheduling
+ * consumers stay kind-agnostic, because the engine serves due preparations for broadcast exactly
+ * like transfers. [isProved] is true once the engine holds a proof (Proved/Broadcast/Mined).
  */
 data class MigrationTransferState(
     val id: String,
+    val isTransfer: Boolean,
     val isSent: Boolean,
-    val scheduledHeight: Long
+    val isProved: Boolean,
+    val scheduledHeight: Long,
+    /** Committed ZIP 318 anchor bucket boundary; null for preparations (natural anchor). */
+    val anchorBoundaryHeight: Long?,
 )
 
 /**
- * The live schedule/status of every committed transfer transaction, read straight from the
- * persisted migration store — see [OrchardMigrationSdk.getMigrationTransferStates].
- * [tipHeight] is the wallet's current tip at the time of the read, for converting
- * [MigrationTransferState.scheduledHeight] into a wall-clock estimate.
+ * The live schedule/status of every committed migration transaction — transfers AND preparations,
+ * distinguished by [MigrationTransferState.isTransfer] — read straight from the engine's
+ * persisted migration store (the single source of truth for the plan); see
+ * [OrchardMigrationSdk.getMigrationTransferStates]. [tipHeight] is the wallet's current tip at
+ * the time of the read, for converting [MigrationTransferState.scheduledHeight] into a wall-clock
+ * estimate.
  */
 data class MigrationTransferStates(
     val transfers: List<MigrationTransferState>,
@@ -654,18 +666,6 @@ interface OrchardMigrationSdk {
     suspend fun hasOverdueTransfers(useEstimatedTip: Boolean = false): Boolean
 
     /**
-     * Reschedules a not-yet-proven transfer to a new broadcast window, returning the new
-     * `scheduled_height` as a **block height** (NOT epoch-seconds — the engine schedules by
-     * block height, and this value is compared against the estimated/scanned chain tip). The
-     * previous KDoc said "epoch-seconds", which is exactly the units confusion that caused the
-     * deleted `rescheduleOverdueTransfer()` stub's bug (epoch seconds compared against block
-     * heights, §7.4); do not reintroduce it. The transfer is still validly signed; only its
-     * proof is missing — this shifts it to a later slot so the WorkManager scheduler can skip the
-     * current window and retry when proving is expected to be complete.
-     */
-    suspend fun rescheduleUnprovenTransfer(transferId: String): Long
-
-    /**
      * Reconciles any transfers whose input notes have been invalidated (double-spent or expired)
      * against the engine's persisted state. Returns `true` if any transfer was invalidated and
      * the migration state transitioned to [MigrationState.RequiresAttention].
@@ -712,10 +712,13 @@ interface OrchardMigrationSdk {
     suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationSchedule
 
     /**
-     * The live, persisted status of every committed transfer transaction — reflects any
-     * reschedule (production [rescheduleUnprovenTransfer], or the debug-only
-     * [debugRescheduleTransfers]) immediately, unlike an app-side cache populated once at
-     * propose/commit time. Returns `null` if there's no in-progress migration.
+     * The live, persisted status of EVERY committed migration transaction — transfers AND
+     * preparations, distinguished by [MigrationTransferState.isTransfer] — read straight from the
+     * engine's migration store, the single source of truth for the plan (unlike an app-side cache
+     * populated once at propose/commit time). Display-facing consumers filter on `isTransfer` or
+     * correlate by stable id; scheduling consumers stay kind-agnostic, since the engine serves due
+     * preparations for broadcast exactly like transfers. Returns `null` if there's no in-progress
+     * migration.
      */
     suspend fun getMigrationTransferStates(): MigrationTransferStates?
 
@@ -756,24 +759,6 @@ interface OrchardMigrationSdk {
      * proposal with a shorter test schedule without waiting out or resuming the previous one).
      */
     suspend fun clearMigration()
-
-    /**
-     * DEBUG ONLY: reschedules every not-yet-broadcast transfer in this account's migration to
-     * become due in quick succession (first ~2.5 min out, then ~5 min apart), instead of ZIP
-     * 318's normal privacy-motivated schedule (mean ~3h between transfers). Both the persisted
-     * `scheduled_height` (broadcast eligibility) and `anchor_boundary` (proving eligibility) are
-     * rewritten — the original `anchor_boundary` is drawn relative to the chain tip at commit
-     * time and can still be far in the *future* of the current synced tip, which would otherwise
-     * leave every rescheduled transfer stuck un-provable regardless of how soon it's due. Any real
-     * mining dependency a transfer has is unaffected, since transfers never depend on each other
-     * (only, at most, on the single preparation transaction that minted their own funding note).
-     * Not for production use.
-     *
-     * @return the number of transfer rows actually rescheduled (0 if there's no in-progress
-     * migration, or every transfer is already broadcast/mined) — surface this to whoever is
-     * testing with it, since a silent 0 looks identical to a successful reschedule otherwise.
-     */
-    suspend fun debugRescheduleTransfers(): Int
 
     companion object {
         /**

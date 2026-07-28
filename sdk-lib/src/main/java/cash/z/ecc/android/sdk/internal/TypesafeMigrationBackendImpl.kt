@@ -60,19 +60,6 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Int = rustBackend().clearMigration(dbDataPath, network.id, account.value)
 
-    override suspend fun debugRescheduleTransfers(
-        dbDataPath: String,
-        network: ZcashNetwork,
-        account: AccountUuid
-    ): Int = rustBackend().debugRescheduleTransfers(dbDataPath, network.id, account.value)
-
-    override suspend fun rescheduleUnprovenTransfer(
-        dbDataPath: String,
-        network: ZcashNetwork,
-        account: AccountUuid,
-        transferId: String
-    ): Long = rustBackend().rescheduleUnprovenTransfer(dbDataPath, network.id, account.value, transferId)
-
     override suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

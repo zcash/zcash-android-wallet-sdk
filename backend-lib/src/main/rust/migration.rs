@@ -41,7 +41,6 @@ use prost::Message;
 use rand::rngs::OsRng;
 use rusqlite::Connection;
 use std::ptr;
-use std::{collections::HashMap, num::NonZeroU32};
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
 use zcash_client_backend::data_api::{InputSource, NullifierQuery, WalletRead, WalletWrite};
@@ -61,7 +60,6 @@ use zcash_pool_migration::{
         self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction, MigrationTxId,
         MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
     },
-    scheduling::AnchorBucketInterval,
 };
 
 use crate::migration_engine::Backend;
@@ -1171,6 +1169,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
                     current.and_then(|state| {
                         if !state.is_terminal() {
+                            // Status-only swap: every sub-state (note split, preparation,
+                            // transactions, anchor grid) passes through verbatim — the engine has
+                            // no cancel/fail primitive in rc.1, so this is the accepted way to
+                            // mark a run Failed without touching the committed plan.
                             Some(MigrationState::from_parts(
                                 engine::MigrationStatus::Failed,
                                 state.note_split().clone(),
@@ -1498,6 +1500,8 @@ fn reconcile_invalidated(
     let invalid_id_str = u32::from(invalid_id).to_string();
     record_invalidation(store_conn, account_bytes, "invalid_transfer", Some(&invalid_id_str))
         .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
+    // Status-only swap: sub-state passed through verbatim (no cancel/fail primitive in the rc.1
+    // engine) — the committed plan itself is never rewritten here.
     let failed = MigrationState::from_parts(
         engine::MigrationStatus::Failed,
         state.note_split().clone(),
@@ -1842,7 +1846,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // (the proposal's `anchorHeight` shown to the app is only a duration-display reference —
         // the per-transfer bucket boundaries exist first here, post-commit).
         {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
             if let Some(state) = backend
                 .get_migration()
                 .map_err(|e| anyhow!("Error re-reading committed migration state: {:?}", e))?
@@ -2121,11 +2125,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// The live, persisted status of every committed transfer transaction — reads straight from the
-/// migration store's current `scheduled_height`/state columns, so it reflects any reschedule
-/// (production `rescheduleOverdueTransfer()` or the debug-only `debugRescheduleTransfersNative`)
-/// immediately, unlike the app's own `MigrationPlanRepository` cache (populated once, at
-/// propose/commit time, and only ever updated by whichever caller remembers to write through it).
+/// The live, persisted status of EVERY committed migration transaction — transfers AND
+/// preparations — read straight from the migration store's current state, so it always reflects
+/// what the engine committed (the engine is the single source of truth for the plan; this
+/// function only SURFACES it). Unlike the app's own `MigrationPlanRepository` cache (populated
+/// once, at propose/commit time), this is never stale.
+///
+/// Per entry: `(id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)`.
+/// - `is_transfer` distinguishes transfers from preparation (note-split layer) transactions —
+///   display-facing consumers filter on it or correlate by id (prep ids match no display row);
+///   scheduling consumers (Lane B's next-window re-arm) deliberately stay kind-agnostic, since
+///   `nextDueTransferNative` serves due preparations too.
+/// - `is_proved` is true once the transaction has a proof (`Proved`/`Broadcast`/`Mined`) — the
+///   app's sync lane (Lane A) wakes at the anchor-boundary heights of unproved, unsent entries.
+/// - `anchor_boundary` is the committed ZIP 318 bucket boundary the transaction proves against,
+///   or `-1` when the engine committed none (preparations prove at their natural anchor).
+///
 /// Returns `null` if there's no in-progress migration.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationTransferStatesNative<
@@ -2149,39 +2164,60 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             return Ok(ptr::null_mut());
         };
 
-        // Keyed by the transfer's real, stable MigrationTxId — NOT `transfer_crossing()` (the
+        // Keyed by the transaction's real, stable MigrationTxId — NOT `transfer_crossing()` (the
         // funding-note/crossing index). The app's displayed "Transfer N" position comes from
         // sorting the ORIGINAL proposal by broadcast_height (see `encode_migration_schedule`),
         // while the engine assigns real tx ids in crossing/schedule() order at commit time —
         // ZIP 318 deliberately shuffles those two orderings apart, so they permanently disagree.
         // The app now carries this same id on its cached `MigrationTransfer.id` (see
         // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
-        let transfers: Vec<(MigrationTxId, bool, BlockHeight)> = state
-            .transactions()
-            .iter()
-            .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
-            .map(|t| {
-                let is_sent = matches!(
-                    t.state(),
-                    MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
-                );
-                (t.id(), is_sent, t.scheduled_height())
-            })
-            .collect();
+        //
+        // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)
+        let transactions: Vec<(MigrationTxId, bool, bool, bool, BlockHeight, Option<BlockHeight>)> =
+            state
+                .transactions()
+                .iter()
+                .map(|t| {
+                    let is_transfer = matches!(t.kind(), MigrationTxKind::Transfer { .. });
+                    let is_sent = matches!(
+                        t.state(),
+                        MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
+                    );
+                    let is_proved = matches!(
+                        t.state(),
+                        MigrationTxState::Proved
+                            | MigrationTxState::Broadcast { .. }
+                            | MigrationTxState::Mined { .. }
+                    );
+                    (
+                        t.id(),
+                        is_transfer,
+                        is_sent,
+                        is_proved,
+                        t.scheduled_height(),
+                        t.anchor_boundary(),
+                    )
+                })
+                .collect();
 
         let jtransfers = crate::utils::rust_vec_to_java(
             env,
-            transfers,
+            transactions,
             JNI_MIGRATION_TRANSFER_STATE,
-            |env, (id, is_sent, scheduled_height)| {
+            |env, (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)| {
                 let id = encode_transfer_id(env, id)?;
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(Ljava/lang/String;ZJ)V",
+                    "(Ljava/lang/String;ZZZJJ)V",
                     &[
                         JValue::Object(&id),
+                        JValue::Bool(is_transfer as jboolean),
                         JValue::Bool(is_sent as jboolean),
+                        JValue::Bool(is_proved as jboolean),
                         JValue::Long(i64::from(u32::from(scheduled_height))),
+                        JValue::Long(
+                            anchor_boundary.map_or(-1i64, |b| i64::from(u32::from(b))),
+                        ),
                     ],
                 )
             },
@@ -2356,9 +2392,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         if state.is_terminal() {
             return Ok(0);
         }
-        // Only the status changes; the anchor bucket grid the run was committed under is carried
-        // through unchanged, since rewriting it would misreport which boundaries the already-drawn
-        // transfer anchors lie on.
+        // Status-only swap: only the status changes; every sub-state — including the anchor
+        // bucket grid the run was committed under — is carried through unchanged, since rewriting
+        // it would misreport which boundaries the already-drawn transfer anchors lie on. (The
+        // rc.1 engine has no cancel/fail primitive; this is the accepted residual.)
         let cancelled = MigrationState::from_parts(
             engine::MigrationStatus::Failed,
             state.note_split().clone(),
@@ -2373,391 +2410,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         clear_invalidation(&store_conn, &account_bytes)
             .map_err(|e| anyhow!("Error clearing invalidation on cancel: {}", e))?;
         Ok(1)
-    });
-    unwrap_exc_or(&mut env, res, 0)
-}
-
-/// Pure inner logic for rescheduling a single `Signed` transfer — extracted so tests can call
-/// it directly without a wallet database. Returns `(new_scheduled_height_as_i64, updated_state)`,
-/// or `(-1, original_state)` if the transfer is not reschedulable (not found or not `Signed`).
-///
-/// `new_schedule` and `new_boundary` are pre-computed by the caller (the JNI wrapper draws
-/// an exponential delay and candidate boundary; tests supply deterministic values).
-/// Pure boundary-selection helper for `rescheduleUnprovenTransferNative`.
-///
-/// Given the funding height of the dependency, the current tip, and the bucket interval,
-/// computes the candidate grid range `[lowest, highest]` and either:
-/// - returns `old_boundary` unchanged when the candidate set is empty (lowest > highest), or
-/// - calls `pick(count)` with the number of candidates and uses the returned index (0-based) to
-///   select a grid multiple, returning `Some(lowest + pick_idx * interval_u32)`.
-///
-/// This is the load-bearing "empty candidate set → keep old boundary" decision (spec M4).
-/// The JNI wrapper passes `OsRng.gen_range(0..count)` as the pick closure; tests pass a
-/// deterministic function so the boundary selection is fully exercised without any RNG.
-fn select_shift_boundary(
-    funding_height: u32,
-    tip_u32: u32,
-    interval_u32: u32,
-    old_boundary: Option<BlockHeight>,
-    pick: impl FnOnce(u32) -> u32,
-) -> Option<BlockHeight> {
-    // highest = most recent settled grid point one interval back from tip.
-    // Guard: if tip < interval, set highest = 0 (conservative; triggers no-candidate below).
-    let highest = if tip_u32 >= interval_u32 {
-        (tip_u32 / interval_u32) * interval_u32 - interval_u32
-    } else {
-        0u32
-    };
-    // lowest = first grid multiple >= funding_height (ceiling division).
-    // If funding_height == 0 (unknown dep), use interval_u32 as a conservative floor.
-    let lowest = if funding_height == 0 {
-        interval_u32
-    } else {
-        ((funding_height + interval_u32 - 1) / interval_u32) * interval_u32
-    };
-
-    if lowest > highest {
-        // No candidate in range: keep old boundary unchanged (spec M4, testnet load-bearing)
-        old_boundary
-    } else {
-        let count = (highest - lowest) / interval_u32 + 1;
-        let pick_idx = pick(count);
-        Some(BlockHeight::from(lowest + pick_idx * interval_u32))
-    }
-}
-
-fn reschedule_unproven_transfer_inner(
-    state: MigrationState,
-    transfer_id: MigrationTxId,
-    new_schedule: BlockHeight,
-    new_boundary: Option<BlockHeight>,
-) -> (i64, MigrationState) {
-    // Must exist and be Signed; any other state (AwaitingSignature, Proved, Broadcast, Mined) → -1.
-    match state
-        .transactions()
-        .iter()
-        .find(|t| t.id() == transfer_id)
-    {
-        Some(t) if matches!(t.state(), MigrationTxState::Signed) => {}
-        _ => return (-1, state),
-    }
-
-    // Rebuild every transaction in its original order.
-    // expiry_height is NEVER changed — the ZIP 374 sighash covers it; pczt bytes are preserved.
-    let interval = state.anchor_bucket_interval();
-    let new_transactions: Vec<MigrationTransaction> = state
-        .transactions()
-        .iter()
-        .map(|t| {
-            if t.id() == transfer_id {
-                MigrationTransaction::from_parts(
-                    t.id(),
-                    t.kind(),
-                    t.pczt().clone(),
-                    t.depends_on().clone(),
-                    new_schedule,
-                    t.expiry_height(), // MUST NOT change — ZIP 374 sighash covers it
-                    new_boundary,
-                    t.state(),
-                    t.lock_owner(),
-                )
-            } else {
-                t.clone()
-            }
-        })
-        .collect();
-
-    let new_state = MigrationState::from_parts(
-        state.status(),
-        state.note_split().clone(),
-        state.preparation().clone(),
-        new_transactions,
-        interval,
-    );
-    (i64::from(u32::from(new_schedule)), new_state)
-}
-
-/// Shifts a single `Signed` transfer's `scheduled_height` (and optionally redraws its
-/// `anchor_boundary`) into the future, then persists the updated run. Called by the app's
-/// broadcast lane when a due transfer has no proof yet (missed its sync window).
-///
-/// Returns the new `scheduled_height` as a positive `jlong`, or `-1` if the transfer was not
-/// reschedulable (not found / not `Signed` / terminal run).
-///
-/// Constraints:
-/// - `expiry_height` is NEVER modified — the ZIP 374 sighash covers it; PCZT bytes remain
-///   byte-identical.
-/// - Only `Signed` transfers are reschedulable; `Proved`/terminal/missing → return -1.
-/// - Boundary redraw: bucket-grid multiples only. Empty candidate set → keep old boundary
-///   (spec M4, load-bearing for testnet where tip is often within one interval of genesis).
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_rescheduleUnprovenTransferNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_data: JString<'local>,
-    network_id: jint,
-    account_uuid: JByteArray<'local>,
-    transfer_id: JString<'local>,
-) -> jlong {
-    let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
-        let account = crate::account_id_from_jni(env, account_uuid)?;
-        let id = decode_transfer_id(env, &transfer_id)?;
-
-        let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let Some(state) = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
-        else {
-            return Ok(-1i64);
-        };
-        if state.is_terminal() {
-            return Ok(-1i64);
-        }
-
-        // Check the transfer exists and is Signed; extract what we need before consuming `state`.
-        let (old_boundary, dep_ids) = {
-            let tx = state.transactions().iter().find(|t| t.id() == id);
-            match tx {
-                Some(t) if matches!(t.state(), MigrationTxState::Signed) => {
-                    (t.anchor_boundary(), t.depends_on().clone())
-                }
-                _ => return Ok(-1i64),
-            }
-        };
-
-        let interval_u32 = state.anchor_bucket_interval().block_count().get();
-        let tip_u32 = u32::from(tip);
-
-        // New schedule: exponential delay, mean = one bucket interval, cap 4×.
-        // Testnet (interval=12): mean ~12 blocks (~15 min); mainnet (interval=144): mean ~3 h.
-        let delay = {
-            use rand::Rng;
-            let mean = interval_u32 as f64;
-            let u: f64 = rand::rngs::OsRng.gen_range(f64::EPSILON..1.0);
-            (-u.ln() * mean).round().clamp(1.0, 4.0 * mean) as u32
-        };
-        let new_height = BlockHeight::from(tip_u32 + delay);
-
-        // Boundary redraw: uniform-random grid multiple in [lowest, highest].
-        // lowest = first grid multiple ≥ funding height (dep's mined height, else interval).
-        // highest = most recent settled grid point one interval back from tip.
-        // Empty candidate set (lowest > highest) → keep old boundary (spec M4 fallback).
-        // Recency-weighted draw (used at commit time by draw_anchor_boundary) is NOT applied here;
-        // uniform is acceptable for a reschedule shift since the original commit already
-        // incorporated the privacy weighting.
-        let funding_height: u32 = state
-            .transactions()
-            .iter()
-            .find(|t| dep_ids.contains(&t.id()))
-            .and_then(|dep| dep.state().mined_height())
-            .map(u32::from)
-            .unwrap_or(0);
-
-        let new_boundary = {
-            use rand::Rng;
-            select_shift_boundary(
-                funding_height,
-                tip_u32,
-                interval_u32,
-                old_boundary,
-                |count| rand::rngs::OsRng.gen_range(0..count),
-            )
-        };
-
-        let (result, new_state) =
-            reschedule_unproven_transfer_inner(state, id, new_height, new_boundary);
-        if result < 0 {
-            return Ok(-1i64);
-        }
-        backend
-            .replace_migration(&new_state)
-            .map_err(|e| anyhow!("Error persisting rescheduled migration state: {:?}", e))?;
-        Ok(result)
-    });
-    unwrap_exc_or(&mut env, res, -1)
-}
-
-/// DEBUG ONLY: overrides this account's persisted migration schedule so its transfers become due
-/// in quick succession, for manually testing real broadcast execution without waiting out ZIP
-/// 318's privacy-motivated delay (mean ~3h between transfers — see `zcash_pool_migration::
-/// scheduling`'s module doc: this is a deliberate anti-correlation choice, not a technical
-/// requirement). Not exposed to production users.
-///
-/// Both `scheduled_height` (which gates BROADCAST — see `next_broadcastable`) AND `anchor_boundary`
-/// (which gates PROVING — see `is_prove_ready`) are rewritten; dependency-mining is not touched or
-/// bypassed:
-/// - A transfer's `anchor_boundary`, as originally drawn at commit time
-///   (`scheduling::draw_anchor_boundary`), is a boundary in the past relative to the chain tip
-///   *at commit time* — normally already passed by the time the transfer's (much later,
-///   ZIP-318-delayed) `scheduled_height` arrives. This override exists precisely because
-///   `debugRescheduleTransfers` moves `scheduled_height` to now, while the original
-///   `anchor_boundary` stays wherever it was drawn — confirmed live: the original boundary can
-///   still be ~70-1800 blocks AHEAD of the current synced tip, since it was never meant to be
-///   reached this soon. Left alone, `is_prove_ready` (`boundary + 1 < target_height`) would keep
-///   failing regardless of how close `scheduled_height` is. So every rescheduled transfer's
-///   `anchor_boundary` is also rewritten, to `natural_anchor_height` — the SAME anchor ordinary
-///   non-migration sends use (guaranteed checkpointed/witnessed). NOT a full `BOUNDARY_MODULUS`
-///   bucket back like `draw_anchor_boundary` draws in production (that bucketing is a privacy
-///   measure, irrelevant here, and lands outside the checkpoint retention window — confirmed live
-///   via `AnchorNotFound`), and NOT a hand-picked "tip minus N" guess either (also not guaranteed
-///   checkpointed — see `natural_anchor_height`'s own doc comment) — so proving can proceed as
-///   soon as `finalizeReadyTransfers` next runs.
-/// - Transfers do NOT depend on each other (confirmed directly: `MigrationTransaction::depends_on`
-///   for a `Transfer` never lists another transfer's id, only the single preparation transaction
-///   that minted its own funding note, if any) — so every transfer can be staggered independently;
-///   there is no need to wait for transfer N to broadcast before N+1 becomes due.
-/// - A transfer whose funding note comes from an actual note-split (preparation) transaction still
-///   genuinely cannot broadcast until that preparation transaction is MINED (`deps_mined`) — this
-///   function does not and cannot bypass that; it only affects how soon a transfer becomes due and
-///   provable once its real dependencies are satisfied.
-///
-/// Every not-yet-broadcast/mined TRANSFER (preparation transactions are left alone) is
-/// rescheduled to `tip + FIRST_DELAY_BLOCKS + i * STRIDE_BLOCKS`, in `i` = the transfers' existing
-/// relative order (by their current `scheduled_height`, so the engine's own ZIP 318 shuffle order
-/// is preserved even though the absolute heights are now compressed) — the first becomes due in
-/// about `FIRST_DELAY_BLOCKS * 75s`, each subsequent one `STRIDE_BLOCKS * 75s` after that. The
-/// stride is intentionally tight (one block) so all transfers stay within a handful of blocks of
-/// the current tip and remain reachable on a slow testnet; the per-broadcast pace is still gated
-/// by the 10-minute privacy sync buffer regardless, so tightening the heights doesn't collapse the
-/// broadcast spacing.
-///
-/// Returns the number of transfers rescheduled.
-///
-/// KNOWN EXCEPTION — direct SQL against engine-owned tables: rewriting a committed schedule is
-/// deliberately not something `zcash_pool_migration` exposes (the ZIP 318 schedule is a
-/// privacy property, and `MigrationTransaction` offers no schedule setters), so this debug-only
-/// function reads and updates `orchard_ironwood_migration_transactions` rows directly. This is
-/// the ONLY remaining direct manipulation of wallet-database internals in this crate; if the
-/// engine ever grows a (feature-gated) rescheduling hook, replace this with it. Column-name
-/// drift here fails only this debug aid, never a production path.
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_debugRescheduleTransfersNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_data: JString<'local>,
-    network_id: jint,
-    account_uuid: JByteArray<'local>,
-) -> jint {
-    // Packed one block apart starting at tip+1 (~75s to the first, ~75s between each) so all N
-    // transfers land within N blocks of the tip instead of spanning N*STRIDE. A wider stride
-    // (previously 2 + i*4) pushed the last of a dozen transfers ~46 blocks / ~1h out — on a slow
-    // or momentarily-stalled testnet those far heights are never reached, so the run never
-    // finishes. Kept at tip+1 (not tip) deliberately: the first transfer stays a block in the
-    // future so the background sync-advance path (MigrationWorker's WAIT_AND_RETRY → sync burst →
-    // becomes due) is still exercised, rather than being immediately overdue.
-    const FIRST_DELAY_BLOCKS: u32 = 1;
-    const STRIDE_BLOCKS: u32 = 1;
-
-    let res = catch_unwind(&mut env, |env| {
-        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
-        let account = crate::account_id_from_jni(env, account_uuid)?;
-        let target = target_height(&wallet)?;
-        // The wallet's real, currently-witnessable anchor — NOT a hand-picked "tip minus N" guess.
-        // A full BOUNDARY_MODULUS (144-block) bucket back, like the real engine's
-        // draw_anchor_boundary draws, falls outside the checkpoint/witness retention window
-        // (confirmed live: AnchorNotFound at tip-256); a smaller ad-hoc offset (tip-5) isn't
-        // guaranteed checkpointed either — natural_anchor_height's own doc comment warns about
-        // this exact class of mistake ("NOT just chain tip minus one, which isn't necessarily
-        // checkpointed"). This is the same anchor ordinary non-migration sends use, so it's
-        // guaranteed available.
-        let debug_anchor_boundary = u32::from(natural_anchor_height(&wallet)?);
-
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let Some(state) = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
-        else {
-            return Ok(0);
-        };
-
-        // The still-pending transfers, earliest-scheduled first: transfer-kind transactions that
-        // have neither broadcast nor mined (i.e. only AwaitingSignature/Signed/Proved qualify),
-        // sorted by scheduled_height ascending. This order gives each pending transfer its index
-        // `i` below (matching the old `ORDER BY scheduled_height ASC` query).
-        let mut pending: Vec<&MigrationTransaction> = state
-            .transactions()
-            .iter()
-            .filter(|t| {
-                matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                    && !matches!(
-                        t.state(),
-                        MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
-                    )
-            })
-            .collect();
-        pending.sort_by_key(|t| t.scheduled_height());
-
-        // The new (scheduled_height, anchor_boundary) for each pending transfer, keyed by its
-        // stable id so the full transactions vec can be rebuilt in its original order below.
-        let mut reschedule: HashMap<MigrationTxId, (BlockHeight, Option<BlockHeight>)> =
-            HashMap::with_capacity(pending.len());
-        for (i, tx) in pending.iter().enumerate() {
-            let new_height = BlockHeight::from(
-                u32::from(target) + FIRST_DELAY_BLOCKS + (i as u32) * STRIDE_BLOCKS,
-            );
-            // `is_prove_ready` (`finalizeReadyTransfers`) gates purely on `anchor_boundary`, NOT on
-            // `scheduled_height` — so rewriting every transfer's anchor here would make ALL of them
-            // prove-ready in the same `finalizeReadyTransfers` call (confirmed live: 12 real Halo2
-            // proofs run back-to-back under one MIGRATION_DB_ACCESS_MUTEX hold, ~4-5 minutes,
-            // starving a concurrent "Send Now" tap the whole time — not a hang, just an unrealistic
-            // proving batch this debug tool itself created). Only the earliest-due transfer (i==0,
-            // this list's scheduled_height-ascending order) gets a valid anchor; the rest keep their
-            // original, still-in-the-future one (the old `COALESCE(NULL, anchor_boundary)`),
-            // matching production's natural one-becomes-ready-at-a-time shape. Re-invoke this debug
-            // action once this transfer broadcasts to unlock the next one.
-            let anchor_boundary = if i == 0 {
-                Some(BlockHeight::from(debug_anchor_boundary))
-            } else {
-                tx.anchor_boundary()
-            };
-            reschedule.insert(tx.id(), (new_height, anchor_boundary));
-        }
-        let rescheduled = reschedule.len();
-
-        // Rebuild every transaction in its ORIGINAL order: a rescheduled pending transfer gets its
-        // new scheduled_height and anchor_boundary (every other part copied through unchanged); any
-        // other transaction is kept as-is.
-        let new_transactions: Vec<MigrationTransaction> = state
-            .transactions()
-            .iter()
-            .map(|tx| match reschedule.get(&tx.id()) {
-                Some(&(new_height, new_anchor_boundary)) => MigrationTransaction::from_parts(
-                    tx.id(),
-                    tx.kind(),
-                    tx.pczt().clone(),
-                    tx.depends_on().clone(),
-                    new_height,
-                    tx.expiry_height(),
-                    new_anchor_boundary,
-                    tx.state(),
-                    tx.lock_owner(),
-                ),
-                None => tx.clone(),
-            })
-            .collect();
-
-        let new_state = MigrationState::from_parts(
-            state.status(),
-            state.note_split().clone(),
-            state.preparation().clone(),
-            new_transactions,
-            match network {
-                Network::MainNetwork => AnchorBucketInterval::ZIP_318,
-                Network::TestNetwork => {
-                    AnchorBucketInterval::custom(NonZeroU32::try_from(12).expect("12 is nonzero"))
-                }
-            },
-        );
-        backend
-            .replace_migration(&new_state)
-            .map_err(|e| anyhow!("Error persisting rescheduled migration state: {:?}", e))?;
-        Ok(rescheduled as jint)
     });
     unwrap_exc_or(&mut env, res, 0)
 }
@@ -4304,341 +3956,6 @@ mod next_due_transfer_tests {
     }
 }
 
-mod reschedule_unproven_tests {
-    use super::*;
-    use zcash_pool_migration::{
-        engine::{
-            MigrationState, MigrationStatus, MigrationTransaction, MigrationTxId, MigrationTxKind,
-            MigrationTxState,
-        },
-        note_splitting::NoteSplitPlan,
-        preparation::PreparationPlan,
-        scheduling::AnchorBucketInterval,
-    };
-    use zcash_protocol::{consensus::BlockHeight, value::Zatoshis};
-
-    fn make_state(
-        status: MigrationStatus,
-        transfers: Vec<MigrationTransaction>,
-    ) -> MigrationState {
-        let note_split = NoteSplitPlan::from_stored_parts(
-            vec![Zatoshis::const_from_u64(100_000_000)],
-            Zatoshis::const_from_u64(5_000),
-            None,
-            Zatoshis::const_from_u64(10_000),
-            Zatoshis::const_from_u64(100_010_000),
-            Zatoshis::const_from_u64(100_000_000),
-        )
-        .expect("valid note split plan");
-        MigrationState::from_parts(
-            status,
-            note_split,
-            PreparationPlan::from_parts(vec![], vec![]),
-            transfers,
-            AnchorBucketInterval::ZIP_318,
-        )
-    }
-
-    fn make_tx(
-        id: u32,
-        state: MigrationTxState,
-        scheduled: u32,
-        expiry: u32,
-        pczt: Vec<u8>,
-    ) -> MigrationTransaction {
-        MigrationTransaction::from_parts(
-            MigrationTxId::new(id),
-            MigrationTxKind::Transfer { crossing: 0 },
-            pczt,
-            vec![],
-            BlockHeight::from_u32(scheduled),
-            BlockHeight::from_u32(expiry),
-            Some(BlockHeight::from_u32(scheduled.saturating_sub(10))),
-            state,
-            None,
-        )
-    }
-
-    /// Thin wrapper: tests pass pre-computed schedule/boundary directly (no tip/interval needed).
-    fn reschedule(
-        state: MigrationState,
-        transfer_id: MigrationTxId,
-        new_schedule: BlockHeight,
-        new_boundary: Option<BlockHeight>,
-    ) -> (i64, MigrationState) {
-        reschedule_unproven_transfer_inner(state, transfer_id, new_schedule, new_boundary)
-    }
-
-    #[test]
-    fn reschedule_unproven_moves_scheduled_height_into_future_and_persists() {
-        let tip = BlockHeight::from_u32(1000);
-        let old_expiry = BlockHeight::from_u32(5000);
-        let old_pczt = vec![0xABu8; 32];
-        let tx = make_tx(1, MigrationTxState::Signed, u32::from(tip), u32::from(old_expiry), old_pczt.clone());
-        let state = make_state(MigrationStatus::InProgress, vec![tx]);
-        let new_height = BlockHeight::from_u32(1144);
-        let (result, new_state) = reschedule(
-            state,
-            MigrationTxId::new(1),
-            new_height,
-            Some(BlockHeight::from_u32(864)),
-        );
-        assert!(result > 0, "must return positive new scheduled_height, got {}", result);
-        assert_eq!(result as u32, 1144, "returned height must match");
-        let tx = new_state
-            .transactions()
-            .iter()
-            .find(|t| t.id() == MigrationTxId::new(1))
-            .unwrap();
-        assert_eq!(u32::from(tx.scheduled_height()), 1144, "persisted scheduled_height must be new");
-        assert_eq!(tx.expiry_height(), old_expiry, "expiry_height must be UNCHANGED");
-        assert_eq!(tx.pczt(), &old_pczt, "pczt bytes must be byte-identical");
-        assert!(
-            matches!(tx.state(), MigrationTxState::Signed),
-            "state must still be Signed"
-        );
-    }
-
-    /// Helper: calls `select_shift_boundary` with a deterministic pick (always index 0 = lowest).
-    /// This lets tests assert boundary selection logic without RNG.
-    fn select_boundary_det(
-        funding_height: u32,
-        tip_u32: u32,
-        interval_u32: u32,
-        old_boundary: Option<BlockHeight>,
-    ) -> Option<BlockHeight> {
-        super::select_shift_boundary(
-            funding_height,
-            tip_u32,
-            interval_u32,
-            old_boundary,
-            |_count| 0, // always pick lowest candidate
-        )
-    }
-
-    /// Helper: calls `select_shift_boundary` with a pick that always selects the highest candidate.
-    fn select_boundary_det_high(
-        funding_height: u32,
-        tip_u32: u32,
-        interval_u32: u32,
-        old_boundary: Option<BlockHeight>,
-    ) -> Option<BlockHeight> {
-        super::select_shift_boundary(
-            funding_height,
-            tip_u32,
-            interval_u32,
-            old_boundary,
-            |count| count - 1, // always pick highest candidate
-        )
-    }
-
-    #[test]
-    fn reschedule_unproven_redraws_boundary_when_candidates_exist() {
-        // Mainnet interval=144: tip=2000, funding=0 (unknown dep → lowest=144)
-        // highest=(2000/144)*144-144 = 13*144-144 = 1728; lowest=144; candidates exist
-        // pick=0 → lowest=144, pick=highest_idx → 1728; both must be on-grid.
-        let interval: u32 = 144;
-        let tip: u32 = 2000;
-        let old_boundary = Some(BlockHeight::from_u32(500));
-
-        let boundary_low = select_boundary_det(0, tip, interval, old_boundary);
-        let boundary_high = select_boundary_det_high(0, tip, interval, old_boundary);
-
-        let b_low = boundary_low.expect("must be Some when candidates exist");
-        let b_high = boundary_high.expect("must be Some when candidates exist");
-        assert_eq!(u32::from(b_low) % interval, 0, "lowest pick must be on grid");
-        assert_eq!(u32::from(b_high) % interval, 0, "highest pick must be on grid");
-        // lowest candidate = 144, highest candidate = 1728
-        assert_eq!(u32::from(b_low), 144, "lowest pick must equal first candidate");
-        assert_eq!(u32::from(b_high), 1728, "highest pick must equal last candidate");
-        assert!(u32::from(b_low) <= u32::from(b_high), "low <= high");
-
-        // Testnet interval=12: tip=200, funding=0 → lowest=12, highest=(200/12)*12-12=192-12=180
-        let interval12: u32 = 12;
-        let tip12: u32 = 200;
-        let boundary12_low = select_boundary_det(0, tip12, interval12, old_boundary);
-        let boundary12_high = select_boundary_det_high(0, tip12, interval12, old_boundary);
-        let bl12 = boundary12_low.expect("testnet: must be Some");
-        let bh12 = boundary12_high.expect("testnet: must be Some");
-        assert_eq!(u32::from(bl12) % interval12, 0, "testnet lowest pick on grid");
-        assert_eq!(u32::from(bh12) % interval12, 0, "testnet highest pick on grid");
-        assert_eq!(u32::from(bl12), 12, "testnet: lowest candidate = 12");
-        assert_eq!(u32::from(bh12), 180, "testnet: highest candidate = 180");
-
-        // Cross-check: the inner reschedule with the boundary-helper result persists it correctly.
-        let tx = MigrationTransaction::from_parts(
-            MigrationTxId::new(2),
-            MigrationTxKind::Transfer { crossing: 0 },
-            vec![0u8; 32],
-            vec![],
-            BlockHeight::from_u32(tip),
-            BlockHeight::from_u32(10000),
-            old_boundary,
-            MigrationTxState::Signed,
-            None,
-        );
-        let state = make_state(MigrationStatus::InProgress, vec![tx]);
-        let (result, new_state) = reschedule(
-            state,
-            MigrationTxId::new(2),
-            BlockHeight::from_u32(2144),
-            boundary_low, // already verified to be on-grid
-        );
-        assert!(result > 0);
-        let tx = new_state
-            .transactions()
-            .iter()
-            .find(|t| t.id() == MigrationTxId::new(2))
-            .unwrap();
-        let persisted = tx.anchor_boundary().expect("boundary must be Some after reschedule");
-        assert_eq!(
-            u32::from(persisted) % interval,
-            0,
-            "persisted boundary must be on bucket grid (multiple of {}), got {}",
-            interval,
-            u32::from(persisted)
-        );
-    }
-
-    /// Tests the load-bearing "empty candidate set → keep old boundary" decision in
-    /// `select_shift_boundary`. This is the logic that lives in the JNI wrapper (previously
-    /// untested because the old test bypassed it by passing `old_boundary` directly into
-    /// `reschedule_unproven_transfer_inner`).
-    #[test]
-    fn reschedule_unproven_keeps_old_boundary_when_no_candidate() {
-        let old_boundary = Some(BlockHeight::from_u32(100));
-
-        // --- Mainnet interval=144 ---
-        // tip=200: highest=(200/144)*144-144 = 144-144=0; lowest=144 → 144>0 → no candidates
-        let result_144 = select_boundary_det(0, 200, 144, old_boundary);
-        assert_eq!(
-            result_144, old_boundary,
-            "mainnet tip=200: no candidates → old boundary unchanged"
-        );
-
-        // tip=143: highest=0 (tip<interval); lowest=144 → no candidates
-        let result_143 = select_boundary_det(0, 143, 144, old_boundary);
-        assert_eq!(
-            result_143, old_boundary,
-            "mainnet tip=143: tip<interval → no candidates → old boundary unchanged"
-        );
-
-        // funding_height set to tip-interval+1 (barely too recent for candidates):
-        // tip=300, interval=144: highest=(300/144)*144-144=2*144-144=144;
-        // funding=157 → lowest=ceil(157/144)*144=2*144=288; 288>144 → no candidates
-        let result_recent = select_boundary_det(157, 300, 144, old_boundary);
-        assert_eq!(
-            result_recent, old_boundary,
-            "funding too recent: no candidates → old boundary unchanged"
-        );
-
-        // --- Testnet interval=12 ---
-        // tip=20: highest=(20/12)*12-12=12-12=0; lowest=12 → 12>0 → no candidates
-        let result_t12 = select_boundary_det(0, 20, 12, old_boundary);
-        assert_eq!(
-            result_t12, old_boundary,
-            "testnet tip=20: no candidates → old boundary unchanged"
-        );
-
-        // tip=11: tip<interval → highest=0; lowest=12 → no candidates
-        let result_t11 = select_boundary_det(0, 11, 12, old_boundary);
-        assert_eq!(
-            result_t11, old_boundary,
-            "testnet tip=11 (tip<interval): no candidates → old boundary unchanged"
-        );
-
-        // Confirm the boundary IS updated when there ARE candidates (tip=2000, mainnet):
-        // This ensures the above assertions are actually the no-candidate branch, not a bug
-        // that always returns old_boundary.
-        let result_candidates = select_boundary_det(0, 2000, 144, old_boundary);
-        assert_ne!(
-            result_candidates, old_boundary,
-            "when candidates exist (tip=2000, interval=144), boundary must change from old={:?}",
-            old_boundary
-        );
-
-        // Also cross-check via the inner fn that it faithfully stores what we give it.
-        let tip_bh = BlockHeight::from_u32(200);
-        let tx = MigrationTransaction::from_parts(
-            MigrationTxId::new(3),
-            MigrationTxKind::Transfer { crossing: 0 },
-            vec![0u8; 32],
-            vec![],
-            tip_bh,
-            BlockHeight::from_u32(10000),
-            old_boundary,
-            MigrationTxState::Signed,
-            None,
-        );
-        let state = make_state(MigrationStatus::InProgress, vec![tx]);
-        // Use the helper result (verified above = old_boundary) so the test reflects real JNI flow.
-        let (result, new_state) = reschedule(
-            state,
-            MigrationTxId::new(3),
-            BlockHeight::from_u32(344),
-            result_144, // == old_boundary — as select_shift_boundary would return
-        );
-        assert!(result > 0);
-        let tx = new_state
-            .transactions()
-            .iter()
-            .find(|t| t.id() == MigrationTxId::new(3))
-            .unwrap();
-        assert_eq!(
-            tx.anchor_boundary(),
-            old_boundary,
-            "inner fn must persist exactly what select_shift_boundary returned"
-        );
-    }
-
-    #[test]
-    fn reschedule_unproven_rejects_proved_and_terminal() {
-        let tip = BlockHeight::from_u32(1000);
-
-        // Proved → must return -1
-        let proved_tx = MigrationTransaction::from_parts(
-            MigrationTxId::new(10),
-            MigrationTxKind::Transfer { crossing: 0 },
-            vec![0u8; 32],
-            vec![],
-            tip,
-            BlockHeight::from_u32(5000),
-            Some(BlockHeight::from_u32(900)),
-            MigrationTxState::Proved,
-            None,
-        );
-        let state = make_state(MigrationStatus::InProgress, vec![proved_tx]);
-        let (result, _) = reschedule(
-            state,
-            MigrationTxId::new(10),
-            BlockHeight::from_u32(1144),
-            None,
-        );
-        assert_eq!(result, -1, "Proved transfer must return -1");
-
-        // Missing id → must return -1
-        let signed_tx = MigrationTransaction::from_parts(
-            MigrationTxId::new(20),
-            MigrationTxKind::Transfer { crossing: 0 },
-            vec![0u8; 32],
-            vec![],
-            tip,
-            BlockHeight::from_u32(5000),
-            Some(BlockHeight::from_u32(900)),
-            MigrationTxState::Signed,
-            None,
-        );
-        let state2 = make_state(MigrationStatus::InProgress, vec![signed_tx]);
-        let (result2, _) = reschedule(
-            state2,
-            MigrationTxId::new(99),
-            BlockHeight::from_u32(1144),
-            None,
-        );
-        assert_eq!(result2, -1, "Missing transfer id must return -1");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Invalidation persistence tests
 // ---------------------------------------------------------------------------
@@ -4661,6 +3978,7 @@ mod record_transfer_result_tests {
         engine::MigrationStatus,
         note_splitting::NoteSplitPlan,
         preparation::PreparationPlan,
+        scheduling::AnchorBucketInterval,
     };
     use zcash_protocol::value::Zatoshis;
 

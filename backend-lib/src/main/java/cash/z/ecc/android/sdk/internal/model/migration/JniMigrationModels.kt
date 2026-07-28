@@ -91,24 +91,34 @@ class JniMigrationSchedule(
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The live, persisted status of one
- * committed transfer transaction — [id] is its real, stable `MigrationTxId` (same format/value as
- * `JniTransferProposal.id`), NOT its pool-crossing/funding-note index. ZIP 318 deliberately shuffles
- * crossing order away from the broadcast-height order the app displays transfers in, so [id] is the
- * only key that reliably correlates back to a specific `MigrationPlan.transfers` entry (via that
- * entry's own `id` field).
+ * committed migration transaction (transfer or preparation) — [id] is its real, stable
+ * `MigrationTxId` (same format/value as `JniTransferProposal.id`), NOT its pool-crossing/
+ * funding-note index. ZIP 318 deliberately shuffles crossing order away from the broadcast-height
+ * order the app displays transfers in, so [id] is the only key that reliably correlates back to a
+ * specific `MigrationPlan.transfers` entry (via that entry's own `id` field).
+ *
+ * [isTransfer] is false for preparation (note-split layer) transactions — display-facing
+ * consumers filter on it or correlate by id (prep ids match no display row). [isProved] is true
+ * once the engine holds a proof (`Proved`/`Broadcast`/`Mined`). [anchorBoundaryHeight] is the
+ * committed ZIP 318 bucket boundary the transaction proves against, or `-1` when the engine
+ * committed none (preparations prove at their natural anchor).
  */
 @Keep
 class JniMigrationTransferState(
     val id: String,
+    val isTransfer: Boolean,
     val isSent: Boolean,
-    val scheduledHeight: Long
+    val isProved: Boolean,
+    val scheduledHeight: Long,
+    val anchorBoundaryHeight: Long
 )
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The live schedule/status of every
- * committed transfer transaction, read directly from the persisted migration store — unlike
- * [JniMigrationSchedule] (a one-time proposal snapshot), this reflects whatever the store's
- * `scheduled_height`/state columns hold right now, including any later reschedule.
+ * committed migration transaction (transfers AND preparations), read directly from the persisted
+ * migration store — unlike [JniMigrationSchedule] (a one-time proposal snapshot), this reflects
+ * whatever the engine's store holds right now. The engine is the single source of truth for the
+ * plan; this type only surfaces it.
  */
 @Keep
 class JniMigrationTransferStates(

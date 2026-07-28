@@ -253,19 +253,6 @@ class OrchardMigrationSdkImplTest {
             account: AccountUuid
         ): Int = error("Unused")
 
-        override suspend fun debugRescheduleTransfers(
-            dbDataPath: String,
-            network: ZcashNetwork,
-            account: AccountUuid
-        ): Int = error("Unused")
-
-        override suspend fun rescheduleUnprovenTransfer(
-            dbDataPath: String,
-            network: ZcashNetwork,
-            account: AccountUuid,
-            transferId: String
-        ): Long = error("Unused")
-
         override suspend fun hasOverdueTransfers(
             dbDataPath: String,
             network: ZcashNetwork,

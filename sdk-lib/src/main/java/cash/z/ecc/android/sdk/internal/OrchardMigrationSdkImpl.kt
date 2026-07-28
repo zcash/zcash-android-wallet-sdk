@@ -533,13 +533,6 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.hasOverdueTransfers(dbDataPath, network, account, est)
         }
 
-    override suspend fun rescheduleUnprovenTransfer(transferId: String): Long =
-        logged("rescheduleUnprovenTransfer") {
-            val dbDataPath = dbDataPath()
-            val account = account ?: noAccountAvailable()
-            migrationBackend.rescheduleUnprovenTransfer(dbDataPath, network, account, transferId)
-        }
-
     override suspend fun reconcileInvalidations(): Boolean =
         logged("reconcileInvalidations") {
             val dbDataPath = dbDataPath()
@@ -597,13 +590,6 @@ internal class OrchardMigrationSdkImpl(
             val account = account ?: noAccountAvailable()
             migrationBackend.clearMigration(dbDataPath, network, account)
             Unit
-        }
-
-    override suspend fun debugRescheduleTransfers(): Int =
-        logged("debugRescheduleTransfers") {
-            val dbDataPath = dbDataPath()
-            val account = account ?: noAccountAvailable()
-            migrationBackend.debugRescheduleTransfers(dbDataPath, network, account)
         }
 
     private suspend fun isSyncBlockedNow(preferenceProvider: PreferenceProvider): Boolean {
@@ -938,8 +924,13 @@ private fun JniMigrationSchedule.toPublic(): MigrationSchedule =
 private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
     MigrationTransferState(
         id = id,
+        isTransfer = isTransfer,
         isSent = isSent,
+        isProved = isProved,
         scheduledHeight = scheduledHeight,
+        // -1 is the JNI sentinel for "no committed boundary" (preparations prove at their
+        // natural anchor).
+        anchorBoundaryHeight = anchorBoundaryHeight.takeIf { it >= 0L },
     )
 
 private fun JniMigrationTransferStates.toPublic(): MigrationTransferStates =
