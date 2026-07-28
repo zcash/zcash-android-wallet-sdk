@@ -655,9 +655,13 @@ interface OrchardMigrationSdk {
 
     /**
      * Reschedules a not-yet-proven transfer to a new broadcast window, returning the new
-     * `nextExecutableAfterHeight` (epoch-seconds). The transfer is still validly signed;
-     * only its proof is missing — this shifts it to a later slot so the WorkManager scheduler
-     * can skip the current window and retry when proving is expected to be complete.
+     * `scheduled_height` as a **block height** (NOT epoch-seconds — the engine schedules by
+     * block height, and this value is compared against the estimated/scanned chain tip). The
+     * previous KDoc said "epoch-seconds", which is exactly the units confusion that caused the
+     * deleted `rescheduleOverdueTransfer()` stub's bug (epoch seconds compared against block
+     * heights, §7.4); do not reintroduce it. The transfer is still validly signed; only its
+     * proof is missing — this shifts it to a later slot so the WorkManager scheduler can skip the
+     * current window and retry when proving is expected to be complete.
      */
     suspend fun rescheduleUnprovenTransfer(transferId: String): Long
 

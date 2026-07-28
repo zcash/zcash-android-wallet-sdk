@@ -138,6 +138,25 @@ class MigrationRustBackend private constructor() {
             hasOverdueTransfersNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
         }
 
+    /**
+     * The mined block height of the transaction with the given [txId], or `-1` if the wallet does
+     * not (yet) know a height for it. [txId] is the 32-byte transaction id in internal byte order
+     * (as carried by `JniPreparedTransfer.txid`), NOT the display-hex reversal.
+     *
+     * Used by the F2 broadcast path to disambiguate a non-gRPC submit failure that is actually a
+     * duplicate rejection of an already-on-chain transaction (submit-then-crash) from a genuine
+     * invalidation.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun transactionMinedHeight(
+        dbDataPath: String,
+        networkId: Int,
+        txId: ByteArray
+    ): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            transactionMinedHeightNative(dbDataPath, networkId, txId)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun hasInvalidTransfers(
         dbDataPath: String,
@@ -613,6 +632,14 @@ class MigrationRustBackend private constructor() {
             accountUuidBytes: ByteArray,
             estimatedTip: Long
         ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun transactionMinedHeightNative(
+            dbDataPath: String,
+            networkId: Int,
+            txId: ByteArray
+        ): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)

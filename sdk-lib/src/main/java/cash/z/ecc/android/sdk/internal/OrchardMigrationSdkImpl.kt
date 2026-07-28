@@ -24,6 +24,7 @@ import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
+import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.TorClient
@@ -247,7 +248,14 @@ internal class OrchardMigrationSdkImpl(
                 )
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val submitResult = broadcast(rawTx, prepared.txid, useTor = false, endpoint = defaultSubmitEndpoint)
-            val mapped = mapSubmitResult(submitResult)
+            // F2: probe for a duplicate/already-on-chain rejection before mapping (see mapSubmitResult).
+            val minedHeight: Long =
+                if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
+                    migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
+                } else {
+                    -1L
+                }
+            val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
             migrationBackend.recordTransferResult(
                 dbDataPath,
                 network,
@@ -280,7 +288,14 @@ internal class OrchardMigrationSdkImpl(
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
             val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
-            val mapped = mapSubmitResult(submitResult)
+            // F2: probe for a duplicate/already-on-chain rejection before mapping (see mapSubmitResult).
+            val minedHeight: Long =
+                if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
+                    migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
+                } else {
+                    -1L
+                }
+            val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
             migrationBackend.recordTransferResult(
                 dbDataPath,
                 network,
@@ -443,7 +458,18 @@ internal class OrchardMigrationSdkImpl(
                 (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
             )
             val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
-            val mapped = mapSubmitResult(submitResult)
+            // F2: a non-gRPC submit Failure must NOT be terminally recorded as InvalidNote (tag=2)
+            // until we rule out "our transaction is already on-chain / already in the mempool" —
+            // otherwise a duplicate rejection after a submit-then-crash kills the whole pre-signed
+            // plan (and, for Keystone, forces a fresh signing ceremony). Probe the prepared txid's
+            // mined height before mapping; the rejection text is the mempool-duplicate fallback.
+            val minedHeight: Long =
+                if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
+                    migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
+                } else {
+                    -1L
+                }
+            val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
             migrationBackend.recordTransferResult(
                 dbDataPath,
                 network,
@@ -681,18 +707,59 @@ private class MappedTransferResult(
 )
 
 /**
+ * Case-insensitive substrings that identify a submit rejection as a DUPLICATE of a transaction
+ * already known to the network (already broadcast, already in the mempool, already mined). Such a
+ * rejection is NOT an invalidation — it is a success that our own crashed/retried broadcast already
+ * achieved. See [classifyNonGrpcFailure].
+ */
+private val DUPLICATE_REJECTION_MARKERS =
+    listOf("already in mempool", "duplicate", "already known", "txid already", "already exists")
+
+/**
+ * F2 pure decision core: given a non-gRPC submit-`Failure` description and the mined height the
+ * txid probe returned (`-1` = wallet knows no height for the prepared txid), decide whether this
+ * "failure" is really a success (our transaction is already on-chain / already in the mempool).
+ *
+ * A non-gRPC rejection is treated as a SUCCESS iff either:
+ *   - the wallet already knows a mined height for the prepared txid ([minedHeight] `>= 0`), i.e.
+ *     our broadcast landed and we simply never recorded it (submit-then-crash), or
+ *   - the rejection text matches a known duplicate-rejection marker (already in mempool /
+ *     duplicate / already known txid) — accepted even without a mined height, because a mempool
+ *     duplicate has no height yet but is still our transaction, in flight.
+ *
+ * Only genuinely-unknown non-gRPC rejections return `false` (→ real invalidation, tag=2). This is
+ * the single most important behavioural fix in F2: since Task 3 made tag=2 terminally Fail the
+ * whole pre-signed plan, a false positive here forces a Keystone re-sign ceremony.
+ */
+internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Boolean {
+    if (minedHeight >= 0) return true
+    val text = description?.lowercase() ?: return false
+    return DUPLICATE_REJECTION_MARKERS.any { text.contains(it) }
+}
+
+/**
  * Maps a raw submission outcome to the engine's [TransferResult], both as the public value and
- * as the scalar params `record_transfer_result` needs. Used by both [OrchardMigrationSdkImpl.submitNoteSplit]
- * and [OrchardMigrationSdkImpl.executeNextPendingTransfer].
+ * as the scalar params `record_transfer_result` needs. Used by [OrchardMigrationSdkImpl.submitNoteSplit],
+ * [OrchardMigrationSdkImpl.executeNextPendingTransfer], and the immediate send-max path.
+ *
+ * [preparedTxid] is the internal-byte-order txid of the transaction just submitted (used to record
+ * a duplicate/on-chain rejection as a Success). [minedHeight] is the height the txid probe returned
+ * for a non-gRPC failure (`-1` when not probed or unknown). Together with the rejection text these
+ * feed [classifyNonGrpcFailure] so a duplicate/already-on-chain rejection records tag=0 (Success)
+ * instead of the plan-killing tag=2 (InvalidNote). Only a genuinely-unknown non-gRPC rejection
+ * still records tag=2.
  *
  * No expiry-height signal is threaded through here — `next_due_transfer()` returns a
  * `PreparedTransfer`, which (unlike `TransferProposal`) carries no `expiryHeight`, so a
- * non-network rejection can't yet be told apart from an expired anchor and is treated as
- * [TransferResult.InvalidNote] (the Rust `MigrationError`/lightwalletd rejection reasons don't
- * distinguish these either). Disambiguating needs either extending `PreparedTransfer` or a
- * separate chain-tip lookup — flagged as a follow-up, not a blocker.
+ * genuinely-unknown non-network rejection can't yet be told apart from an expired anchor and is
+ * treated as [TransferResult.InvalidNote]. Disambiguating those two needs either extending
+ * `PreparedTransfer` or the scanned-tip expiry filter — flagged as a follow-up, not a blocker.
  */
-private fun mapSubmitResult(result: TransactionSubmitResult): MappedTransferResult =
+private fun mapSubmitResult(
+    result: TransactionSubmitResult,
+    preparedTxid: ByteArray,
+    minedHeight: Long,
+): MappedTransferResult =
     when (result) {
         is TransactionSubmitResult.Success -> {
             MappedTransferResult(
@@ -704,15 +771,32 @@ private fun mapSubmitResult(result: TransactionSubmitResult): MappedTransferResu
         }
 
         is TransactionSubmitResult.Failure -> {
-            if (result.grpcError) {
-                MappedTransferResult(
-                    TransferResult.NetworkError(retryable = true, isTorFailure = result.isTorFailure),
-                    tag = 1,
-                    retryable = true,
-                    txIdBytes = ByteArray(0),
-                )
-            } else {
-                MappedTransferResult(TransferResult.InvalidNote, tag = 2, retryable = false, txIdBytes = ByteArray(0))
+            when {
+                result.grpcError ->
+                    MappedTransferResult(
+                        TransferResult.NetworkError(retryable = true, isTorFailure = result.isTorFailure),
+                        tag = 1,
+                        retryable = true,
+                        txIdBytes = ByteArray(0),
+                    )
+
+                // F2: duplicate / already-on-chain rejection → this is our own transaction, treat
+                // as Success (tag=0) so the pre-signed plan is not terminally failed.
+                classifyNonGrpcFailure(result.description, minedHeight) ->
+                    MappedTransferResult(
+                        TransferResult.Success(preparedTxid.toHexReversed()),
+                        tag = 0,
+                        retryable = false,
+                        txIdBytes = preparedTxid,
+                    )
+
+                else ->
+                    MappedTransferResult(
+                        TransferResult.InvalidNote,
+                        tag = 2,
+                        retryable = false,
+                        txIdBytes = ByteArray(0),
+                    )
             }
         }
 

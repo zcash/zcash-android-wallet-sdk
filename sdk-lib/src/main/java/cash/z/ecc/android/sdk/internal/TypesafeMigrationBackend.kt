@@ -80,6 +80,17 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Boolean
 
+    /**
+     * The mined block height of [txId] (internal byte order), or `-1` if unknown. See
+     * [cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend.transactionMinedHeight]. No account
+     * is needed — a txid is globally unique.
+     */
+    suspend fun transactionMinedHeight(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        txId: ByteArray
+    ): Long
+
     suspend fun reconcileInvalidatedTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

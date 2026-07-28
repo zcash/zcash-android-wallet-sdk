@@ -86,6 +86,12 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Boolean = rustBackend().hasInvalidTransfers(dbDataPath, network.id, account.value)
 
+    override suspend fun transactionMinedHeight(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        txId: ByteArray
+    ): Long = rustBackend().transactionMinedHeight(dbDataPath, network.id, txId)
+
     override suspend fun reconcileInvalidatedTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

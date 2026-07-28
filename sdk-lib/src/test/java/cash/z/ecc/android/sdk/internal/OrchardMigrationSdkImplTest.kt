@@ -44,6 +44,32 @@ class OrchardMigrationSdkImplTest {
         assertFalse(isBroadcastInFlight(nowEpochSeconds = 200, inFlightUntilEpochSeconds = 160))
     }
 
+    // ── F2: non-gRPC submit-failure classification ──────────────────────────
+    // classifyNonGrpcFailure(description, minedHeight) == true means "treat as Success" (our tx is
+    // already on-chain / in the mempool); false means "genuinely unknown rejection" (record tag=2).
+
+    @Test
+    fun `a mined txid makes a non-gRPC failure a success regardless of text`() {
+        assertTrue(classifyNonGrpcFailure(description = null, minedHeight = 0L))
+        assertTrue(classifyNonGrpcFailure(description = "some unknown reason", minedHeight = 1_234_567L))
+    }
+
+    @Test
+    fun `duplicate rejection strings are treated as success even without a mined height`() {
+        assertTrue(classifyNonGrpcFailure("tx already in mempool", minedHeight = -1L))
+        assertTrue(classifyNonGrpcFailure("Duplicate transaction", minedHeight = -1L))
+        assertTrue(classifyNonGrpcFailure("txid ABC already known to node", minedHeight = -1L))
+        // Case-insensitive.
+        assertTrue(classifyNonGrpcFailure("ALREADY IN MEMPOOL", minedHeight = -1L))
+    }
+
+    @Test
+    fun `a genuinely unknown rejection with no mined height stays a failure`() {
+        assertFalse(classifyNonGrpcFailure("insufficient fee", minedHeight = -1L))
+        assertFalse(classifyNonGrpcFailure(null, minedHeight = -1L))
+        assertFalse(classifyNonGrpcFailure("", minedHeight = -1L))
+    }
+
 
     @Test
     fun `proposeImmediateMigration delegates to the send-max native call and returns an ordinary Proposal`() =
@@ -252,6 +278,12 @@ class OrchardMigrationSdkImplTest {
             network: ZcashNetwork,
             account: AccountUuid
         ): Boolean = error("Unused")
+
+        override suspend fun transactionMinedHeight(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            txId: ByteArray
+        ): Long = error("Unused")
 
         override suspend fun reconcileInvalidatedTransfers(
             dbDataPath: String,

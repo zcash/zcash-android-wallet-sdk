@@ -1255,8 +1255,21 @@ fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
 /// defers the anchor/witness, not the nullifier, which is a function of the note and the account
 /// key alone). So we do NOT need to reconstruct the `orchard::note::Note` or re-derive the nullifier
 /// via the FVK: the value the wallet compares against `get_orchard_nullifiers` is already in the
-/// PCZT. Returns `None` if the transfer has not exactly one Orchard spend (migration transfers
-/// always have exactly one funding spend; anything else is not a candidate for this check).
+/// PCZT. Returns `None` if the transfer has not exactly one Orchard spend.
+///
+/// # KNOWN LIMITATION (F1) — currently returns `None` for every production transfer
+///
+/// This function requires the bundle to hold EXACTLY one Orchard action. Production migration
+/// transfers are built with a PADDED 2-action Orchard bundle: one real funding spend plus one
+/// dummy/padding action (see the engine's `build/transfer.rs` — Orchard bundles are padded to a
+/// minimum action count). The real transfer therefore has `actions.len() == 2` and this function
+/// takes the `!= 1` early-return path, yielding `None`.
+///
+/// Consequence: in `reconcile_invalidated`'s pass 3 every candidate's funding nullifier is `None`,
+/// so the all-`None` early-exit fires on every run and the foreign-spend spent-check is inert in
+/// production. Correctly reading the funding nullifier out of the padded 2-action shape (i.e.
+/// identifying the real spend among the padding) is a follow-up ticket; it is deliberately NOT
+/// attempted here. Passes 1 and 2 (own-broadcast / submit-crash reconciliation) are unaffected.
 fn transfer_funding_nullifier(bytes: &[u8]) -> Option<[u8; 32]> {
     let parsed = pczt::Pczt::parse(bytes).ok()?;
     let actions = parsed.orchard().actions();
@@ -1404,6 +1417,19 @@ fn reconcile_invalidated(
         .collect();
     if candidates.iter().all(|(_, nf, _)| nf.is_none()) {
         // Nothing readable to check — no invalidation.
+        //
+        // KNOWN LIMITATION (F1): production transfers carry a padded 2-action Orchard bundle (one
+        // real funding spend + one dummy/padding action — see engine `build/transfer.rs`), so
+        // `transfer_funding_nullifier` — which requires EXACTLY one action — returns `None` for
+        // every real transfer. That makes this early-exit fire on every reconciliation run, so
+        // pass 3 (foreign-spend detection) is currently inert in production. The multi-action
+        // nullifier rework is a follow-up ticket; passes 1 and 2 (own-broadcast / submit-crash
+        // reconciliation) still function.
+        tracing::warn!(
+            "MIGRATION_DIAG reconcile: all {} candidate PCZTs unreadable — foreign-spend \
+             detection inactive (known limitation, 2-action transfers)",
+            candidates.len()
+        );
         return Ok(false);
     }
 
@@ -1466,6 +1492,18 @@ fn reconcile_invalidated(
 /// foreign-spend check on its funding notes) and marks it `Failed` if it can no longer complete.
 /// See `reconcile_invalidated` for the load-bearing pass ordering. Returns `JNI_TRUE` iff the plan
 /// is (or already was) invalidated.
+///
+/// # KNOWN LIMITATION (F1) — foreign-spend detection (pass 3) is currently inert
+///
+/// The pass-3 spent-check reads each candidate transfer's funding nullifier via
+/// `transfer_funding_nullifier`, which requires an EXACTLY-one-action Orchard bundle. Production
+/// migration transfers carry a PADDED 2-action bundle (one real funding spend + one dummy/padding
+/// action — see the engine's `build/transfer.rs`), so that helper returns `None` for every real
+/// transfer and pass 3's all-`None` early-exit fires on every run (logged as `MIGRATION_DIAG
+/// reconcile: ... foreign-spend detection inactive`). Foreign-spend detection is therefore not
+/// active in production; supporting the padded 2-action shape is a follow-up ticket. Passes 1 and
+/// 2 (own-broadcast promotion and submit-crash reconciliation) remain fully functional, so
+/// submit-time rejection is still the effective last line of defence against a spent funding note.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_reconcileInvalidatedTransfersNative<
     'local,
@@ -1489,6 +1527,46 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         )
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+/// Returns the mined block height of the transaction with the given `txid`, or `-1` if the wallet
+/// does not (yet) know a height for it.
+///
+/// Thin passthrough over `Wallet::get_tx_height` (the same read the reconciliation passes use).
+/// F2 uses it on the broadcast path: when a submit call fails non-gRPC, we probe the prepared
+/// transfer's txid here before recording an invalidation — a hit means our transaction is already
+/// on-chain (e.g. a duplicate rejection after a submit-then-crash), so the "failure" is really a
+/// success and the pre-signed plan must NOT be terminally failed.
+///
+/// `txid` is the 32-byte transaction id in the SAME byte order the SDK's `PreparedTransfer.txid`
+/// carries it (internal / little-endian byte order, i.e. `TxId::from_bytes`), NOT the display hex.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_transactionMinedHeightNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    txid: JByteArray<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let txid_bytes = crate::utils::java_bytes_to_rust(env, &txid)?;
+        let txid_arr: [u8; 32] = txid_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("txid must be exactly 32 bytes, got {}", txid_bytes.len()))?;
+        let txid = zcash_protocol::TxId::from_bytes(txid_arr);
+        let height = wallet
+            .get_tx_height(txid)
+            .map_err(|e| anyhow!("Error reading tx height for {:?}: {:?}", txid, e))?;
+        Ok(match height {
+            Some(h) => i64::from(u32::from(h)),
+            None => -1,
+        })
+    });
+    unwrap_exc_or(&mut env, res, -1)
 }
 
 #[unsafe(no_mangle)]
