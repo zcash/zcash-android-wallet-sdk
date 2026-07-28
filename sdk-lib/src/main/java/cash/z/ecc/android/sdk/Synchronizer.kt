@@ -760,6 +760,20 @@ interface Synchronizer {
     ): SyncBurstResult = SyncBurstResult.UNAVAILABLE
 
     /**
+     * Drives a bounded sync pass until the engine reaches the current network tip (i.e.
+     * [SyncBurstResult.SYNCED_TO_TIP]), then returns. Unlike [syncBurst] with a caller-supplied
+     * target, this never returns [SyncBurstResult.TARGET_REACHED] — callers that only need to
+     * be sure the wallet is up to date (Lane A in the migration two-lane model) use this instead
+     * of supplying their own [isTargetReached] predicate.
+     *
+     * Delegates to [syncBurst] with `isTargetReached = { false }`, so all of [syncBurst]'s
+     * guarantees apply: privacy pauses are respected, the timeout bounds the call, and a
+     * [SyncBurstResult.UNAVAILABLE] is returned by implementations that cannot drive a real burst.
+     */
+    suspend fun syncToTip(timeout: Duration): SyncBurstResult =
+        syncBurst(timeout = timeout, isTargetReached = { false })
+
+    /**
      *
      * @param config to configure [HttpClient]
      *

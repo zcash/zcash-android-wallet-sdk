@@ -28,8 +28,23 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 
 class OrchardMigrationSdkImplTest {
+    @Test
+    fun `privacy buffer is 10 minutes on mainnet and 3 on testnet`() {
+        assertEquals(10.minutes, privacySyncBufferFor(ZcashNetwork.Mainnet))
+        assertEquals(3.minutes, privacySyncBufferFor(ZcashNetwork.Testnet))
+    }
+
+    @Test
+    fun `sync is blocked while broadcast in flight mark is in the future`() {
+        // pure helper: isBroadcastInFlight(nowEpoch, markEpoch) -> Boolean
+        assertTrue(isBroadcastInFlight(nowEpochSeconds = 100, inFlightUntilEpochSeconds = 160))
+        assertFalse(isBroadcastInFlight(nowEpochSeconds = 200, inFlightUntilEpochSeconds = 160))
+    }
+
+
     @Test
     fun `proposeImmediateMigration delegates to the send-max native call and returns an ordinary Proposal`() =
         runBlocking {

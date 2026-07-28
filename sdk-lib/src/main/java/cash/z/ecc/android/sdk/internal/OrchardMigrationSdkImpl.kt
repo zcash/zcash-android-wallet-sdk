@@ -429,6 +429,13 @@ internal class OrchardMigrationSdkImpl(
             }
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
+            // Mark the broadcast as in-flight before attempting the network call so the sync engine
+            // is gated for the duration. A stale mark from a crash self-expires in BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
+            val prefs = preferenceProviderHolder()
+            prefs.putString(
+                EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
+                (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
+            )
             val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
             val mapped = mapSubmitResult(submitResult)
             migrationBackend.recordTransferResult(
@@ -440,8 +447,10 @@ internal class OrchardMigrationSdkImpl(
                 mapped.retryable,
                 mapped.txIdBytes,
             )
+            // Clear the in-flight mark now that the result is recorded.
+            prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
             if (wasOverdue && mapped.transferResult is TransferResult.Success) {
-                preferenceProviderHolder().putString(
+                prefs.putString(
                     EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key,
                     (Clock.System.now().epochSeconds + privacySyncBufferDuration().inWholeSeconds).toString(),
                 )
@@ -458,13 +467,14 @@ internal class OrchardMigrationSdkImpl(
                 combine(
                     tickerFlow(SYNC_BLOCK_TICK),
                     preferenceProvider.observe(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key),
-                ) { _, _ -> }
+                    preferenceProvider.observe(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key),
+                ) { _, _, _ -> }
                     .map { isSyncBlockedNow(preferenceProvider) }
                     .distinctUntilChanged()
             )
         }
 
-    override fun privacySyncBufferDuration(): Duration = PRIVACY_SYNC_BUFFER
+    override fun privacySyncBufferDuration(): Duration = privacySyncBufferFor(network)
 
     // ── On-launch reconciliation ─────────────────────────────────────────────
 
@@ -570,10 +580,15 @@ internal class OrchardMigrationSdkImpl(
                         .any { migrationBackend.hasOverdueTransfers(dbDataPath, network, it) }
                 }
             }
+        val nowEpochSeconds = Clock.System.now().epochSeconds
         val resumeAtEpochSeconds =
             preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key)?.toLongOrNull()
-        val bufferActive = resumeAtEpochSeconds != null && resumeAtEpochSeconds > Clock.System.now().epochSeconds
-        return overdue || bufferActive
+        val bufferActive = resumeAtEpochSeconds != null && resumeAtEpochSeconds > nowEpochSeconds
+        val inFlightUntilEpochSeconds =
+            preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)?.toLongOrNull()
+                ?: 0L
+        val broadcastInFlight = isBroadcastInFlight(nowEpochSeconds, inFlightUntilEpochSeconds)
+        return overdue || bufferActive || broadcastInFlight
     }
 
     // Time passing alone can flip "overdue"/"buffer elapsed" even with no data change, so
@@ -634,10 +649,10 @@ internal class OrchardMigrationSdkImpl(
         const val RACE_RETRY_MAX_ATTEMPTS = 2
         val RACE_RETRY_DELAY = 2.seconds
 
-        // Post-broadcast privacy buffer for the "send now" resume path — a real, fixed value
-        // (unlike the app-side mock's debug-shrunk one): this decouples broadcast timing from
-        // sync-resume timing for privacy, so it should not vary by build type in production code.
-        val PRIVACY_SYNC_BUFFER = 10.minutes
+        // How long before a broadcast is considered no longer in-flight (seconds). Written to
+        // preferences immediately before calling broadcast(); cleared (written as "0") right after
+        // recordTransferResult(). A stale mark from a crash self-expires within this window.
+        const val BROADCAST_IN_FLIGHT_WINDOW_SECONDS = 120L
 
         // Matches the engine's own default target cadence between scheduled transfers (~6h) —
         // rescheduling to roughly one more natural interval out, same as the cadence a fresh
@@ -754,6 +769,44 @@ internal suspend fun withBroadcastTimeout(
             isTorFailure = useTor,
         )
     }
+
+/**
+ * Post-broadcast privacy sync buffer for Mainnet — 10 minutes to decouple broadcast timing from
+ * sync-resume timing. Never build-type-scaled; a debug build on Mainnet still applies the full
+ * buffer. See [privacySyncBufferFor].
+ */
+internal val PRIVACY_SYNC_BUFFER_MAINNET = 10.minutes
+
+/**
+ * Post-broadcast privacy sync buffer for Testnet — 3 minutes for faster development cycles.
+ * See [privacySyncBufferFor].
+ */
+internal val PRIVACY_SYNC_BUFFER_TESTNET = 3.minutes
+
+/**
+ * Returns the post-broadcast privacy sync buffer duration for [network]. Mainnet uses
+ * [PRIVACY_SYNC_BUFFER_MAINNET] (10 min, full timing-privacy decoupling); testnet uses
+ * [PRIVACY_SYNC_BUFFER_TESTNET] (3 min, faster development cycles without compromising production
+ * privacy). Never varied by build type — a debug build on Mainnet should apply the full buffer.
+ *
+ * Top-level and `internal` so it is unit-testable without constructing an
+ * [OrchardMigrationSdkImpl]; [OrchardMigrationSdkImpl.privacySyncBufferDuration] delegates here.
+ */
+internal fun privacySyncBufferFor(network: ZcashNetwork): Duration =
+    if (network == ZcashNetwork.Mainnet) PRIVACY_SYNC_BUFFER_MAINNET else PRIVACY_SYNC_BUFFER_TESTNET
+
+/**
+ * Returns `true` while [inFlightUntilEpochSeconds] is strictly in the future relative to
+ * [nowEpochSeconds], meaning a migration broadcast is currently in progress.
+ *
+ * A zero or past expiry (including the cleared "0" sentinel) returns `false`, so stale marks
+ * written before a crash self-expire within [OrchardMigrationSdkImpl.BROADCAST_IN_FLIGHT_WINDOW_SECONDS]
+ * of being written. Top-level and `internal` so it is unit-testable as a pure function.
+ */
+internal fun isBroadcastInFlight(
+    nowEpochSeconds: Long,
+    inFlightUntilEpochSeconds: Long,
+): Boolean = inFlightUntilEpochSeconds > nowEpochSeconds
 
 private fun JniMigrationProgress.toPublic(): MigrationProgress =
     MigrationProgress(

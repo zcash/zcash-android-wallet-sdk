@@ -22,4 +22,18 @@ internal object EncryptedPreferenceKeys {
             key = PreferenceKey("migration_sync_resume_at"),
             defaultValue = ""
         )
+
+    /**
+     * Epoch-seconds expiry: the point past which a migration broadcast is no longer considered
+     * in-flight. Written to `now + 120s` immediately before calling [broadcast], cleared (written
+     * as "0") right after [OrchardMigrationSdkImpl.executeNextPendingTransfer] records the
+     * transfer result. A stale mark (e.g. from a crash between write and clear) self-expires in
+     * at most 120 seconds — [isBroadcastInFlight] treats any value ≤ now as expired. Used by
+     * [isSyncBlockedNow] to gate the sync engine during the critical broadcast window.
+     */
+    val MIGRATION_BROADCAST_IN_FLIGHT_UNTIL =
+        StringPreferenceDefault(
+            key = PreferenceKey("migration_broadcast_in_flight_until"),
+            defaultValue = ""
+        )
 }
