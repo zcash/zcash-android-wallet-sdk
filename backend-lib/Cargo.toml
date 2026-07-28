@@ -186,7 +186,7 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 tracing-android = { version = "0.2", optional = true }
 
 [patch.crates-io]
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "f134aa625a92c5085f1e42d5f75d7178a1ea9999" }
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "c9cf12c50793b008885ba98e50cfbe372192b54f" }
 # Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
 # entry for a crate that is not in the graph. Uncomment together with it.
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }

@@ -4606,7 +4606,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slipstream-core"
 version = "0.6.4"
-source = "git+https://github.com/zodl-inc/slipstream.git?rev=f134aa625a92c5085f1e42d5f75d7178a1ea9999#f134aa625a92c5085f1e42d5f75d7178a1ea9999"
+source = "git+https://github.com/zodl-inc/slipstream.git?rev=c9cf12c50793b008885ba98e50cfbe372192b54f#c9cf12c50793b008885ba98e50cfbe372192b54f"
 dependencies = [
  "ff",
  "futures-util",

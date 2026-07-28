@@ -6,6 +6,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Hardware-wallet signing of Orchard-to-Ironwood migration transactions: the Orchard spends a
+  migration transaction still needs a signature for now carry ZIP 32 derivation metadata, so an
+  external signer can recognize them as the account's and authorize them. Previously the SDK
+  attached no derivation to these spends, and a Keystone-signed migration could not be completed.
+- In builds that ship the Slipstream sync engine, a transaction whose Ironwood spend was not yet
+  linked to the note it spends was treated as reconciled during a recent-first restore. A
+  self-send's change could therefore surface as a phantom receive and the restore balance could
+  over-report, correcting itself only once the origin block was scanned. Since NU6.3 every
+  shielded output a wallet receives lands in Ironwood, so this affected essentially every
+  post-activation restore.
+
 ## [2.8.0-rc.1] - 2026-07-26
 
 ### Added
