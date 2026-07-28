@@ -25,6 +25,7 @@ import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.EnhanceTr
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.EnhanceTransactionError.EnhanceTxSetStatusError
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.MismatchedConsensusBranch
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.MismatchedNetwork
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.LightWalletException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
@@ -1184,6 +1185,17 @@ class CompactBlockProcessor internal constructor(
         private const val SYNC_BATCH_SIZE = 1000
 
         /**
+         * See [clampBatchEndToAnchorGrid]. The ZIP 318 anchor-bucket interval per network —
+         * mirrors the engine's `AnchorBucketInterval` config (144 mainnet, 12 on the compressed
+         * testnet grid, SDK PR #2042).
+         */
+        internal fun anchorGridIntervalFor(network: ZcashNetwork): Long =
+            if (network == ZcashNetwork.Testnet) 12L else 144L
+
+        /** See [clampBatchEndToAnchorGrid] — only grid points this close to the sync range end get their own batch cut. */
+        private const val ANCHOR_GRID_RECENT_WINDOW = 300L
+
+        /**
          * This is the same as [SYNC_BATCH_SIZE] but meant to be used in the Zcash sandblasting periods
          */
         private const val SYNC_BATCH_SMALL_SIZE = 100
@@ -1881,6 +1893,29 @@ class CompactBlockProcessor internal constructor(
             }
         }
 
+    /**
+     * Cuts a scan batch short so it ends exactly ON a ZIP 318 anchor-bucket grid multiple when one
+     * falls inside the batch near the chain tip. The tree checkpoint the scanner writes at each
+     * batch end is the ONLY way a checkpoint (and therefore a provable anchor,
+     * `root_at_checkpoint_id`) exists at a given height — a batch that scans PAST a grid boundary
+     * leaves no checkpoint on it, and every migration transfer anchored to that boundary then
+     * fails proving with AnchorNotFound forever (observed live: batch [4210440..4210446] left no
+     * checkpoint at boundary 4210440). Restricted to [ANCHOR_GRID_RECENT_WINDOW] below the sync
+     * range end so a multi-thousand-block catch-up doesn't shatter into bucket-sized batches:
+     * proofs only ever target boundaries near the tip, and checkpoint retention prunes old ones
+     * anyway.
+     */
+    private fun clampBatchEndToAnchorGrid(
+        start: Long,
+        end: Long,
+        syncRangeEnd: Long,
+        gridInterval: Long
+    ): Long {
+        if (syncRangeEnd - end > ANCHOR_GRID_RECENT_WINDOW) return end
+        val largestMultipleAtOrBelowEnd = (end / gridInterval) * gridInterval
+        return if (largestMultipleAtOrBelowEnd in start until end) largestMultipleAtOrBelowEnd else end
+    }
+
     private fun calculateBatchEnd(
         start: Long,
         rangeEnd: Long,
@@ -1925,6 +1960,13 @@ class CompactBlockProcessor internal constructor(
                                 batchSize = SYNC_BATCH_SMALL_SIZE
                             )
                     }
+
+                    end = clampBatchEndToAnchorGrid(
+                        start = start,
+                        end = end,
+                        syncRangeEnd = syncRange.endInclusive.value,
+                        gridInterval = anchorGridIntervalFor(network)
+                    )
 
                     val range = BlockHeight.new(start)..BlockHeight.new(end)
                     add(

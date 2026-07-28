@@ -125,15 +125,26 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     rusqlite::vtab::array::load_module(&wallet_conn)
         .map_err(|e| anyhow!("Error loading SQLite array module: {}", e))?;
     wallet_conn
-        .busy_timeout(std::time::Duration::from_secs(5))
+        .busy_timeout(std::time::Duration::from_secs(15))
         .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
+    // mmap disabled on BOTH connections: a WAL checkpoint TRUNCATE by any other connection on
+    // this file shrinks the mapped region under a concurrent mmap reader, which the kernel
+    // reports as SIGBUS (observed live 2026-07-28: BUS_ADRERR read fault on the zc-io thread
+    // during a signAndStore retry racing the synchronizer). Plain read()/write() I/O is immune,
+    // and these short-lived per-call connections gain nothing measurable from mmap.
+    wallet_conn
+        .pragma_update(None, "mmap_size", 0)
+        .map_err(|e| anyhow!("Error disabling wallet mmap: {}", e))?;
     let wallet = Wallet::from_connection(wallet_conn, network, SystemClock, OsRng)
         .with_anchor_retention_interval(retention_interval);
     let store_conn = Connection::open(db_path)
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
     store_conn
-        .busy_timeout(std::time::Duration::from_secs(5))
+        .busy_timeout(std::time::Duration::from_secs(15))
         .map_err(|e| anyhow!("Error setting store busy_timeout: {}", e))?;
+    store_conn
+        .pragma_update(None, "mmap_size", 0)
+        .map_err(|e| anyhow!("Error disabling store mmap: {}", e))?;
     // The pool-migration tables are created by `zcash_client_sqlite`'s own schema migrations
     // (`orchard_ironwood_migration_tables`, run as part of the wallet's normal `init_wallet_db`
     // call, see `lib.rs`), not by this crate — no separate init call needed here. All schema

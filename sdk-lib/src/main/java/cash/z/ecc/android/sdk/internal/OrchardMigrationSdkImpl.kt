@@ -175,7 +175,14 @@ internal class OrchardMigrationSdkImpl(
                 Twig.debug { "MIGRATION_DIAG OrchardMigrationSdk: $operation succeeded" }
                 return result
             } catch (e: Throwable) {
-                val looksLikeSyncRace = e.message?.contains("InsufficientFunds") == true
+                // "database is locked": rusqlite's busy_timeout (5 s, set in open_at) rides out
+                // short contention, but a sync cycle's long write transaction can exceed it —
+                // observed live as a main-thread crash from hasOverdueTransfers while the
+                // foreground synchronizer was mid-sync. Transient by nature: the lock clears when
+                // that write transaction commits, so it gets the same bounded retry as the
+                // InsufficientFunds sync race.
+                val looksLikeSyncRace = e.message?.contains("InsufficientFunds") == true ||
+                    e.message?.contains("database is locked") == true
                 if (looksLikeSyncRace && attempt <= RACE_RETRY_MAX_ATTEMPTS) {
                     Twig.error(e) {
                         "MIGRATION_DIAG OrchardMigrationSdk: $operation failed (attempt $attempt/" +
@@ -683,7 +690,7 @@ internal class OrchardMigrationSdkImpl(
         // How many extra attempts logged() makes for an InsufficientFunds-shaped failure before
         // giving up and reporting it — observed sync-cycle write windows are a few seconds, so two
         // retries at RACE_RETRY_DELAY apart comfortably rides out one.
-        const val RACE_RETRY_MAX_ATTEMPTS = 2
+        const val RACE_RETRY_MAX_ATTEMPTS = 3
         val RACE_RETRY_DELAY = 2.seconds
 
         // How long before a broadcast is considered no longer in-flight (seconds). Written to
