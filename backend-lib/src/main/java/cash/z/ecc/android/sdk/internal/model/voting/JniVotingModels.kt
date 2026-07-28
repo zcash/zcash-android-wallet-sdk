@@ -1,6 +1,8 @@
 package cash.z.ecc.android.sdk.internal.model.voting
 
 import androidx.annotation.Keep
+import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
+import cash.z.ecc.android.sdk.internal.jni.JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE
 
 /**
  * Typed JNI carrier for a spendable note the voting backend may draw voting weight from.
@@ -458,14 +460,14 @@ data class JniShareDelegationRecord(
  * `data class` rendering would print the secret's bytes into any log that
  * interpolates it.
  *
- * The constructor and `copy()` are public, unlike the `@ConsistentCopyVisibility`
- * predecessor of this type. A hotkey is now only ever produced by
- * `generateHotkey`, whose typesafe wrapper in `sdk-lib` length-checks both byte
- * arrays; that wrapper's own tests live in a different Gradle module and so need
- * to fabricate a malformed hotkey to exercise the check. Constructing one here
- * grants no capability: every native entry point takes the raw
- * [storedSecret] bytes, not this carrier, so a fabricated instance cannot make
- * `zcash_voting` accept a hotkey it would otherwise reject.
+ * Both byte arrays are length-checked on construction, so a malformed hotkey
+ * cannot exist regardless of where it came from. That includes the native layer:
+ * JNI's `NewObject` runs the constructor, and therefore this `init` block, so a
+ * bug in `make_jni_voting_hotkey` surfaces here rather than travelling onward as
+ * a short secret. The constructor stays public because the invariant is enforced
+ * by the type rather than by visibility, and constructing one grants no
+ * capability in any case: every native entry point takes the raw [storedSecret]
+ * bytes, not this carrier.
  */
 @Keep
 data class JniVotingHotkey(
@@ -473,6 +475,16 @@ data class JniVotingHotkey(
     val rawOrchardAddress: ByteArray,
     val addressIndex: Int
 ) {
+    init {
+        require(storedSecret.size == JNI_HOTKEY_STORED_SECRET_BYTES_SIZE) {
+            "storedSecret must be $JNI_HOTKEY_STORED_SECRET_BYTES_SIZE bytes"
+        }
+
+        require(rawOrchardAddress.size == JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE) {
+            "rawOrchardAddress must be $JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE bytes"
+        }
+    }
+
     override fun toString(): String = "JniVotingHotkey(redacted)"
 
     override fun equals(other: Any?): Boolean {

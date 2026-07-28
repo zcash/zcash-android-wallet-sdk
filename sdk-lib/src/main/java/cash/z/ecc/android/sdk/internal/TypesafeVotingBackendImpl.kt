@@ -4,8 +4,6 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.JNI_DELEGATION_PUBLIC_INPUT_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_GOVERNANCE_NULLIFIER_COUNT
-import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
-import cash.z.ecc.android.sdk.internal.jni.JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_PROTOCOL_FIELD_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_SPEND_AUTH_SIG_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_VAN_WITNESS_PATH_DEPTH
@@ -766,16 +764,11 @@ internal class TypesafeVotingDbImpl(
         roundId: String,
         networkId: Int
     ): JniVotingHotkey =
-        votingDb.generateHotkey(roundId, networkId).also { hotkey ->
-            hotkey.storedSecret.requireByteArraySize(
-                "storedSecret",
-                JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
-            )
-            hotkey.rawOrchardAddress.requireByteArraySize(
-                "rawOrchardAddress",
-                JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE
-            )
-        }
+        // JniVotingHotkey length-checks both byte arrays on construction, and JNI's
+        // NewObject runs that init block too, so there is no route by which a
+        // malformed hotkey reaches this point. Re-checking here would be a defence
+        // that can never fire.
+        votingDb.generateHotkey(roundId, networkId)
 
     override suspend fun buildGovernancePczt(
         roundId: String,
