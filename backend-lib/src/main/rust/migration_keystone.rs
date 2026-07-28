@@ -38,8 +38,8 @@ use ur_registry::zcash::zcash_sign_batch::ZcashSignBatch;
 /// fails on-device with "None of inputs belongs to the provided account".
 ///
 /// A dummy padding spend that `IoFinalizer` already self-signed carries a `spend_auth_sig` at
-/// this point and is left alone (its throwaway key needs no derivation, and this crate's
-/// [`build_sign_batch_qr_parts`] clears its `spend_auth_sig` for the batch anyway); every action
+/// this point and is left alone (its throwaway key needs no derivation, and the batch redaction
+/// in [`build_sign_batch_qr_parts`] carries its signature through untouched); every action
 /// still awaiting a real signature — a real spend, or a wallet-controlled zero-value spend
 /// paired with a change output — gets the derivation.
 pub fn annotate_spend_zip32_derivation(
@@ -103,13 +103,14 @@ fn annotate_unsigned_actions(
 /// Every PCZT is passed through
 /// [`redact_pczt_for_batch_signer`](zcash_client_backend::data_api::wallet::redact_pczt_for_batch_signer)
 /// before being added to the request. The wallet's own IO-finalizer already puts `spend_auth_sig`
-/// on every dummy/wallet-controlled Orchard and Ironwood spend when the unsigned PCZT is built —
-/// but the Keystone batch-signing firmware rejects any batch request containing a pre-existing
-/// Orchard/Ironwood `spend_auth_sig` outright ("Invalid pczt, Zcash batch request must not
-/// contain Orchard spend authorization signatures"). Redacting clears those (plus the spend FVK,
-/// which the device derives itself) so only what the batch signer protocol expects reaches the
-/// wire; the caller's retained, unredacted PCZT bytes (`split_unsigned`/`transfer_unsigned`) are
-/// what [`apply_batch_signatures`] applies the returned signatures back onto.
+/// on every dummy padding Orchard and Ironwood spend when the unsigned PCZT is built. Under the
+/// librustzcash `a00f4a7a` engine generation the batch redaction RETAINS those pre-existing
+/// signatures (stripping one would leave an action neither side could ever re-authorize: the
+/// dummy's `dummy_sk` is already cleared by the compact view) and instead clears the signed
+/// action's alpha, while unsigned actions keep alpha and lose only the spend FVK (the device
+/// derives its own). The caller's retained, unredacted PCZT bytes
+/// (`split_unsigned`/`transfer_unsigned`) are what [`apply_batch_signatures`] applies the
+/// returned signatures back onto.
 ///
 /// `request_id` is an opaque correlation token (e.g. a UUID's bytes) round-tripped by the device
 /// and checked in [`decode_sign_batch_part`] to reject a scan of an unrelated/stale response.
@@ -358,7 +359,7 @@ mod tests {
     /// Orchard's default padding minimum, the Orchard builder inserts a dummy padding
     /// action, and `IoFinalizer` self-signs that dummy spend (see `pczt::roles::io_finalizer`'s
     /// "dummy spends will have been signed" note) — producing exactly the kind of
-    /// pre-existing `spend_auth_sig` the Keystone batch firmware rejects.
+    /// pre-existing `spend_auth_sig` whose batch-redaction handling is under test here.
     fn build_single_pool_orchard_pczt() -> Vec<u8> {
         let mut rng = OsRng;
         let sk = SpendingKey::from_zip32_seed(&[11u8; 32], 1, zip32::AccountId::ZERO)
@@ -452,11 +453,11 @@ mod tests {
     }
 
     #[test]
-    fn build_sign_batch_qr_parts_strips_preexisting_orchard_spend_auth_sig() {
+    fn build_sign_batch_qr_parts_retains_dummy_sig_and_clears_its_alpha() {
         let unsigned = build_single_pool_orchard_pczt();
 
         // Sanity-check the premise: the IO-finalized PCZT already carries a dummy
-        // spend_auth_sig before redaction — this is what regressed without the fix.
+        // spend_auth_sig before redaction.
         let parsed = pczt::parse(&unsigned).expect("parse base pczt");
         assert!(
             parsed
@@ -495,13 +496,40 @@ mod tests {
         let batch = ZcashSignBatch::try_from(cbor).expect("cbor-decode zcash-sign-batch");
         let request = BatchSignRequest::parse(batch.get_data()).expect("parse batch sign request");
 
+        // The `a00f4a7a` engine generation's `redact_pczt_for_batch_signer` contract:
+        // a pre-signed (dummy padding) action RETAINS its `spend_auth_sig` — stripping it
+        // would leave an action nobody could ever re-authorize (the dummy's `dummy_sk` is
+        // already cleared by the compact view) — and gives up its alpha instead; unsigned
+        // actions keep alpha (the batch Signer needs it) and stay unsigned on the wire.
         assert_eq!(request.pczts().len(), 1);
-        for action in request.pczts()[0].orchard().actions() {
-            assert!(
-                action.spend().spend_auth_sig().is_none(),
-                "batch request must not contain a pre-existing Orchard spend_auth_sig",
-            );
+        let base_actions = parsed.orchard().actions();
+        let wire_actions = request.pczts()[0].orchard().actions();
+        assert_eq!(wire_actions.len(), base_actions.len());
+        let mut presigned_count = 0;
+        for (base_action, wire_action) in base_actions.iter().zip(wire_actions.iter()) {
+            let wire_debug = format!("{:?}", wire_action.spend());
+            if base_action.spend().spend_auth_sig().is_some() {
+                presigned_count += 1;
+                assert!(
+                    wire_action.spend().spend_auth_sig().is_some(),
+                    "a pre-signed dummy action must retain its spend_auth_sig on the wire",
+                );
+                assert!(
+                    !wire_debug.contains("alpha: Some"),
+                    "a pre-signed dummy action must give up its alpha",
+                );
+            } else {
+                assert!(
+                    wire_action.spend().spend_auth_sig().is_none(),
+                    "an unsigned action must not gain a spend_auth_sig",
+                );
+                assert!(
+                    wire_debug.contains("alpha: Some"),
+                    "an unsigned action must keep its alpha for the batch signer",
+                );
+            }
         }
+        assert!(presigned_count > 0, "premise: at least one pre-signed dummy");
     }
 
     #[test]
