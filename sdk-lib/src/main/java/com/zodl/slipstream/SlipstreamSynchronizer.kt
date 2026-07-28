@@ -462,6 +462,9 @@ class SlipstreamSynchronizer internal constructor(
         transparentReceiver: String?
     ): Proposal? = spendService.proposeShielding(account, shieldingThreshold, memo, transparentReceiver)
 
+    override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
+        spendService.proposeOrchardToIronwoodMigration(account)
+
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey

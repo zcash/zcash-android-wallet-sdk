@@ -116,7 +116,7 @@ data class NoteSplitProposal(
  * invalid and [OrchardMigrationSdk.restartCurrentMigrationStep] must be called.
  */
 data class TransferProposal(
-    val id: String,
+    val id: Long,
     val amountZatoshi: Long,
     val anchorHeight: Long,
     val nextExecutableAfterHeight: Long,
@@ -177,7 +177,7 @@ data class KeystoneBatchSignedPczts(
 
 /**
  * The live, persisted status of one committed migration transaction (transfer or preparation) —
- * [id] matches [TransferProposal.id] (the real, stable `MigrationTxId`), NOT its position in
+ * [id] matches [TransferProposal.id] (the real, stable `MigrationTransferId`), NOT its position in
  * [MigrationSchedule.transfers]: the engine assigns real transfer ids in its own funding-note/
  * crossing order, while array position there is sorted by broadcast height — ZIP 318 deliberately
  * shuffles those two orderings apart, so a caller must correlate by [id], never by array index.
@@ -188,7 +188,7 @@ data class KeystoneBatchSignedPczts(
  * like transfers. [isProved] is true once the engine holds a proof (Proved/Broadcast/Mined).
  */
 data class MigrationTransferState(
-    val id: String,
+    val id: Long,
     val isTransfer: Boolean,
     val isSent: Boolean,
     val isProved: Boolean,
@@ -261,7 +261,7 @@ sealed class MigrationState {
 sealed class AttentionReason {
     /** Input note was spent externally before the migration transfer was broadcast. */
     data class InvalidTransfer(
-        val transferId: String
+        val transferId: Long
     ) : AttentionReason()
 
     /** Transaction anchor expired before broadcast (e.g. extended offline period). */
@@ -311,7 +311,7 @@ sealed class TransferResult {
 
 sealed class TransferAttemptOutcome {
     object NothingDue : TransferAttemptOutcome()
-    data class AwaitingProof(val transferId: String) : TransferAttemptOutcome()
+    data class AwaitingProof(val transferId: Long) : TransferAttemptOutcome()
     data class Executed(val result: TransferResult) : TransferAttemptOutcome()
 }
 
@@ -422,7 +422,7 @@ interface OrchardMigrationSdk {
      * placeholder-witness scheme [signAndStoreMigrationSchedule] does — callers do not need to
      * wait for the note-split to confirm on-chain before calling this either.
      */
-    suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<String, ByteArray>>
+    suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, ByteArray>>
 
     /**
      * Accepts the full set of externally-signed transfer PCZTs — **all-or-nothing**, matched back
@@ -431,7 +431,7 @@ interface OrchardMigrationSdk {
      * role): [finalizeReadyTransfers] later completes any transfer that was staged awaiting proof,
      * exactly as it already does for the software-signing path.
      */
-    suspend fun storeSignedSchedulePczts(signed: List<Pair<String, ByteArray>>)
+    suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, ByteArray>>)
 
     /**
      * Builds the animated multi-part QR frames for one combined Keystone batch-signing request

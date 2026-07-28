@@ -1116,6 +1116,14 @@ class SdkSynchronizer private constructor(
     ): Proposal = txManager.proposeTransfer(account, recipient, amount, memo)
 
     /**
+     * @throws TransactionEncoderException.ProposalFromParametersException in case the proposal
+     * creation failed
+     */
+    @Throws(TransactionEncoderException.ProposalFromParametersException::class)
+    override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
+        txManager.proposeOrchardToIronwoodMigration(account)
+
+    /**
      * @throws TransactionEncoderException.ProposalShieldingException in case the proposal creation failed
      *
      * @return the proposal or an exception

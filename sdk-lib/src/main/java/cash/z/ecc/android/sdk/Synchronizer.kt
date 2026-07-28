@@ -337,6 +337,32 @@ interface Synchronizer {
     ): Proposal
 
     /**
+     * Creates a proposal migrating the account's entire Orchard balance into the Ironwood
+     * pool, introduced by NU6.3.
+     *
+     * The proposal spends every Orchard note the account holds and sends the maximum to the
+     * account's own internal receiver, with the fee computed so that no change is left in
+     * Orchard. Sapling and transparent funds are not touched.
+     *
+     * This is deliberately all-or-nothing: if any Orchard note is not yet spendable the
+     * proposal fails rather than migrating part of the balance and reporting success. After
+     * NU6.3 the Orchard turnstile forbids adding value back to the Orchard pool, so funds
+     * left behind would be stranded in a pool the wallet is leaving.
+     *
+     * Note this reveals the account's Orchard balance on-chain: the migration is a single
+     * transaction of exactly that value. It does not attempt to split the crossing into
+     * less-identifying amounts.
+     *
+     * @param account the account whose Orchard funds to migrate.
+     *
+     * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.ProposalFromParametersException if NU6.3 is not
+     * active, if any Orchard note is not yet spendable, or if the proposal cannot be created
+     */
+    suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal
+
+    /**
      * Creates a proposal for fulfilling a payment ZIP-321 URI
      *
      * @param account the account from which to transfer funds.

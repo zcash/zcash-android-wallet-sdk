@@ -316,7 +316,7 @@ internal class OrchardMigrationSdkImpl(
             mapped.transferResult
         }
 
-    override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<String, ByteArray>> =
+    override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, ByteArray>> =
         logged("createUnsignedTransferPczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
@@ -325,7 +325,7 @@ internal class OrchardMigrationSdkImpl(
                 .map { it.id to it.pcztBytes }
         }
 
-    override suspend fun storeSignedSchedulePczts(signed: List<Pair<String, ByteArray>>) =
+    override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, ByteArray>>) =
         logged("storeSignedSchedulePczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
@@ -333,7 +333,7 @@ internal class OrchardMigrationSdkImpl(
                 dbDataPath,
                 network,
                 account,
-                Array(signed.size) { signed[it].first },
+                LongArray(signed.size) { signed[it].first },
                 Array(signed.size) { signed[it].second },
             )
         }

@@ -277,11 +277,15 @@ fn finish_decode(cbor: Vec<u8>, expected_request_id: &[u8]) -> anyhow::Result<De
 /// combine this with the staged *proven* original internally) — no other change needed there.
 ///
 /// Returns an error if the response's signature-set count doesn't match the number of PCZTs sent.
+/// The signed-but-unproven PCZTs a batch signature application yields: the note-split PCZT when
+/// the run needed one, and one PCZT per transfer.
+type SignedBatchPczts = (Option<Vec<u8>>, Vec<Vec<u8>>);
+
 pub fn apply_batch_signatures(
     split_unsigned: Option<&[u8]>,
     transfer_unsigned: &[Vec<u8>],
     batch_sign_response: &[u8],
-) -> anyhow::Result<(Option<Vec<u8>>, Vec<Vec<u8>>)> {
+) -> anyhow::Result<SignedBatchPczts> {
     let response = BatchSignResponse::parse(batch_sign_response)
         .map_err(|e| anyhow::anyhow!("parse batch sign response: {e:?}"))?;
     let signatures = response.signatures();

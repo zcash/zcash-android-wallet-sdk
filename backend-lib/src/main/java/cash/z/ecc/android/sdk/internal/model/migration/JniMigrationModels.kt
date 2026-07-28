@@ -41,10 +41,16 @@ class JniNoteSplitProposal(
  */
 @Keep
 class JniPreparedTransfer(
-    val id: String,
+    val id: Long,
     val txid: ByteArray,
     val pcztBytes: ByteArray
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
@@ -59,22 +65,36 @@ class JniDueTransferResult(
     /** 0 = NOTHING_DUE, 1 = READY, 2 = AWAITING_PROOF */
     val status: Int,
     /** Non-null when status == 2 (the due-but-unproven transfer). */
-    val awaitingProofTransferId: String?,
+    val awaitingProofTransferId: Long?,
     /** Non-null when status == 1. */
     val prepared: JniPreparedTransfer?,
-)
+) {
+    init {
+        awaitingProofTransferId?.let {
+            require(it.isInUIntRange()) {
+                "Transfer id $it is outside of allowed UInt range"
+            }
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
  */
 @Keep
 class JniTransferProposal(
-    val id: String,
+    val id: Long,
     val amountZatoshi: Long,
     val anchorHeight: Long,
     val nextExecutableAfterHeight: Long,
     val expiryHeight: Long
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class.
@@ -92,7 +112,7 @@ class JniMigrationSchedule(
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The live, persisted status of one
  * committed migration transaction (transfer or preparation) — [id] is its real, stable
- * `MigrationTxId` (same format/value as `JniTransferProposal.id`), NOT its pool-crossing/
+ * `MigrationTransferId` (same format/value as `JniTransferProposal.id`), NOT its pool-crossing/
  * funding-note index. ZIP 318 deliberately shuffles crossing order away from the broadcast-height
  * order the app displays transfers in, so [id] is the only key that reliably correlates back to a
  * specific `MigrationPlan.transfers` entry (via that entry's own `id` field).
@@ -105,13 +125,19 @@ class JniMigrationSchedule(
  */
 @Keep
 class JniMigrationTransferState(
-    val id: String,
+    val id: Long,
     val isTransfer: Boolean,
     val isSent: Boolean,
     val isProved: Boolean,
     val scheduledHeight: Long,
     val anchorBoundaryHeight: Long
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The live schedule/status of every
@@ -133,9 +159,15 @@ class JniMigrationTransferStates(
  */
 @Keep
 class JniUnsignedTransferPczt(
-    val id: String,
+    val id: Long,
     val pcztBytes: ByteArray
-)
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
 
 /**
  * Serves as cross layer (Kotlin, Rust) communication class. The result of feeding one scanned QR
@@ -173,8 +205,14 @@ class JniKeystoneBatchSignedPczts(
 sealed class JniAttentionReason {
     @Keep
     class InvalidTransfer(
-        val transferId: String
-    ) : JniAttentionReason()
+        val transferId: Long
+    ) : JniAttentionReason() {
+        init {
+            require(transferId.isInUIntRange()) {
+                "Transfer id $transferId is outside of allowed UInt range"
+            }
+        }
+    }
 
     @Keep
     class TransferExpired : JniAttentionReason()

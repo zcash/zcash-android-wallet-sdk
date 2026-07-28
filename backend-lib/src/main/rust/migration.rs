@@ -34,7 +34,7 @@
 use anyhow::anyhow;
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray},
 };
 use prost::Message;
@@ -43,7 +43,7 @@ use rusqlite::Connection;
 use std::ptr;
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
-use zcash_client_backend::data_api::{InputSource, NullifierQuery, WalletRead, WalletWrite};
+use zcash_client_backend::data_api::{InputSource, NullifierQuery, OutputLockStore, WalletRead};
 use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
@@ -57,8 +57,9 @@ use zcash_protocol::{PoolType, ShieldedPool};
 use zcash_pool_migration::wallet::{WalletMigrationProver, WalletProveError};
 use zcash_pool_migration::{
     engine::{
-        self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction, MigrationTxId,
-        MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProveError,
+        self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction,
+        MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead,
+        PoolMigrationWrite, ProveError,
     },
 };
 
@@ -169,7 +170,7 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
 //
 // `account_uuid` — the raw 16-byte UUID identifying the account (same bytes `expose_uuid().as_bytes()` returns).
 // `reason`       — one of `"invalid_transfer"` or `"transfer_expired"`.
-// `transfer_id`  — the string representation of the `MigrationTxId` index (may be NULL when the
+// `transfer_id`  — the string representation of the `MigrationTransferId` index (may be NULL when the
 //                  id is not meaningful, e.g. for TransferExpired recorded without a specific id).
 
 const INVALIDATION_DDL: &str = "
@@ -457,6 +458,23 @@ fn plan(
 }
 
 /// Returns the already-committed migration state if one exists (non-terminal), otherwise commits
+/// A migration state paired with the transactions it left awaiting signature, each as its
+/// id and PCZT bytes. Named because both the commit entry point and every `sign` closure it
+/// dispatches to return this same shape.
+type MigrationCommitOutcome = (MigrationState, Vec<(MigrationTransferId, Vec<u8>)>);
+
+/// The wallet-side context a commit runs against: which network and account, the store
+/// connection it writes through, and the target height the cached plan was built for. Grouped
+/// so `commit_or_reuse` takes the plan handle and signing strategy as its own arguments rather
+/// than trailing five pieces of ambient context.
+struct CommitContext<'a> {
+    network: &'a Network,
+    wallet: &'a Wallet,
+    account: AccountUuid,
+    store_conn: &'a mut Connection,
+    target: BlockHeight,
+}
+
 /// the cached plan that `plan_handle` identifies — erroring if no plan is cached or if a later
 /// `propose*`/`prepare*` call replaced the plan the caller was shown (see `migration_plan_cache`'s
 /// module doc: the handle gate is what guarantees a commit can only sign the exact plan the user
@@ -466,11 +484,7 @@ fn plan(
 /// picks which `commit_preparation`/`build_preparation_unsigned` variant to run, and whether a
 /// spending key is available to the `Backend` while doing so.
 fn commit_or_reuse(
-    network: &Network,
-    wallet: &Wallet,
-    account: AccountUuid,
-    store_conn: &mut Connection,
-    target: BlockHeight,
+    ctx: CommitContext<'_>,
     plan_handle: crate::migration_plan_cache::PlanHandle,
     usk: Option<UnifiedSpendingKey>,
     sign: impl FnOnce(
@@ -479,23 +493,29 @@ fn commit_or_reuse(
         &mut Backend<Wallet>,
         &MigrationPlan,
         &mut OsRng,
-    ) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)>,
-) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)> {
+    ) -> anyhow::Result<MigrationCommitOutcome>,
+) -> anyhow::Result<MigrationCommitOutcome> {
+    let CommitContext {
+        network,
+        wallet,
+        account,
+        store_conn,
+        target,
+    } = ctx;
     {
-        let backend = Backend::new(wallet, account, None, store_conn)?;
+        let backend = Backend::new(wallet, account, None, &mut *store_conn)?;
         if let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+            && !state.is_terminal()
         {
-            if !state.is_terminal() {
-                let unsigned = state
-                    .transactions()
-                    .iter()
-                    .filter(|t| matches!(t.state(), MigrationTxState::AwaitingSignature))
-                    .map(|t| (t.id(), t.pczt().clone()))
-                    .collect();
-                return Ok((state, unsigned));
-            }
+            let unsigned = state
+                .transactions()
+                .iter()
+                .filter(|t| matches!(t.state(), MigrationTxState::AwaitingSignature))
+                .map(|t| (t.id(), t.pczt().clone()))
+                .collect();
+            return Ok((state, unsigned));
         }
     }
     let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
@@ -605,7 +625,7 @@ fn encode_note_split_proposal<'a>(
     plan: &MigrationPlan,
     plan_handle: crate::migration_plan_cache::PlanHandle,
 ) -> jni::errors::Result<JObject<'a>> {
-    let split = plan.note_split();
+    let split = plan.denominations();
     let values: Vec<i64> = split
         .crossing_values()
         .iter()
@@ -626,19 +646,19 @@ fn encode_note_split_proposal<'a>(
     )
 }
 
-fn encode_transfer_id<'a>(
-    env: &mut JNIEnv<'a>,
-    id: MigrationTxId,
-) -> jni::errors::Result<JString<'a>> {
-    env.new_string(u32::from(id).to_string())
+/// A transaction id as Kotlin receives it: the engine's `u32` widened to the `Long` this JNI
+/// boundary uses for every unsigned 32-bit value (heights included), so the value survives without
+/// a sign flip and Kotlin can range-check it.
+fn encode_transfer_id(id: MigrationTransferId) -> jlong {
+    jlong::from(u32::from(id))
 }
 
-fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<MigrationTxId> {
-    let raw = crate::utils::java_string_to_rust(env, id)?;
-    let idx: u32 = raw
-        .parse()
-        .map_err(|e| anyhow!("Invalid transfer id {}: {}", raw, e))?;
-    Ok(MigrationTxId::new(idx))
+/// The inverse of [`encode_transfer_id`]: a `Long` from Kotlin back to the engine's id. Rejects
+/// values outside the `u32` range rather than truncating them into a different transaction.
+fn decode_transfer_id(id: jlong) -> anyhow::Result<MigrationTransferId> {
+    let idx =
+        u32::try_from(id).map_err(|_| anyhow!("Transfer id {} is outside the u32 range", id))?;
+    Ok(MigrationTransferId::new(idx))
 }
 
 /// `anchor_height` here is NOT a real commitment-tree anchor (ZIP 374 defers that to proving time
@@ -651,18 +671,17 @@ fn decode_transfer_id(env: &mut JNIEnv, id: &JString) -> anyhow::Result<Migratio
 /// correctly spread out (see the `MIGRATION_DIAG plan:` log in `plan()` above).
 fn encode_transfer_proposal<'a>(
     env: &mut JNIEnv<'a>,
-    id: MigrationTxId,
+    id: MigrationTransferId,
     amount: Zatoshis,
     anchor_height: BlockHeight,
     schedule_broadcast_height: BlockHeight,
     schedule_expiry_height: BlockHeight,
 ) -> jni::errors::Result<JObject<'a>> {
-    let id = encode_transfer_id(env, id)?;
     env.new_object(
         JNI_TRANSFER_PROPOSAL,
-        "(Ljava/lang/String;JJJJ)V",
+        "(JJJJJ)V",
         &[
-            JValue::Object(&id),
+            JValue::Long(encode_transfer_id(id)),
             JValue::Long(u64::from(amount) as i64),
             JValue::Long(i64::from(u32::from(anchor_height))),
             JValue::Long(i64::from(u32::from(schedule_broadcast_height))),
@@ -692,7 +711,7 @@ fn encode_migration_schedule<'a>(
     // displaying the received amount, fee visible only in the transaction detail), so subtract the
     // constant fee buffer back out to recover the round `{1,2,5}×10ⁿ` crossing value per note.
     let funding_notes = plan.funding_notes();
-    let note_fee_buffer = plan.note_split().note_fee_buffer();
+    let note_fee_buffer = plan.denominations().note_fee_buffer();
     let schedule = plan.schedule();
     if funding_notes.len() != schedule.len() {
         return Err(anyhow!(
@@ -709,7 +728,7 @@ fn encode_migration_schedule<'a>(
         })
         .collect();
 
-    // The real `MigrationTxId` the engine will assign at commit time numbers every preparation
+    // The real `MigrationTransferId` the engine will assign at commit time numbers every preparation
     // transaction (across all layers) first, THEN transfers in `schedule()` order (confirmed
     // directly against `commit_preparation_inner` in `zcash_pool_migration::engine`) — so
     // transfer `i`'s id is `prep_tx_count + i`, not `i`. Getting this wrong doesn't affect Kotlin
@@ -727,7 +746,7 @@ fn encode_migration_schedule<'a>(
     let mut proposals = Vec::with_capacity(schedule.len());
     for (i, (amount, entry)) in crossings.iter().zip(schedule.iter()).enumerate() {
         proposals.push((
-            MigrationTxId::new(prep_tx_count + i as u32),
+            MigrationTransferId::new(prep_tx_count + i as u32),
             *amount,
             entry.broadcast_height(),
             entry.expiry_height(),
@@ -812,7 +831,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// The new engine plans the note split and the transfer schedule together in one
-/// `plan_migration()` call (the split's realized output values ARE `plan.note_split()
+/// `plan_migration()` call (the split's realized output values ARE `plan.denominations()
 /// .crossing_values()`, which is exactly what `encode_migration_schedule` already derives the
 /// schedule from) — so unlike `proposeMigrationTransfersNative` above, this does NOT plan afresh:
 /// it encodes the schedule of the exact cached plan `proposal_handle` identifies (the one whose
@@ -925,7 +944,7 @@ fn try_prove(
     account: AccountUuid,
     fvk: orchard::keys::FullViewingKey,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
     kind: MigrationTxKind,
 ) -> anyhow::Result<bool> {
     let anchor = match kind {
@@ -968,7 +987,7 @@ fn finalize_note_split(
     account: AccountUuid,
     store_conn: &mut Connection,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
 ) -> anyhow::Result<(Vec<u8>, [u8; 32])> {
     let fvk = {
         let backend = Backend::new(wallet, account, None, store_conn)?;
@@ -1046,11 +1065,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let usk = crate::decode_usk(env, usk)?;
         let target = target_height(&wallet)?;
         let (mut state, _unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
@@ -1069,15 +1090,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (proven_pczt, txid) =
             finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
-        let id = encode_transfer_id(env, split_id)?;
+        let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_obj = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_obj),
                 ],
@@ -1122,7 +1143,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    transfer_id: JString<'local>,
+    transfer_id: jlong,
     result_tag: jint,
     _retryable: jboolean,
     tx_id: JByteArray<'local>,
@@ -1130,13 +1151,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let transfer_id_str = crate::utils::java_string_to_rust(env, &transfer_id)?;
-        let id = {
-            let idx: u32 = transfer_id_str
-                .parse()
-                .map_err(|e| anyhow!("Invalid transfer id {}: {}", transfer_id_str, e))?;
-            MigrationTxId::new(idx)
-        };
+        let id = decode_transfer_id(transfer_id)?;
+        // The invalidation side table stores the id as TEXT (see INVALIDATION_DDL) — render the
+        // engine id back to its decimal form for that row only; everywhere else it stays a u32.
+        let transfer_id_str = u32::from(id).to_string();
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
         match result_tag {
             // Success: record the broadcast txid. `mark_mined` has no old-crate equivalent call
@@ -1181,7 +1199,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                             // mark a run Failed without touching the committed plan.
                             Some(MigrationState::from_parts(
                                 engine::MigrationStatus::Failed,
-                                state.note_split().clone(),
+                                state.denominations().clone(),
                                 state.preparation().clone(),
                                 state.transactions().clone(),
                                 state.anchor_bucket_interval(),
@@ -1244,13 +1262,12 @@ fn read_reconciled(
     };
     let mut newly_mined = Vec::new();
     for tx in state.transactions() {
-        if let MigrationTxState::Broadcast { txid } = tx.state() {
-            if let Some(height) = wallet
+        if let MigrationTxState::Broadcast { txid } = tx.state()
+            && let Some(height) = wallet
                 .get_tx_height(txid)
                 .map_err(|e| anyhow!("Error reading tx height for {:?}: {:?}", txid, e))?
-            {
-                newly_mined.push((tx.id(), height));
-            }
+        {
+            newly_mined.push((tx.id(), height));
         }
     }
     if !newly_mined.is_empty() {
@@ -1337,10 +1354,10 @@ fn transfer_funding_nullifier(bytes: &[u8]) -> Option<[u8; 32]> {
 ///
 /// False negatives are acceptable: submit-time rejection remains the last line of defence.
 fn decide_foreign_spend(
-    candidates: &[(MigrationTxId, Option<[u8; 32]>, Option<[u8; 32]>)],
+    candidates: &[(MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>)],
     unspent_nullifiers: &std::collections::HashSet<[u8; 32]>,
     own_txids_on_chain: &std::collections::HashSet<[u8; 32]>,
-) -> Option<MigrationTxId> {
+) -> Option<MigrationTransferId> {
     for (id, funding_nf, own_txid) in candidates {
         // (a) Ambiguous nullifier → skip.
         let Some(nf) = funding_nf else { continue };
@@ -1399,7 +1416,7 @@ fn reconcile_invalidated(
     }
 
     // --- Pass 2: submit-crash probe. Promote any Proved transfer whose txid is already on chain. ---
-    let mut promotions: Vec<(MigrationTxId, zcash_protocol::TxId, BlockHeight)> = Vec::new();
+    let mut promotions: Vec<(MigrationTransferId, zcash_protocol::TxId, BlockHeight)> = Vec::new();
     for tx in state.transactions() {
         if !matches!(tx.state(), MigrationTxState::Proved) {
             continue;
@@ -1431,7 +1448,7 @@ fn reconcile_invalidated(
     // The own txid is needed by decide_foreign_spend to satisfy the no-false-positive bar: if the
     // txid is unreadable (b) or is on-chain (c), the situation is ambiguous and we skip rather than
     // invalidate (see decide_foreign_spend's doc for the full decision rule).
-    let candidates: Vec<(MigrationTxId, Option<[u8; 32]>, Option<[u8; 32]>)> = state
+    let candidates: Vec<(MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>)> = state
         .transactions()
         .iter()
         .filter(|t| {
@@ -1510,7 +1527,7 @@ fn reconcile_invalidated(
     // engine) — the committed plan itself is never rewritten here.
     let failed = MigrationState::from_parts(
         engine::MigrationStatus::Failed,
-        state.note_split().clone(),
+        state.denominations().clone(),
         state.preparation().clone(),
         state.transactions().clone(),
         state.anchor_bucket_interval(),
@@ -1834,11 +1851,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // latest-plan-wins cache contract).
         let target = target_height(&wallet)?;
         commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
@@ -1918,7 +1937,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Collect ready ids/kinds up front (not while iterating `state.transactions()`) since
         // `try_prove` needs `&mut state` — see `is_prove_ready`'s doc comment for why this doesn't
         // just loop `MigrationState::next_provable`.
-        let ready: Vec<(MigrationTxId, MigrationTxKind)> = state
+        let ready: Vec<(MigrationTransferId, MigrationTxKind)> = state
             .transactions()
             .iter()
             .filter(|t| {
@@ -1975,7 +1994,7 @@ enum DueTransferResult<'a> {
     /// No migration is in progress, it's terminal, or nothing is due right now.
     NothingDue,
     /// A transfer is due but still in `Signed` state (not yet proven) — cannot broadcast yet.
-    AwaitingProof(MigrationTxId),
+    AwaitingProof(MigrationTransferId),
     /// A transfer is proven and ready to broadcast.
     Ready(&'a MigrationTransaction),
 }
@@ -2048,7 +2067,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             // No migration: status=0, both nullable fields null.
             return Ok(env.new_object(
                 JNI_DUE_TRANSFER_RESULT,
-                format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
                 &[
                     JValue::Int(0),
                     JValue::Object(&JObject::null()),
@@ -2074,7 +2093,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             DueTransferResult::NothingDue => {
                 Ok(env.new_object(
                     JNI_DUE_TRANSFER_RESULT,
-                    format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
                     &[
                         JValue::Int(0),
                         JValue::Object(&JObject::null()),
@@ -2083,10 +2102,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 )?.into_raw())
             }
             DueTransferResult::AwaitingProof(id) => {
-                let id_obj = encode_transfer_id(env, id)?;
+                let id_obj = env
+                    .call_static_method(
+                        "java/lang/Long",
+                        "valueOf",
+                        "(J)Ljava/lang/Long;",
+                        &[JValue::Long(encode_transfer_id(id))],
+                    )?
+                    .l()?;
                 Ok(env.new_object(
                     JNI_DUE_TRANSFER_RESULT,
-                    format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
                     &[
                         JValue::Int(2),
                         JValue::Object(&id_obj),
@@ -2104,21 +2130,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 .extract()
                 .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
                 let txid: [u8; 32] = *extracted.txid().as_ref();
-                let id_obj = encode_transfer_id(env, tx.id())?;
                 let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
                 let pczt_obj = crate::utils::rust_bytes_to_java(env, bytes)?;
                 let prepared = env.new_object(
                     JNI_PREPARED_TRANSFER,
-                    "(Ljava/lang/String;[B[B)V",
+                    "(J[B[B)V",
                     &[
-                        JValue::Object(&id_obj),
+                        JValue::Long(encode_transfer_id(tx.id())),
                         JValue::Object(&txid_obj),
                         JValue::Object(&pczt_obj),
                     ],
                 )?;
                 Ok(env.new_object(
                     JNI_DUE_TRANSFER_RESULT,
-                    format!("(ILjava/lang/String;L{JNI_PREPARED_TRANSFER};)V"),
+                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
                     &[
                         JValue::Int(1),
                         JValue::Object(&JObject::null()),
@@ -2170,7 +2195,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             return Ok(ptr::null_mut());
         };
 
-        // Keyed by the transaction's real, stable MigrationTxId — NOT `transfer_crossing()` (the
+        // Keyed by the transaction's real, stable MigrationTransferId — NOT `transfer_crossing()` (the
         // funding-note/crossing index). The app's displayed "Transfer N" position comes from
         // sorting the ORIGINAL proposal by broadcast_height (see `encode_migration_schedule`),
         // while the engine assigns real tx ids in crossing/schedule() order at commit time —
@@ -2179,7 +2204,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
         //
         // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)
-        let transactions: Vec<(MigrationTxId, bool, bool, bool, BlockHeight, Option<BlockHeight>)> =
+        let transactions: Vec<(MigrationTransferId, bool, bool, bool, BlockHeight, Option<BlockHeight>)> =
             state
                 .transactions()
                 .iter()
@@ -2211,12 +2236,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             transactions,
             JNI_MIGRATION_TRANSFER_STATE,
             |env, (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)| {
-                let id = encode_transfer_id(env, id)?;
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(Ljava/lang/String;ZZZJJ)V",
+                    "(JZZZJJ)V",
                     &[
-                        JValue::Object(&id),
+                        JValue::Long(encode_transfer_id(id)),
                         JValue::Bool(is_transfer as jboolean),
                         JValue::Bool(is_sent as jboolean),
                         JValue::Bool(is_proved as jboolean),
@@ -2404,7 +2428,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // rc.1 engine has no cancel/fail primitive; this is the accepted residual.)
         let cancelled = MigrationState::from_parts(
             engine::MigrationStatus::Failed,
-            state.note_split().clone(),
+            state.denominations().clone(),
             state.preparation().clone(),
             state.transactions().clone(),
             state.anchor_bucket_interval(),
@@ -2531,11 +2555,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         let (state, unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             None,
             |network, target, backend, migration_plan, rng| {
@@ -2619,15 +2645,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (proven_pczt, txid) =
             finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
-        let id = encode_transfer_id(env, split_id)?;
+        let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
         let pczt_bytes = crate::utils::rust_bytes_to_java(env, &proven_pczt)?;
         Ok(env
             .new_object(
                 JNI_PREPARED_TRANSFER,
-                "(Ljava/lang/String;[B[B)V",
+                "(J[B[B)V",
                 &[
-                    JValue::Object(&id),
+                    JValue::Long(id),
                     JValue::Object(&txid_obj),
                     JValue::Object(&pczt_bytes),
                 ],
@@ -2659,11 +2685,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // (which would have hit `CommitError::MigrationInProgress` from the engine anyway).
         let target = target_height(&wallet)?;
         let (state, unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             proposal_handle as u64,
             None,
             |network, target, backend, migration_plan, rng| {
@@ -2681,7 +2709,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 ))
             },
         )?;
-        let transfer_ids: std::collections::HashSet<MigrationTxId> = state
+        let transfer_ids: std::collections::HashSet<MigrationTransferId> = state
             .transactions()
             .iter()
             .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
@@ -2707,12 +2735,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             transfers,
             JNI_UNSIGNED_TRANSFER_PCZT,
             |env, (id, pczt_bytes)| {
-                let id = encode_transfer_id(env, id)?;
                 let pczt_bytes = crate::utils::rust_bytes_to_java(env, &pczt_bytes)?;
                 env.new_object(
                     JNI_UNSIGNED_TRANSFER_PCZT,
-                    "(Ljava/lang/String;[B)V",
-                    &[JValue::Object(&id), JValue::Object(&pczt_bytes)],
+                    "(J[B)V",
+                    &[
+                        JValue::Long(encode_transfer_id(id)),
+                        JValue::Object(&pczt_bytes),
+                    ],
                 )
             },
         )?
@@ -2730,13 +2760,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
-    ids: JObjectArray<'local>,
+    ids: JLongArray<'local>,
     pczt_bytes_list: JObjectArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let count = env.get_array_length(&ids)?;
+        // A `long[]` is read as a region rather than element-by-element: the ids are primitives,
+        // not objects.
+        let mut raw_ids = vec![0i64; count as usize];
+        env.get_long_array_region(&ids, 0, &mut raw_ids)?;
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let mut state = backend
             .get_migration()
@@ -2745,8 +2779,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Absorbs the new engine's per-transaction `apply_signature` into the old batch-shaped
         // call Kotlin still makes — see module doc point about the signed-PCZT return path.
         for i in 0..count {
-            let id_obj = env.get_object_array_element(&ids, i)?;
-            let id = decode_transfer_id(env, &JString::from(id_obj))?;
+            let id = decode_transfer_id(raw_ids[i as usize])?;
             let bytes_obj = env.get_object_array_element(&pczt_bytes_list, i)?;
             let pczt_bytes = crate::utils::java_bytes_to_rust(env, &JByteArray::from(bytes_obj))?;
             if !state.apply_signature(id, pczt_bytes) {
@@ -2890,7 +2923,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         Ok(env
             .new_object(
                 JNI_KEYSTONE_BATCH_SIGNED_PCZTS,
-                format!("([B[[B)V"),
+                "([B[[B)V".to_string(),
                 &[
                     JValue::Object(&split_signed_obj),
                     JValue::Object(&transfers_signed_obj),
@@ -3071,7 +3104,7 @@ mod live_wallet_signing_tests {
             backend.orchard_fvk().expect("fvk")
         };
 
-        let ids_and_kinds: Vec<(MigrationTxId, MigrationTxKind)> = state
+        let ids_and_kinds: Vec<(MigrationTransferId, MigrationTxKind)> = state
             .transactions()
             .iter()
             .map(|t| (t.id(), t.kind()))
@@ -3337,7 +3370,7 @@ mod live_wallet_edge_case_tests {
         backend: &mut Backend<Wallet>,
         plan: &MigrationPlan,
         rng: &mut OsRng,
-    ) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)> {
+    ) -> anyhow::Result<MigrationCommitOutcome> {
         let (state, unsigned) =
             engine::build_preparation_unsigned(network, target, backend, plan, rng)
                 .map_err(|e| anyhow!("build_preparation_unsigned: {:?}", e))?;
@@ -3510,11 +3543,13 @@ mod live_wallet_edge_case_tests {
         let target = tip + 1;
 
         let (state1, unsigned1) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             handle,
             None,
             sign_unsigned,
@@ -3533,11 +3568,13 @@ mod live_wallet_edge_case_tests {
         // reuse path the handle must NOT be consulted (the commitment already happened, with a
         // handle-verified plan) — a stale handle only blocks a FRESH commit.
         let (state2, unsigned2) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             handle,
             None,
             sign_unsigned,
@@ -3590,11 +3627,13 @@ mod live_wallet_edge_case_tests {
         let target = tip + 1;
 
         let err = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             stale_handle,
             None,
             sign_unsigned,
@@ -3607,11 +3646,13 @@ mod live_wallet_edge_case_tests {
         );
 
         let (_state, unsigned) = commit_or_reuse(
-            &network,
-            &wallet,
-            account,
-            &mut store_conn,
-            target,
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
             current_handle,
             None,
             sign_unsigned,
@@ -3674,7 +3715,7 @@ mod live_wallet_edge_case_tests {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
 
-        let committed_ids: Vec<MigrationTxId> = {
+        let committed_ids: Vec<MigrationTransferId> = {
             let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
             let account = first_account(&wallet);
             let (plan, tip, _handle) =
@@ -3698,7 +3739,7 @@ mod live_wallet_edge_case_tests {
             .get_migration()
             .expect("read migration state")
             .expect("migration state must persist across a fresh connection to the same DB file");
-        let reloaded_ids: Vec<MigrationTxId> =
+        let reloaded_ids: Vec<MigrationTransferId> =
             reloaded.transactions().iter().map(|t| t.id()).collect();
         assert_eq!(
             committed_ids, reloaded_ids,
@@ -3779,10 +3820,10 @@ mod next_due_transfer_tests {
     use super::*;
     use zcash_pool_migration::{
         engine::{
-            MigrationState, MigrationStatus, MigrationTransaction, MigrationTxId, MigrationTxKind,
+            MigrationState, MigrationStatus, MigrationTransaction, MigrationTransferId, MigrationTxKind,
             MigrationTxState,
         },
-        note_splitting::NoteSplitPlan,
+        denomination::DenominationPlan,
         preparation::PreparationPlan,
         scheduling::AnchorBucketInterval,
     };
@@ -3790,7 +3831,7 @@ mod next_due_transfer_tests {
 
     /// Builds a minimal `MigrationState` with the given transactions (all transfers, no prep).
     fn make_state(status: MigrationStatus, transfers: Vec<MigrationTransaction>) -> MigrationState {
-        let note_split = NoteSplitPlan::from_stored_parts(
+        let note_split = DenominationPlan::from_stored_parts(
             vec![Zatoshis::const_from_u64(100_000_000)],
             Zatoshis::const_from_u64(5_000),
             None,
@@ -3815,7 +3856,7 @@ mod next_due_transfer_tests {
         expiry: u32,
     ) -> MigrationTransaction {
         MigrationTransaction::from_parts(
-            MigrationTxId::new(id),
+            MigrationTransferId::new(id),
             MigrationTxKind::Transfer { crossing: 0 },
             vec![0u8; 32], // dummy pczt
             vec![],        // no deps
@@ -3834,7 +3875,7 @@ mod next_due_transfer_tests {
         expiry: u32,
     ) -> MigrationTransaction {
         MigrationTransaction::from_parts(
-            MigrationTxId::new(id),
+            MigrationTransferId::new(id),
             MigrationTxKind::Preparation { layer: 0, index: 0 },
             vec![0u8; 32], // dummy pczt
             vec![],        // no deps
@@ -3869,7 +3910,7 @@ mod next_due_transfer_tests {
         let result = next_due_transfer_result(&state, tip, tip);
         match result {
             DueTransferResult::AwaitingProof(id) => {
-                assert_eq!(id, MigrationTxId::new(42), "id must match the signed transfer");
+                assert_eq!(id, MigrationTransferId::new(42), "id must match the signed transfer");
             }
             other => panic!(
                 "expected AwaitingProof, got NothingDue: {}",
@@ -3950,7 +3991,7 @@ mod next_due_transfer_tests {
             DueTransferResult::Ready(tx) => {
                 assert_eq!(
                     tx.id(),
-                    MigrationTxId::new(11),
+                    MigrationTransferId::new(11),
                     "only the unexpired transfer (id=11) may be returned"
                 );
             }
@@ -3982,7 +4023,7 @@ mod record_transfer_result_tests {
     use super::*;
     use zcash_pool_migration::{
         engine::MigrationStatus,
-        note_splitting::NoteSplitPlan,
+        denomination::DenominationPlan,
         preparation::PreparationPlan,
         scheduling::AnchorBucketInterval,
     };
@@ -3990,7 +4031,7 @@ mod record_transfer_result_tests {
 
     // Reuse the minimal-state builder from next_due_transfer_tests.
     fn make_state(status: MigrationStatus, transfers: Vec<MigrationTransaction>) -> MigrationState {
-        let note_split = NoteSplitPlan::from_stored_parts(
+        let note_split = DenominationPlan::from_stored_parts(
             vec![Zatoshis::const_from_u64(100_000_000)],
             Zatoshis::const_from_u64(5_000),
             None,
@@ -4010,7 +4051,7 @@ mod record_transfer_result_tests {
 
     fn transfer(id: u32, state: MigrationTxState, scheduled: u32, expiry: u32) -> MigrationTransaction {
         MigrationTransaction::from_parts(
-            MigrationTxId::new(id),
+            MigrationTransferId::new(id),
             MigrationTxKind::Transfer { crossing: 0 },
             vec![0u8; 32],
             vec![],
@@ -4048,7 +4089,7 @@ mod record_transfer_result_tests {
                 let failed = if !state.is_terminal() {
                     MigrationState::from_parts(
                         MigrationStatus::Failed,
-                        state.note_split().clone(),
+                        state.denominations().clone(),
                         state.preparation().clone(),
                         state.transactions().clone(),
                         state.anchor_bucket_interval(),
@@ -4173,7 +4214,7 @@ mod record_transfer_result_tests {
 mod reconcile_tests {
     use super::*;
     use std::collections::HashSet;
-    use zcash_pool_migration::engine::{MigrationTxId, MigrationTxState};
+    use zcash_pool_migration::engine::{MigrationTransferId, MigrationTxState};
     use zcash_protocol::TxId;
 
     fn nf(byte: u8) -> [u8; 32] {
@@ -4221,7 +4262,7 @@ mod reconcile_tests {
     // (Previously misnamed `reconcile_ignores_spends_by_the_plans_own_transactions`.)
     #[test]
     fn reconcile_unspent_funding_note_never_invalidated() {
-        let id = MigrationTxId::new(3);
+        let id = MigrationTransferId::new(3);
         // Funding note still unspent → the transfer is fine, regardless of own-txid fields.
         let candidates = vec![(id, Some(nf(0x42)), Some(txid(0x10)))];
         let unspent: HashSet<[u8; 32]> = [nf(0x42)].into_iter().collect();
@@ -4239,7 +4280,7 @@ mod reconcile_tests {
     // should have promoted it, but even if it didn't, decide_foreign_spend must not false-positive.
     #[test]
     fn reconcile_ignores_spends_by_the_plans_own_transactions() {
-        let id = MigrationTxId::new(5);
+        let id = MigrationTransferId::new(5);
         let own = txid(0xAB);
         // Funding note IS spent (absent from unspent), but the transfer's own txid IS on-chain.
         let candidates = vec![(id, Some(nf(0x55)), Some(own))];
@@ -4260,7 +4301,7 @@ mod reconcile_tests {
     // confirm the spender is foreign, so we must not invalidate.
     #[test]
     fn reconcile_skips_when_own_txid_is_unreadable() {
-        let id = MigrationTxId::new(9);
+        let id = MigrationTransferId::new(9);
         // Funding note spent (not in unspent set), own txid unreadable (None).
         let candidates = vec![(id, Some(nf(0x77)), None)];
         let unspent: HashSet<[u8; 32]> = HashSet::new(); // 0x77 not present → spent
@@ -4277,7 +4318,7 @@ mod reconcile_tests {
     // Spent nullifier + own txid readable + own txid NOT on-chain → spender must be foreign.
     #[test]
     fn reconcile_invalidates_when_funding_note_spent_by_foreign_tx() {
-        let id = MigrationTxId::new(7);
+        let id = MigrationTransferId::new(7);
         let own = txid(0x11);
         // Funding note spent (absent from unspent); own txid readable; own txid NOT on-chain.
         let candidates = vec![(id, Some(nf(0xAA)), Some(own))];
@@ -4297,7 +4338,7 @@ mod reconcile_tests {
     // (unknown) nullifier is trivially absent from the unspent set.
     #[test]
     fn reconcile_never_invalidates_on_unreadable_funding_nullifier() {
-        let candidates = vec![(MigrationTxId::new(1), None, Some(txid(0x01)))];
+        let candidates = vec![(MigrationTransferId::new(1), None, Some(txid(0x01)))];
         let unspent: HashSet<[u8; 32]> = HashSet::new();
         let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
 
@@ -4314,14 +4355,14 @@ mod reconcile_tests {
         let unspent: HashSet<[u8; 32]> = [nf(0x01)].into_iter().collect(); // only id=1 unspent
         let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
         let candidates = vec![
-            (MigrationTxId::new(1), Some(nf(0x01)), Some(txid(0x01))), // unspent → skip
-            (MigrationTxId::new(2), Some(nf(0x02)), Some(txid(0x02))), // spent, not own → invalidate
-            (MigrationTxId::new(3), Some(nf(0x03)), Some(txid(0x03))), // also spent, but id=2 wins
+            (MigrationTransferId::new(1), Some(nf(0x01)), Some(txid(0x01))), // unspent → skip
+            (MigrationTransferId::new(2), Some(nf(0x02)), Some(txid(0x02))), // spent, not own → invalidate
+            (MigrationTransferId::new(3), Some(nf(0x03)), Some(txid(0x03))), // also spent, but id=2 wins
         ];
 
         assert_eq!(
             decide_foreign_spend(&candidates, &unspent, &own_on_chain),
-            Some(MigrationTxId::new(2)),
+            Some(MigrationTransferId::new(2)),
             "the first foreign-spent candidate must be the one invalidated"
         );
     }
@@ -4329,7 +4370,7 @@ mod reconcile_tests {
     // Empty candidate set → no decision.
     #[test]
     fn reconcile_no_candidates_no_invalidation() {
-        let candidates: Vec<(MigrationTxId, Option<[u8; 32]>, Option<[u8; 32]>)> = vec![];
+        let candidates: Vec<(MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>)> = vec![];
         assert_eq!(
             decide_foreign_spend(&candidates, &HashSet::new(), &HashSet::new()),
             None,

@@ -6,7 +6,159 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0-rc.1] - 2026-07-26
+
+### Added
+- `Synchronizer.broadcaster`, a `Broadcaster` that separates transaction creation from
+  submission. `createProposedTransactions` and `createTransactionFromPczt` create and store
+  transactions locally and return them as `CreatedTransaction`s; `submit(transaction, endpoint)`
+  sends one to a caller-chosen lightwalletd endpoint. A transaction created this way is not
+  automatically resubmitted until it has been submitted at least once through `submit`, after
+  which automatic retry uses the endpoints it was actually submitted to rather than the endpoint
+  the synchronizer was built with. The same-named `Synchronizer` methods are unchanged: they
+  still create and submit in one step, to the builder-configured endpoint.
+- `CreatedTransaction` (`txId`, `raw`, `expiryHeight`), the transaction handle that `Broadcaster`
+  returns and accepts.
+- `Synchronizer.fullyScannedHeight`, the height up to which the wallet has trial-decrypted every
+  block, and `Synchronizer.getTreeState(height)`, which returns the protobuf-encoded note
+  commitment tree state at a height so consumers can generate witnesses or verify inclusion
+  proofs without using the lightwalletd transport directly. `getTreeState` performs a live server
+  request and does not wait for local scan state; callers combining its result with local wallet
+  data at the same height should first check that `fullyScannedHeight` has reached `height`.
+
 ### Changed
+- `Synchronizer` gains three abstract members — `fullyScannedHeight`, `getTreeState` and
+  `getWalletDbPathForVoting` — so any implementer or test fake must now provide them.
+  `broadcaster` is not abstract: it defaults to an implementation whose every method throws
+  `UnsupportedOperationException`.
+- New wallets now initialize from a tree state fetched from the server 100 blocks below the chain
+  tip instead of from the bundled checkpoint, so a wallet with no transaction history starts near
+  the tip and scans far fewer blocks while staying reorg-safe. If that fetch does not complete
+  within 5 seconds, initialization falls back to the bundled checkpoint. Wallet restore is
+  unaffected.
+- `String.fromHex` now throws `IllegalArgumentException` on odd-length or non-hex input instead
+  of silently coercing malformed strings.
+- `Synchronizer.getAccounts` now rethrows `CancellationException` instead of wrapping it in
+  `InitializeException.GetAccountsException`, so cancelling the calling coroutine no longer
+  surfaces as an account-loading failure.
+- Shielded voting is unavailable in this release, and `VotingRustBackend` — in the
+  separately published `zcash-android-backend` artifact — is now deprecated at
+  `ERROR` level. Referencing it is a compile error rather than a runtime
+  `UnsatisfiedLinkError`, because the native library exports none of the symbols
+  its methods bind to. There is no alternative code path: callers must remove
+  every use for this release. Consumers who depend only on
+  `zcash-android-sdk` are unaffected, as the backend artifact is not on their
+  compile classpath. `Synchronizer.getWalletDbPathForVoting` still returns a
+  path, but nothing in this release can act on it.
+- `FiatCurrencyConversion.fiatCurrency` is now a constructor parameter rather
+  than a fixed property, and can be set to a currency other than
+  `FiatCurrency.USD`. It previously always held `USD` and took no part in the
+  generated `data class` members; it now participates in `equals`, `hashCode`,
+  `toString` and `copy`. Code comparing two conversions will now see values that
+  differ only in currency as unequal, and code that destructures gains a third
+  component. Two-argument construction still compiles unchanged and defaults to
+  `USD`.
+- Updated checkpoints for testnet.
+
+### Fixed
+- `CompactBlockProcessor` no longer crashes with an `IllegalArgumentException` from
+  `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
+  importing an account whose birthday is at the chain tip). The combined progress ratio now uses
+  the same zero-denominator semantics as the individual ratios: an empty range means 100%.
+
+## [2.7.0-rc.2] - 2026-07-26
+
+### Changed
+- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
+  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
+  both Orchard and Ironwood bundles no longer constructs the key twice.
+
+### Fixed
+- Hardware-wallet signing of post-NU6.3 (v6) transactions: the wallet-controlled zero-value
+  Orchard spends that pad such transactions now carry ZIP 32 derivation metadata (via
+  `zcash_client_backend 0.24.0-rc.4`), so signers can identify and sign them. Previously these
+  actions were unsignable and v6 sends failed at finalization with
+  `Pczt(Extraction(Orchard(Extract(MissingSpendAuthSig))))` even though the device approved the
+  transaction.
+- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
+  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
+  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
+- Hardware-wallet (Keystone) PCZT signing now sends the full (non-compacted) signer view in the
+  minimal PCZT encoding (v1 for v5 transactions). The compact view/v2-encoding wire contract is
+  not supported by deployed firmware's ordinary signing flow, and caused finalization failures
+  with `MissingSpendAuthSig`.
+
+## [2.7.0-rc.1] - 2026-07-25
+
+### Added
+- Ironwood (NU6.3) shielded pool support: the SDK now exposes the Ironwood pool
+  (balance, subtree roots, sync) alongside Sapling and Orchard.
+- `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that
+  moves the account's entire Orchard balance across the NU6.3 turnstile into the
+  Ironwood pool.
+
+  **This migration is not private.** It produces a single transaction whose value
+  is the account's entire Orchard balance, so any chain observer can read that
+  balance off the chain. The SDK deliberately does not split the crossing into
+  less-identifying denominations. Wallets should surface this in the confirmation
+  UI rather than presenting the migration as a routine self-send.
+- `CompactBlockProcessorException.MismatchedConsensusBranch`, `MismatchedNetwork`
+  and `MismatchedSaplingActivationHeight` now expose their constructor arguments
+  as public `val`s (`clientBranchId`/`serverBranchId`,
+  `clientNetwork`/`serverNetwork`, `clientHeight`/`serverHeight`). Previously the
+  mismatched values were reachable only by parsing the exception's `message`, so
+  consumers had to either scrape English prose or surface it verbatim. Wallets
+  can now render a localized, structured explanation of why a server is
+  incompatible. Note that consensus branch IDs are opaque unordered constants:
+  neither the SDK nor a consumer can infer from them alone which side is stale.
+
+### Breaking changes
+
+Adding the Ironwood pool changes several public types. Downstream consumers will
+need source changes:
+
+- `AccountBalance` gains a required `ironwood: WalletBalance` property, in third
+  position, before `unshielded`. Positional construction will not compile.
+- `CompactBlockUnsafe` gains a required `ironwoodOutputsCount: UInt` constructor
+  parameter, before `compactBlockBytes`.
+- `TransactionPool` and `ShieldedProtocolEnum` each gain an `IRONWOOD` case, so
+  exhaustive `when` expressions over them stop compiling until the new case is
+  handled.
+- `Synchronizer` gains an abstract `proposeOrchardToIronwoodMigration`, which any
+  implementer or test fake must now provide.
+
+The lightwallet protocol definitions are now vendored from
+[zcash/lightwallet-protocol](https://github.com/zcash/lightwallet-protocol) at
+v0.5.0 rather than maintained by hand, which changes the generated
+`cash.z.wallet.sdk.internal.rpc` types. The SDK itself uses none of the
+following, but consumers touching the generated gRPC types directly will:
+
+- `CompactTx.hash` is renamed to `CompactTx.txid`, so `getHash()`/`setHash()`
+  become `getTxid()`/`setTxid()`.
+- `CompactBlock.protoVersion` is removed; field 1 is now reserved.
+- The `Exclude` message is replaced by `GetMempoolTxRequest`, changing the
+  `GetMempoolTx` RPC signature.
+
+Additive in the same update: a `PoolType` enum, `BlockRange.poolTypes`, the
+`CompactTxIn` and `TxOut` messages with `CompactTx.vin`/`vout`, four new
+`LightdInfo` fields, and a `GetTaddressTransactions` RPC. `GetBlockNullifiers`
+and `GetBlockRangeNullifiers` are now deprecated upstream in favour of
+`GetBlockRange` with `poolTypes`.
+
+### Changed
+- Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
+  line, adapting the backend to the send-max and builder API changes.
+- Updated the librustzcash crates to their published releases,
+  `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
+- Migration transfer ids are `Long` (the engine's `u32`, widened as this JNI boundary widens every
+  unsigned 32-bit value) rather than decimal strings, across `JniTransferProposal`,
+  `JniPreparedTransfer`, `JniMigrationTransferState`, `JniUnsignedTransferPczt`,
+  `JniAttentionReason.InvalidTransfer`, their `MigrationSdk` counterparts
+  (`TransferProposal`, `MigrationTransferState`, `AttentionReason.InvalidTransfer`),
+  `recordTransferResult(transferId:)`, and the `ids` array of `storeSignedSchedulePczts`
+  (now a `LongArray`). The id identifies the TRANSFER, not one broadcast attempt: a rebuilt
+  expired transfer keeps its id while getting a new transaction id, so it stays the key to
+  correlate on.
 - The native backend no longer runs any DDL or direct DML against wallet-database
   internals: the pre-release schema self-heal shim for
   `orchard_ironwood_migration_transactions` is removed (wallets created against
@@ -23,6 +175,46 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end in minutes rather than days. Mainnet is unchanged and still uses the ZIP
   318 parameters. A testnet wallet that committed a migration before this change
   has its transfers anchored to the old grid; those runs must be restarted.
+
+### Fixed
+- The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
+  helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
+  paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that
+  fired during the active `submit()` RPC could race the foreground submit with a second
+  `txManager.submit()`. With the plan-store dance, the in-flight window is `AwaitingPlan` and the
+  resubmit step skips it. Note that `resubmitUnminedTransactions` is DB-driven (loads
+  unmined-and-not-expired txs from the wallet DB) and does not query the mempool, so a tx that
+  has been accepted into a server's mempool but not yet mined will still be re-broadcast on the
+  next sync tick — that mempool-duplication path is handled by the "verify against the server"
+  reclassification (separate `## Fixed` entry below). This entry narrows the *in-flight* race
+  window specifically. The public `Broadcaster.submit` and both legacy helpers record their
+  endpoint after the submit RPC returns (rather than before), and the write is wrapped in
+  `NonCancellable` so a coroutine cancellation mid-submit cannot leave the plan stranded at
+  `AwaitingPlan`.
+- `Synchronizer.submitTransaction` (and the broadcaster equivalent) now verifies submit failures
+  against the server before surfacing them: when the submit RPC returns a non-zero error code
+  (and not a gRPC-layer failure), the SDK immediately asks the same lightwalletd whether the tx
+  is known via `fetchTransaction`, and reclassifies the result as `TransactionSubmitResult.Success`
+  if the server reports the tx is in mempool or chain. This covers the cases that previously
+  produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's
+  `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
+  backend-specific error codes or message text.
+
+## [2.6.6] - 2026-07-25
+
+### Added
+- Support for the Ironwood (NU6.3) shielded pool: per-pool balances, output counts and
+  subtree roots, and the Ironwood `ShieldedProtocol` variant.
+
+### Changed
+- Migrated to `zcash_client_backend 0.24`, `zcash_client_sqlite 0.22`, `zcash_protocol 0.10`,
+  `zcash_primitives`/`zcash_proofs 0.29`, `orchard 0.15`, `pczt 0.8`, `zcash_transparent 0.9`.
+- Updated checkpoints for mainnet and testnet.
+
+### Internal
+- The shielded-voting native surface (`zcash_voting`, the `chp-voting` feature and `mod voting`)
+  is commented out, so no `Java_..._VotingRustBackend_*` JNI symbols are emitted.
+
 
 ## [2.6.5] - 2026-06-19
 
@@ -45,6 +237,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.0] - 2026-05-26
 
 ### Added
+- `CompactBlockProcessor.enhanceTransactionDetails` and the per-transaction `enhanceTransaction`
+  step now emit structured diagnostic logs at each step of an enhance cycle — cycle start with
+  request count, per-request type, fetch response shape (whether a tx was returned, whether it
+  has a mined height), the decision taken (`setTransactionStatus` or `decryptAndStoreTransaction`),
+  per-request errors with error type, and cycle completion. Logs use opaque per-request
+  correlation ids (no transaction ids, addresses, or other PII) so production logs are debuggable
+  for future stuck-transaction reports without exposing user-identifying data.
 - New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
   scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
   to the bundled checkpoint if this optimization does not complete within 5 seconds.
@@ -71,6 +270,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exposes raw-address derivation to callers that do not retain the hotkey seed.
 - Pinned `orchard` to `=0.13.1` with `unstable-voting-circuits` to match `zcash_voting` / `voting-circuits` requirements.
 - Pinned `zcash_voting` to `=0.10.1`.
+
+## [2.5.2] - 2026-06-03
+
+### Changed
+- Migrated to NU 6.2
 
 ## [2.5.1] - 2026-05-14
 

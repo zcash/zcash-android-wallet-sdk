@@ -166,26 +166,48 @@ sealed class CompactBlockProcessorException(
             )
     }
 
+    /**
+     * The client and the server disagree about which network they are on.
+     *
+     * [clientNetwork] and [serverNetwork] are exposed so that callers can present the mismatch
+     * without parsing [message], whose wording is not part of the API contract.
+     */
     class MismatchedNetwork(
-        clientNetwork: String?,
-        serverNetwork: String?
+        val clientNetwork: String?,
+        val serverNetwork: String?
     ) : CompactBlockProcessorException(
             "Incompatible server: this client expects a server using $clientNetwork but it was $serverNetwork! Try " +
                 "updating the client or switching servers."
         )
 
+    /**
+     * The client and the server disagree about the active consensus branch, so sync cannot make
+     * progress. Either side may be the stale one: the client may predate a network upgrade the
+     * server has already activated, or the server may be running an older release than the client.
+     *
+     * [clientBranchId] and [serverBranchId] are lowercase hex branch IDs (for example `5437f330`),
+     * exposed so that callers can present the mismatch without parsing [message], whose wording is
+     * not part of the API contract. They are opaque unordered constants and cannot be compared to
+     * decide which side is behind.
+     */
     class MismatchedConsensusBranch(
-        clientBranchId: String,
-        serverBranchId: String
+        val clientBranchId: String,
+        val serverBranchId: String
     ) : CompactBlockProcessorException(
             message =
                 "Incompatible server: this client expects a consensus branch $clientBranchId but it " +
                     "was $serverBranchId! Try updating the client or switching servers."
         )
 
+    /**
+     * The client and the server disagree about the Sapling activation height.
+     *
+     * [clientHeight] and [serverHeight] are exposed so that callers can present the mismatch
+     * without parsing [message], whose wording is not part of the API contract.
+     */
     class MismatchedSaplingActivationHeight(
-        clientHeight: Long,
-        serverHeight: Long
+        val clientHeight: Long,
+        val serverHeight: Long
     ) : CompactBlockProcessorException(
             message =
                 "Incompatible server: this client expects a sapling activation height $clientHeight but it " +

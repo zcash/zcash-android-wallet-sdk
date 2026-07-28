@@ -113,6 +113,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.min
@@ -366,7 +367,12 @@ class CompactBlockProcessor internal constructor(
                             GetSubtreeRootsResult.FailureConnection -> {
                                 // SubtreeRoot fetching retry
                                 subTreeRootResult =
-                                    getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex, ironwoodStartIndex)
+                                    getSubtreeRoots(
+                                        downloader,
+                                        saplingStartIndex,
+                                        orchardStartIndex,
+                                        ironwoodStartIndex
+                                    )
                                 BlockProcessingResult.Reconnecting
                             }
                         }
@@ -474,7 +480,10 @@ class CompactBlockProcessor internal constructor(
 
     suspend fun enhanceTransaction(txId: TransactionId) {
         processingMutex.withLockLogged("processNewBlocks") {
+            val reqId = UUID.randomUUID().toString().take(LOG_CORRELATION_ID_LENGTH)
             enhanceTransaction(
+                reqId = reqId,
+                typeName = "enhancement",
                 transactionRequest = TransactionDataRequest.Enhancement(txId.value.byteArray),
                 backend = backend,
                 downloader = downloader,
@@ -1360,165 +1369,87 @@ class CompactBlockProcessor internal constructor(
 
         var result: GetSubtreeRootsResult = GetSubtreeRootsResult.Linear
 
-        var saplingSubtreeRootList: List<SubtreeRoot> = emptyList()
-        var orchardSubtreeRootList: List<SubtreeRoot> = emptyList()
-        var ironwoodSubtreeRootList: List<SubtreeRoot> = emptyList()
-
-        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
-            downloader
-                .getSubtreeRoots(
-                    saplingStartIndex,
-                    shieldedProtocol = ShieldedProtocolEnum.SAPLING,
-                    maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
-                ).onEach { response ->
-                    when (response) {
-                        is Response.Success -> {
-                            Twig.verbose {
-                                "Sapling SubtreeRoot fetched successfully: its completingHeight is: ${
-                                    response.result
-                                        .completingBlockHeight
-                                }"
-                            }
-                        }
-
-                        is Response.Failure -> {
-                            val error =
-                                LightWalletException.GetSubtreeRootsException(
-                                    response.code,
-                                    response.description,
-                                    response.toThrowable()
-                                )
-                            if (response is Response.Failure.Server.Unavailable) {
-                                Twig.error {
-                                    "Fetching Sapling SubtreeRoot failed due to server communication problem with" +
-                                        " failure: ${response.toThrowable()}"
+        // Fetching the subtree roots of a pool differs only in which pool is targeted and in
+        // whether a failure is recorded, so the three per-pool retry loops share one implementation.
+        //
+        // Sapling and Orchard record into [result] exactly as they did before Ironwood existed.
+        // Only the Ironwood fetch tolerates failure: no deployed lightwalletd answers for a pool
+        // that activates at NU6.3, so until the server population is upgraded this request fails
+        // for every wallet, on every sync start. Recording that would set a value the trailing
+        // `saplingSubtreeRootList.isNotEmpty()` block discards anyway; tolerating it keeps the
+        // absence of Ironwood roots from reading as a fetch failure.
+        //
+        // This tolerance is transitional and must not outlive the server rollout, or a genuine
+        // Ironwood fetch fault will be ignored and spend-before-sync will proceed on an
+        // incomplete Ironwood commitment tree. Tracked in
+        // https://github.com/zcash/zcash-android-wallet-sdk/issues/2061.
+        suspend fun fetchSubtreeRoots(
+            startIndex: UInt,
+            shieldedProtocol: ShieldedProtocolEnum,
+            onFailure: (GetSubtreeRootsResult) -> Unit
+        ): List<SubtreeRoot> {
+            var roots: List<SubtreeRoot> = emptyList()
+            retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
+                roots =
+                    downloader
+                        .getSubtreeRoots(
+                            startIndex = startIndex,
+                            shieldedProtocol = shieldedProtocol,
+                            maxEntries = UInt.MIN_VALUE,
+                            serviceMode = ServiceMode.Direct
+                        ).onEach { response ->
+                            when (response) {
+                                is Response.Success -> {
+                                    Twig.verbose {
+                                        "$shieldedProtocol SubtreeRoot fetched successfully: its completingHeight" +
+                                            " is: ${response.result.completingBlockHeight}"
+                                    }
                                 }
-                                result = GetSubtreeRootsResult.FailureConnection
-                            } else {
-                                Twig.error {
-                                    "Fetching Sapling SubtreeRoot failed with failure: ${response.toThrowable()}"
+
+                                is Response.Failure -> {
+                                    val error =
+                                        LightWalletException.GetSubtreeRootsException(
+                                            response.code,
+                                            response.description,
+                                            response.toThrowable()
+                                        )
+                                    if (response is Response.Failure.Server.Unavailable) {
+                                        Twig.error {
+                                            "Fetching $shieldedProtocol SubtreeRoot failed due to server" +
+                                                " communication problem with failure: ${response.toThrowable()}"
+                                        }
+                                        onFailure(GetSubtreeRootsResult.FailureConnection)
+                                    } else {
+                                        Twig.error {
+                                            "Fetching $shieldedProtocol SubtreeRoot failed with failure:" +
+                                                " ${response.toThrowable()}"
+                                        }
+                                        onFailure(GetSubtreeRootsResult.OtherFailure(error))
+                                    }
+                                    // Deliberately not ending [traceScope] here: `retryUpToAndContinue`
+                                    // swallows this after the last attempt, so control always reaches the
+                                    // single `traceScope.end()` below. Ending it per failed attempt closed
+                                    // the scope early and logged "ended more than once" for each retry.
+                                    throw error
                                 }
-                                result = GetSubtreeRootsResult.OtherFailure(error)
                             }
-                            traceScope.end()
-                            throw error
+                        }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
+                        .map { response ->
+                            response.result
+                        }.toList()
+                        .map {
+                            SubtreeRoot.new(it)
                         }
-                    }
-                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
-                .map { response ->
-                    response.result
-                }.toList()
-                .map {
-                    SubtreeRoot.new(it)
-                }.let {
-                    saplingSubtreeRootList = it
-                }
+            }
+            return roots
         }
 
-        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
-            downloader
-                .getSubtreeRoots(
-                    startIndex = orchardStartIndex,
-                    shieldedProtocol = ShieldedProtocolEnum.ORCHARD,
-                    maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
-                ).onEach { response ->
-                    when (response) {
-                        is Response.Success -> {
-                            Twig.verbose {
-                                "Orchard SubtreeRoot fetched successfully: its completingHeight is: ${
-                                    response.result
-                                        .completingBlockHeight
-                                }"
-                            }
-                        }
-
-                        is Response.Failure -> {
-                            val error =
-                                LightWalletException.GetSubtreeRootsException(
-                                    response.code,
-                                    response.description,
-                                    response.toThrowable()
-                                )
-                            if (response is Response.Failure.Server.Unavailable) {
-                                Twig.error {
-                                    "Fetching Orchard SubtreeRoot failed due to server communication problem with" +
-                                        " failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.FailureConnection
-                            } else {
-                                Twig.error {
-                                    "Fetching Orchard SubtreeRoot failed with failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.OtherFailure(error)
-                            }
-                            traceScope.end()
-                            throw error
-                        }
-                    }
-                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
-                .map { response ->
-                    response.result
-                }.toList()
-                .map {
-                    SubtreeRoot.new(it)
-                }.let {
-                    orchardSubtreeRootList = it
-                }
-        }
-
-        retryUpToAndContinue(GET_SUBTREE_ROOTS_RETRIES) {
-            downloader
-                .getSubtreeRoots(
-                    startIndex = ironwoodStartIndex,
-                    shieldedProtocol = ShieldedProtocolEnum.IRONWOOD,
-                    maxEntries = UInt.MIN_VALUE,
-                    serviceMode = ServiceMode.Direct
-                ).onEach { response ->
-                    when (response) {
-                        is Response.Success -> {
-                            Twig.verbose {
-                                "Ironwood SubtreeRoot fetched successfully: its completingHeight is: ${
-                                    response.result
-                                        .completingBlockHeight
-                                }"
-                            }
-                        }
-
-                        is Response.Failure -> {
-                            val error =
-                                LightWalletException.GetSubtreeRootsException(
-                                    response.code,
-                                    response.description,
-                                    response.toThrowable()
-                                )
-                            if (response is Response.Failure.Server.Unavailable) {
-                                Twig.error {
-                                    "Fetching Ironwood SubtreeRoot failed due to server communication problem with" +
-                                        " failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.FailureConnection
-                            } else {
-                                Twig.error {
-                                    "Fetching Ironwood SubtreeRoot failed with failure: ${response.toThrowable()}"
-                                }
-                                result = GetSubtreeRootsResult.OtherFailure(error)
-                            }
-                            traceScope.end()
-                            throw error
-                        }
-                    }
-                }.filterIsInstance<Response.Success<SubtreeRootUnsafe>>()
-                .map { response ->
-                    response.result
-                }.toList()
-                .map {
-                    SubtreeRoot.new(it)
-                }.let {
-                    ironwoodSubtreeRootList = it
-                }
-        }
+        val saplingSubtreeRootList =
+            fetchSubtreeRoots(saplingStartIndex, ShieldedProtocolEnum.SAPLING) { failure -> result = failure }
+        val orchardSubtreeRootList =
+            fetchSubtreeRoots(orchardStartIndex, ShieldedProtocolEnum.ORCHARD) { failure -> result = failure }
+        val ironwoodSubtreeRootList =
+            fetchSubtreeRoots(ironwoodStartIndex, ShieldedProtocolEnum.IRONWOOD) { /* tolerated; see above */ }
 
         // Intentionally omitting [orchardSubtreeRootList]/[ironwoodSubtreeRootList], e.g., for Mainnet usage, we
         // could check it, but on custom networks without NU5/NU6.3 activation, it wouldn't work. If the Orchard or
@@ -2163,6 +2094,7 @@ class CompactBlockProcessor internal constructor(
     }
 
     @VisibleForTesting
+    @Suppress("LongMethod")
     internal fun enhanceTransactionDetails(
         range: ClosedRange<BlockHeight>,
         repository: DerivedDataRepository,
@@ -2191,7 +2123,8 @@ class CompactBlockProcessor internal constructor(
             if (newTxDataRequests.isEmpty()) {
                 Twig.debug { "No new transactions found in $range" }
             } else {
-                Twig.debug { "Enhancing ${newTxDataRequests.size} transaction(s)!" }
+                val cycleId = UUID.randomUUID().toString().take(LOG_CORRELATION_ID_LENGTH)
+                Twig.info { "BlockEnhancer cycle started [$cycleId] requests=${newTxDataRequests.size}" }
 
                 // If the first transaction has been added
                 // Ideally, we could remove this last reference to the transaction view from the enhancing logic
@@ -2200,14 +2133,19 @@ class CompactBlockProcessor internal constructor(
                     emit(SyncingResult.UpdateBirthday)
                 }
 
-                newTxDataRequests.forEach {
-                    Twig.debug { "Transaction data request: $it" }
+                newTxDataRequests.forEachIndexed { index, request ->
+                    val reqId = "$cycleId.$index"
+                    val typeName = request.typeName
 
-                    when (it) {
+                    when (request) {
                         is TransactionDataRequest.EnhancementRequired -> {
-                            val trxEnhanceResult = enhanceTransaction(it, backend, downloader, sdkFlags)
+                            val trxEnhanceResult =
+                                enhanceTransaction(reqId, typeName, request, backend, downloader, sdkFlags)
                             if (trxEnhanceResult is SyncingResult.EnhanceFailed) {
-                                Twig.error(trxEnhanceResult.exception) { "Encountered transaction enhancing error" }
+                                val errorType = trxEnhanceResult.exception::class.simpleName
+                                Twig.error {
+                                    "BlockEnhancer [$reqId] type=$typeName failed error_type=$errorType"
+                                }
                                 emit(trxEnhanceResult)
                                 // We intentionally do not terminate the batch enhancing here, just reporting it
                             }
@@ -2216,12 +2154,13 @@ class CompactBlockProcessor internal constructor(
                         is TransactionDataRequest.TransactionsInvolvingAddress -> {
                             val processTaddrTxidsResult =
                                 processTransparentAddressTxids(
-                                    transactionRequest = it,
+                                    transactionRequest = request,
                                     downloader = downloader
                                 )
                             if (processTaddrTxidsResult is SyncingResult.EnhanceFailed) {
-                                Twig.error(processTaddrTxidsResult.exception) {
-                                    "Encountered SpendsFromAddress transactions error"
+                                val errorType = processTaddrTxidsResult.exception::class.simpleName
+                                Twig.error {
+                                    "BlockEnhancer [$reqId] type=$typeName failed error_type=$errorType"
                                 }
                                 emit(processTaddrTxidsResult)
                                 // We intentionally do not terminate the batch enhancing here, just reporting it
@@ -2229,9 +2168,10 @@ class CompactBlockProcessor internal constructor(
                         }
                     }
                 }
+
+                Twig.info { "BlockEnhancer cycle complete [$cycleId]" }
             }
 
-            Twig.debug { "Done enhancing transaction details" }
             emit(SyncingResult.EnhanceSuccess)
         }
 
@@ -2345,12 +2285,14 @@ class CompactBlockProcessor internal constructor(
 
     @Suppress("LongMethod")
     private suspend fun enhanceTransaction(
+        reqId: String,
+        typeName: String,
         transactionRequest: TransactionDataRequest.EnhancementRequired,
         backend: TypesafeBackend,
         downloader: CompactBlockDownloader,
         sdkFlags: SdkFlags
     ): SyncingResult {
-        Twig.debug { "Starting enhancing transaction: txid: ${transactionRequest.txIdString()}" }
+        Twig.info { "BlockEnhancer [$reqId] type=$typeName start" }
 
         val traceScope = TraceScope("CompactBlockProcessor.enhanceTransaction")
         val result =
@@ -2363,15 +2305,15 @@ class CompactBlockProcessor internal constructor(
                         sdkFlags = sdkFlags
                     )
 
-                Twig.debug { "Transaction fetched: $rawTransactionUnsafe" }
+                val hasTx = rawTransactionUnsafe != null
+                val hasMined = rawTransactionUnsafe is RawTransactionUnsafe.MainChain
+                Twig.info {
+                    "BlockEnhancer [$reqId] fetch returned has_tx=$hasTx has_mined_height=$hasMined"
+                }
 
                 // We need to distinct between the two possible states of [transactionRequest]
                 when (transactionRequest) {
                     is TransactionDataRequest.GetStatus -> {
-                        Twig.debug {
-                            "Resolving TransactionDataRequest.GetStatus by setting status of " +
-                                "transaction: txid: ${transactionRequest.txIdString()}"
-                        }
                         val status =
                             rawTransactionUnsafe?.toTransactionStatus()
                                 ?: TransactionStatus.TxidNotRecognized
@@ -2380,35 +2322,35 @@ class CompactBlockProcessor internal constructor(
                             status = status,
                             backend = backend
                         )
+                        val statusName = status::class.simpleName
+                        Twig.info {
+                            "BlockEnhancer [$reqId] setTransactionStatus called (status=$statusName)"
+                        }
                     }
 
                     is TransactionDataRequest.Enhancement -> {
                         if (rawTransactionUnsafe == null) {
-                            Twig.debug {
-                                "Resolving TransactionDataRequest.Enhancement by setting status of " +
-                                    "transaction. Txid not recognized: ${transactionRequest.txIdString()}"
-                            }
                             setTransactionStatus(
                                 transactionRawId = transactionRequest.txid,
                                 status = TransactionStatus.TxidNotRecognized,
                                 backend = backend
                             )
-                        } else {
-                            Twig.debug {
-                                "Resolving TransactionDataRequest.Enhancement by decrypting and storing " +
-                                    "transaction: txid: ${transactionRequest.txIdString()}"
+                            Twig.info {
+                                "BlockEnhancer [$reqId] setTransactionStatus called (txidNotRecognized)"
                             }
-
+                        } else {
                             decryptSemaphore.withLock {
                                 decryptTransaction(
                                     rawTransaction = RawTransaction.new(rawTransactionUnsafe = rawTransactionUnsafe),
                                 )
                             }
+                            Twig.info {
+                                "BlockEnhancer [$reqId] decryptAndStoreTransaction called has_mined_height=$hasMined"
+                            }
                         }
                     }
                 }
 
-                Twig.debug { "Done enhancing transaction: txid: ${transactionRequest.txIdString()}" }
                 SyncingResult.EnhanceSuccess
             } catch (exception: CompactBlockProcessorException.EnhanceTransactionError) {
                 SyncingResult.EnhanceFailed(null, exception)
@@ -2585,17 +2527,34 @@ class CompactBlockProcessor internal constructor(
             recoveryProgress?.getSafeRatio()?.let { PercentDecimal(it) } ?: PercentDecimal.ZERO_PERCENT
         }
 
-        // [_progress] is calculated as sum numerator divided by denominators if [recoveryProgress] is not null
+        // [_progress] is calculated as sum of numerators divided by sum of denominators if [recoveryProgress] is
+        // not null. A zero combined denominator means 100% (same semantics as [Progress.getSafeRatio]) — a raw
+        // division would produce NaN and fail [PercentDecimal]'s range requirement, e.g. for a freshly imported
+        // account whose scan and recovery ranges are both empty.
         _progress.value =
             PercentDecimal(
                 if (recoveryProgress == null) {
-                    scanProgress.numerator.toFloat() /
-                        scanProgress.denominator.toFloat()
+                    scanProgress.getSafeRatio()
                 } else {
-                    (scanProgress.numerator.toFloat() + recoveryProgress.numerator.toFloat()) /
-                        (scanProgress.denominator.toFloat() + recoveryProgress.denominator.toFloat())
+                    getSafeCombinedRatio(scanProgress, recoveryProgress)
                 }
             )
+    }
+
+    /**
+     * Combined scan+recovery progress ratio with the same safety semantics as [Progress.getSafeRatio]: a zero
+     * denominator is interpreted as 100% progress and any out-of-range value is treated as 0.
+     */
+    private fun getSafeCombinedRatio(
+        scanProgress: ScanProgress,
+        recoveryProgress: RecoveryProgress
+    ): Float {
+        val denominator = scanProgress.denominator + recoveryProgress.denominator
+        if (denominator <= 0L) {
+            return 1f
+        }
+        val ratio = (scanProgress.numerator + recoveryProgress.numerator).toFloat() / denominator.toFloat()
+        return if (ratio < 0f || ratio > 1f) 0f else ratio
     }
 
     /**
@@ -2984,3 +2943,15 @@ private const val NOT_FOUND_MESSAGE_WORKAROUND_2 =
     "No such mempool or blockchain transaction. Use gettransaction for wallet transactions."
 
 private const val NOT_FOUND_MESSAGE_WORKAROUND_3 = "No such mempool or main chain transaction"
+
+/** Length of the opaque correlation id prefix used in BlockEnhancer diagnostic logs. */
+private const val LOG_CORRELATION_ID_LENGTH = 6
+
+/** Short, non-PII label for diagnostic logging. */
+private val TransactionDataRequest.typeName: String
+    get() =
+        when (this) {
+            is TransactionDataRequest.GetStatus -> "getStatus"
+            is TransactionDataRequest.Enhancement -> "enhancement"
+            is TransactionDataRequest.TransactionsInvolvingAddress -> "transactionsInvolvingAddress"
+        }
