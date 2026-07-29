@@ -6676,7 +6676,7 @@ dependencies = [
 
 [[package]]
 name = "zcash-android-wallet-sdk"
-version = "2.8.0-rc.1"
+version = "2.8.0-rc.2"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -6737,9 +6737,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_backend"
-version = "0.24.0-rc.4"
+version = "0.24.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e019c2adb1eb2c3479603f4556e85c01022723f14ce8837a3bb225cb2af4d3f"
+checksum = "956f2438ea82fbbcf2407fb7c96e14ea6420963fbb0483a522e3e20fab2ae93f"
 dependencies = [
  "arti-client",
  "base64",
@@ -6805,9 +6805,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_sqlite"
-version = "0.22.0-rc.4"
+version = "0.22.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a496ad83b77e790bd0ea1013db14961b3ff825550097a2658837dc7e92a23d53"
+checksum = "70415a7cc23b9850d984231b989813684166adab55c22d92185abd0601288c2e"
 dependencies = [
  "bip32",
  "bitflags",
@@ -6864,9 +6864,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_keys"
-version = "0.16.0"
+version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc842e024fe37e52cfd3920826c4a28cc2a023fc9d77351d9c0f310becae3eb7"
+checksum = "def800f128e459eedebc900f36f408eaf0687634128dcf64ecfeaeebc3e16c14"
 dependencies = [
  "bech32",
  "bip32",
@@ -6907,9 +6907,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_pool_migration"
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7e4169a96a25de216d4a7265fe772003aaeea05ed2566b14cfc0b8146b1f99e"
+checksum = "ed5099c9398bc00929cfc6b72842cbd9af60b0acc45f64ce830c4ed42026d2fe"
 dependencies = [
  "corez",
  "getset",
@@ -6923,6 +6923,7 @@ dependencies = [
  "zcash_keys",
  "zcash_primitives",
  "zcash_protocol",
+ "zip32",
 ]
 
 [[package]]
@@ -6980,9 +6981,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_protocol"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4034db33a1ce58416430e065b01474b958e4649caa3e06e20654683a95149710"
+checksum = "5d23144aed9cc370a746896a1b0cb5ebe40d7ce0599aa8522ac6b189c1d61a22"
 dependencies = [
  "corez",
  "document-features",
