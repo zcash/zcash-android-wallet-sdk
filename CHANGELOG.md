@@ -146,6 +146,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
   backend-specific error codes or message text.
 
+## [2.8.0-rc.2] - 2026-07-28
+
+### Changed
+- Migrated to `zcash_client_backend-0.24.0-rc.5`, `zcash_client_sqlite-0.24.0-rc.5`
+
 ## [2.8.0-rc.1] - 2026-07-26
 
 ### Added
