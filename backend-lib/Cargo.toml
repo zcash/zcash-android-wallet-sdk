@@ -1,6 +1,6 @@
 [package]
 name = "zcash-android-wallet-sdk"
-version = "2.8.0-rc.1"
+version = "2.8.0-rc.2"
 authors = [
     "Jack Grigg <jack@z.cash>",
     "Kevin Gorham <kevin.gorham@z.cash>",
@@ -52,7 +52,7 @@ pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling", "signer"
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.4", features = [
+zcash_client_backend = { version = "0.24.0-rc.5", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -60,7 +60,7 @@ zcash_client_backend = { version = "0.24.0-rc.4", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.4", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.5", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
@@ -185,25 +185,6 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-android = { version = "0.2", optional = true }
 
-[patch.crates-io]
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "f134aa625a92c5085f1e42d5f75d7178a1ea9999" }
-# Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
-# entry for a crate that is not in the graph. Uncomment together with it.
-# zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
-
-## Uncomment and modify the following block to use librustzcash crates at a pinned revision.
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "a00f4a7a88647bc5a0af532c1a23aafa576f0b53" }
-
 [dev-dependencies]
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
 # which needs a real UnifiedSpendingKey to exercise the in-process-signing path
@@ -219,3 +200,24 @@ crate-type = ["staticlib", "cdylib"]
 # This crate is its own single-package workspace. The former nested slipstream-jni crate (which
 # required an `exclude` here) is gone — its code is now the `slipstream` module of this crate.
 [workspace]
+
+[patch.crates-io]
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "bf5c1227b6f5be23eefd88122ecac03715fd5cb5" }
+
+# Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
+# entry for a crate that is not in the graph. Uncomment together with it.
+# zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
+
+## Uncomment and modify the following block to use librustzcash crates at a pinned revision.
+#pczt = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+
