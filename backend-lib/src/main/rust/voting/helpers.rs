@@ -277,6 +277,21 @@ pub(super) fn java_secret_bytes_at_least(
     require_min_len(java_bytes(env, array, field)?, field, minimum).map(SecretVec::new)
 }
 
+/// Reads a secret whose length is fixed by the protocol.
+///
+/// Distinct from `java_secret_bytes_at_least`, which exists for inputs like a
+/// wallet seed whose length genuinely varies. Where the width is fixed, checking
+/// it exactly keeps the JNI boundary and `zcash_voting` agreeing on the contract
+/// rather than accepting an over-long value here and having it rejected deeper in.
+pub(super) fn java_secret_bytes_exact(
+    env: &mut JNIEnv<'_>,
+    array: &JByteArray<'_>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<SecretVec<u8>> {
+    require_len(java_bytes(env, array, field)?, field, expected).map(SecretVec::new)
+}
+
 pub(super) fn java_bytes32(
     env: &mut JNIEnv<'_>,
     array: &JByteArray<'_>,
@@ -1111,14 +1126,17 @@ pub(super) fn make_jni_voting_hotkey<'local>(
 
 /// Reconstructs a voting hotkey from the stored secret a caller persisted.
 ///
-/// The secret is opaque app-owned material; `zcash_voting` owns its length and
-/// key-derivation checks, so this does not pre-validate the bytes.
+/// The secret is opaque app-owned material, so its content is `zcash_voting`'s
+/// business, but its width is fixed and is checked here against the same
+/// constant the crate uses. Checking it at the boundary means a caller that
+/// passes the wrong material gets an error naming the parameter, rather than one
+/// phrased in terms of the crate's internals.
 pub(super) fn java_voting_hotkey(
     env: &mut JNIEnv<'_>,
     stored_secret: &JByteArray<'_>,
     network: VotingNetwork,
 ) -> anyhow::Result<VotingHotkey> {
-    let stored_secret = java_secret_bytes_at_least(
+    let stored_secret = java_secret_bytes_exact(
         env,
         stored_secret,
         "hotkeyStoredSecret",

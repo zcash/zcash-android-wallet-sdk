@@ -705,29 +705,12 @@ class TypesafeVotingBackendImplTest {
             assertTrue(error.message.orEmpty().contains("encShares"))
         }
 
-    @Test
-    fun generate_hotkey_wrapper_rejects_malformed_hotkey_material() =
-        runTest {
-            val backend =
-                RecordingVotingDbBackend(
-                    proofResult = jniDelegationProofResult(),
-                    submissionResult = jniDelegationSubmissionResult(),
-                    hotkeyResult =
-                        JniVotingHotkey(
-                            storedSecret = byteArrayOf(1, 2, 3),
-                            rawOrchardAddress = ByteArray(JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE),
-                            addressIndex = 0
-                        )
-                )
-            val db = TypesafeVotingDbImpl(backend)
-
-            val error =
-                assertFailsWith<IllegalArgumentException> {
-                    db.generateHotkey("round-vote", 0)
-                }
-
-            assertTrue(error.message.orEmpty().contains("storedSecret"))
-        }
+    // generate_hotkey_wrapper_rejects_malformed_hotkey_material used to live here. It
+    // fabricated a hotkey carrying a three-byte secret and asserted that the typesafe
+    // wrapper rejected it. JniVotingHotkey now length-checks both of its byte arrays in
+    // its own init block, so that value cannot be constructed at all and the wrapper
+    // check it exercised has been removed as unreachable. The invariant is tested where
+    // it is now enforced, in backend-lib's JniVotingModelsTest.
 
     private fun jniDelegationProofResult(
         proof: ByteArray = ByteArray(PROOF_BYTES) { 3 },
