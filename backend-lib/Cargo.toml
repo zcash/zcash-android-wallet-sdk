@@ -17,7 +17,7 @@ pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.4", features = [
+zcash_client_backend = { version = "0.24.0-rc.5", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -25,7 +25,7 @@ zcash_client_backend = { version = "0.24.0-rc.4", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.4", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.5", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
@@ -76,18 +76,6 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 component = "0.1.1"
 rust-analyzer = "0.0.1"
-
-## Uncomment this to test librustzcash changes locally
-[patch.crates-io]
-pczt = { package = "pczt", git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
 
 ## Uncomment this to test someone else's librustzcash changes in a branch
 #[patch.crates-io]
