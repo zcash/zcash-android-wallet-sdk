@@ -60,6 +60,8 @@ All of the following were picked up from the librustzcash update:
 ## [2.7.0-rc.2] - 2026-07-26
 
 ### Changed
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.4` and
+  `zcash_client_sqlite 0.22.0-rc.4`.
 - `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
   `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
   both Orchard and Ironwood bundles no longer constructs the key twice.
@@ -78,6 +80,12 @@ All of the following were picked up from the librustzcash update:
   minimal PCZT encoding (v1 for v5 transactions). The compact view/v2-encoding wire contract is
   not supported by deployed firmware's ordinary signing flow, and caused finalization failures
   with `MissingSpendAuthSig`.
+- The PCZT signer view now redacts the Ironwood bundle as it already did Orchard and
+  Sapling: each action's spend witness and the SDK's internal per-output metadata are
+  removed before the PCZT is sent to the external signer. A spend from the Ironwood
+  pool previously shipped its Merkle witnesses (which locate the wallet's notes in
+  the global commitment tree) and wallet output metadata to the signing device, which
+  needs neither.
 
 ## [2.7.0-rc.1] - 2026-07-25
 
@@ -141,6 +149,17 @@ and `GetBlockRangeNullifiers` are now deprecated upstream in favour of
   line, adapting the backend to the send-max and builder API changes.
 - Updated the librustzcash crates to their published releases,
   `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
+
+### Fixed
+Both of the following were picked up from the librustzcash update:
+
+- `Synchronizer.deleteAccount` no longer fails when a wallet transaction had sent
+  funds to an address belonging to the account being deleted (for example, after an
+  internal transfer to one of the account's own addresses).
+- Account balances now report value in immature transparent coinbase outputs as
+  pending spendability rather than as spendable. Such value was previously counted as
+  spendable even though it could not be selected for shielding until the output
+  reached coinbase maturity.
 
 ## [2.5.2] - 2026-06-03
 
