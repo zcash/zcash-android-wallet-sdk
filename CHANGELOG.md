@@ -9,7 +9,53 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.0-rc.3] - 2026-07-29
 
 ### Changed
-- Migrated to `zcash_client_backend-0.24.0-rc.5`, `zcash_client_sqlite-0.24.0-rc.5`
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.5` and
+  `zcash_client_sqlite 0.22.0-rc.5`.
+- A payment that crosses the Orchard turnstile in a canonical ZIP 318 denomination (a
+  `{1, 2, 5} * 10^k` amount between 0.01 and 10,000 ZEC), and that the wallet can fund
+  from a single Orchard note, is now proposed as a canonical crossing: anchored on the
+  ZIP 318 bucket grid, given the ZIP 318 rolling expiry height, and built with one
+  unpadded Ironwood action instead of two. Such a transaction pays one fewer ZIP 317
+  marginal-fee action, but its inputs may require up to two bucket intervals of
+  additional confirmations before it can be proposed. When the wallet cannot fund the
+  payment that way, an ordinary transaction is proposed as before.
+
+### Fixed
+All of the following were picked up from the librustzcash update:
+
+- An Ironwood note received on an account's internal address is now classified as
+  change once the wallet learns that the same account funded the transaction, as
+  Sapling and Orchard notes already were. An Ironwood change note recorded before its
+  transaction's spends could be linked to the wallet previously kept the wrong
+  classification permanently: transaction history counted it as a received (and sent)
+  note rather than change, presenting the account's own change as a recipient of the
+  transaction. Balances were not affected. Notes recorded with the wrong
+  classification are repaired by a database migration on upgrade; no rescan is
+  required.
+- An address that had received only Ironwood notes was treated as never having been
+  used: the transparent address gap-limit search could hand the same address out
+  again, and the receiving account was not reported as involved in the transaction
+  that paid it. Since NU6.3 every payment to an Orchard receiver is delivered in the
+  Ironwood bundle, so this affected ordinary received payments. A database migration
+  corrects the affected records on upgrade.
+- The funding account recorded for a transparent output now takes value spent from
+  the Ironwood pool into account. An output whose creating transaction was funded
+  entirely from Ironwood was attributed to no account, and one funded from several
+  pools could be attributed to an account other than the largest contributor.
+  Post-NU6.3 wallets hold their shielded value in Ironwood, so this affected ordinary
+  spends.
+- Transaction status queries issued during sync are now generated from explicit,
+  durable observation intent: a sent transaction is queried by txid when the wallet
+  cannot observe one of its shielded spends or outputs — including a transaction
+  funded entirely by transparent inputs whose shielded outputs all belong to another
+  wallet — and the intent lies dormant while the transaction is mined, becoming
+  active again after a chain rewind. Redundant status queries previously synthesized
+  for transactions the wallet can observe by scanning are no longer produced.
+- Tor network operations — Tor-backed lightwalletd connections and the exchange-rate
+  fetch behind `Synchronizer.exchangeRateUsd` — are now bounded in time. A server
+  that accepted a connection and then never responded previously left the request
+  pending indefinitely, and could thereby stall the exchange-rate fetch, which
+  aggregates several exchanges.
 
 ## [2.7.0-rc.2] - 2026-07-26
 
