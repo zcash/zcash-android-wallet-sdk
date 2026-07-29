@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Migrated to `zcash_client_backend-0.24.0-rc.5`, `zcash_client_sqlite-0.24.0-rc.5`
+
 ## [2.8.0-rc.1] - 2026-07-26
 
 ### Added
