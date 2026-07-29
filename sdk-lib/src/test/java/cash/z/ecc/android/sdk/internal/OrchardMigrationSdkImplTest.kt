@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
+import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
@@ -8,6 +9,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
 import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
+import cash.z.ecc.android.sdk.internal.model.migration.JniPreparationStep
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
@@ -230,6 +232,19 @@ class OrchardMigrationSdkImplTest {
             assertTrue(result is TransactionSubmitResult.Failure)
             assertFalse(result.isTorFailure)
         }
+
+    @Test
+    fun `toPublic maps preparations`() {
+        val jni = JniMigrationSchedule(
+            transfers = emptyArray(),
+            preparations = arrayOf(JniPreparationStep(id = 2, layer = 1, index = 0, broadcastHeight = 4219055, dependsOn = longArrayOf(0, 1))),
+            estimatedDurationHours = 1,
+            proposalHandle = 7,
+        )
+        val pub = jni.toPublic()
+        assertEquals(1, pub.preparations.size)
+        assertEquals(PreparationStep(2, 1, 0, 4219055, listOf(0L, 1L)), pub.preparations.first())
+    }
 
     /**
      * A minimal, hand-encoded `cash.z.wallet.sdk.ffi.Proposal` protobuf message (see

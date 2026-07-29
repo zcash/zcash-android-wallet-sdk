@@ -61,6 +61,7 @@ use zcash_pool_migration::{
         MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead,
         PoolMigrationWrite, ProveError,
     },
+    preparation::{PrepInput, PreparationPlan},
 };
 
 use crate::migration_engine::Backend;
@@ -80,6 +81,8 @@ const JNI_DUE_TRANSFER_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniDueTransferResult";
 const JNI_TRANSFER_PROPOSAL: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniTransferProposal";
+const JNI_PREPARATION_STEP: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniPreparationStep";
 const JNI_MIGRATION_SCHEDULE: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniMigrationSchedule";
 const JNI_MIGRATION_TRANSFER_STATE: &str =
@@ -661,6 +664,90 @@ fn decode_transfer_id(id: jlong) -> anyhow::Result<MigrationTransferId> {
     Ok(MigrationTransferId::new(idx))
 }
 
+/// One preparation (note-split) transaction entry, ready to encode into [`JniPreparationStep`].
+///
+/// - `id` is the stable [`MigrationTransferId`] the engine assigns at commit time (same ordinal as
+///   in [`MigrationPlan::planned_transactions`]).
+/// - `layer` / `index` address the transaction within [`PreparationPlan::layers`].
+/// - `broadcast_height` is drawn from [`MigrationPlan::prep_schedule`]`[layer][index]`.
+/// - `depends_on` lists the ids of every preparation transaction whose output this one spends; a
+///   layer-0 transaction's list is always empty.
+struct PrepEntry {
+    id: u32,
+    layer: usize,
+    index: usize,
+    broadcast_height: BlockHeight,
+    depends_on: Vec<u32>,
+}
+
+/// Enumerate all note-split (preparation) transactions in a [`MigrationPlan`], in
+/// [`MigrationPlan::planned_transactions`] id order (which is also the commit-time assignment
+/// order: all preparation transactions before all transfers, layer by layer).
+///
+/// Dependencies are derived directly from the [`PrepInput::Prior`] inputs of each
+/// [`PrepTransaction`]: if a transaction at `(layer, index)` has a `Prior { layer: pl,
+/// transaction: pt, .. }` input, then the preparation transaction at `(pl, pt)` — whose id the
+/// commit assigns at offset `sum(layer_lengths[0..pl]) + pt` — is a dependency. This mirrors
+/// exactly the dependency ids the engine persists to `orchard_ironwood_migration_transaction_deps`
+/// at commit time (derived there from the same `PrepInput::Prior` references), so the schedule
+/// exposed to Kotlin is always consistent with what the engine later stores.
+fn preparation_schedule_entries(
+    preparation: &PreparationPlan,
+    prep_schedule: &[Vec<BlockHeight>],
+) -> Vec<PrepEntry> {
+    let layers = preparation.layers();
+
+    // Build the cumulative id offset for each layer: the id of tx (l, t) is
+    // `layer_start[l] + t as u32`, matching the commit order in `planned_transactions`.
+    let mut layer_start: Vec<u32> = Vec::with_capacity(layers.len());
+    let mut cumulative: u32 = 0;
+    for layer in layers {
+        layer_start.push(cumulative);
+        cumulative = cumulative
+            .checked_add(layer.len() as u32)
+            .expect("preparation tx count fits u32");
+    }
+
+    let mut entries = Vec::with_capacity(cumulative as usize);
+    for (li, layer_txs) in layers.iter().enumerate() {
+        for (ti, prep_tx) in layer_txs.iter().enumerate() {
+            let id = layer_start[li] + ti as u32;
+            let broadcast_height = prep_schedule[li][ti];
+
+            // Collect unique dependency ids from every Prior input, preserving order then
+            // deduplicating (a transaction could theoretically reference the same predecessor's
+            // output twice, though valid plans do not).
+            let mut depends_on: Vec<u32> = prep_tx
+                .inputs()
+                .iter()
+                .filter_map(|input| {
+                    if let PrepInput::Prior {
+                        layer: prior_layer,
+                        transaction: prior_tx,
+                        ..
+                    } = input
+                    {
+                        Some(layer_start[*prior_layer] + *prior_tx as u32)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            depends_on.sort_unstable();
+            depends_on.dedup();
+
+            entries.push(PrepEntry {
+                id,
+                layer: li,
+                index: ti,
+                broadcast_height,
+                depends_on,
+            });
+        }
+    }
+    entries
+}
+
 /// `anchor_height` here is NOT a real commitment-tree anchor (ZIP 374 defers that to proving time
 /// — see module doc point 1) — it's the wallet's tip *at plan time*, used purely as Kotlin's "now"
 /// reference point: `MigrationDurationFormat.estimatedSecondsBetweenHeights(fromHeight=anchorHeight,
@@ -769,6 +856,38 @@ fn encode_migration_schedule<'a>(
         },
     )?;
 
+    // Build the JniPreparationStep[] from the plan's preparation schedule. Each entry gets a
+    // LongArray for its `dependsOn` field (mirrors the pattern used above for JniNoteSplitProposal's
+    // `outputValuesZatoshi: LongArray`). The JniPreparationStep constructor signature is:
+    //   (long id, int layer, int index, long broadcastHeight, long[] dependsOn)
+    //   JNI signature "(JIIJ[J)V" = (id: J, layer: I, index: I, broadcastHeight: J, dependsOn: [J).
+    // The exact field order must match the Kotlin constructor declaration:
+    //   JniPreparationStep(id: Long, layer: Int, index: Int, broadcastHeight: Long, dependsOn: LongArray)
+    let prep_entries = preparation_schedule_entries(plan.preparation(), plan.prep_schedule());
+    let preparations = crate::utils::rust_vec_to_java(
+        env,
+        prep_entries,
+        JNI_PREPARATION_STEP,
+        |env, entry| -> jni::errors::Result<JObject<'_>> {
+            let depends_on_array = env.new_long_array(entry.depends_on.len() as i32)?;
+            if !entry.depends_on.is_empty() {
+                let longs: Vec<jlong> = entry.depends_on.iter().map(|&id| jlong::from(id)).collect();
+                env.set_long_array_region(&depends_on_array, 0, &longs)?;
+            }
+            env.new_object(
+                JNI_PREPARATION_STEP,
+                "(JIIJ[J)V",
+                &[
+                    JValue::Long(jlong::from(entry.id)),
+                    JValue::Int(entry.layer as jint),
+                    JValue::Int(entry.index as jint),
+                    JValue::Long(i64::from(u32::from(entry.broadcast_height))),
+                    JValue::Object(&depends_on_array),
+                ],
+            )
+        },
+    )?;
+
     // Estimated duration: span from the earliest to the latest scheduled broadcast height, in
     // hours (75s/block, matching `zcash_protocol::SECONDS_PER_BLOCK`/`BLOCKS_PER_HOUR`).
     let estimated_duration_hours = schedule
@@ -784,11 +903,15 @@ fn encode_migration_schedule<'a>(
         .map(|(max, min)| max.saturating_sub(min) / BLOCKS_PER_HOUR)
         .unwrap_or(0);
 
+    // Constructor parameter order matches the Kotlin field declaration order in JniMigrationSchedule:
+    //   (transfers: Array<JniTransferProposal>, preparations: Array<JniPreparationStep>,
+    //    estimatedDurationHours: Int, proposalHandle: Long)
     Ok(env.new_object(
         JNI_MIGRATION_SCHEDULE,
-        format!("([L{JNI_TRANSFER_PROPOSAL};IJ)V"),
+        format!("([L{JNI_TRANSFER_PROPOSAL};[L{JNI_PREPARATION_STEP};IJ)V"),
         &[
             JValue::Object(&transfers),
+            JValue::Object(&preparations),
             JValue::Int(estimated_duration_hours as jint),
             JValue::Long(plan_handle as i64),
         ],
@@ -919,7 +1042,39 @@ fn is_prove_ready(
         return false;
     }
     match tx.anchor_boundary() {
-        Some(boundary) => u32::from(boundary) + 1 < u32::from(target_height),
+        Some(boundary) => {
+            // The boundary must have SETTLED: it must be strictly below the chain tip so its
+            // checkpoint exists in the tree. `target_height` is `tip + 1`, so `boundary < tip` is
+            // `boundary + 1 < target_height`.
+            if u32::from(boundary) + 1 >= u32::from(target_height) {
+                return false;
+            }
+            // LATE-DEPENDENCY GUARD (fixes the live `finalizeReadyTransfers` crash): a transfer
+            // proves against the commitment tree AS OF ITS `boundary`. Its funding notes are the
+            // outputs of the preparations it `depends_on`, so each of those must have been mined
+            // AT OR BEFORE `boundary` — otherwise that output note is NOT yet in the tree at the
+            // anchor and the prover's tree query misses with `Query(NotContained(..))`, which can
+            // never be satisfied against this anchor.
+            //
+            // The plan guarantees this by construction (every transfer's anchor is >= its
+            // dependency's SCHEDULED mining), but EXECUTION can violate it: a dependency deferred at
+            // commit or stalled in the foreground can mine LATER than the dependent transfer's
+            // anchor (live: prep id1 mined at 4220802, after tx8's anchor 4220724). Such a transfer
+            // is un-provable against its committed anchor and must NOT be offered as prove-ready —
+            // it needs re-anchoring by a separate reschedule step. `deps_mined` alone only checks a
+            // dependency is mined AT ALL, not that it mined in time, which is why this extra guard
+            // is required.
+            tx.depends_on().iter().all(|dep| {
+                state
+                    .transactions()
+                    .iter()
+                    .find(|t| t.id() == *dep)
+                    .and_then(|t| t.state().mined_height())
+                    .is_some_and(|mined| u32::from(mined) <= u32::from(boundary))
+            })
+        }
+        // A preparation carries no drawn boundary and anchors to a fresh checkpoint at the tip when
+        // proved, so it is prove-ready once its dependencies are mined and its schedule is due.
         None => tx.scheduled_height() <= target_height,
     }
 }
@@ -958,11 +1113,9 @@ fn try_prove(
     };
     match result {
         Ok(()) => Ok(true),
-        Err(ProveError::Prover(reason @ WalletProveError::UnknownSpentNote(_)))
-        | Err(ProveError::Prover(reason @ WalletProveError::AnchorNotFound(_)))
-        | Err(ProveError::Prover(reason @ WalletProveError::WitnessNotFound(_))) => {
+        Err(ProveError::Prover(reason)) if is_transient_prove_error(&reason) => {
             tracing::debug!(
-                "MIGRATION_DIAG try_prove: {:?} not yet provable (transient): {:?}",
+                "MIGRATION_DIAG try_prove: {:?} not yet provable (transient): {}",
                 id,
                 reason
             );
@@ -974,6 +1127,36 @@ fn try_prove(
             e
         )),
     }
+}
+
+/// Whether a `WalletProveError` from the prover is a TRANSIENT "not ready yet" condition — the
+/// migration transaction cannot be proved right now, but may become provable once more chain state
+/// is observed — as opposed to a genuine, surfacing failure. A transient error makes `try_prove`
+/// defer (return `Ok(false)`) instead of propagating an `Err` that would crash and roll back the
+/// whole `finalizeReadyTransfers` batch, re-proving forever.
+///
+/// Transient variants:
+/// - `UnknownSpentNote` — the funding note has not been observed as spendable yet.
+/// - `AnchorNotFound` / `WitnessNotFound` — the anchor's checkpoint or a spend's witness is not yet
+///   resolvable in the wallet's commitment tree at this height.
+/// - `Tree(..)` — a commitment-tree query miss, i.e. `Query(NotContained(..))`. This is the exact
+///   error the live late-dependency crash carried: transfer tx8 anchored at 4220724 while its
+///   funding preparation id1 mined LATE at 4220802, so id1's output note was NOT in the tree at
+///   tx8's anchor and the tree query for its position missed. Left un-classified it PROPAGATED,
+///   crashed `finalizeReadyTransfers`, rolled back the whole prove batch, and looped forever. It is
+///   transient in the same sense as the others: it must defer (the transfer needs re-anchoring by a
+///   separate reschedule step) rather than take down every other ready transfer with it.
+///
+/// A non-transient prover error (e.g. `IronwoodTreeUnavailable`) is NOT swallowed here — it still
+/// surfaces so a real failure is not silently dropped.
+fn is_transient_prove_error<TE, NE, RE>(err: &WalletProveError<TE, NE, RE>) -> bool {
+    matches!(
+        err,
+        WalletProveError::UnknownSpentNote(_)
+            | WalletProveError::AnchorNotFound(_)
+            | WalletProveError::WitnessNotFound(_)
+            | WalletProveError::Tree(_)
+    )
 }
 
 /// Proves the note split (the layer-0 preparation transaction) via `try_prove`, persists the
@@ -4788,6 +4971,510 @@ mod reconcile_tests {
             !candidates.contains(&some_tx_id),
             "a transfer reconciled to Mined must NOT be a spent-check candidate (would misread our \
              own broadcast as a foreign spend)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod preparation_schedule_entries_tests {
+    use super::*;
+    use zcash_pool_migration::preparation::{PrepInput, PrepOutput, PrepTransaction, PreparationPlan};
+    use zcash_protocol::consensus::BlockHeight;
+    use zcash_protocol::value::Zatoshis;
+
+    /// Build a [`MigrationPlan`]-shaped fixture purely from [`PreparationPlan`] parts (no wallet,
+    /// no network, no prover): 3 layers, L0 = 2 transactions, L1 = 1, L2 = 1, with the dependency
+    /// structure described in the task-1 brief.
+    ///
+    /// Dependency structure:
+    ///  - id 0: L0/0 — spends a wallet note (no Prior deps)
+    ///  - id 1: L0/1 — spends a wallet note (no Prior deps)
+    ///  - id 2: L1/0 — spends outputs of L0/0 and L0/1 (Prior deps → ids 0 and 1)
+    ///  - id 3: L2/0 — spends the output of L1/0 (Prior dep → id 2)
+    fn fixture_preparation_plan() -> (PreparationPlan, Vec<Vec<BlockHeight>>) {
+        let dummy_value = Zatoshis::const_from_u64(100_000);
+
+        // Layer 0 tx 0: one wallet input → one funding output
+        let l0_tx0 = PrepTransaction::from_parts(
+            vec![PrepInput::Wallet { index: 0, value: dummy_value }],
+            vec![PrepOutput::Funding(dummy_value)],
+        );
+        // Layer 0 tx 1: one wallet input → one funding output
+        let l0_tx1 = PrepTransaction::from_parts(
+            vec![PrepInput::Wallet { index: 1, value: dummy_value }],
+            vec![PrepOutput::Funding(dummy_value)],
+        );
+        // Layer 1 tx 0: spends outputs of L0/0 AND L0/1 → one funding output
+        // (two Prior inputs referencing layer=0, transaction=0 and layer=0, transaction=1)
+        let l1_tx0 = PrepTransaction::from_parts(
+            vec![
+                PrepInput::Prior { layer: 0, transaction: 0, output: 0, value: dummy_value },
+                PrepInput::Prior { layer: 0, transaction: 1, output: 0, value: dummy_value },
+            ],
+            vec![PrepOutput::Funding(dummy_value)],
+        );
+        // Layer 2 tx 0: spends output of L1/0 → one funding output
+        let l2_tx0 = PrepTransaction::from_parts(
+            vec![PrepInput::Prior { layer: 1, transaction: 0, output: 0, value: dummy_value }],
+            vec![PrepOutput::Funding(dummy_value)],
+        );
+
+        let preparation = PreparationPlan::from_parts(
+            vec![vec![l0_tx0, l0_tx1], vec![l1_tx0], vec![l2_tx0]],
+            vec![],
+        );
+
+        // Broadcast heights: three layers, each with the right number of entries.
+        // Heights chosen so each layer is clearly distinguishable in assertions.
+        let prep_schedule = vec![
+            vec![BlockHeight::from_u32(1000), BlockHeight::from_u32(1100)], // L0: 2 txs
+            vec![BlockHeight::from_u32(1200)],                               // L1: 1 tx
+            vec![BlockHeight::from_u32(1300)],                               // L2: 1 tx
+        ];
+
+        (preparation, prep_schedule)
+    }
+
+    /// The pure helper covers all layers and assigns the correct ids, kinds, heights, and deps.
+    #[test]
+    fn preparation_schedule_entries_cover_all_layers() {
+        let (preparation, prep_schedule) = fixture_preparation_plan();
+        let entries = preparation_schedule_entries(&preparation, &prep_schedule);
+
+        // 4 preparation transactions total (2 + 1 + 1).
+        assert_eq!(entries.len(), 4);
+
+        // id 0: layer 0, index 0, no deps
+        assert_eq!(entries[0].id, 0);
+        assert_eq!((entries[0].layer, entries[0].index), (0, 0));
+        assert_eq!(entries[0].broadcast_height, prep_schedule[0][0]);
+        assert!(entries[0].depends_on.is_empty(), "L0/0 has no deps");
+
+        // id 1: layer 0, index 1, no deps
+        assert_eq!(entries[1].id, 1);
+        assert_eq!((entries[1].layer, entries[1].index), (0, 1));
+        assert_eq!(entries[1].broadcast_height, prep_schedule[0][1]);
+        assert!(entries[1].depends_on.is_empty(), "L0/1 has no deps");
+
+        // id 2: layer 1, index 0 — depends on both L0 txs (ids 0 and 1)
+        assert_eq!(entries[2].id, 2);
+        assert_eq!((entries[2].layer, entries[2].index), (1, 0));
+        assert_eq!(entries[2].broadcast_height, prep_schedule[1][0]);
+        assert_eq!(entries[2].depends_on, vec![0, 1]);
+
+        // id 3: layer 2, index 0 — depends on L1/0 (id 2)
+        assert_eq!(entries[3].id, 3);
+        assert_eq!((entries[3].layer, entries[3].index), (2, 0));
+        assert_eq!(entries[3].broadcast_height, prep_schedule[2][0]);
+        assert_eq!(entries[3].depends_on, vec![2]);
+    }
+
+    /// An empty preparation plan (no layers) yields an empty entry list.
+    #[test]
+    fn empty_preparation_yields_no_entries() {
+        let preparation = PreparationPlan::from_parts(vec![], vec![]);
+        let entries = preparation_schedule_entries(&preparation, &[]);
+        assert!(entries.is_empty());
+    }
+
+    /// A single-layer, single-transaction plan with no Prior deps yields one entry with empty deps.
+    #[test]
+    fn single_layer_single_tx_no_deps() {
+        let prep_tx = PrepTransaction::from_parts(
+            vec![PrepInput::Wallet {
+                index: 0,
+                value: Zatoshis::const_from_u64(50_000),
+            }],
+            vec![PrepOutput::Funding(Zatoshis::const_from_u64(50_000))],
+        );
+        let preparation = PreparationPlan::from_parts(vec![vec![prep_tx]], vec![]);
+        let prep_schedule = vec![vec![BlockHeight::from_u32(500)]];
+        let entries = preparation_schedule_entries(&preparation, &prep_schedule);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, 0);
+        assert_eq!((entries[0].layer, entries[0].index), (0, 0));
+        assert_eq!(entries[0].broadcast_height, BlockHeight::from_u32(500));
+        assert!(entries[0].depends_on.is_empty());
+    }
+}
+
+/// Deterministic reproduction of the LATE-DEPENDENCY anchor break that crashed
+/// `finalizeReadyTransfers` in a live migration, driven entirely through the
+/// `zcash_pool_migration` engine's public state surface (`MigrationState::from_parts`,
+/// `MigrationTransaction::from_parts`, `mark_broadcast`, `mark_mined`) — no wallet DB, no real
+/// crypto, so it runs in a plain `cargo test`. The bug is in the prove-SELECTION logic
+/// (`is_prove_ready` / the `finalizeReadyTransfers` filter) and the error CLASSIFICATION
+/// (`try_prove`), not the prover, so a state-level flow simulation exercises it exactly.
+///
+/// The live crash:
+/// ```text
+/// Error proving transfer MigrationTransferId(8): ... proving the transfer failed:
+/// commitment-tree query failed: Query(NotContained(Address { level: Level(0), index: 242174 }))
+/// ```
+/// Root cause verified against the wallet DB: transfer tx8 committed `anchor_boundary = 4220724`
+/// and depends on preparation `id1`; `id1` was mined LATE at height 4220802 (deferred at commit +
+/// a foreground stall), i.e. AFTER tx8's anchor. So `id1`'s output note — the note that funds tx8 —
+/// is NOT in the commitment tree at tx8's anchor 4220724, and proving tx8 against that anchor can
+/// never succeed (`Query(NotContained)`). Yet `is_prove_ready` returned TRUE (it only checked that
+/// deps were mined AT ALL, not that they mined at-or-before the anchor), so `finalizeReadyTransfers`
+/// attempted the impossible prove, the `Tree` error PROPAGATED (not caught as transient), the whole
+/// prove batch rolled back, nothing persisted, and the wallet re-proved forever.
+#[cfg(test)]
+mod late_dependency_anchor_tests {
+    use super::*;
+    use incrementalmerkletree::{Address, Level};
+    use shardtree::error::{QueryError, ShardTreeError};
+    use zcash_pool_migration::denomination::DenominationPlan;
+    use zcash_pool_migration::engine::MigrationStatus;
+    use zcash_pool_migration::preparation::PreparationPlan;
+    use zcash_pool_migration::scheduling::AnchorBucketInterval;
+    use zcash_protocol::value::Zatoshis;
+
+    // The exact live heights, so the scenario the test encodes is the one the wallet hit.
+    pub(super) const ANCHOR: u32 = 4_220_724; // tx8's committed anchor_boundary
+    pub(super) const LATE_MINED: u32 = 4_220_802; // id1 actually mined here — AFTER the anchor (the bug)
+    pub(super) const ON_TIME_MINED: u32 = 4_220_700; // a well-behaved dep mines at-or-before the anchor
+    pub(super) const TARGET: u32 = 4_221_000; // chain_tip + 1, well past the anchor so it has settled
+
+    // --- minimal committed-state builder ---
+
+    pub(super) fn note_split() -> DenominationPlan {
+        DenominationPlan::from_stored_parts(
+            vec![Zatoshis::const_from_u64(100_000_000)],
+            Zatoshis::const_from_u64(5_000),
+            None,
+            Zatoshis::const_from_u64(10_000),
+            Zatoshis::const_from_u64(100_010_000),
+            Zatoshis::const_from_u64(100_000_000),
+        )
+        .expect("valid note split plan")
+    }
+
+    /// A preparation transaction (no anchor_boundary; it funds the transfer once mined).
+    pub(super) fn preparation(id: u32, state: MigrationTxState) -> MigrationTransaction {
+        MigrationTransaction::from_parts(
+            MigrationTransferId::new(id),
+            MigrationTxKind::Preparation { layer: 0, index: 0 },
+            vec![0u8; 32],
+            vec![],
+            BlockHeight::from_u32(ANCHOR - 100),
+            BlockHeight::from_u32(0), // never expires
+            None,                     // preparation carries no drawn boundary
+            state,
+            None,
+        )
+    }
+
+    /// A transfer with a drawn `anchor_boundary` that `depends_on` the given preparation ids.
+    pub(super) fn transfer(
+        id: u32,
+        state: MigrationTxState,
+        anchor: u32,
+        depends_on: Vec<u32>,
+    ) -> MigrationTransaction {
+        MigrationTransaction::from_parts(
+            MigrationTransferId::new(id),
+            MigrationTxKind::Transfer { crossing: 0 },
+            vec![0u8; 32],
+            depends_on.into_iter().map(MigrationTransferId::new).collect(),
+            BlockHeight::from_u32(anchor + 50), // broadcast after the anchor settles
+            BlockHeight::from_u32(0),           // never expires (isolate the anchor logic)
+            Some(BlockHeight::from_u32(anchor)),
+            state,
+            None,
+        )
+    }
+
+    pub(super) fn state_with(transactions: Vec<MigrationTransaction>) -> MigrationState {
+        MigrationState::from_parts(
+            MigrationStatus::InProgress,
+            note_split(),
+            PreparationPlan::from_parts(vec![], vec![]),
+            transactions,
+            AnchorBucketInterval::ZIP_318,
+        )
+    }
+
+    pub(super) fn tip1() -> BlockHeight {
+        BlockHeight::from_u32(TARGET)
+    }
+
+    pub(super) fn find<'a>(state: &'a MigrationState, id: u32) -> &'a MigrationTransaction {
+        state
+            .transactions()
+            .iter()
+            .find(|t| t.id() == MigrationTransferId::new(id))
+            .expect("transaction present")
+    }
+
+    // --- flow-level: is_prove_ready, driven by advancing mined heights ---
+
+    /// ON-TIME dependency: the prep mines at-or-before the transfer's anchor, so its funding note
+    /// IS in the tree at the anchor. `is_prove_ready` must stay TRUE. (Guards against the fix being
+    /// too aggressive and deferring provable transfers.)
+    #[test]
+    fn on_time_dependency_stays_prove_ready() {
+        // Start committed: prep Signed, transfer Signed.
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
+        ]);
+        // Advance the flow: broadcast then mine the prep ON TIME (<= anchor).
+        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xaa));
+        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(ON_TIME_MINED));
+
+        let t8 = find(&state, 8);
+        assert!(
+            is_prove_ready(&state, t8, tip1()),
+            "a transfer whose funding dependency mined at-or-before its anchor is provable"
+        );
+    }
+
+    /// LATE dependency (THE BUG): the prep mines AFTER the transfer's anchor, so its funding note is
+    /// absent from the tree at the anchor and the transfer can never prove against it. `is_prove_ready`
+    /// MUST be FALSE. Before the fix this asserts RED (the old code returned TRUE because it only
+    /// checked deps were mined at all, never that they mined at-or-before the anchor).
+    #[test]
+    fn late_dependency_is_not_prove_ready() {
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
+        ]);
+        // Advance the flow: the prep is broadcast/mined LATE (mined_height > anchor).
+        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xbb));
+        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+
+        let t8 = find(&state, 8);
+        assert!(
+            !is_prove_ready(&state, t8, tip1()),
+            "a transfer whose funding dependency mined AFTER its anchor can never prove against \
+             that anchor (the note is not yet in the tree at the anchor => Query(NotContained)); \
+             it must NOT be offered as prove-ready"
+        );
+    }
+
+    /// finalize-level: the late-dep transfer must be EXCLUDED from the prove-ready set that
+    /// `finalizeReadyTransfers` (line ~2231) collects, so the batch never even attempts the
+    /// impossible prove. This mirrors that exact filter.
+    #[test]
+    fn late_dependency_excluded_from_finalize_ready_set() {
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
+        ]);
+        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xcc));
+        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+
+        let target = tip1();
+        let ready: Vec<MigrationTransferId> = state
+            .transactions()
+            .iter()
+            .filter(|t| {
+                matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(&state, t, target)
+            })
+            .map(|t| t.id())
+            .collect();
+
+        assert!(
+            !ready.contains(&MigrationTransferId::new(8)),
+            "the late-dependency transfer must never enter the prove batch"
+        );
+    }
+
+    /// The transfer defers only until the anchor problem is resolved from the outside: it is NOT
+    /// marked failed or dropped — `is_prove_ready` simply returns false (a separate, larger concern,
+    /// `rescheduleUnprovenTransfer`, re-anchors it; out of scope here). Sanity: with the SAME late
+    /// dep, an EARLIER anchor (>= the dep's mined height) would be provable, proving it's the
+    /// anchor-vs-mined ordering that matters, not the dep being late in the abstract.
+    #[test]
+    fn later_anchor_covering_the_late_dep_is_prove_ready() {
+        let covering_anchor = LATE_MINED + 10; // anchor now AFTER the dep's mined height
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, covering_anchor, vec![1]),
+        ]);
+        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xdd));
+        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+
+        let t8 = find(&state, 8);
+        assert!(
+            is_prove_ready(&state, t8, BlockHeight::from_u32(covering_anchor + 100)),
+            "if the anchor is at-or-after the dependency's mined height, the note IS in the tree \
+             and the transfer is provable"
+        );
+    }
+
+    // --- unit: try_prove's error classification treats the commitment-tree error as transient ---
+
+    /// A helper to build a `TxId`-shaped 32-byte array for `mark_broadcast`.
+    pub(super) fn txid_bytes(seed: u8) -> zcash_protocol::TxId {
+        zcash_protocol::TxId::from_bytes([seed; 32])
+    }
+
+    /// The commitment-tree `Query(NotContained(..))` error — the one the live crash carried — must be
+    /// classified as TRANSIENT so `try_prove` returns `Ok(false)` (defer) instead of `Err` (which
+    /// crashes and rolls back the whole finalize batch). Before the fix, `is_transient_prove_error`
+    /// does not exist / does not include the `Tree` arm, so this is RED.
+    #[test]
+    fn commitment_tree_not_contained_is_transient() {
+        // Reconstruct the EXACT live error value: Query(NotContained(Address{level:0, index:242174})).
+        let tree_err: WalletProveError<(), (), ()> = WalletProveError::Tree(ShardTreeError::Query(
+            QueryError::NotContained(Address::from_parts(Level::from(0u8), 242_174)),
+        ));
+        assert!(
+            is_transient_prove_error(&tree_err),
+            "a commitment-tree query miss (NotContained) is transient: the funding note is not yet \
+             in the tree at the anchor. It must defer (Ok(false)), never propagate and roll back the \
+             whole prove batch"
+        );
+    }
+
+    /// The three witness/anchor-resolution errors that were ALREADY transient must stay transient.
+    #[test]
+    fn witness_and_anchor_errors_stay_transient() {
+        let unknown: WalletProveError<(), (), ()> = WalletProveError::UnknownSpentNote(
+            orchard::note::Nullifier::from_bytes(&[0u8; 32])
+                .into_option()
+                .expect("valid nullifier bytes"),
+        );
+        let anchor: WalletProveError<(), (), ()> =
+            WalletProveError::AnchorNotFound(BlockHeight::from_u32(ANCHOR));
+        let witness: WalletProveError<(), (), ()> =
+            WalletProveError::WitnessNotFound(BlockHeight::from_u32(ANCHOR));
+        assert!(is_transient_prove_error(&unknown));
+        assert!(is_transient_prove_error(&anchor));
+        assert!(is_transient_prove_error(&witness));
+    }
+
+    /// A genuinely non-transient prover error (the tree unavailable) must NOT be classified as
+    /// transient — it should still surface, so we don't silently swallow real failures.
+    #[test]
+    fn ironwood_tree_unavailable_is_not_transient() {
+        let err: WalletProveError<(), (), ()> = WalletProveError::IronwoodTreeUnavailable;
+        assert!(
+            !is_transient_prove_error(&err),
+            "a genuinely unrecoverable prover error must not be swallowed as transient"
+        );
+    }
+}
+
+/// RE-ANCHOR HEALING contract for a late-dependency-stuck transfer, and a documented UPSTREAM GAP.
+///
+/// `late_dependency_anchor_tests` proves the DEFER half: a transfer whose funding dependency mined
+/// AFTER its committed `anchor_boundary` is (correctly) withheld from the prove-ready set, so it no
+/// longer crashes `finalizeReadyTransfers` with `Query(NotContained)`. But deferral alone does not
+/// HEAL it: nothing advances such a transfer, so it waits forever. Healing requires RE-ANCHORING —
+/// redrawing its `anchor_boundary` to a later bucket, at or after the dependency's ACTUAL mined
+/// height, so the funding note is in the commitment tree at the new anchor and the transfer becomes
+/// provable again.
+///
+/// These tests pin the CONTRACT a re-anchor must satisfy and DOCUMENT that the engine
+/// (`zcash_pool_migration` 0.1.0-rc.4) exposes no non-expired redraw entry point to satisfy it:
+///
+/// - The only anchor-redraw API is [`zcash_pool_migration::engine::rebuild_expired_transfer`] /
+///   `..._unsigned`, which internally reschedules from the tip and calls
+///   `scheduling::draw_anchor_boundary(.., funding_creation, ..)` with `funding_creation` taken from
+///   the MAX mined height of the transfer's dependencies — EXACTLY the boundary a late-dep heal
+///   needs. BUT it is gated on `is_expired` (`expiry != 0 && expiry < target_height`) and returns
+///   `RebuildError::NotExpired` otherwise. A transfer stuck by a late dependency is typically NOT yet
+///   expired, so this API cannot be driven to heal it.
+/// - `MigrationState::next_step` surfaces `AdvanceStep::Rebuild` only via `next_rebuildable`, which
+///   is likewise expiry-based; a non-expired but un-provable late-dep transfer falls through to
+///   `AdvanceStep::Waiting` forever. There is no `rescheduleUnprovenTransfer` / re-anchor step.
+/// - The engine's own `MigrationState::prove_ready` still has the late-dependency BUG (it checks
+///   only `boundary + 1 < target_height`, never that deps mined at-or-before the boundary), which is
+///   why our `is_prove_ready` re-implements it with the extra guard. So even if a redraw happened,
+///   the covering-anchor logic we depend on to confirm healing lives in OUR guard, not the engine's.
+///
+/// GAP TO ESCALATE (Kris's crate): a public re-anchor entry point that redraws a NON-EXPIRED
+/// transfer's `anchor_boundary` to `>= max(dep mined heights)` — either a new
+/// `reanchor_late_transfer` engine fn, or relaxing `rebuild_expired_transfer`'s `NotExpired` gate to
+/// also admit a transfer whose committed anchor was overtaken by a late dependency. Until then, Lane
+/// A can DEFER (done) but cannot HEAL; the stuck transfer is stranded pending upstream.
+///
+/// The tests below drive the heal through the ONLY public surface available for constructing a
+/// re-anchored transfer — `MigrationTransaction::from_parts` with a redrawn boundary (what such an
+/// API would ultimately persist) — so the desired end-state is pinned and will keep passing once a
+/// real redraw path is wired to produce it.
+#[cfg(test)]
+mod reanchor_healing_tests {
+    use super::late_dependency_anchor_tests::*;
+    use super::*;
+
+    /// A transfer stuck by a late dependency is NOT healed by the late-dependency GUARD alone: with
+    /// its ORIGINAL (overtaken) anchor it stays un-prove-ready even after the dep is mined and the
+    /// chain moves well past everything. Deferral is not repair.
+    #[test]
+    fn stuck_transfer_stays_unprovable_without_reanchor() {
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
+        ]);
+        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x11));
+        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+
+        // Chain advanced far past both the anchor and the late mine — still un-provable, because the
+        // committed anchor 4220724 predates the note's mine at 4220802: the note is not in the tree
+        // at that anchor and no passage of time changes that. Only a re-anchor can.
+        let far_tip = BlockHeight::from_u32(LATE_MINED + 10_000);
+        let t8 = find(&state, 8);
+        assert!(
+            !is_prove_ready(&state, t8, far_tip),
+            "the committed anchor was overtaken by the late dependency; the transfer can never \
+             prove against it no matter how far the chain advances — it must be re-anchored"
+        );
+    }
+
+    /// THE HEAL: re-anchoring the stuck transfer to a boundary at-or-after the dependency's ACTUAL
+    /// mined height makes it prove-ready again. This is the desired behavior a redraw API must
+    /// produce; we construct the re-anchored transfer through the only public surface
+    /// (`from_parts` with the redrawn boundary) that can express it.
+    #[test]
+    fn reanchor_to_covering_boundary_heals_stuck_transfer() {
+        // The dep mined LATE; the redraw picks a boundary at-or-after that mine (as
+        // `rebuild_expired_transfer_inner` does via `funding_creation = max(dep mined heights)` fed
+        // to `draw_anchor_boundary`). A bucket boundary >= the mine height is what a redraw yields.
+        let redrawn_anchor = LATE_MINED + 24; // >= the dependency's actual mined height
+
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            // The re-anchored transfer: same id/kind/deps, NEW covering anchor_boundary. This is the
+            // state a `reanchor`/`rebuild` step would persist for the stuck transfer.
+            transfer(8, MigrationTxState::Signed, redrawn_anchor, vec![1]),
+        ]);
+        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x22));
+        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+
+        // Chain past the redrawn boundary so it has settled.
+        let target = BlockHeight::from_u32(redrawn_anchor + 100);
+        let t8 = find(&state, 8);
+        assert!(
+            is_prove_ready(&state, t8, target),
+            "after re-anchoring to a boundary >= the dependency's mined height, the funding note IS \
+             in the tree at the new anchor and the transfer is prove-ready again — this is the \
+             healing a redraw/reschedule step must deliver"
+        );
+    }
+
+    /// The redrawn boundary must COVER the dependency's mined height: a re-anchor to a boundary that
+    /// is STILL below the late mine does not heal (it just relocates the same bug). Pins that the
+    /// redraw target is `>= max(dep mined heights)`, not merely "some later anchor".
+    #[test]
+    fn reanchor_below_the_dep_mine_does_not_heal() {
+        let insufficient_anchor = LATE_MINED - 5; // still BELOW the dependency's mined height
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, insufficient_anchor, vec![1]),
+        ]);
+        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x33));
+        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+
+        let target = BlockHeight::from_u32(insufficient_anchor + 10_000);
+        let t8 = find(&state, 8);
+        assert!(
+            !is_prove_ready(&state, t8, target),
+            "a redraw target below the dependency's actual mined height still leaves the note out \
+             of the tree at the anchor; the covering boundary must be >= that mined height"
         );
     }
 }

@@ -15,6 +15,7 @@ import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
+import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationTransferState
 import cash.z.ecc.android.sdk.MigrationTransferStates
@@ -36,6 +37,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPcz
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
+import cash.z.ecc.android.sdk.internal.model.migration.JniPreparationStep
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferState
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
@@ -938,9 +940,19 @@ private fun JniTransferProposal.toPublic(): TransferProposal =
         expiryHeight = expiryHeight,
     )
 
-private fun JniMigrationSchedule.toPublic(): MigrationSchedule =
+internal fun JniPreparationStep.toPublic(): PreparationStep =
+    PreparationStep(
+        id = id,
+        layer = layer,
+        index = index,
+        broadcastHeight = broadcastHeight,
+        dependsOn = dependsOn.toList(),
+    )
+
+internal fun JniMigrationSchedule.toPublic(): MigrationSchedule =
     MigrationSchedule(
         transfers = transfers.map { it.toPublic() },
+        preparations = preparations.map { it.toPublic() },
         estimatedDurationHours = estimatedDurationHours,
         proposalHandle = proposalHandle,
     )

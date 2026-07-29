@@ -124,6 +124,20 @@ data class TransferProposal(
 )
 
 /**
+ * One note-split (preparation) transaction in the migration schedule: its stable [id], which
+ * [layer] and [index] within that layer it occupies, the [broadcastHeight] at which to broadcast
+ * it, and the ids of earlier preparation transactions whose outputs it spends ([dependsOn], empty
+ * for layer-0 transactions).
+ */
+data class PreparationStep(
+    val id: Long,
+    val layer: Int,
+    val index: Int,
+    val broadcastHeight: Long,
+    val dependsOn: List<Long>,
+)
+
+/**
  * Full migration schedule returned by [OrchardMigrationSdk.proposeMigrationTransfers].
  * Shown to the user for review before [OrchardMigrationSdk.signAndStoreMigrationSchedule]
  * is called. After sign+store, individual transfers do not require per-send confirmation.
@@ -135,7 +149,8 @@ data class TransferProposal(
 data class MigrationSchedule(
     val transfers: List<TransferProposal>,
     val estimatedDurationHours: Int,
-    val proposalHandle: Long
+    val proposalHandle: Long,
+    val preparations: List<PreparationStep> = emptyList(),
 )
 
 /**
