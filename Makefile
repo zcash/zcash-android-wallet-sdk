@@ -28,14 +28,6 @@
 # The demo app has a network dimension (Zcashmainnet, Zcashtestnet). The
 # library modules do not. Override per invocation:
 #   make lint-android NETWORK=Zcashtestnet
-#
-# Detekt and git worktrees
-# ------------------------
-# detekt scans the whole tree, including any git worktrees left inside it
-# (for example under .claude/worktrees/). Those hold other branches' sources,
-# so detekt reports failures that have nothing to do with your change. Move
-# them aside before running `make detekt` or `make ci-local`; the targets warn
-# when they are present.
 
 GRADLE ?= ./gradlew
 CARGO ?= cargo
@@ -133,20 +125,6 @@ info: ## Print resolved paths and tool versions
 		if command -v $(CARGO) >/dev/null 2>&1; then $(CARGO) --version; \
 		else echo "absent"; fi
 
-# Warns rather than fails: a worktree inside the repo is legitimate, it just
-# makes a whole-tree scan report other branches' code as your failures.
-.PHONY: warn-worktrees
-warn-worktrees:
-	@if [ -d .claude/worktrees ] && \
-		[ -n "$$(ls -A .claude/worktrees 2>/dev/null)" ]; then \
-		echo "WARNING: .claude/worktrees/ is non-empty."; \
-		echo "         Whole-tree scans (detekt, ktlint) will read those"; \
-		echo "         branches' sources and may fail on code that is not"; \
-		echo "         yours. Move the directory aside before trusting a"; \
-		echo "         failure."; \
-		echo ""; \
-	fi
-
 # ---------------------------------------------------------------------------
 # Aggregate targets
 # ---------------------------------------------------------------------------
@@ -214,15 +192,15 @@ setup: ## Set up the development environment
 # the single definition of the stage list.
 
 .PHONY: ci-local
-ci-local: warn-worktrees ## Run every local CI stage (slowest; includes device)
+ci-local: ## Run every local CI stage (slowest; includes device)
 	./scripts/ci-local.sh full
 
 .PHONY: ci-local-fast
-ci-local-fast: warn-worktrees ## Run the lint and style CI stages only
+ci-local-fast: ## Run the lint and style CI stages only
 	./scripts/ci-local.sh fast
 
 .PHONY: ci-local-quick
-ci-local-quick: warn-worktrees ## Run lint, style and unit-test CI stages
+ci-local-quick: ## Run lint, style and unit-test CI stages
 	./scripts/ci-local.sh quick
 
 # ---------------------------------------------------------------------------
@@ -230,7 +208,7 @@ ci-local-quick: warn-worktrees ## Run lint, style and unit-test CI stages
 # ---------------------------------------------------------------------------
 
 .PHONY: detekt
-detekt: warn-worktrees ## Static analysis with detekt
+detekt: ## Static analysis with detekt
 	$(GRADLE) detektAll
 
 .PHONY: detekt-baseline
@@ -238,7 +216,7 @@ detekt-baseline: ## Regenerate the detekt baseline
 	$(GRADLE) detektGenerateBaseline
 
 .PHONY: ktlint
-ktlint: warn-worktrees ## Check Kotlin code style with ktlint
+ktlint: ## Check Kotlin code style with ktlint
 	$(GRADLE) ktlint
 
 .PHONY: ktlint-format

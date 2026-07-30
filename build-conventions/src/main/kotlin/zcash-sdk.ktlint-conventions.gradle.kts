@@ -14,7 +14,13 @@ dependencies {
 
 tasks {
     val editorConfigFile = rootProject.file("tools/.editorconfig")
-    val ktlintArgs = listOf("**/src/**/*.kt", "!**/build/**.kt", "--editorconfig=$editorConfigFile")
+    // An agent worktree has src directories of its own, which the first
+    // pattern would otherwise match. Keep the scan to this branch: see
+    // AgentDirectories.kt.
+    val ktlintArgs =
+        listOf("**/src/**/*.kt", "!**/build/**.kt") +
+            AGENT_DIRECTORY_EXCLUDES.map { "!$it" } +
+            listOf("--editorconfig=$editorConfigFile")
 
     register("ktlint", org.gradle.api.tasks.JavaExec::class) {
         description = "Check code style with ktlint"
