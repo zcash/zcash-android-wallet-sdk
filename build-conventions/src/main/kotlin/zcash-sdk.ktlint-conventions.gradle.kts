@@ -14,9 +14,6 @@ dependencies {
 
 tasks {
     val editorConfigFile = rootProject.file("tools/.editorconfig")
-    // An agent worktree has src directories of its own, which the first
-    // pattern would otherwise match. Keep the scan to this branch: see
-    // AgentDirectories.kt.
     val ktlintArgs =
         listOf("**/src/**/*.kt", "!**/build/**.kt") +
             AGENT_DIRECTORY_EXCLUDES.map { "!$it" } +

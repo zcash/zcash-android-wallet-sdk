@@ -17,7 +17,6 @@ tasks {
         include("**/*.kts")
         exclude("**/resources/**")
         exclude("**/build/**")
-        // Keep the scan to this branch: see AgentDirectories.kt.
         exclude(AGENT_DIRECTORY_EXCLUDES)
         config.setFrom(files("${rootProject.projectDir}/tools/detekt.yml"))
         baseline.set(File("${rootProject.projectDir}/tools/detekt-baseline.xml"))
@@ -36,7 +35,6 @@ tasks {
         include("**/*.kts")
         exclude("**/resources/**")
         exclude("**/build/**")
-        // Keep the scan to this branch: see AgentDirectories.kt.
         exclude(AGENT_DIRECTORY_EXCLUDES)
     }
 }
