@@ -247,6 +247,19 @@ tables. The definitions live in `zcash_client_sqlite/src/wallet/db.rs` in
 
 [lrz]: https://github.com/zcash/librustzcash
 
+### Why those two, and when to ask for another
+
+Everything the FFI returns is serialized and copied across the boundary, so a
+query yielding many rows can cost more that way than reading it directly.
+That is why `v_transactions` and `v_tx_outputs`, which back the transaction
+history, are exempt at all.
+
+Another query with the same bulk property may deserve the same treatment, but
+that is not a call to make on your own. Do not add a direct read silently:
+flag it to the user, say what the query returns and roughly how much data it
+moves, and let them decide. If they agree, record it in the table below so the
+next reader sees a sanctioned exception rather than a violation.
+
 ### Where direct access lives
 
 All of it is under
