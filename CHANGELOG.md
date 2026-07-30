@@ -18,6 +18,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note exists.
 
 ### Fixed
+- The vendored `proposal.proto` is back in sync with the definition in
+  `zcash_client_backend 0.24.0-rc.6`. It was missing the `Ironwood` value pool,
+  so a proposal with an Ironwood output or change value decoded that pool as
+  `UNRECOGNIZED`, and it was missing the `Proposal.confirmationsPolicy`,
+  `Proposal.proposedVersion`, `TransactionBalance.dummyOutputs`, and
+  `ChangeValue.isEphemeral` fields, which decoded into unknown fields and so
+  could not be read. Round-tripping a proposal through Kotlin preserved all of
+  these, so no proposal was mis-built; they were simply unreadable.
+
 All of the following were picked up from the librustzcash update:
 
 - A wallet whose database was upgraded by a build using
