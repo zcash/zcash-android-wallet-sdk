@@ -156,7 +156,18 @@ class JniMigrationTransferState(
      * 5 expired, 6 unprovable anchor (synthetic — the backend guard veto; see the driver-surface
      * note in migration.rs, TODO(remove) once the engine surfaces it natively).
      */
-    val blocker: Int
+    val blocker: Int,
+    /** The engine-persisted crossing value (`transfer_crossing_value`); -1 for preparations. */
+    val amountZatoshi: Long,
+    /** Preparation layer/index within the note-split tree; -1/-1 for transfers. */
+    val prepLayer: Int,
+    val prepIndex: Int,
+    /** Ids of the transactions that must mine before this one can build/broadcast. */
+    val dependsOn: LongArray,
+    /** ZIP 203 expiry height; 0 = never expires. */
+    val expiryHeight: Long,
+    /** Height this transaction mined at; -1 while unmined. */
+    val minedHeight: Long,
 ) {
     init {
         require(id.isInUIntRange()) {

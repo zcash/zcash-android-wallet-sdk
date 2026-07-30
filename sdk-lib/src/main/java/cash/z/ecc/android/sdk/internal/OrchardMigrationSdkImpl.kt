@@ -1022,6 +1022,12 @@ private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
                 6 -> MigrationBlocker.UNPROVABLE_ANCHOR
                 else -> null
             },
+        amountZatoshi = amountZatoshi.takeIf { it >= 0 },
+        prepLayer = prepLayer.takeIf { it >= 0 },
+        prepIndex = prepIndex.takeIf { it >= 0 },
+        dependsOn = dependsOn.toList(),
+        expiryHeight = expiryHeight.takeIf { it > 0 },
+        minedHeight = minedHeight.takeIf { it >= 0 },
         // -1 is the JNI sentinel for "no committed boundary" (preparations prove at their
         // natural anchor).
         anchorBoundaryHeight = anchorBoundaryHeight.takeIf { it >= 0L },

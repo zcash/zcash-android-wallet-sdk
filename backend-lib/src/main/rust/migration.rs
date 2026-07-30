@@ -2509,7 +2509,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// function only SURFACES it). Unlike the app's own `MigrationPlanRepository` cache (populated
 /// once, at propose/commit time), this is never stale.
 ///
-/// Per entry: `(id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)`.
+/// Per entry: `(id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary, ready,
+/// action, blocker, amount_zatoshi, prep_layer, prep_index, depends_on, expiry_height,
+/// mined_height)` — everything a display or scheduling consumer needs, read live from the
+/// engine's persisted state so the app never has to cache plan data (amounts come from
+/// `MigrationState::transfer_crossing_value`, the accessor built for exactly this marshaling).
 /// - `is_transfer` distinguishes transfers from preparation (note-split layer) transactions —
 ///   display-facing consumers filter on it or correlate by id (prep ids match no display row);
 ///   scheduling consumers (Lane B's next-window re-arm) deliberately stay kind-agnostic, since
@@ -2555,7 +2559,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // reported READY-to-Prove; it gets the synthetic UNPROVABLE_ANCHOR blocker instead.
         let engine_statuses = state.transaction_statuses(tip + 1);
 
-        // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary, ready, action, blocker)
+        // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary, ready, action,
+        //  blocker, amount_zatoshi, prep_layer, prep_index, depends_on, expiry_height, mined_height)
         #[allow(clippy::type_complexity)]
         let transactions: Vec<(
             MigrationTransferId,
@@ -2567,6 +2572,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             bool,
             i32,
             i32,
+            i64,
+            i32,
+            i32,
+            Vec<i64>,
+            i64,
+            i64,
         )> = state
             .transactions()
             .iter()
@@ -2601,6 +2612,24 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     };
                     (status.ready(), action, blocker)
                 };
+                // The engine-persisted denomination for a transfer; -1 for preparations (their
+                // value is internal plumbing, never displayed).
+                let amount_zatoshi = state
+                    .transfer_crossing_value(t)
+                    .map_or(-1i64, |v| i64::try_from(u64::from(v)).unwrap_or(-1));
+                let (prep_layer, prep_index) = match t.kind() {
+                    MigrationTxKind::Preparation { layer, index } => (layer as i32, index as i32),
+                    MigrationTxKind::Transfer { .. } => (-1, -1),
+                };
+                let depends_on: Vec<i64> = status
+                    .depends_on()
+                    .iter()
+                    .map(|d| encode_transfer_id(*d))
+                    .collect();
+                let expiry_height = i64::from(u32::from(status.expiry_height()));
+                let mined_height = status
+                    .mined_height()
+                    .map_or(-1i64, |h| i64::from(u32::from(h)));
                 (
                     t.id(),
                     is_transfer,
@@ -2611,6 +2640,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     ready,
                     action,
                     blocker,
+                    amount_zatoshi,
+                    prep_layer,
+                    prep_index,
+                    depends_on,
+                    expiry_height,
+                    mined_height,
                 )
             })
             .collect();
@@ -2630,10 +2665,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 ready,
                 action,
                 blocker,
+                amount_zatoshi,
+                prep_layer,
+                prep_index,
+                depends_on,
+                expiry_height,
+                mined_height,
             )| {
+                let jdeps = env.new_long_array(depends_on.len() as i32)?;
+                env.set_long_array_region(&jdeps, 0, &depends_on)?;
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(JZZZJJZII)V",
+                    "(JZZZJJZIIJII[JJJ)V",
                     &[
                         JValue::Long(encode_transfer_id(id)),
                         JValue::Bool(is_transfer as jboolean),
@@ -2646,6 +2689,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Bool(ready as jboolean),
                         JValue::Int(action),
                         JValue::Int(blocker),
+                        JValue::Long(amount_zatoshi),
+                        JValue::Int(prep_layer),
+                        JValue::Int(prep_index),
+                        JValue::Object(&jdeps),
+                        JValue::Long(expiry_height),
+                        JValue::Long(mined_height),
                     ],
                 )
             },

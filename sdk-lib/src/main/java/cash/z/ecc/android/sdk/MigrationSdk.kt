@@ -216,6 +216,17 @@ data class MigrationTransferState(
     val action: MigrationNextAction? = null,
     /** Why a waiting transaction is not yet actionable, or null when none/ready. */
     val blocker: MigrationBlocker? = null,
+    /** The engine-persisted crossing value in zatoshi; null for preparations. */
+    val amountZatoshi: Long? = null,
+    /** Preparation layer/index within the note-split tree; null for transfers. */
+    val prepLayer: Int? = null,
+    val prepIndex: Int? = null,
+    /** Ids of the transactions that must mine before this one can build/broadcast. */
+    val dependsOn: List<Long> = emptyList(),
+    /** ZIP 203 expiry height; null = never expires. */
+    val expiryHeight: Long? = null,
+    /** Height this transaction mined at; null while unmined. */
+    val minedHeight: Long? = null,
 )
 
 /**
