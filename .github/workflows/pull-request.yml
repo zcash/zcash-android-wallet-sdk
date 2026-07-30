@@ -243,6 +243,24 @@ jobs:
         run: |
           cargo fmt --all --check
 
+  # backend-lib/src/main/proto/proposal.proto is vendored from librustzcash.
+  # Rust encodes proposals with the schema of the pinned zcash_client_backend,
+  # so a stale copy silently drops fields on the Kotlin side. Re-derive it from
+  # the pinned version and fail if the committed copy differs.
+  check_proposal_proto:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Check proposal.proto matches the pinned zcash_client_backend
+        timeout-minutes: 5
+        run: |
+          ./scripts/update-proposal-proto.sh --check
+
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
     runs-on: ubuntu-latest
