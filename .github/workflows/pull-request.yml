@@ -62,7 +62,7 @@ jobs:
       - name: Check properties
         timeout-minutes: 4
         run: |
-          ./gradlew checkProperties
+          make check-properties
 
   static_analysis_detekt:
     needs: validate_gradle_wrapper
@@ -80,7 +80,7 @@ jobs:
       - name: Detekt
         timeout-minutes: 4
         run: |
-          ./gradlew detektAll
+          make detekt
       - name: Collect Artifacts
         timeout-minutes: 1
         if: ${{ always() }}
@@ -115,7 +115,7 @@ jobs:
       - name: Ktlint
         timeout-minutes: 4
         run: |
-          ./gradlew ktlint
+          make ktlint
       - name: Collect Artifacts
         timeout-minutes: 1
         if: ${{ always() }}
@@ -153,7 +153,7 @@ jobs:
           # Disable minify, since it makes lint run faster
           ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: false
         run: |
-          ./gradlew :sdk-lib:lintRelease :demo-app:lintZcashmainnetRelease
+          make lint-android
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -190,9 +190,8 @@ jobs:
           rust-cache: true
       - name: Test
         timeout-minutes: 15
-        working-directory: backend-lib
         run: |
-          cargo test --all-features
+          make test-rust
 
   # --all-features matters: code behind a cargo feature (for example the
   # android-test-fixtures gate the Android build enables) is invisible to a
@@ -215,9 +214,8 @@ jobs:
           rust-cache: true
       - name: Clippy
         timeout-minutes: 15
-        working-directory: backend-lib
         run: |
-          cargo clippy --tests --all-features -- -W clippy::all -D warnings
+          make lint-rust
 
   # Checks that the Rust sources are rustfmt-clean. `--check` only reports; it never
   # rewrites the tree, so this job cannot mask an unformatted commit by fixing it.
@@ -239,9 +237,8 @@ jobs:
         uses: ./.github/actions/setup
       - name: Rustfmt
         timeout-minutes: 5
-        working-directory: backend-lib
         run: |
-          cargo fmt --all --check
+          make check-format-rust
 
   test_android_modules_unit:
     needs: [ validate_gradle_wrapper ]
@@ -259,7 +256,7 @@ jobs:
       - name: Build and test
         timeout-minutes: 30
         run: |
-          ./gradlew test
+          make test-unit
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -405,13 +402,7 @@ jobs:
       - name: Build and test
         timeout-minutes: 45
         run: |
-          ./gradlew \
-            :sdk-lib:pixel2MinDebugAndroidTest \
-            :lightwallet-client-lib:pixel2MinDebugAndroidTest \
-            :sdk-incubator-lib:pixel2MinDebugAndroidTest \
-            :backend-lib:pixel2MinDebugAndroidTest \
-            -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 \
-            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+          make test-instrumented
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -464,7 +455,7 @@ jobs:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS: androiddebugkey
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS_PASSWORD: android
         run: |
-           ./gradlew assembleRelease
+           make build-release
       - name: Collect Artifacts
         timeout-minutes: 1
         env:
@@ -525,4 +516,4 @@ jobs:
           ORG_GRADLE_PROJECT_ZCASH_FIREBASE_TEST_LAB_API_KEY_PATH: ${{ steps.auth_test_lab.outputs.credentials_file_path }}
         run: |
           unzip ${BINARIES_ZIP_PATH}
-          ./gradlew :demo-app:runFlankSanityConfig
+          make test-robo
