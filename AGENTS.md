@@ -226,6 +226,48 @@ the body.
 - All enhancements and bug fixes need an entry in `CHANGELOG.md`
   (see `CONTRIBUTING.md` and `docs/CODE_REVIEW_GUIDELINES.md`).
 
+## Database access: views only, everything else through the FFI
+
+`data.db` is owned by Rust. `zcash_client_sqlite` defines both its tables and
+a set of `v_*` views, and only the views are a supported interface. The tables
+are an implementation detail that upstream reshapes freely, and a schema
+migration that leaves a view's columns intact can still rename, split or drop
+the tables underneath it.
+
+**Kotlin may read `v_transactions` and `v_tx_outputs` directly. Every other
+query goes through the FFI.** Never read a table from Kotlin, and never write
+anything at all: writes belong to Rust, which owns invariants across tables
+that no single statement can preserve.
+
+Those two views are the client-facing read surface. `zcash_client_sqlite`
+defines other `v_*` views, but they serve the scanning and note-commitment
+machinery inside Rust and are not an interface for this SDK; treat them like
+tables. The definitions live in `zcash_client_sqlite/src/wallet/db.rs` in
+[librustzcash][lrz].
+
+[lrz]: https://github.com/zcash/librustzcash
+
+### Where direct access lives
+
+All of it is under
+`sdk-lib/src/main/java/cash/z/ecc/android/sdk/internal/db/derived/`. Adding a
+query anywhere else is a mistake; adding one that names a table is a mistake
+wherever it is.
+
+| File | Reads | Status |
+|---|---|---|
+| `AllTransactionView.kt` | `v_transactions` | view, fine |
+| `TxOutputsView.kt` | `v_tx_outputs` | view, fine |
+| `BlockTable.kt` | `blocks` | **table, pre-existing exception** |
+| `TransactionTable.kt` | `transactions` | **table, pre-existing exception** |
+
+`DerivedDataDb.kt` and `DbDerivedDataRepository.kt` are wiring and open no
+entities of their own.
+
+The two exceptions predate this rule and are being migrated to the FFI. Do not
+copy them, and do not add to them: if you need something they expose, add an
+FFI call rather than a third table reader.
+
 ## Other notes
 
 - The SDK and related libraries are Kotlin + Rust. Changes that cross the
