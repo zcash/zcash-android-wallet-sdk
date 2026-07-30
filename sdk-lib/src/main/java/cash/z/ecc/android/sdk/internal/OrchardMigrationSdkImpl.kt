@@ -175,6 +175,13 @@ internal class OrchardMigrationSdkImpl(
             try {
                 val result = block()
                 return result
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Cancellation is not a failure — the caller's scope went away (typically UI
+                // recomposition churn cancelling a scoped-flow child). Logging it at error level
+                // produced a steady stream of scary-but-benign "operation failed:
+                // ChildCancelledException" lines, and retrying a cancelled block would outlive
+                // the caller. Propagate immediately, silently.
+                throw e
             } catch (e: Throwable) {
                 // "database is locked": rusqlite's busy_timeout (5 s, set in open_at) rides out
                 // short contention, but a sync cycle's long write transaction can exceed it —
