@@ -170,12 +170,10 @@ internal class OrchardMigrationSdkImpl(
         MIGRATION_DB_ACCESS_MUTEX.withLock { loggedRetryLoop(operation, block) }
 
     private suspend fun <T> loggedRetryLoop(operation: String, block: suspend () -> T): T {
-        Twig.debug { "MIGRATION_DIAG OrchardMigrationSdk: $operation starting" }
         var attempt = 1
         while (true) {
             try {
                 val result = block()
-                Twig.debug { "MIGRATION_DIAG OrchardMigrationSdk: $operation succeeded" }
                 return result
             } catch (e: Throwable) {
                 // "database is locked": rusqlite's busy_timeout (5 s, set in open_at) rides out
