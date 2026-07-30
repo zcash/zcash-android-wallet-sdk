@@ -19,6 +19,7 @@ import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
 import cash.z.ecc.android.sdk.PreparationStep
+import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
 import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
@@ -609,6 +610,15 @@ internal class OrchardMigrationSdkImpl(
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend.applySignature(dbDataPath, network, account, transferId, signedPczt)
+        }
+
+    override suspend fun keystoneSigningRoundBudget(): KeystoneSigningRoundBudget =
+        migrationBackend.keystoneSigningRoundBudget().let { arr ->
+            KeystoneSigningRoundBudget(
+                maxActions = arr[0],
+                preparationActions = arr[1],
+                transferActions = arr[2],
+            )
         }
 
     override suspend fun getMigrationSummary(): MigrationSummary? =

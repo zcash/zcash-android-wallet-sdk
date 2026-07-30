@@ -302,6 +302,19 @@ data class MigrationSyncWakeup(
 )
 
 /**
+ * The signer's per-ROUND action budget and per-transaction-kind weights, from the engine's
+ * `signing_rounds` module: one signing round (one QR interaction) may cover at most [maxActions]
+ * TOTAL Orchard actions summed across all its transactions — a note-split preparation weighs
+ * [preparationActions] (16), a migration transfer weighs [transferActions] (3). Today's Keystone
+ * budget is 96 → 26 transfers alongside a split, 32 without.
+ */
+data class KeystoneSigningRoundBudget(
+    val maxActions: Int,
+    val preparationActions: Int,
+    val transferActions: Int,
+)
+
+/**
  * The completed migration's summary, read straight from the ENGINE's persisted migration data (the
  * single source of truth), for the Migration Complete screen — see
  * [OrchardMigrationSdk.getMigrationSummary]. Unlike the app-side plan (cleared on completion), this
@@ -852,6 +865,14 @@ interface OrchardMigrationSdk {
      * whether the state changed.
      */
     suspend fun applySignature(transferId: Long, signedPczt: ByteArray): Boolean
+
+    /**
+     * The engine's Keystone signing-round budget ([KeystoneSigningRoundBudget]) — how many TOTAL
+     * Orchard actions one QR signing round (one device interaction) may cover, plus the per-kind
+     * action weights. Sourced from `zcash_pool_migration::signing_rounds` so the app never
+     * hardcodes device limits.
+     */
+    suspend fun keystoneSigningRoundBudget(): KeystoneSigningRoundBudget
 
     /**
      * The completed migration's real summary — total migrated (crossing values), mined-transfer

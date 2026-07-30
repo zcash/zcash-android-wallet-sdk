@@ -227,6 +227,12 @@ internal interface TypesafeMigrationBackend {
     ): Boolean
 
     /**
+     * The engine's Keystone signing-round budget constants:
+     * `[maxActionsPerRound, preparationActions, transferActions]`.
+     */
+    suspend fun keystoneSigningRoundBudget(): IntArray
+
+    /**
      * The completed migration's summary from the engine's persisted migration data, as
      * `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds, lastMinedEpochSeconds]`, or an
      * EMPTY array when there is no migration data / no mined transfer yet. No account is needed —

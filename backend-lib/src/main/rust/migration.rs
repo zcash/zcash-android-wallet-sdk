@@ -35,7 +35,7 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv,
     objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
-    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jlongArray, jobject, jobjectArray},
+    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jintArray, jlong, jlongArray, jobject, jobjectArray},
 };
 use prost::Message;
 use rand::rngs::OsRng;
@@ -6317,4 +6317,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         Ok(applied as jboolean)
     });
     unwrap_exc_or(&mut env, res, 0)
+}
+
+/// The engine's Keystone signing-round budget constants, so the app never hardcodes them:
+/// `[max_actions_per_round, preparation_actions, transfer_actions]` — today `[96, 16, 3]` from
+/// `zcash_pool_migration::signing_rounds` (`SigningRoundBudget::KEYSTONE`, `PREPARATION_ACTIONS`,
+/// `TRANSFER_ACTIONS`). A signing ROUND is one QR interaction; the budget is the TOTAL Orchard
+/// actions across every transaction in that round, never a per-transaction cap. Pure constants —
+/// no wallet database is opened.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_keystoneSigningRoundBudgetNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+) -> jintArray {
+    let res = catch_unwind(&mut env, |env| {
+        use zcash_pool_migration::signing_rounds::{
+            SigningRoundBudget, PREPARATION_ACTIONS, TRANSFER_ACTIONS,
+        };
+        let values = [
+            SigningRoundBudget::KEYSTONE.max_actions() as jint,
+            PREPARATION_ACTIONS as jint,
+            TRANSFER_ACTIONS as jint,
+        ];
+        let arr = env.new_int_array(values.len() as i32)?;
+        env.set_int_array_region(&arr, 0, &values)?;
+        Ok(arr.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
 }

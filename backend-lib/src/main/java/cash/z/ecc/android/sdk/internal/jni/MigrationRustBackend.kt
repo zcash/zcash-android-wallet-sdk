@@ -528,6 +528,16 @@ class MigrationRustBackend private constructor() {
         storeSignedSchedulePcztsNative(dbDataPath, networkId, accountUuidBytes, ids, pcztBytesList)
     }
 
+    /**
+     * The engine's Keystone signing-round budget constants:
+     * `[maxActionsPerRound, preparationActions, transferActions]` (today `[96, 16, 3]`). Pure
+     * constants — no wallet database access.
+     */
+    suspend fun keystoneSigningRoundBudget(): IntArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            keystoneSigningRoundBudgetNative()
+        }
+
     // ----- Keystone batch-signing UR bridge (no wallet database access) -----
 
     /**
@@ -813,6 +823,8 @@ class MigrationRustBackend private constructor() {
             transferId: Long,
             signedPczt: ByteArray
         ): Boolean
+
+    private external fun keystoneSigningRoundBudgetNative(): IntArray
 
         @JvmStatic
         @Throws(RuntimeException::class)
