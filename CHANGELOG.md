@@ -299,12 +299,35 @@ Both of the following were picked up from the librustzcash update:
 ### Changed
 - Updated checkpoints for mainnet and testnet.
 
+## [2.6.2] - 2026-06-09
+
+### Added
+- New wallets now fetch a recent, reorg-safe tree state from the lightwalletd server,
+  reducing unnecessary block scanning for wallets with no transaction history.
+  Initialization falls back to the bundled checkpoint if the fetch does not complete
+  within 5 seconds.
+- `FiatCurrencyConversion.fiatCurrency` is now a constructor parameter (defaulting
+  to `FiatCurrency.USD`) rather than a fixed USD-only property, so a conversion can
+  carry a currency other than USD.
+
+### Internal
+- Unpinned `zcash_voting` in `Cargo.toml` in favor of the lockfile.
+
+## [2.6.1] - 2026-06-03
+
+### Changed
+- Migrated to NU 6.2, updating the librustzcash crates to `zcash_client_backend 0.23`,
+  `zcash_client_sqlite 0.21`, `zcash_keys 0.14`, `zcash_primitives 0.28` and
+  `zcash_protocol 0.9`.
+
+### Fixed
+- The librustzcash update incorporates the fixes for the Orchard proof soundness
+  vulnerability GHSA-ww9q-8r59-xv46 and the Orchard non-canonical proof size issue
+  GHSA-2x4w-pxqw-58v9.
+
 ## [2.6.0] - 2026-05-26
 
 ### Added
-- New wallets now fetch a recent tree state from the lightwalletd server, reducing unnecessary block
-  scanning for wallets with no transaction history while retaining reorg safety. Initialization falls back
-  to the bundled checkpoint if this optimization does not complete within 5 seconds.
 - `Synchronizer.broadcaster` API for creating transactions without immediate
   submission and submitting stored transactions to selected lightwalletd
   endpoints. Automatic retry uses the endpoints submitted through the
@@ -333,6 +356,11 @@ Both of the following were picked up from the librustzcash update:
 
 ### Changed
 - Migrated to NU 6.2
+
+### Fixed
+- The librustzcash update incorporates the fixes for the Orchard proof soundness
+  vulnerability GHSA-ww9q-8r59-xv46 and the Orchard non-canonical proof size issue
+  GHSA-2x4w-pxqw-58v9.
 
 ## [2.5.1] - 2026-05-14
 
