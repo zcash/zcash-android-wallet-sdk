@@ -12,6 +12,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferState
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
+import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedPreparationPczt
 import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -288,6 +289,13 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid,
         proposalHandle: Long
     ): Array<JniUnsignedTransferPczt>
+
+    suspend fun createUnsignedPreparationPczts(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        proposalHandle: Long
+    ): List<JniUnsignedPreparationPczt>
 
     /**
      * [ids]/[pcztBytesList] are parallel arrays — signed PCZTs matched back to their staged

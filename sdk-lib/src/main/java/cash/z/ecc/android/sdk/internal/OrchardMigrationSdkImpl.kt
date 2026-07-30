@@ -30,6 +30,7 @@ import cash.z.ecc.android.sdk.OrchardMigrationSdk
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
+import cash.z.ecc.android.sdk.UnsignedPreparationPczt
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
@@ -336,6 +337,15 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend
                 .createUnsignedTransferPczts(dbDataPath, network, account, schedule.proposalHandle)
                 .map { it.id to it.pcztBytes }
+        }
+
+    override suspend fun createUnsignedPreparationPczts(schedule: MigrationSchedule): List<UnsignedPreparationPczt> =
+        logged("createUnsignedPreparationPczts") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend
+                .createUnsignedPreparationPczts(dbDataPath, network, account, schedule.proposalHandle)
+                .map { UnsignedPreparationPczt(id = it.id, layer = it.layer, index = it.index, pcztBytes = it.pcztBytes) }
         }
 
     override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, ByteArray>>) =

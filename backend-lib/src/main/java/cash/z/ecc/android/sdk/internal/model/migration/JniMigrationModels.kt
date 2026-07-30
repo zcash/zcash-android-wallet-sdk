@@ -194,6 +194,25 @@ class JniMigrationTransferStates(
  * funding transfers are the exception: not yet proven, per the sign-now/prove-later scheme) PCZT,
  * staged in the engine and awaiting an external signer (e.g. Keystone).
  */
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class. One PREPARATION transaction's
+ * unsigned, ZIP32-annotated PCZT — the whole note-split tree is built (and therefore
+ * pre-signable) at commit; [layer]/[index] locate the transaction within that tree.
+ */
+@Keep
+class JniUnsignedPreparationPczt(
+    val id: Long,
+    val layer: Int,
+    val index: Int,
+    val pcztBytes: ByteArray
+) {
+    init {
+        require(id.isInUIntRange()) {
+            "Transfer id $id is outside of allowed UInt range"
+        }
+    }
+}
+
 @Keep
 class JniUnsignedTransferPczt(
     val id: Long,

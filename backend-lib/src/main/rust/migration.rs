@@ -91,6 +91,8 @@ const JNI_MIGRATION_TRANSFER_STATES: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniMigrationTransferStates";
 const JNI_UNSIGNED_TRANSFER_PCZT: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniUnsignedTransferPczt";
+const JNI_UNSIGNED_PREPARATION_PCZT: &str =
+    "cash/z/ecc/android/sdk/internal/model/migration/JniUnsignedPreparationPczt";
 const JNI_KEYSTONE_BATCH_DECODE_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/migration/JniKeystoneBatchDecodeResult";
 const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
@@ -3350,6 +3352,108 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     "(J[B)V",
                     &[
                         JValue::Long(encode_transfer_id(id)),
+                        JValue::Object(&pczt_bytes),
+                    ],
+                )
+            },
+        )?
+        .into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// EVERY preparation transaction's unsigned PCZT — the WHOLE note-split tree, not just the first
+/// layer-0 split. The engine builds all layers at commit (`build_preparation_layers` resolves a
+/// layer's spends from the previous layer's just-built outputs — sign-now/prove-later covers the
+/// entire tree), so one external-signer ceremony can pre-sign everything; this surface exists
+/// because `createUnsignedNoteSplitPcztNative` deliberately returns only the FIRST layer-0 split
+/// (the immediate-broadcast special case) and `createUnsignedTransferPcztsNative` only transfers —
+/// without this, every other preparation stayed `AwaitingSignature` forever (found 2026-07-30).
+///
+/// Per entry: `(id, layer, index, pczt_bytes)`, ZIP32-derivation-annotated for Keystone, in the
+/// engine's commit (id) order. Signed results go back through the kind-agnostic
+/// `storeSignedSchedulePcztsNative` (`apply_signature` per id). Same opaque-handle contract as the
+/// transfer call: builds the cached plan `proposal_handle` identifies, or reuses the committed one.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_createUnsignedPreparationPcztsNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    proposal_handle: jlong,
+) -> jobjectArray {
+    let res = catch_unwind(&mut env, |env| {
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let target = target_height(&wallet)?;
+        let (state, unsigned) = commit_or_reuse(
+            CommitContext {
+                network: &network,
+                wallet: &wallet,
+                account,
+                store_conn: &mut store_conn,
+                target,
+            },
+            proposal_handle as u64,
+            None,
+            |network, target, backend, migration_plan, rng| {
+                let (state, unsigned) = engine::build_preparation_unsigned(
+                    network,
+                    target,
+                    backend,
+                    migration_plan,
+                    rng,
+                )
+                .map_err(|e| anyhow!("Error building unsigned migration PCZTs: {:?}", e))?;
+                Ok((
+                    state,
+                    unsigned.into_iter().map(|tx| tx.into_parts()).collect(),
+                ))
+            },
+        )?;
+        let prep_kinds: std::collections::HashMap<MigrationTransferId, (usize, usize)> = state
+            .transactions()
+            .iter()
+            .filter_map(|t| match t.kind() {
+                MigrationTxKind::Preparation { layer, index } => Some((t.id(), (layer, index))),
+                MigrationTxKind::Transfer { .. } => None,
+            })
+            .collect();
+        let (seed_fingerprint, account_index) = account_zip32_derivation(&wallet, account)?;
+        let preps: Vec<_> = unsigned
+            .into_iter()
+            .filter_map(|(id, pczt_bytes)| {
+                prep_kinds
+                    .get(&id)
+                    .map(|(layer, index)| (id, *layer, *index, pczt_bytes))
+            })
+            .map(|(id, layer, index, pczt_bytes)| {
+                let pczt_bytes = crate::migration_keystone::annotate_spend_zip32_derivation(
+                    &pczt_bytes,
+                    seed_fingerprint,
+                    network.coin_type(),
+                    account_index,
+                )
+                .map_err(|e| anyhow!("Error annotating preparation PCZT derivation: {:?}", e))?;
+                Ok::<_, anyhow::Error>((id, layer, index, pczt_bytes))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(crate::utils::rust_vec_to_java(
+            env,
+            preps,
+            JNI_UNSIGNED_PREPARATION_PCZT,
+            |env, (id, layer, index, pczt_bytes)| {
+                let pczt_bytes = crate::utils::rust_bytes_to_java(env, &pczt_bytes)?;
+                env.new_object(
+                    JNI_UNSIGNED_PREPARATION_PCZT,
+                    "(JII[B)V",
+                    &[
+                        JValue::Long(encode_transfer_id(id)),
+                        JValue::Int(layer as jint),
+                        JValue::Int(index as jint),
                         JValue::Object(&pczt_bytes),
                     ],
                 )

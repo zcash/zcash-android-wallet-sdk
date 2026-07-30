@@ -14,6 +14,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferState
 import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
+import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedPreparationPczt
 import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
 import kotlinx.coroutines.withContext
 
@@ -529,6 +530,26 @@ class MigrationRustBackend private constructor() {
     }
 
     /**
+     * Every PREPARATION transaction's unsigned PCZT — the whole note-split tree (see the Rust
+     * native's doc; `createUnsignedNoteSplitPczt` returns only the first layer-0 split). Same
+     * opaque-handle contract as [createUnsignedTransferPczts].
+     */
+    suspend fun createUnsignedPreparationPczts(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long,
+    ): List<JniUnsignedPreparationPczt> =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            createUnsignedPreparationPcztsNative(
+                dbDataPath,
+                networkId,
+                accountUuidBytes,
+                proposalHandle,
+            )?.toList() ?: error("createUnsignedPreparationPczts returned null")
+        }
+
+    /**
      * The engine's Keystone signing-round budget constants:
      * `[maxActionsPerRound, preparationActions, transferActions]` (today `[96, 16, 3]`). Pure
      * constants — no wallet database access.
@@ -888,6 +909,13 @@ class MigrationRustBackend private constructor() {
             accountUuidBytes: ByteArray,
             proposalHandle: Long
         ): Array<JniUnsignedTransferPczt>?
+
+    private external fun createUnsignedPreparationPcztsNative(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long,
+    ): Array<JniUnsignedPreparationPczt>?
 
         @JvmStatic
         @Throws(RuntimeException::class)

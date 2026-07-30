@@ -314,6 +314,14 @@ data class KeystoneSigningRoundBudget(
     val transferActions: Int,
 )
 
+/** One preparation transaction's unsigned PCZT with its position in the note-split tree. */
+data class UnsignedPreparationPczt(
+    val id: Long,
+    val layer: Int,
+    val index: Int,
+    val pcztBytes: ByteArray,
+)
+
 /**
  * The completed migration's summary, read straight from the ENGINE's persisted migration data (the
  * single source of truth), for the Migration Complete screen — see
@@ -545,6 +553,17 @@ interface OrchardMigrationSdk {
      * wait for the note-split to confirm on-chain before calling this either.
      */
     suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, ByteArray>>
+
+    /**
+     * Every PREPARATION transaction's unsigned, ZIP32-annotated PCZT — the WHOLE note-split tree.
+     * The engine builds all layers at commit (a layer's spends resolve against the previous
+     * layer's just-built outputs), so sign-now/prove-later covers the entire tree and ONE
+     * external-signer ceremony can pre-sign everything. [createUnsignedNoteSplitPczt] still
+     * returns only the first layer-0 split (the immediate-broadcast special case) — preparations
+     * beyond it come from here and their signed results go back through the kind-agnostic
+     * [storeSignedSchedulePczts]. Same proposal-handle contract as [createUnsignedTransferPczts].
+     */
+    suspend fun createUnsignedPreparationPczts(schedule: MigrationSchedule): List<UnsignedPreparationPczt>
 
     /**
      * Accepts the full set of externally-signed transfer PCZTs — **all-or-nothing**, matched back
