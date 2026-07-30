@@ -100,3 +100,5 @@ backup-dbs/
 /.idea/inspectionProfiles/Project_Default.xml
 /.idea/kotlinc.xml
 /.idea/runConfigurations.xml
+
+.plans/
