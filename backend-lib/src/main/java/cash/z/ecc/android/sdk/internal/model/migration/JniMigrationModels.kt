@@ -146,7 +146,17 @@ class JniMigrationTransferState(
     val isSent: Boolean,
     val isProved: Boolean,
     val scheduledHeight: Long,
-    val anchorBoundaryHeight: Long
+    val anchorBoundaryHeight: Long,
+    /** Actionable RIGHT NOW ([action] says how) per the engine's `transaction_statuses`. */
+    val ready: Boolean,
+    /** 0 = none, 1 = prove, 2 = broadcast. */
+    val action: Int,
+    /**
+     * Why it is waiting: 0 none, 1 dependencies, 2 schedule, 3 anchor boundary, 4 signature,
+     * 5 expired, 6 unprovable anchor (synthetic — the backend guard veto; see the driver-surface
+     * note in migration.rs, TODO(remove) once the engine surfaces it natively).
+     */
+    val blocker: Int
 ) {
     init {
         require(id.isInUIntRange()) {

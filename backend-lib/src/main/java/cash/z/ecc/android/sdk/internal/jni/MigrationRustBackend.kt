@@ -366,6 +366,48 @@ class MigrationRustBackend private constructor() {
             migrationTransferStatesNative(dbDataPath, networkId, accountUuidBytes)
         }
 
+    /**
+     * The single "what now?" driver read — `[stepCode, transferId]` from the guarded
+     * `next_step` (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent).
+     * `null` when no migration is in progress.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun nextStep(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): LongArray? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            nextStepNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * The engine's minimal sync/prove wake-up schedule: each row is `[wakeHeight, coveredId...]`
+     * (guard-vetoed transfers excluded). `null` when no migration is in progress.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun syncWakeupSchedule(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<LongArray>? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            syncWakeupScheduleNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /** Applies an externally signed PCZT (`AwaitingSignature → Signed`); true when it applied. */
+    @Throws(RuntimeException::class)
+    suspend fun applySignature(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        transferId: Long,
+        signedPczt: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            applySignatureNative(dbDataPath, networkId, accountUuidBytes, transferId, signedPczt)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun restartCurrentMigrationStep(
         dbDataPath: String,
@@ -745,6 +787,32 @@ class MigrationRustBackend private constructor() {
             accountUuidBytes: ByteArray,
             estimatedTip: Long
         ): JniDueTransferResult
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun nextStepNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): LongArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun syncWakeupScheduleNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Array<LongArray>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun applySignatureNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            transferId: Long,
+            signedPczt: ByteArray
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)

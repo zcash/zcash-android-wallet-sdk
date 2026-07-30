@@ -201,6 +201,32 @@ internal interface TypesafeMigrationBackend {
     ): JniMigrationTransferStates?
 
     /**
+     * The guarded `next_step` driver read: `[stepCode, transferId]` (0 waiting, 1 prove,
+     * 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent), or `null` with no migration.
+     */
+    suspend fun nextStep(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): LongArray?
+
+    /** Rows of `[wakeHeight, coveredId...]` from the engine's sync wake-up schedule. */
+    suspend fun syncWakeupSchedule(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Array<LongArray>?
+
+    /** Applies an externally signed PCZT (`AwaitingSignature → Signed`); true when applied. */
+    suspend fun applySignature(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        transferId: Long,
+        signedPczt: ByteArray
+    ): Boolean
+
+    /**
      * The completed migration's summary from the engine's persisted migration data, as
      * `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds, lastMinedEpochSeconds]`, or an
      * EMPTY array when there is no migration data / no mined transfer yet. No account is needed —

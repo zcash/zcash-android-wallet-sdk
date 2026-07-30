@@ -2550,42 +2550,90 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // The app now carries this same id on its cached `MigrationTransfer.id` (see
         // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
         //
-        // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)
-        let transactions: Vec<(MigrationTransferId, bool, bool, bool, BlockHeight, Option<BlockHeight>)> =
-            state
-                .transactions()
-                .iter()
-                .map(|t| {
-                    let is_transfer = matches!(t.kind(), MigrationTxKind::Transfer { .. });
-                    let is_sent = matches!(
-                        t.state(),
-                        MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
-                    );
-                    let is_proved = matches!(
-                        t.state(),
-                        MigrationTxState::Proved
-                            | MigrationTxState::Broadcast { .. }
-                            | MigrationTxState::Mined { .. }
-                    );
-                    (
-                        t.id(),
-                        is_transfer,
-                        is_sent,
-                        is_proved,
-                        t.scheduled_height(),
-                        t.anchor_boundary(),
-                    )
-                })
-                .collect();
+        // Engine per-tx status view (ready/action/blocker), with the guard veto applied on top —
+        // see the driver-surface note: a guard-vetoed (unprovable-anchor) transfer must never be
+        // reported READY-to-Prove; it gets the synthetic UNPROVABLE_ANCHOR blocker instead.
+        let engine_statuses = state.transaction_statuses(tip + 1);
+
+        // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary, ready, action, blocker)
+        #[allow(clippy::type_complexity)]
+        let transactions: Vec<(
+            MigrationTransferId,
+            bool,
+            bool,
+            bool,
+            BlockHeight,
+            Option<BlockHeight>,
+            bool,
+            i32,
+            i32,
+        )> = state
+            .transactions()
+            .iter()
+            .zip(engine_statuses.iter())
+            .map(|(t, status)| {
+                let is_transfer = matches!(t.kind(), MigrationTxKind::Transfer { .. });
+                let is_sent = matches!(
+                    t.state(),
+                    MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
+                );
+                let is_proved = matches!(
+                    t.state(),
+                    MigrationTxState::Proved
+                        | MigrationTxState::Broadcast { .. }
+                        | MigrationTxState::Mined { .. }
+                );
+                let (ready, action, blocker) = if is_unprovable_anchor(&state, t, tip + 1) {
+                    (false, ACTION_NONE, BLOCKER_UNPROVABLE_ANCHOR)
+                } else {
+                    let action = match status.action() {
+                        Some(zcash_pool_migration::state::NextAction::Prove) => ACTION_PROVE,
+                        Some(zcash_pool_migration::state::NextAction::Broadcast) => ACTION_BROADCAST,
+                        None => ACTION_NONE,
+                    };
+                    let blocker = match status.blocked_on() {
+                        Some(zcash_pool_migration::state::Blocker::Dependencies) => BLOCKER_DEPENDENCIES,
+                        Some(zcash_pool_migration::state::Blocker::Schedule) => BLOCKER_SCHEDULE,
+                        Some(zcash_pool_migration::state::Blocker::AnchorBoundary) => BLOCKER_ANCHOR_BOUNDARY,
+                        Some(zcash_pool_migration::state::Blocker::Signature) => BLOCKER_SIGNATURE,
+                        Some(zcash_pool_migration::state::Blocker::Expired) => BLOCKER_EXPIRED,
+                        None => BLOCKER_NONE,
+                    };
+                    (status.ready(), action, blocker)
+                };
+                (
+                    t.id(),
+                    is_transfer,
+                    is_sent,
+                    is_proved,
+                    t.scheduled_height(),
+                    t.anchor_boundary(),
+                    ready,
+                    action,
+                    blocker,
+                )
+            })
+            .collect();
 
         let jtransfers = crate::utils::rust_vec_to_java(
             env,
             transactions,
             JNI_MIGRATION_TRANSFER_STATE,
-            |env, (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary)| {
+            |env,
+             (
+                id,
+                is_transfer,
+                is_sent,
+                is_proved,
+                scheduled_height,
+                anchor_boundary,
+                ready,
+                action,
+                blocker,
+            )| {
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(JZZZJJ)V",
+                    "(JZZZJJZII)V",
                     &[
                         JValue::Long(encode_transfer_id(id)),
                         JValue::Bool(is_transfer as jboolean),
@@ -2595,6 +2643,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Long(
                             anchor_boundary.map_or(-1i64, |b| i64::from(u32::from(b))),
                         ),
+                        JValue::Bool(ready as jboolean),
+                        JValue::Int(action),
+                        JValue::Int(blocker),
                     ],
                 )
             },
@@ -5965,4 +6016,256 @@ mod state_machine_trace_tests {
         let (steps, _) = d.drain(4_224_620);
         assert_eq!(steps, vec![prove(9), broadcast(9)]);
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// State-machine driver surface (engine adoption, 2026-07-30 — see
+// spec/2026-07-30-engine-state-machine-adoption-design.md). The app's single migration worker
+// obeys these three reads (`nextStep`, extended `transactionStates`, `syncWakeupSchedule`) plus
+// `applySignature`; it never selects, orders or schedules transactions itself.
+//
+// TEMPORARY GUARD VETO — TODO(remove: upstream late-dependency guard, engine change request
+// `2026-07-30-engine-change-request-unprovable-boundary.md`): the pure `state.rs::prove_ready`
+// lacks the late-dependency guard this file's `is_prove_ready` carries, so a raw
+// `MigrationState::next_step` wedges forever on `Prove` for a transfer whose dependency mined
+// past its anchor boundary (pinned by `state_machine_trace_tests::unprovable_boundary_documented_gap`).
+// Until the guard is upstreamed, the driver surface below applies it locally: such a transfer is
+// never offered for Prove, is reported with the synthetic UNPROVABLE_ANCHOR blocker, and
+// contributes no sync wake-ups.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+const STEP_WAITING: i64 = 0;
+const STEP_PROVE: i64 = 1;
+const STEP_BROADCAST: i64 = 2;
+const STEP_REBUILD: i64 = 3;
+const STEP_COMPLETE: i64 = 4;
+
+const ACTION_NONE: i32 = 0;
+const ACTION_PROVE: i32 = 1;
+const ACTION_BROADCAST: i32 = 2;
+
+const BLOCKER_NONE: i32 = 0;
+const BLOCKER_DEPENDENCIES: i32 = 1;
+const BLOCKER_SCHEDULE: i32 = 2;
+const BLOCKER_ANCHOR_BOUNDARY: i32 = 3;
+const BLOCKER_SIGNATURE: i32 = 4;
+const BLOCKER_EXPIRED: i32 = 5;
+/// Synthetic, app-facing only — the engine has no such variant yet (see the guard-veto note).
+const BLOCKER_UNPROVABLE_ANCHOR: i32 = 6;
+
+/// Whether `t` is wedged behind the late-dependency guard: pre-signed, dependencies mined, boundary
+/// settled — yet un-provable because a dependency mined PAST the drawn anchor boundary.
+fn is_unprovable_anchor(
+    state: &zcash_pool_migration::engine::MigrationState,
+    t: &zcash_pool_migration::engine::MigrationTransaction,
+    target_height: BlockHeight,
+) -> bool {
+    use zcash_pool_migration::engine::MigrationTxState;
+    if !matches!(
+        t.state(),
+        MigrationTxState::Signed | MigrationTxState::AwaitingSignature
+    ) {
+        return false;
+    }
+    let Some(boundary) = t.anchor_boundary() else {
+        return false;
+    };
+    // Boundary settled and deps mined, yet the guarded readiness check refuses: the only remaining
+    // cause is a dependency mined past the boundary (the guard's own condition).
+    let expired = {
+        let expiry = u32::from(t.expiry_height());
+        expiry != 0 && expiry < u32::from(target_height)
+    };
+    !expired
+        && state.deps_mined(t.depends_on())
+        && u32::from(boundary) + 1 < u32::from(target_height)
+        && !is_prove_ready(state, t, target_height)
+}
+
+/// `MigrationState::next_step` with the late-dependency guard applied to the Prove arm (see the
+/// guard-veto note above); otherwise mirrors the engine's decision order exactly: terminal →
+/// prove-first (time-critical) → broadcast → rebuild-expired → complete/waiting.
+fn guarded_next_step(
+    state: &zcash_pool_migration::engine::MigrationState,
+    target_height: BlockHeight,
+) -> (i64, i64) {
+    use zcash_pool_migration::engine::{MigrationTxKind, MigrationTxState};
+    if state.is_terminal() {
+        return (STEP_COMPLETE, -1);
+    }
+    if let Some(t) = state.transactions().iter().find(|t| {
+        matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(state, t, target_height)
+    }) {
+        return (STEP_PROVE, i64::from(u32::from(t.id())));
+    }
+    if let Some(id) = state.next_broadcastable(target_height) {
+        return (STEP_BROADCAST, i64::from(u32::from(id)));
+    }
+    // Rebuild: the first expired, unmined TRANSFER (a dependency leaf — rebuildable alone).
+    if let Some(t) = state.transactions().iter().find(|t| {
+        matches!(t.kind(), MigrationTxKind::Transfer { .. })
+            && !matches!(t.state(), MigrationTxState::Mined { .. })
+            && {
+                let expiry = u32::from(t.expiry_height());
+                expiry != 0 && expiry < u32::from(target_height)
+            }
+    }) {
+        return (STEP_REBUILD, i64::from(u32::from(t.id())));
+    }
+    let all_mined = !state.transactions().is_empty()
+        && state
+            .transactions()
+            .iter()
+            .all(|t| matches!(t.state(), MigrationTxState::Mined { .. }));
+    if all_mined {
+        (STEP_COMPLETE, -1)
+    } else {
+        (STEP_WAITING, -1)
+    }
+}
+
+/// The single "what now?" read the app worker loops on. Returns `[stepCode, transferId]`
+/// (`transferId = -1` for Waiting/Complete), decided at the SCANNED target (`tip + 1`) — proving
+/// correctness needs real checkpoints; broadcast-side estimated-tip acceleration lives in
+/// `executeNextPendingTransfer`, which remains the ACTION for the Broadcast step.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_nextStepNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let target = target_height(&wallet)?;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let Some(state) = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+        else {
+            return Ok(ptr::null_mut());
+        };
+        let (code, id) = guarded_next_step(&state, target);
+        let arr = env.new_long_array(2)?;
+        env.set_long_array_region(&arr, 0, &[code, id])?;
+        Ok(arr.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// The minimal sync/prove wake-up schedule for the app's worker, from the engine's
+/// `sync_wakeup_schedule` (windows, minimality, jitter, immediate-overdue) — with guard-vetoed
+/// (unprovable-anchor) transfers dropped from coverage so a wedged transfer cannot demand
+/// perpetual immediate wake-ups (see the guard-veto note; pinned by the golden traces).
+/// Encoding: an array of long-arrays, each `[wakeHeight, coveredId...]`; empty wake-ups are
+/// dropped.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_syncWakeupScheduleNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let target = target_height(&wallet)?;
+        let tip = target - 1;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let Some(state) = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+        else {
+            return Ok(ptr::null_mut());
+        };
+        let vetoed: Vec<u32> = state
+            .transactions()
+            .iter()
+            .filter(|t| is_unprovable_anchor(&state, t, target))
+            .map(|t| u32::from(t.id()))
+            .collect();
+        let mut rng = OsRng;
+        let wakeups = state
+            .sync_wakeup_schedule(
+                tip,
+                &zcash_pool_migration::scheduling::WakeupParams::default(),
+                &mut rng,
+            )
+            .map_err(|e| anyhow!("Error computing sync wake-up schedule: {:?}", e))?;
+        let entries: Vec<Vec<i64>> = wakeups
+            .iter()
+            .filter_map(|w| {
+                let ids: Vec<i64> = w
+                    .covers()
+                    .iter()
+                    .map(|t| u32::from(*t))
+                    .filter(|id| !vetoed.contains(id))
+                    .map(i64::from)
+                    .collect();
+                if ids.is_empty() {
+                    None
+                } else {
+                    let mut row = vec![i64::from(u32::from(w.height()))];
+                    row.extend(ids);
+                    Some(row)
+                }
+            })
+            .collect();
+        let long_array_class = env.find_class("[J")?;
+        let outer = env.new_object_array(
+            entries.len() as i32,
+            long_array_class,
+            JObject::null(),
+        )?;
+        for (i, row) in entries.iter().enumerate() {
+            let inner = env.new_long_array(row.len() as i32)?;
+            env.set_long_array_region(&inner, 0, row)?;
+            env.set_object_array_element(&outer, i as i32, inner)?;
+        }
+        Ok(outer.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Stores an externally signed PCZT for one migration transaction, moving it
+/// `AwaitingSignature → Signed` via the engine's `apply_signature` (the state-machine contract the
+/// Keystone flow adopts). Returns whether the state changed.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_applySignatureNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    transfer_id: jlong,
+    signed_pczt: JByteArray<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let id = decode_transfer_id(transfer_id)?;
+        let pczt_bytes = env.convert_byte_array(signed_pczt)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut state = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+            .ok_or_else(|| anyhow!("No migration in progress"))?;
+        let applied = state.apply_signature(id, pczt_bytes);
+        if applied {
+            backend
+                .replace_migration(&state)
+                .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
+        }
+        Ok(applied as jboolean)
+    });
+    unwrap_exc_or(&mut env, res, 0)
 }

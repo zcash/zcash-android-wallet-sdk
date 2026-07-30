@@ -12,11 +12,15 @@ import android.content.Context
 import cash.z.ecc.android.sdk.AttentionReason
 import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
+import cash.z.ecc.android.sdk.MigrationAdvanceStep
+import cash.z.ecc.android.sdk.MigrationBlocker
+import cash.z.ecc.android.sdk.MigrationNextAction
 import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
 import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.MigrationSummary
+import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
 import cash.z.ecc.android.sdk.MigrationTransferStates
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
@@ -575,6 +579,38 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.migrationTransferStates(dbDataPath, network, account)?.toPublic()
         }
 
+    override suspend fun nextStep(): MigrationAdvanceStep? =
+        logged("nextStep") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.nextStep(dbDataPath, network, account)?.let { arr ->
+                val id = arr.getOrElse(1) { -1L }
+                when (arr.getOrElse(0) { 0L }) {
+                    1L -> MigrationAdvanceStep.Prove(id)
+                    2L -> MigrationAdvanceStep.Broadcast(id)
+                    3L -> MigrationAdvanceStep.Rebuild(id)
+                    4L -> MigrationAdvanceStep.Complete
+                    else -> MigrationAdvanceStep.Waiting
+                }
+            }
+        }
+
+    override suspend fun syncWakeupSchedule(): List<MigrationSyncWakeup>? =
+        logged("syncWakeupSchedule") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend
+                .syncWakeupSchedule(dbDataPath, network, account)
+                ?.map { row -> MigrationSyncWakeup(height = row[0], covers = row.drop(1)) }
+        }
+
+    override suspend fun applySignature(transferId: Long, signedPczt: ByteArray): Boolean =
+        logged("applySignature") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: noAccountAvailable()
+            migrationBackend.applySignature(dbDataPath, network, account, transferId, signedPczt)
+        }
+
     override suspend fun getMigrationSummary(): MigrationSummary? =
         logged("getMigrationSummary") {
             val dbDataPath = dbDataPath()
@@ -969,6 +1005,23 @@ private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
         isSent = isSent,
         isProved = isProved,
         scheduledHeight = scheduledHeight,
+        ready = ready,
+        action =
+            when (action) {
+                1 -> MigrationNextAction.PROVE
+                2 -> MigrationNextAction.BROADCAST
+                else -> null
+            },
+        blocker =
+            when (blocker) {
+                1 -> MigrationBlocker.DEPENDENCIES
+                2 -> MigrationBlocker.SCHEDULE
+                3 -> MigrationBlocker.ANCHOR_BOUNDARY
+                4 -> MigrationBlocker.SIGNATURE
+                5 -> MigrationBlocker.EXPIRED
+                6 -> MigrationBlocker.UNPROVABLE_ANCHOR
+                else -> null
+            },
         // -1 is the JNI sentinel for "no committed boundary" (preparations prove at their
         // natural anchor).
         anchorBoundaryHeight = anchorBoundaryHeight.takeIf { it >= 0L },

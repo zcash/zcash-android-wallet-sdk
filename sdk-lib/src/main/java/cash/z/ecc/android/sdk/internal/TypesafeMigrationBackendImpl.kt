@@ -187,6 +187,26 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): JniMigrationTransferStates? = rustBackend().migrationTransferStates(dbDataPath, network.id, account.value)
 
+    override suspend fun nextStep(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): LongArray? = rustBackend().nextStep(dbDataPath, network.id, account.value)
+
+    override suspend fun syncWakeupSchedule(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Array<LongArray>? = rustBackend().syncWakeupSchedule(dbDataPath, network.id, account.value)
+
+    override suspend fun applySignature(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        transferId: Long,
+        signedPczt: ByteArray
+    ): Boolean = rustBackend().applySignature(dbDataPath, network.id, account.value, transferId, signedPczt)
+
     override suspend fun migrationSummary(dbDataPath: String): LongArray =
         rustBackend().migrationSummary(dbDataPath)
 

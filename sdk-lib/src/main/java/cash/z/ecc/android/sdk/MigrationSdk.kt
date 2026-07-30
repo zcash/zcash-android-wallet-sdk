@@ -210,6 +210,12 @@ data class MigrationTransferState(
     val scheduledHeight: Long,
     /** Committed ZIP 318 anchor bucket boundary; null for preparations (natural anchor). */
     val anchorBoundaryHeight: Long?,
+    /** Actionable RIGHT NOW per the engine's `transaction_statuses` ([action] says how). */
+    val ready: Boolean = false,
+    /** The action a ready transaction takes next, or null when waiting. */
+    val action: MigrationNextAction? = null,
+    /** Why a waiting transaction is not yet actionable, or null when none/ready. */
+    val blocker: MigrationBlocker? = null,
 )
 
 /**
@@ -223,6 +229,65 @@ data class MigrationTransferState(
 data class MigrationTransferStates(
     val transfers: List<MigrationTransferState>,
     val tipHeight: Long
+)
+
+/** The action a READY migration transaction takes next — see [MigrationTransferState.action]. */
+enum class MigrationNextAction { PROVE, BROADCAST }
+
+/** Why a waiting migration transaction is not yet actionable — see [MigrationTransferState.blocker]. */
+enum class MigrationBlocker {
+    /** Waiting for its dependency transactions (earlier preparation layers) to mine. */
+    DEPENDENCIES,
+
+    /** Built and due only at a later height (the privacy broadcast schedule). */
+    SCHEDULE,
+
+    /** A transfer whose drawn anchor boundary has not yet settled below the tip. */
+    ANCHOR_BOUNDARY,
+
+    /** Awaiting an EXTERNAL signature — apply it via [OrchardMigrationSdk.applySignature]. */
+    SIGNATURE,
+
+    /** Its expiry height passed unmined — the rebuild path must reconstruct it. */
+    EXPIRED,
+
+    /**
+     * SYNTHETIC (backend guard veto — TODO(remove) once the engine surfaces it): a dependency
+     * mined PAST this transfer's drawn anchor boundary, so no witness can ever be built against
+     * it. Needs a plan-level reschedule/rebuild; more syncing can never help.
+     */
+    UNPROVABLE_ANCHOR,
+}
+
+/**
+ * One decision of the engine state machine — what the app's migration worker does next.
+ * The worker performs the corresponding I/O and asks again; it never chooses on its own.
+ */
+sealed class MigrationAdvanceStep {
+    /** Sync + prove now (the given transaction's anchor is resolvable). */
+    data class Prove(val transferId: Long) : MigrationAdvanceStep()
+
+    /** Broadcast the given already-proven transaction (its scheduled height arrived). */
+    data class Broadcast(val transferId: Long) : MigrationAdvanceStep()
+
+    /** The given transfer expired unmined — reconstruct + re-sign it (needs spend authority). */
+    data class Rebuild(val transferId: Long) : MigrationAdvanceStep()
+
+    /** Nothing actionable right now — re-arm from [OrchardMigrationSdk.syncWakeupSchedule]. */
+    object Waiting : MigrationAdvanceStep() {
+        override fun toString() = "Waiting"
+    }
+
+    /** Every transaction is mined. */
+    object Complete : MigrationAdvanceStep() {
+        override fun toString() = "Complete"
+    }
+}
+
+/** One sync/prove wake-up of the engine's schedule: wake at [height], prove [covers]. */
+data class MigrationSyncWakeup(
+    val height: Long,
+    val covers: List<Long>,
 )
 
 /**
@@ -754,6 +819,28 @@ interface OrchardMigrationSdk {
      * migration.
      */
     suspend fun getMigrationTransferStates(): MigrationTransferStates?
+
+    /**
+     * The engine state machine's single "what now?" answer (guarded `next_step`, decided at the
+     * SCANNED tip): the app worker performs exactly this and asks again. `null` when no migration
+     * is in progress. Broadcast execution itself stays [executeNextPendingTransfer] (which also
+     * carries the estimated-tip schedule acceleration).
+     */
+    suspend fun nextStep(): MigrationAdvanceStep?
+
+    /**
+     * The engine's minimal sync/prove wake-up schedule (windows, minimality, jitter,
+     * immediate-overdue) — the ONLY source of sync wake heights for the app worker. `null` when
+     * no migration is in progress; empty when nothing needs proving.
+     */
+    suspend fun syncWakeupSchedule(): List<MigrationSyncWakeup>?
+
+    /**
+     * Stores an externally signed PCZT for one transaction (`AwaitingSignature → Signed`) via the
+     * engine's `apply_signature` — the state-machine contract for the Keystone flow. Returns
+     * whether the state changed.
+     */
+    suspend fun applySignature(transferId: Long, signedPczt: ByteArray): Boolean
 
     /**
      * The completed migration's real summary — total migrated (crossing values), mined-transfer
