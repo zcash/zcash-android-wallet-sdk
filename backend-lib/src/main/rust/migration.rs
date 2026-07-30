@@ -5478,3 +5478,491 @@ mod reanchor_healing_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod state_machine_trace_tests {
+    //! Golden execution traces over the pure `zcash_pool_migration` state machine — the contract
+    //! the app's single-lane worker obeys (design:
+    //! `spec/2026-07-30-engine-state-machine-adoption-design.md`). Each test replays the REAL plan
+    //! shape from the 2026-07-30 live run (2 wallet notes → 4 preparations in 3 layers + 11
+    //! transfers, 12-block bucket grid) against a simulated chain and asserts, height by height,
+    //! exactly what `next_step` / `transaction_statuses` / `sync_wakeup_schedule` tell a consumer.
+    //!
+    //! The driver is FUNCTIONAL: the test owns a plain spec of every transaction plus its current
+    //! `MigrationTxState`, and rebuilds the `MigrationState` via `from_parts` after every applied
+    //! step — no engine-internal mutation, so the traces exercise the same read-only surface the
+    //! JNI layer will.
+    use std::num::NonZeroU32;
+
+    use zcash_pool_migration::{
+        denomination::DenominationPlan,
+        engine::{
+            MigrationState, MigrationStatus, MigrationTransaction, MigrationTransferId,
+            MigrationTxKind, MigrationTxState,
+        },
+        preparation::PreparationPlan,
+        scheduling::{AnchorBucketInterval, WakeupParams},
+        state::{AdvanceStep, Blocker},
+    };
+    use zcash_protocol::consensus::BlockHeight;
+
+    const EXPIRY: u32 = 4_285_440;
+    const BUCKET: u32 = 12;
+
+    /// One transaction of the plan, as the test owns it: everything `from_parts` needs except the
+    /// live `MigrationTxState`, which the driver tracks separately.
+    #[derive(Clone)]
+    struct TxSpec {
+        id: u32,
+        kind: MigrationTxKind,
+        deps: Vec<u32>,
+        scheduled: u32,
+        boundary: Option<u32>,
+    }
+
+    fn prep(id: u32, layer: usize, index: usize, deps: &[u32], scheduled: u32) -> TxSpec {
+        TxSpec {
+            id,
+            kind: MigrationTxKind::Preparation { layer, index },
+            deps: deps.to_vec(),
+            scheduled,
+            boundary: None,
+        }
+    }
+
+    fn transfer(id: u32, crossing: usize, dep: u32, scheduled: u32, boundary: u32) -> TxSpec {
+        TxSpec {
+            id,
+            kind: MigrationTxKind::Transfer { crossing },
+            deps: vec![dep],
+            scheduled,
+            boundary: Some(boundary),
+        }
+    }
+
+    /// The EXACT plan committed live on 2026-07-30 10:18 (referenceTip 4224538) — see
+    /// `spec/tx9-investigation/db-readable.txt`. tx9 is the only transfer funded from the L2
+    /// preparation (tx3); its drawn boundary (4224576) is one bucket past tx3's SCHEDULED height.
+    fn live_plan() -> Vec<TxSpec> {
+        vec![
+            prep(0, 0, 0, &[], 4_224_541),
+            prep(1, 0, 1, &[], 4_224_541),
+            prep(2, 1, 0, &[0, 1], 4_224_551),
+            prep(3, 2, 0, &[2], 4_224_562),
+            transfer(4, 0, 0, 4_224_604, 4_224_588),
+            transfer(5, 1, 0, 4_224_610, 4_224_576),
+            transfer(6, 2, 0, 4_224_655, 4_224_612),
+            transfer(7, 3, 0, 4_224_627, 4_224_612),
+            transfer(8, 4, 1, 4_224_593, 4_224_576),
+            transfer(9, 5, 3, 4_224_611, 4_224_576),
+            transfer(10, 6, 0, 4_224_646, 4_224_612),
+            transfer(11, 7, 0, 4_224_617, 4_224_600),
+            transfer(12, 8, 0, 4_224_649, 4_224_636),
+            transfer(13, 9, 0, 4_224_640, 4_224_600),
+            transfer(14, 10, 0, 4_224_656, 4_224_636),
+        ]
+    }
+
+    /// Drives the whole trace: rebuilds the `MigrationState` from the spec + live tx states.
+    struct Driver {
+        specs: Vec<TxSpec>,
+        states: Vec<MigrationTxState>,
+    }
+
+    impl Driver {
+        fn new(specs: Vec<TxSpec>) -> Self {
+            let states = vec![MigrationTxState::Signed; specs.len()];
+            Driver { specs, states }
+        }
+
+        fn idx(&self, id: u32) -> usize {
+            self.specs
+                .iter()
+                .position(|s| s.id == id)
+                .expect("known tx id")
+        }
+
+        fn set(&mut self, id: u32, state: MigrationTxState) {
+            let i = self.idx(id);
+            self.states[i] = state;
+        }
+
+        fn mine(&mut self, id: u32, height: u32) {
+            self.set(
+                id,
+                MigrationTxState::Mined {
+                    height: BlockHeight::from_u32(height),
+                },
+            );
+        }
+
+        fn build(&self) -> MigrationState {
+            let txs: Vec<MigrationTransaction> = self
+                .specs
+                .iter()
+                .zip(self.states.iter())
+                .map(|(s, st)| {
+                    MigrationTransaction::from_parts(
+                        MigrationTransferId::new(s.id),
+                        s.kind,
+                        vec![0u8; 32],
+                        s.deps.iter().map(|d| MigrationTransferId::new(*d)).collect(),
+                        BlockHeight::from_u32(s.scheduled),
+                        BlockHeight::from_u32(EXPIRY),
+                        s.boundary.map(BlockHeight::from_u32),
+                        st.clone(),
+                        None,
+                    )
+                })
+                .collect();
+            let note_split = DenominationPlan::from_stored_parts(
+                vec![zcash_protocol::value::Zatoshis::const_from_u64(100_000_000)],
+                zcash_protocol::value::Zatoshis::const_from_u64(5_000),
+                None,
+                zcash_protocol::value::Zatoshis::const_from_u64(10_000),
+                zcash_protocol::value::Zatoshis::const_from_u64(100_010_000),
+                zcash_protocol::value::Zatoshis::const_from_u64(100_000_000),
+            )
+            .expect("valid note split plan");
+            MigrationState::from_parts(
+                MigrationStatus::Committed,
+                note_split,
+                PreparationPlan::from_parts(vec![], vec![]),
+                txs,
+                AnchorBucketInterval::custom(NonZeroU32::new(BUCKET).expect("nonzero")),
+            )
+        }
+
+        /// Applies every step the engine emits at `tip` until it settles on Waiting/Complete/
+        /// Rebuild: Prove{id} flips the tx to Proved, Broadcast{id} to Broadcast. Returns the
+        /// applied step sequence plus the settling step. Mirrors exactly what the app worker will
+        /// do (modulo privacy timing, which never changes WHAT, only WHEN).
+        fn drain(&mut self, tip: u32) -> (Vec<AdvanceStep>, AdvanceStep) {
+            let target = BlockHeight::from_u32(tip + 1);
+            let mut applied = Vec::new();
+            loop {
+                let step = self.build().next_step(target);
+                match step {
+                    AdvanceStep::Prove { id } => {
+                        self.set(id_of(id), MigrationTxState::Proved);
+                        applied.push(step);
+                    }
+                    AdvanceStep::Broadcast { id } => {
+                        self.set(
+                            id_of(id),
+                            MigrationTxState::Broadcast {
+                                txid: zcash_protocol::TxId::from_bytes([id_of(id) as u8; 32]),
+                            },
+                        );
+                        applied.push(step);
+                    }
+                    settle => return (applied, settle),
+                }
+            }
+        }
+    }
+
+    impl Driver {
+        /// Like `drain`, but simulates a PROVER FAILURE for the given ids: the engine's Prove
+        /// instruction is recorded but NOT applied (in reality `prove_transfer` errors with
+        /// `Query(NotContained)` when the funding note is absent from the tree at the anchor).
+        /// Returns on the first vetoed Prove — the point where a real consumer is wedged, because
+        /// asking again yields the same impossible instruction.
+        fn drain_with_failing_prover(
+            &mut self,
+            tip: u32,
+            failing: &[u32],
+        ) -> (Vec<AdvanceStep>, AdvanceStep) {
+            let target = BlockHeight::from_u32(tip + 1);
+            let mut applied = Vec::new();
+            loop {
+                let step = self.build().next_step(target);
+                match step {
+                    AdvanceStep::Prove { id } if failing.contains(&id_of(id)) => {
+                        return (applied, step);
+                    }
+                    AdvanceStep::Prove { id } => {
+                        self.set(id_of(id), MigrationTxState::Proved);
+                        applied.push(step);
+                    }
+                    AdvanceStep::Broadcast { id } => {
+                        self.set(
+                            id_of(id),
+                            MigrationTxState::Broadcast {
+                                txid: zcash_protocol::TxId::from_bytes([id_of(id) as u8; 32]),
+                            },
+                        );
+                        applied.push(step);
+                    }
+                    settle => return (applied, settle),
+                }
+            }
+        }
+    }
+
+    fn id_of(id: MigrationTransferId) -> u32 {
+        u32::from(id)
+    }
+
+    fn prove(id: u32) -> AdvanceStep {
+        AdvanceStep::Prove {
+            id: MigrationTransferId::new(id),
+        }
+    }
+
+    fn broadcast(id: u32) -> AdvanceStep {
+        AdvanceStep::Broadcast {
+            id: MigrationTransferId::new(id),
+        }
+    }
+
+    fn blocker_of(state: &MigrationState, tip: u32, id: u32) -> Option<Blocker> {
+        state
+            .transaction_statuses(BlockHeight::from_u32(tip + 1))
+            .into_iter()
+            .find(|s| id_of(s.id()) == id)
+            .expect("status for id")
+            .blocked_on()
+    }
+
+    /// (a)+(b) HAPPY TRACE with a late-but-in-margin L2 prep: tx3 mines at 4224566 — 4 blocks past
+    /// its schedule but still BELOW tx9's boundary (4224576) — and the entire plan, tx9 included,
+    /// executes to Complete. This is the end-to-end contract for the single-lane worker: the
+    /// engine emits prove-first batches, then broadcasts in schedule order, and settles Waiting
+    /// between events.
+    #[test]
+    fn live_plan_happy_trace_completes_with_late_but_in_margin_prep() {
+        let mut d = Driver::new(live_plan());
+
+        // Layer 0 due: both preps prove (natural anchor) then broadcast, in list order.
+        let (steps, settle) = d.drain(4_224_542);
+        assert_eq!(steps, vec![prove(0), prove(1), broadcast(0), broadcast(1)]);
+        assert_eq!(settle, AdvanceStep::Waiting);
+        d.mine(0, 4_224_544);
+        d.mine(1, 4_224_546);
+
+        // Layer 1 due once its deps mined.
+        let (steps, settle) = d.drain(4_224_552);
+        assert_eq!(steps, vec![prove(2), broadcast(2)]);
+        assert_eq!(settle, AdvanceStep::Waiting);
+        d.mine(2, 4_224_556);
+
+        // Layer 2 — mines LATE (+4 past schedule) but within tx9's boundary margin.
+        let (steps, _) = d.drain(4_224_563);
+        assert_eq!(steps, vec![prove(3), broadcast(3)]);
+        d.mine(3, 4_224_566);
+
+        // Boundary 4224576 settles: the whole batch (5, 8, 9) proves together — tx9 INCLUDED,
+        // because its dependency mined at 4224566 <= 4224576. Nothing is broadcastable yet.
+        let (steps, settle) = d.drain(4_224_578);
+        assert_eq!(steps, vec![prove(5), prove(8), prove(9)]);
+        assert_eq!(settle, AdvanceStep::Waiting);
+
+        // tx8's schedule arrives; boundary 4224588 also settled → prove-first, then broadcast.
+        let (steps, _) = d.drain(4_224_593);
+        assert_eq!(steps, vec![prove(4), broadcast(8)]);
+        d.mine(8, 4_224_601);
+
+        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out.
+        let (steps, _) = d.drain(4_224_612);
+        assert_eq!(
+            steps,
+            vec![prove(11), prove(13), broadcast(4), broadcast(5), broadcast(9)]
+        );
+        d.mine(4, 4_224_616);
+        d.mine(5, 4_224_616);
+        d.mine(9, 4_224_616);
+
+        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast.
+        let (steps, _) = d.drain(4_224_638);
+        assert_eq!(
+            steps,
+            vec![
+                prove(6),
+                prove(7),
+                prove(10),
+                prove(12),
+                prove(14),
+                // FINDING (documented): among simultaneously-due transactions,
+                // `next_broadcastable` serves VEC (id) order, not scheduled order — tx7
+                // (sched 4224627) goes before tx11 (sched 4224617).
+                broadcast(7),
+                broadcast(11)
+            ]
+        );
+        d.mine(11, 4_224_642);
+        d.mine(7, 4_224_642);
+
+        // The tail broadcasts in schedule order; after the last mine the machine is Complete.
+        let (steps, _) = d.drain(4_224_660);
+        assert_eq!(
+            steps,
+            // Again id order among the simultaneously due, not schedule order.
+            vec![
+                broadcast(6),
+                broadcast(10),
+                broadcast(12),
+                broadcast(13),
+                broadcast(14)
+            ]
+        );
+        for id in [13, 10, 12, 6, 14] {
+            d.mine(id, 4_224_670);
+        }
+        let (steps, settle) = d.drain(4_224_680);
+        assert!(steps.is_empty());
+        assert_eq!(settle, AdvanceStep::Complete);
+
+        // Nothing left to wake for.
+        let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
+        let wakeups = d
+            .build()
+            .sync_wakeup_schedule(
+                BlockHeight::from_u32(4_224_680),
+                &WakeupParams::default(),
+                &mut rng,
+            )
+            .expect("schedule");
+        assert!(wakeups.is_empty());
+    }
+
+    /// (c) THE tx9 CASE, exactly as captured live: tx3 mines at 4224587 — 11 blocks PAST tx9's
+    /// boundary. Documents the PURE state machine's CURRENT behaviour, which is one step WORSE
+    /// than what we observed live (backend-lib's `is_prove_ready` duplicate carries a
+    /// late-dependency guard the pure `state.rs::prove_ready` does NOT have):
+    ///
+    ///  GAP 0: `next_step` insists on `Prove { 9 }` — an instruction that can never succeed
+    ///         (`prove_transfer` fails with `Query(NotContained)`: the funding note is not in the
+    ///         tree at the anchor). A raw consumer is WEDGED: asking again returns the same step.
+    ///  GAP 1: `transaction_statuses` reports tx9 as READY to prove (no honest blocker at all).
+    ///  GAP 2: `sync_wakeup_schedule` emits a PERPETUAL immediate wake-up covering tx9.
+    ///
+    /// The change request (`2026-07-30-engine-change-request-unprovable-boundary.md`) asks to
+    /// close all three: upstream the late-dependency guard into `prove_ready`, surface a distinct
+    /// blocker (or early `Rebuild`), and stop scheduling wake-ups for it. When it ships, the GAP
+    /// assertions below are expected to FLIP — update them alongside.
+    #[test]
+    fn unprovable_boundary_documented_gap() {
+        let mut d = Driver::new(live_plan());
+        // Preps execute as live; tx3 mines LATE, past tx9's boundary.
+        d.drain(4_224_542);
+        d.mine(0, 4_224_544);
+        d.mine(1, 4_224_549);
+        d.drain(4_224_552);
+        d.mine(2, 4_224_568);
+        d.drain(4_224_563);
+        d.mine(3, 4_224_587);
+
+        // GAP 0: the machine wedges on the impossible Prove { 9 } while healthy work remains
+        // possible (the failing-prover drain returns the moment the impossible instruction
+        // appears; a real consumer erroring on it and re-asking would loop forever).
+        let (applied, wedge) = d.drain_with_failing_prover(4_224_700, &[9]);
+        assert_eq!(
+            wedge,
+            AdvanceStep::Prove {
+                id: MigrationTransferId::new(9)
+            },
+            "pure prove_ready lacks the late-dependency guard — it offers the impossible prove"
+        );
+        // Everything provable before the wedge point got applied.
+        assert!(applied.iter().all(
+            |s| !matches!(s, AdvanceStep::Broadcast { id } if id_of(*id) == 9)
+        ));
+
+        // GAP 1: the status view claims tx9 is READY (action = Prove), with no blocker.
+        let statuses = d.build().transaction_statuses(BlockHeight::from_u32(4_224_701));
+        let tx9 = statuses
+            .iter()
+            .find(|st| id_of(st.id()) == 9)
+            .expect("tx9 status");
+        assert!(tx9.ready(), "reported ready even though proving cannot succeed");
+        assert_eq!(tx9.blocked_on(), None);
+
+        // GAP 2: a perpetual immediate wake-up keeps covering tx9.
+        let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
+        let wakeups = d
+            .build()
+            .sync_wakeup_schedule(
+                BlockHeight::from_u32(4_224_700),
+                &WakeupParams::default(),
+                &mut rng,
+            )
+            .expect("schedule");
+        assert!(
+            wakeups
+                .iter()
+                .any(|w| w.covers().iter().any(|t| id_of(*t) == 9)),
+            "wake-ups keep being scheduled for a transfer that can never prove"
+        );
+    }
+
+    /// (d) EXPIRY heals the stuck transfer via the existing rebuild path: once the chain passes
+    /// tx9's expiry height, `next_step` finally emits `Rebuild { 9 }` and the status flips to the
+    /// honest `Blocker::Expired`. This is the machinery our change request asks to trigger EARLY.
+    #[test]
+    fn expiry_surfaces_rebuild_for_the_stuck_transfer() {
+        let mut d = Driver::new(live_plan());
+        d.drain(4_224_542);
+        d.mine(0, 4_224_544);
+        d.mine(1, 4_224_549);
+        d.drain(4_224_552);
+        d.mine(2, 4_224_568);
+        d.drain(4_224_563);
+        d.mine(3, 4_224_587);
+        d.drain_with_failing_prover(4_224_700, &[9]);
+        for id in [4, 5, 6, 7, 8, 10, 11, 12, 13, 14] {
+            d.mine(id, 4_224_706);
+        }
+
+        let past_expiry = EXPIRY + 1;
+        let (steps, settle) = d.drain(past_expiry);
+        assert!(steps.is_empty());
+        assert_eq!(
+            settle,
+            AdvanceStep::Rebuild {
+                id: MigrationTransferId::new(9)
+            }
+        );
+        assert_eq!(blocker_of(&d.build(), past_expiry, 9), Some(Blocker::Expired));
+    }
+
+    /// (e) EXTERNAL SIGNING round-trip: an `AwaitingSignature` transfer is reported via
+    /// `Blocker::Signature`, the automatic driver takes no action on it, and `apply_signature`
+    /// moves it to `Signed`, after which the ordinary prove/broadcast path resumes. This is the
+    /// contract the Keystone flow adopts (replacing the app-side pending-PCZT plumbing).
+    #[test]
+    fn awaiting_signature_blocks_until_apply_signature() {
+        let mut d = Driver::new(live_plan());
+        // Whole prep chain + all-but-tx9 as in the happy path, but tx9 starts AwaitingSignature
+        // (external signer) with its dependency mined IN margin.
+        d.set(9, MigrationTxState::AwaitingSignature);
+        d.drain(4_224_542);
+        d.mine(0, 4_224_544);
+        d.mine(1, 4_224_546);
+        d.drain(4_224_552);
+        d.mine(2, 4_224_556);
+        d.drain(4_224_563);
+        d.mine(3, 4_224_566);
+
+        // Boundary settled, schedule due — yet the driver must not touch it.
+        let (steps, settle) = d.drain(4_224_620);
+        assert!(
+            steps
+                .iter()
+                .all(|s| !matches!(s, AdvanceStep::Prove { id } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
+            "an AwaitingSignature tx is driven by apply_signature, not the automatic loop"
+        );
+        assert_eq!(settle, AdvanceStep::Waiting);
+        assert_eq!(
+            blocker_of(&d.build(), 4_224_620, 9),
+            Some(Blocker::Signature)
+        );
+
+        // The signed PCZT comes back from the device → Signed → the ordinary path resumes.
+        let mut state = d.build();
+        assert!(state.apply_signature(MigrationTransferId::new(9), vec![1u8; 32]));
+        d.set(9, MigrationTxState::Signed);
+        let (steps, _) = d.drain(4_224_620);
+        assert_eq!(steps, vec![prove(9), broadcast(9)]);
+    }
+}
