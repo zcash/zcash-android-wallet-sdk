@@ -23,7 +23,8 @@ internal data class DbTransactionOverview internal constructor(
     val memoCount: Int,
     val blockTimeEpochSeconds: Long?,
     val isShielding: Boolean,
-    val isExpiredUnmined: Boolean?
+    val isExpiredUnmined: Boolean?,
+    val poolCrossingValue: Zatoshi?
 ) {
     override fun toString() = "DbTransactionOverview"
 

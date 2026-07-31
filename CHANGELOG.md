@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `TransactionOverview.poolCrossingValue`: the amount a wallet-internal transfer moved
+  between the account's own shielded pools (for example, a ZIP 318 Orchard -> Ironwood
+  migration transfer), read from the `pool_crossing_value` column that
+  `zcash_client_sqlite 0.22.0-rc.6` added to the `v_transactions` view; null for a
+  transaction that is not such a transfer. For a pool-crossing transfer, `netValue` is
+  just the fee, and `totalSpent`/`totalReceived` overstate the crossing whenever the
+  transaction also returns change to a pool it spent from, so wallets should display
+  `poolCrossingValue` as the migrated amount.
+
 ### Changed
 - Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
   `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing

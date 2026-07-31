@@ -28,6 +28,7 @@ object TransactionOverviewFixture {
     const val BLOCK_TIME_EPOCH_SECONDS: Long = 1234
     val STATE = TransactionState.Confirmed
     const val IS_SHIELDING = false
+    val POOL_CROSSING_VALUE: Zatoshi? = null
 
     @Suppress("LongParameterList")
     fun new(
@@ -47,7 +48,8 @@ object TransactionOverviewFixture {
         memoCount: Int = MEMO_COUNT,
         blockTimeEpochSeconds: Long = BLOCK_TIME_EPOCH_SECONDS,
         transactionState: TransactionState = STATE,
-        isShielding: Boolean = IS_SHIELDING
+        isShielding: Boolean = IS_SHIELDING,
+        poolCrossingValue: Zatoshi? = POOL_CROSSING_VALUE
     ) = TransactionOverview(
         txId = txId,
         minedHeight = minedHeight,
@@ -66,5 +68,6 @@ object TransactionOverviewFixture {
         blockTimeEpochSeconds = blockTimeEpochSeconds,
         transactionState = transactionState,
         isShielding = isShielding,
+        poolCrossingValue = poolCrossingValue,
     )
 }

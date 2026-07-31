@@ -12,6 +12,11 @@ import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
  *
  * Pending transactions are identified by a null [minedHeight].  Pending transactions are considered expired if the
  * last synced block exceeds the [expiryHeight].
+ *
+ * A wallet-internal pool-crossing transfer (for example, a ZIP 318 Orchard -> Ironwood migration transfer) is
+ * identified by a non-null [poolCrossingValue].  For such a transaction, display [poolCrossingValue] as the migrated
+ * amount: [netValue] is just the fee, and [totalSpent] and [totalReceived] overstate the crossing whenever the
+ * transaction also returns change to a pool it spent from.
  */
 data class TransactionOverview(
     val txId: TransactionId,
@@ -30,7 +35,19 @@ data class TransactionOverview(
     val memoCount: Int,
     val blockTimeEpochSeconds: Long?,
     val transactionState: TransactionState,
-    val isShielding: Boolean
+    val isShielding: Boolean,
+    /**
+     * The amount this transaction moved between the account's own shielded pools, or null when the transaction is
+     * not a wallet-internal pool-crossing transfer.
+     *
+     * Non-null exactly when every wallet-spent note and wallet-received output in the transaction is shielded, the
+     * account spent at least one note, at least one output was received in a pool the account spent nothing from,
+     * and no external outputs of the transaction are known; the value is then the total received in the pools the
+     * account did not spend from.  A payment that returns value to one of the wallet's own addresses is classified
+     * once the wallet has observed the returned output; while such a transaction is unmined it is treated as an
+     * ordinary payment.
+     */
+    val poolCrossingValue: Zatoshi? = null
 ) {
     override fun toString() = "TransactionOverview"
 
@@ -62,7 +79,8 @@ data class TransactionOverview(
                     ),
                 isShielding = dbTransactionOverview.isShielding,
                 totalSpent = dbTransactionOverview.totalSpent,
-                totalReceived = dbTransactionOverview.totalReceived
+                totalReceived = dbTransactionOverview.totalReceived,
+                poolCrossingValue = dbTransactionOverview.poolCrossingValue
             )
     }
 

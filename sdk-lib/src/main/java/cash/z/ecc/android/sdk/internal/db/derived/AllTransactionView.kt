@@ -126,6 +126,10 @@ internal class AllTransactionView(
             val blockTimeIndex = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_INTEGER_BLOCK_TIME)
             val isShielding = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_BOOLEAN_IS_SHIELDING)
             val isExpiredUnmined = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_EXPIRED_UNMINED)
+            val poolCrossingValueIndex =
+                cursor.getColumnIndex(
+                    AllTransactionViewDefinition.COLUMN_LONG_POOL_CROSSING_VALUE
+                )
 
             val netValueLong = cursor.getLong(netValueIndex)
             val isSent = netValueLong < 0
@@ -163,7 +167,8 @@ internal class AllTransactionView(
                         1 -> true
                         null -> null
                         else -> false
-                    }
+                    },
+                poolCrossingValue = cursor.getLongOrNull(poolCrossingValueIndex)?.let { Zatoshi(it) }
             )
         }
 
@@ -269,4 +274,6 @@ internal object AllTransactionViewDefinition {
     const val COLUMN_BLOB_ACCOUNT_UUID = "account_uuid" // $NON-NLS
 
     const val COLUMN_EXPIRED_UNMINED = "expired_unmined"
+
+    const val COLUMN_LONG_POOL_CROSSING_VALUE = "pool_crossing_value" // $NON-NLS
 }
