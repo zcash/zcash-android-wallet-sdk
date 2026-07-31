@@ -669,7 +669,8 @@ class OrchardMigrationSdkImplTest {
         override suspend fun nextStep(
             dbDataPath: String,
             network: ZcashNetwork,
-            account: AccountUuid
+            account: AccountUuid,
+            estimatedTip: Long
         ): LongArray? = error("Unused")
 
         override suspend fun syncWakeupSchedule(

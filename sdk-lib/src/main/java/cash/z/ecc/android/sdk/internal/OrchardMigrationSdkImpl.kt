@@ -657,7 +657,10 @@ internal class OrchardMigrationSdkImpl(
         logged("nextStep") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.nextStep(dbDataPath, network, account)?.let { arr ->
+            // Broadcast timing uses the estimated (real) chain tip so a proved, due transfer
+            // returns Broadcast directly; proving stays on the scanned tip inside the backend.
+            val est = chainTipEstimator.estimatedTip()
+            migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
                 when (arr.getOrElse(0) { 0L }) {
                     1L -> MigrationAdvanceStep.Prove(id)

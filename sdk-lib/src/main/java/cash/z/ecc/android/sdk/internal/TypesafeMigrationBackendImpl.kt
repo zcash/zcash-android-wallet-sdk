@@ -191,8 +191,9 @@ internal class TypesafeMigrationBackendImpl(
     override suspend fun nextStep(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
-    ): LongArray? = rustBackend().nextStep(dbDataPath, network.id, account.value)
+        account: AccountUuid,
+        estimatedTip: Long
+    ): LongArray? = rustBackend().nextStep(dbDataPath, network.id, account.value, estimatedTip)
 
     override suspend fun syncWakeupSchedule(
         dbDataPath: String,

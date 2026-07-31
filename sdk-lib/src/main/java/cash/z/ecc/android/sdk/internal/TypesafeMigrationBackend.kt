@@ -204,11 +204,13 @@ internal interface TypesafeMigrationBackend {
     /**
      * The guarded `next_step` driver read: `[stepCode, transferId]` (0 waiting, 1 prove,
      * 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent), or `null` with no migration.
+     * Broadcast timing uses [estimatedTip]; proving uses the scanned tip internally.
      */
     suspend fun nextStep(
         dbDataPath: String,
         network: ZcashNetwork,
-        account: AccountUuid
+        account: AccountUuid,
+        estimatedTip: Long
     ): LongArray?
 
     /** Rows of `[wakeHeight, coveredId...]` from the engine's sync wake-up schedule. */

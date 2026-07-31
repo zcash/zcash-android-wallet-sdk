@@ -370,16 +370,19 @@ class MigrationRustBackend private constructor() {
     /**
      * The single "what now?" driver read — `[stepCode, transferId]` from the guarded
      * `next_step` (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent).
-     * `null` when no migration is in progress.
+     * `null` when no migration is in progress. Broadcast timing uses [estimatedTip] (the real
+     * chain tip); proving uses the scanned tip internally. Pass `-1` when no estimate is
+     * available (falls back to the scanned tip for both).
      */
     @Throws(RuntimeException::class)
     suspend fun nextStep(
         dbDataPath: String,
         networkId: Int,
-        accountUuidBytes: ByteArray
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
     ): LongArray? =
         withContext(SdkDispatchers.DATABASE_IO) {
-            nextStepNative(dbDataPath, networkId, accountUuidBytes)
+            nextStepNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
         }
 
     /**
@@ -824,7 +827,8 @@ class MigrationRustBackend private constructor() {
         private external fun nextStepNative(
             dbDataPath: String,
             networkId: Int,
-            accountUuidBytes: ByteArray
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
         ): LongArray?
 
         @JvmStatic

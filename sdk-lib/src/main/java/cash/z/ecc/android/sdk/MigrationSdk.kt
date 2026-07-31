@@ -864,10 +864,12 @@ interface OrchardMigrationSdk {
     suspend fun getMigrationTransferStates(): MigrationTransferStates?
 
     /**
-     * The engine state machine's single "what now?" answer (guarded `next_step`, decided at the
-     * SCANNED tip): the app worker performs exactly this and asks again. `null` when no migration
-     * is in progress. Broadcast execution itself stays [executeNextPendingTransfer] (which also
-     * carries the estimated-tip schedule acceleration).
+     * The engine state machine's single "what now?" answer (guarded `next_step`): the app worker
+     * performs exactly this and asks again. `null` when no migration is in progress. Broadcast
+     * timing uses the estimated (real) chain tip — a proved, due transfer returns
+     * [MigrationAdvanceStep.Broadcast] directly, broadcast-first over a ready prove (retention-
+     * justified); proving stays on the scanned tip (a witness needs a real settled checkpoint).
+     * Broadcast execution itself stays [executeNextPendingTransfer].
      */
     suspend fun nextStep(): MigrationAdvanceStep?
 
