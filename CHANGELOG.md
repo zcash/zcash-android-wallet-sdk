@@ -7,10 +7,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Release preparation now uses `scripts/prepare-release.sh`, creates
-  `candidate/vX.Y.Z`, validates and updates the Gradle and Rust versions, and
-  pushes both release branches before opening a draft pull request linked to
-  the release issue.
 - Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
   `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
   (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
