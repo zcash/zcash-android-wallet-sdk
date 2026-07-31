@@ -16,11 +16,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when no such note exists. Canonical-denomination payments that previously lost
   the canonical shape to multi-note funding now take it whenever a single covering
   note exists.
+- Updated the `zcash_voting` dependency to `2.0.0-rc.2` (bringing
+  `vote-commitment-tree 0.4.0-rc.1` and `vote-commitment-tree-client 0.6.0-rc.1`),
+  aligning the voting crates with the `zcash_client_backend 0.24.0-rc.6` release
+  candidates. The bump is release and compatibility work only; the voting API is
+  unchanged from 2.0.0-rc.1.
 - **Shielded voting works again, on a source-incompatible API.** 2.8.0-rc.1 shipped with the
   voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
   built into the native library again and that deprecation is removed, so `VotingRustBackend` and
   the `sdk-lib` typesafe wrapper around it are usable. The surface is not the one that existed
-  before 2.8.0-rc.1, because it is now built on `zcash_voting` 2.0.0-rc.1: the native entry points
+  before 2.8.0-rc.1, because it is now built on `zcash_voting` 2.0.0-rc.2: the native entry points
   went from 60 to 55, because three were added and eight were removed — seven of them public API,
   the eighth a test fixture — and nine of the survivors changed their parameter lists, one of them
   without changing its signature. A wallet that stayed on a pre-2.8 release to keep voting working
