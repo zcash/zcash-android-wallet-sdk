@@ -13,7 +13,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JThrowable, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
 };
 use nonempty::NonEmpty;
@@ -47,6 +47,7 @@ use zcash_client_backend::{
         TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
         WalletSummary, WalletWrite, Zip32Derivation,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
+        error::Error as DataApiError,
         scanning::{ScanPriority, ScanRange},
         wallet::{
             self, SignerView, create_pczt_from_proposal, create_proposed_transactions,
@@ -61,6 +62,7 @@ use zcash_client_backend::{
         DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
         UnifiedFullViewingKey, UnifiedSpendingKey,
     },
+    proposal::ProposalError,
     proto::{proposal::Proposal, service::TreeState},
     tor::{
         DormantMode,
@@ -2108,6 +2110,48 @@ fn zip317_helper<DbT>(
     )
 }
 
+/// The JVM class thrown when a proposal fails with [`ProposalError::AnchorNotFound`]. The
+/// `(String, long)` constructor signature is part of the JNI contract with the Kotlin class.
+const ANCHOR_NOT_FOUND_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/jni/ProposalAnchorNotFoundException";
+
+/// Converts a proposal failure into the `anyhow` error reported through the generic exception
+/// path, first raising a typed `ProposalAnchorNotFoundException` on the JVM when the failure is
+/// [`ProposalError::AnchorNotFound`], so that callers can react to it without matching message
+/// text. `unwrap_exc_or` leaves a pending exception in place, so the typed throw wins when it
+/// succeeds and the generic `RuntimeException` remains the fallback when it does not.
+fn map_proposal_error<DE, TE, SE, FE, CE, N>(
+    env: &mut JNIEnv,
+    context: &str,
+    e: DataApiError<DE, TE, SE, FE, CE, N>,
+) -> anyhow::Error
+where
+    DataApiError<DE, TE, SE, FE, CE, N>: std::fmt::Display,
+{
+    if let DataApiError::Proposal(ProposalError::AnchorNotFound(anchor_height)) = &e {
+        let description = format!(
+            "{}: no anchor is computable at height {}",
+            context, anchor_height
+        );
+        let thrown = (|| -> Result<(), jni::errors::Error> {
+            let message = env.new_string(&description)?;
+            let exception = env.new_object(
+                ANCHOR_NOT_FOUND_EXCEPTION_CLASS,
+                "(Ljava/lang/String;J)V",
+                &[
+                    JValue::Object(&message),
+                    JValue::Long(u32::from(*anchor_height) as jlong),
+                ],
+            )?;
+            env.throw(JThrowable::from(exception))
+        })();
+        if let Err(err) = thrown {
+            error!("Unable to throw ProposalAnchorNotFoundException: {}", err);
+        }
+    }
+    anyhow!("{}: {}", context, e)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTransferFromUri<
     'local,
@@ -2149,7 +2193,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             lock_inputs,
             proposed_version,
         )
-        .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
+        .map_err(|e| map_proposal_error(env, "Error creating transaction proposal", e))?;
 
         Ok(utils::rust_bytes_to_java(
             env,
@@ -2218,7 +2262,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             lock_inputs,
             proposed_version,
         )
-        .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
+        .map_err(|e| map_proposal_error(env, "Error creating transaction proposal", e))?;
 
         Ok(utils::rust_bytes_to_java(
             env,
@@ -2248,7 +2292,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
         let proposal =
-            crate::migration::propose_orchard_to_ironwood(&mut db_data, &network, account_uuid)?;
+            crate::migration::propose_orchard_to_ironwood(env, &mut db_data, &network, account_uuid)?;
 
         Ok(utils::rust_bytes_to_java(
             env,

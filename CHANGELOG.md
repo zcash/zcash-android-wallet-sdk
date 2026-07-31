@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `TransactionEncoderException.AnchorNotFoundException`, thrown by the proposal APIs
+  (`Synchronizer.proposeTransfer`, `proposeTransferFromUri` and
+  `proposeOrchardToIronwoodMigration`) when a proposal fails because no anchor is
+  computable at the height the proposal would anchor to (`zcash_client_backend`'s
+  `ProposalError::AnchorNotFound`). This failure previously surfaced as the generic
+  proposal exception, identifiable only by matching the formatted Rust error message.
+  Scanning creates a checkpoint at every height a proposal can anchor to, so syncing
+  further before retrying is expected to resolve it.
+
 ### Changed
 - Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
   `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
@@ -163,7 +173,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a pool migration was in progress. A new database migration adds the missing
   column. The backfilled value is exact on the production network; on a test
   network, a pool migration planned under a custom anchor grid is reported as
-  `AnchorIntervalMismatch` and must be re-planned.
+  `AnchorIntervalMismatch` and must be re-planned. (That report originates in the
+  `zcash_pool_migration` engine's prove and rebuild steps, which this SDK does not
+  currently invoke, so it is not surfaced through this SDK's API.)
 - A ZIP 318 crossing anchored to a bucket boundary whose block contains no note
   commitments in any pool no longer fails with `ProposalError::AnchorNotFound`:
   scanning now creates a checkpoint at every anchor-retention grid height, and
