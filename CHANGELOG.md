@@ -6,6 +6,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `TransactionOverview.zip318Kind`, a new `Zip318Kind` reporting how a transaction
+  classifies against ZIP 318, the Orchard to Ironwood pool migration. It is a
+  trailing constructor parameter, so positional construction of `TransactionOverview`
+  will not compile until it is supplied; named construction needs no edit.
+  `Zip318Kind.NOT_CLASSIFIED` means the wallet has not looked at the transaction,
+  not that the transaction is not a migration, and warrants no label in a UI; a
+  transaction the wallet has examined and rejected is `NONCONFORMING` instead. Only
+  `PREPARATION` and `TRANSFER` are the wallet's own migration. `CROSSING_PAYMENT`
+  has the same shape on chain, deliberately, so that ordinary payments join the
+  migration anonymity set, but it pays a third party and must not be presented as a
+  migration. The value is a conformance class, never evidence that a transaction
+  came from this wallet's migration run.
+
 ### Changed
 - Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
   `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
