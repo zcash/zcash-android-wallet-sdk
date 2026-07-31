@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferResult
+import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
@@ -27,9 +28,11 @@ import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.ArgumentMatchers.anyString
@@ -262,13 +265,35 @@ class OrchardMigrationSdkImplTest {
 
     // ── Task 1 (spec §2a): cancellation-safe broadcast mark ──────────────────
     // executeNextPendingTransfer's entry guard must skip a re-send of an in-flight tx that is
-    // already mined (a prior send whose mark never persisted), and must not affect the normal
-    // (not in-flight) broadcast path.
+    // already mined (a prior send whose mark never persisted); the guard's own record segment
+    // must survive cancellation of the caller.
+
+    /**
+     * Pure-function coverage of the entry-guard predicate itself — both branches, no SDK object,
+     * no fake backend, no prefs/coroutine plumbing. This is what actually pins down the guard's
+     * *condition*; the SDK-level tests below only pin down that the condition is wired to the
+     * right production effects (skip broadcast, uncancellable record).
+     */
+    @Test
+    fun `shouldSkipReSendAlreadyMined is true only when in-flight and mined`() {
+        assertTrue(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = 0L))
+        assertTrue(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = 4_226_000L))
+    }
+
+    @Test
+    fun `shouldSkipReSendAlreadyMined is false when not in-flight or not mined`() {
+        // In-flight mark already expired/cleared, even though the txid happens to be mined.
+        assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 50, nowEpochSeconds = 100, minedHeight = 0L))
+        assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 0, nowEpochSeconds = 100, minedHeight = 0L))
+        // Still in-flight, but the txid probe found no mined height.
+        assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = -1L))
+    }
 
     /**
      * The in-flight flag is still set from a prior send whose mark never persisted (outer timeout
      * / cancellation between send and record), but the exact prepared txid is already mined. The
-     * entry guard must record success directly and must NOT call back into
+     * entry guard must record success directly (with the same txid, hex-reversed, as
+     * `mapSubmitResult`'s duplicate-rejection branch produces) and must NOT call back into
      * `extractBroadcastTx`/`broadcast` for the identical transaction.
      */
     @Test
@@ -276,9 +301,10 @@ class OrchardMigrationSdkImplTest {
         runBlocking {
             val account = AccountUuid.new(ByteArray(16) { it.toByte() })
             val inFlightUntil = (Clock.System.now().epochSeconds + 60).toString()
+            val prepared = preparedTransfer()
             val fakeBackend =
                 FakeTypesafeMigrationBackend(
-                    dueTransferResult = JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = preparedTransfer()),
+                    dueTransferResult = JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = prepared),
                     transactionMinedHeightResult = 4_226_000L, // already mined
                 )
             val sdk =
@@ -300,26 +326,39 @@ class OrchardMigrationSdkImplTest {
             val outcome = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
 
             assertEquals(0, fakeBackend.broadcastCallCount, "must NOT re-broadcast an already-mined in-flight tx")
-            assertTrue(outcome is TransferAttemptOutcome.Executed && outcome.result is TransferResult.Success)
+            check(outcome is TransferAttemptOutcome.Executed) { "expected Executed, got $outcome" }
+            val result = outcome.result
+            check(result is TransferResult.Success) { "expected Success, got $result" }
+            assertEquals(prepared.txid.toHexReversed(), result.txId)
         }
 
     /**
-     * Regression guard for the entry guard added above: when the in-flight mark is cleared (a
-     * fresh, non-resumed attempt), the guard must not fire and the transfer must still broadcast
-     * exactly once. `broadcastCallCount` is counted in the fake's `extractBroadcastTx` (the call
-     * the guard is specifically there to skip); the subsequent real network attempt is directed at
-     * an unroutable loopback endpoint (and wrapped in `runCatching`) so this stays a fast, hermetic
-     * unit test regardless of how that attempt resolves — only the guard-not-firing behavior is
-     * under test here.
+     * Proves the entry guard's record segment is genuinely uncancellable, not just untested: the
+     * fake's `recordTransferResult` signals [enteredRecord] on entry and then suspends on
+     * [recordGate] until the test releases it. The caller (`executeNextPendingTransfer`, launched
+     * in a child [Job]) is cancelled while suspended inside that record segment; only afterwards
+     * does the test let it proceed. If `recordTransferResult` still runs to completion
+     * (`recordTransferResultCompleted == true`) despite the cancellation, the mark survives —
+     * which is exactly the property `withContext(NonCancellable)` exists for.
+     *
+     * Manually verified this test fails when `withContext(NonCancellable)` is temporarily removed
+     * from the entry guard's record segment: `recordTransferResultCompleted` stays `false` because
+     * cancelling the job while suspended in `recordGate.await()` throws `CancellationException`
+     * out of `recordTransferResult` instead of letting it finish — see task-1-report.md, Fix round 1.
      */
     @Test
-    fun executeNextPendingTransfer_broadcasts_normally_when_not_inflight() =
+    fun executeNextPendingTransfer_entry_guard_record_survives_caller_cancellation() =
         runBlocking {
             val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val inFlightUntil = (Clock.System.now().epochSeconds + 60).toString()
+            val enteredRecord = CompletableDeferred<Unit>()
+            val recordGate = CompletableDeferred<Unit>()
             val fakeBackend =
                 FakeTypesafeMigrationBackend(
-                    dueTransferResult = JniDueTransferResult(1, null, preparedTransfer()),
-                    transactionMinedHeightResult = -1L,
+                    dueTransferResult = JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = preparedTransfer()),
+                    transactionMinedHeightResult = 4_226_000L, // already mined -> takes the entry-guard path
+                    onRecordTransferResultEntered = enteredRecord,
+                    recordTransferResultGate = recordGate,
                 )
             val sdk =
                 OrchardMigrationSdkImpl(
@@ -328,19 +367,26 @@ class OrchardMigrationSdkImplTest {
                     alias = "OrchardMigrationSdkImplTest",
                     account = account,
                     migrationBackend = fakeBackend,
-                    defaultSubmitEndpoint = LightWalletEndpoint("127.0.0.1", 1, false),
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
                     preferenceProviderHolder =
                         FakePreferenceHolder(
-                            FakePreferenceProvider(mapOf(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key to "0"))
+                            FakePreferenceProvider(
+                                mapOf(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key to inFlightUntil)
+                            )
                         ),
                 )
 
-            // The guard-not-firing behavior is fully exercised once extractBroadcastTx is reached;
-            // what happens on the real (unroutable) network call afterward is not what this test
-            // is about, so any outcome there (failure result or thrown exception) is fine.
-            runCatching { sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false) }
+            val job = launch { sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false) }
+            enteredRecord.await() // wait until execution is suspended inside the NonCancellable record segment
+            job.cancel() // cancel the caller while the mark write is mid-flight
+            recordGate.complete(Unit) // now let the (uncancellable) record segment proceed
+            job.join()
 
-            assertEquals(1, fakeBackend.broadcastCallCount, "a fresh (not in-flight) transfer must broadcast once")
+            assertTrue(
+                fakeBackend.recordTransferResultCompleted,
+                "recordTransferResult must run to completion even after the caller is cancelled"
+            )
+            assertEquals(0, fakeBackend.broadcastCallCount, "must NOT re-broadcast an already-mined in-flight tx")
         }
 
     private fun preparedTransfer(): JniPreparedTransfer =
@@ -431,11 +477,22 @@ class OrchardMigrationSdkImplTest {
         private val hasOverdueTransfersResult: Boolean = false,
         private val dueTransferResult: JniDueTransferResult =
             JniDueTransferResult(status = 0, awaitingProofTransferId = null, prepared = null),
-        private val transactionMinedHeightResult: Long = -1L
+        private val transactionMinedHeightResult: Long = -1L,
+        // Task 1 cancellation-safety test hooks: when set, recordTransferResult signals
+        // [onRecordTransferResultEntered] on entry, then suspends on [recordTransferResultGate]
+        // until the test releases it, so a test can cancel the caller while this call is
+        // mid-flight and assert it still ran to completion (see
+        // executeNextPendingTransfer_entry_guard_record_survives_caller_cancellation).
+        private val onRecordTransferResultEntered: CompletableDeferred<Unit>? = null,
+        private val recordTransferResultGate: CompletableDeferred<Unit>? = null
     ) : TypesafeMigrationBackend {
         var proposeImmediateSendMaxCalled = false
         var lastAccount: AccountUuid? = null
         var migrationSummaryDbDataPath: String? = null
+
+        // Set only after recordTransferResult has run to completion (i.e. survived any
+        // cancellation of the caller while suspended on recordTransferResultGate above).
+        var recordTransferResultCompleted = false
 
         // Counts calls that fetch the raw tx to broadcast — the call the Task 1 entry guard is
         // specifically there to skip on an already-mined in-flight resend.
@@ -536,7 +593,11 @@ class OrchardMigrationSdkImplTest {
             resultTag: Int,
             retryable: Boolean,
             txId: ByteArray
-        ) = Unit
+        ) {
+            onRecordTransferResultEntered?.complete(Unit)
+            recordTransferResultGate?.await()
+            recordTransferResultCompleted = true
+        }
 
         override suspend fun proposeMigrationTransfers(
             dbDataPath: String,

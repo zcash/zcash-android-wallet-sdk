@@ -488,6 +488,10 @@ internal class OrchardMigrationSdkImpl(
                 else -> Unit // status 1: fall through to broadcast
             }
             val prepared = dueResult.prepared ?: return@logged TransferAttemptOutcome.NothingDue
+            // Single resolution — preferenceProviderHolder() is idempotent/cached, but reading
+            // this once and reusing it for every get/put in this call keeps the guard's read and
+            // this call's writes unambiguously on the same provider instance.
+            val prefs = preferenceProviderHolder()
             // Entry guard (spec §2a): a prior send may have reached the network but never
             // persisted its mark (outer timeout / cancellation between send and record). The
             // in-flight flag is still set; if this exact txid is already mined/in-mempool, record
@@ -495,12 +499,17 @@ internal class OrchardMigrationSdkImpl(
             // transaction is a duplicate-submit privacy signal, not a retry.
             run {
                 val inFlightUntil =
-                    preferenceProviderHolder()
+                    prefs
                         .getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)
                         ?.toLongOrNull() ?: 0L
-                if (isBroadcastInFlight(Clock.System.now().epochSeconds, inFlightUntil)) {
+                val nowEpochSeconds = Clock.System.now().epochSeconds
+                // Only probe the mined height (a DB read) once we already know a broadcast is
+                // marked in-flight — shouldSkipReSendAlreadyMined re-checks that same condition
+                // internally, so this is deliberately a cheap, redundant re-confirmation rather
+                // than a second independent gate.
+                if (isBroadcastInFlight(nowEpochSeconds, inFlightUntil)) {
                     val alreadyMined = migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
-                    if (alreadyMined >= 0L) {
+                    if (shouldSkipReSendAlreadyMined(inFlightUntil, nowEpochSeconds, alreadyMined)) {
                         val outcome =
                             withContext(NonCancellable) {
                                 migrationBackend.recordTransferResult(
@@ -512,10 +521,16 @@ internal class OrchardMigrationSdkImpl(
                                     false, // retryable
                                     prepared.txid,
                                 )
-                                preferenceProviderHolder().putString(
+                                prefs.putString(
                                     EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
                                     "0",
                                 )
+                                // No MIGRATION_SYNC_RESUME_AT write here (unlike the normal success
+                                // path below), deliberately: this guard only fires when the txid is
+                                // already MINED, i.e. already public/on-chain, so the post-broadcast
+                                // de-correlation buffer has no privacy value left to protect on this
+                                // recovery path — arming `now + buffer` would just needlessly block
+                                // sync for no privacy benefit.
                                 TransferAttemptOutcome.Executed(TransferResult.Success(prepared.txid.toHexReversed()))
                             }
                         return@logged outcome
@@ -526,7 +541,6 @@ internal class OrchardMigrationSdkImpl(
             val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
             // Mark the broadcast as in-flight before attempting the network call so the sync engine
             // is gated for the duration. A stale mark from a crash self-expires in BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
-            val prefs = preferenceProviderHolder()
             prefs.putString(
                 EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
                 (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
@@ -1029,6 +1043,23 @@ internal fun isBroadcastInFlight(
     nowEpochSeconds: Long,
     inFlightUntilEpochSeconds: Long,
 ): Boolean = inFlightUntilEpochSeconds > nowEpochSeconds
+
+/**
+ * Task 1 (spec §2a) entry-guard predicate: `true` iff a broadcast is still marked in-flight AND
+ * the prepared txid this call would otherwise re-send is already mined/in-mempool (`minedHeight
+ * >= 0`) — i.e. a prior send reached the network but its mark never persisted (outer timeout /
+ * cancellation between send and record). When `true`,
+ * [OrchardMigrationSdkImpl.executeNextPendingTransfer] must record success directly instead of
+ * calling `extractBroadcastTx`/`broadcast` again for the identical transaction.
+ *
+ * Top-level, `internal`, and pure so it is unit-testable without an [OrchardMigrationSdkImpl]
+ * instance, a fake backend, or any prefs/coroutine plumbing.
+ */
+internal fun shouldSkipReSendAlreadyMined(
+    inFlightUntilEpochSeconds: Long,
+    nowEpochSeconds: Long,
+    minedHeight: Long,
+): Boolean = isBroadcastInFlight(nowEpochSeconds, inFlightUntilEpochSeconds) && minedHeight >= 0L
 
 private fun JniMigrationProgress.toPublic(): MigrationProgress =
     MigrationProgress(
