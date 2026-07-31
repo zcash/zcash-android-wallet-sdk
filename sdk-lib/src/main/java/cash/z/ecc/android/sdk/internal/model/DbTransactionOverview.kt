@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.Zip318Kind
 
 @ConsistentCopyVisibility
 internal data class DbTransactionOverview internal constructor(
@@ -26,7 +27,8 @@ internal data class DbTransactionOverview internal constructor(
     val isExpiredUnmined: Boolean?,
     val spentNoteCount: Int,
     val poolCrossingValue: Zatoshi?,
-    val isTrusted: Boolean
+    val isTrusted: Boolean,
+    val zip318Kind: Zip318Kind
 ) {
     override fun toString() = "DbTransactionOverview"
 

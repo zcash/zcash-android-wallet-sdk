@@ -47,7 +47,14 @@ data class TransactionOverview(
      * spendable after the trusted confirmation count rather than the untrusted
      * one.
      */
-    val isTrusted: Boolean
+    val isTrusted: Boolean,
+    /**
+     * How this transaction classifies against ZIP 318, the Orchard to Ironwood pool migration.
+     *
+     * [Zip318Kind.NOT_CLASSIFIED] means the wallet has not looked, not that the transaction is
+     * not a migration, so it warrants no label at all.
+     */
+    val zip318Kind: Zip318Kind
 ) {
     override fun toString() = "TransactionOverview"
 
@@ -82,7 +89,8 @@ data class TransactionOverview(
                 totalReceived = dbTransactionOverview.totalReceived,
                 spentNoteCount = dbTransactionOverview.spentNoteCount,
                 poolCrossingValue = dbTransactionOverview.poolCrossingValue,
-                isTrusted = dbTransactionOverview.isTrusted
+                isTrusted = dbTransactionOverview.isTrusted,
+                zip318Kind = dbTransactionOverview.zip318Kind
             )
     }
 
