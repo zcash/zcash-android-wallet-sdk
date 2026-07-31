@@ -127,5 +127,13 @@ internal object TxOutputsViewDefinition {
 
     const val COLUMN_INTEGER_IS_CHANGE = "is_change" // $NON-NLS
 
-    const val COLUMN_BLOB_MEMO = "memo" // $NON-NLS
+    const val COLUMN_BLOB_MEMO = "memo"
+
+    const val COLUMN_INTEGER_TX_MINED_HEIGHT = "tx_mined_height" // $NON-NLS
+
+    const val COLUMN_BOOLEAN_TX_TRUST_STATUS = "tx_trust_status" // $NON-NLS
+
+    const val COLUMN_BLOB_FROM_ACCOUNT_UUID = "from_account_uuid" // $NON-NLS
+
+    const val COLUMN_INTEGER_RECIPIENT_KEY_SCOPE = "recipient_key_scope" // $NON-NLS // $NON-NLS
 }
