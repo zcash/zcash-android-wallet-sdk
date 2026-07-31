@@ -4714,6 +4714,49 @@ mod next_due_transfer_tests {
             ),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // `guarded_next_step` two-tip tests (spec §3): broadcast timing runs at the
+    // ESTIMATED tip, proving stays on the SCANNED tip. Reuses this module's
+    // `make_state`/`transfer` helpers directly rather than duplicating them.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn broadcast_due_at_estimated_but_not_scanned_returns_broadcast() {
+        // proved transfer scheduled at 1000; scanned tip behind (target 995), estimated at/after 1000.
+        let st = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
+        );
+        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        assert_eq!((code, id), (STEP_BROADCAST, 7)); // engine says Broadcast on the estimated tip
+    }
+
+    #[test]
+    fn broadcast_first_wins_over_a_ready_prove() {
+        // one Proved+due-at-estimated transfer AND one Signed prove-ready transfer.
+        let st = make_state(
+            MigrationStatus::InProgress,
+            vec![
+                transfer(7, MigrationTxState::Proved, 1000, 0),
+                transfer(4, MigrationTxState::Signed, 1000, 0), // prove-ready at scanned (boundary=990<995)
+            ],
+        );
+        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        assert_eq!((code, id), (STEP_BROADCAST, 7)); // spec §3.1 broadcast-first
+    }
+
+    #[test]
+    fn prove_uses_scanned_tip_when_nothing_broadcastable() {
+        // Signed transfer whose anchor boundary (scheduled - 10 = 980) has settled at the scanned
+        // tip (995) — prove-ready — while nothing is Proved, so nothing is broadcastable.
+        let st = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(4, MigrationTxState::Signed, 990, 0)],
+        );
+        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        assert_eq!((code, id), (STEP_PROVE, 4));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6235,32 +6278,35 @@ fn is_unprovable_anchor(
         && !is_prove_ready(state, t, target_height)
 }
 
-/// `MigrationState::next_step` with the late-dependency guard applied to the Prove arm (see the
-/// guard-veto note above); otherwise mirrors the engine's decision order exactly: terminal →
-/// prove-first (time-critical) → broadcast → rebuild-expired → complete/waiting.
+/// Two-tip decision (spec §3): broadcast timing runs on the ESTIMATED tip (a proved tx is ready
+/// to send from prove time; it only needs `scheduled_height` reached), while proving stays on the
+/// SCANNED tip (a witness needs a real settled checkpoint). Broadcast-first is a retention-
+/// justified override of the engine's prove-first order (spec §3.1) — with always-on anchor
+/// retention a deferred prove costs nothing, and broadcasting proved transfers is direct progress.
 fn guarded_next_step(
     state: &zcash_pool_migration::engine::MigrationState,
-    target_height: BlockHeight,
+    scanned_target: BlockHeight,
+    estimated_target: BlockHeight,
 ) -> (i64, i64) {
     use zcash_pool_migration::engine::{MigrationTxKind, MigrationTxState};
     if state.is_terminal() {
         return (STEP_COMPLETE, -1);
     }
+    if let Some(id) = state.next_broadcastable(estimated_target) {
+        return (STEP_BROADCAST, i64::from(u32::from(id)));
+    }
     if let Some(t) = state.transactions().iter().find(|t| {
-        matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(state, t, target_height)
+        matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(state, t, scanned_target)
     }) {
         return (STEP_PROVE, i64::from(u32::from(t.id())));
     }
-    if let Some(id) = state.next_broadcastable(target_height) {
-        return (STEP_BROADCAST, i64::from(u32::from(id)));
-    }
-    // Rebuild: the first expired, unmined TRANSFER (a dependency leaf — rebuildable alone).
+    // Rebuild + completion stay on the SCANNED target (real mined/expiry facts).
     if let Some(t) = state.transactions().iter().find(|t| {
         matches!(t.kind(), MigrationTxKind::Transfer { .. })
             && !matches!(t.state(), MigrationTxState::Mined { .. })
             && {
                 let expiry = u32::from(t.expiry_height());
-                expiry != 0 && expiry < u32::from(target_height)
+                expiry != 0 && expiry < u32::from(scanned_target)
             }
     }) {
         return (STEP_REBUILD, i64::from(u32::from(t.id())));
@@ -6278,9 +6324,12 @@ fn guarded_next_step(
 }
 
 /// The single "what now?" read the app worker loops on. Returns `[stepCode, transferId]`
-/// (`transferId = -1` for Waiting/Complete), decided at the SCANNED target (`tip + 1`) — proving
-/// correctness needs real checkpoints; broadcast-side estimated-tip acceleration lives in
-/// `executeNextPendingTransfer`, which remains the ACTION for the Broadcast step.
+/// (`transferId = -1` for Waiting/Complete). Two-tip (spec §3): broadcast timing is decided at the
+/// ESTIMATED target (`estimatedTip + 1`, clamped to never go below the scanned target — an
+/// optimistic estimate only ever ACCELERATES broadcast, never substitutes for a real checkpoint),
+/// while proving, rebuild, and completion stay on the SCANNED target (`tip + 1`) — those need real
+/// mined/expiry facts, not an estimate. Pass `estimatedTip < 0` when no estimate is available; the
+/// estimated target then equals the scanned target (no acceleration).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_nextStepNative<
     'local,
@@ -6290,11 +6339,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     db_data: JString<'local>,
     network_id: jint,
     account_uuid: JByteArray<'local>,
+    estimated_tip: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let target = target_height(&wallet)?;
+        let scanned = target_height(&wallet)?; // scanned tip + 1
+        // estimated_tip < 0 → unavailable → no acceleration (estimated == scanned).
+        let estimated = if estimated_tip < 0 {
+            scanned
+        } else {
+            std::cmp::max(scanned, BlockHeight::from_u32(estimated_tip as u32) + 1)
+        };
         let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let Some(state) = backend
             .get_migration()
@@ -6302,7 +6358,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         else {
             return Ok(ptr::null_mut());
         };
-        let (code, id) = guarded_next_step(&state, target);
+        let (code, id) = guarded_next_step(&state, scanned, estimated);
         let arr = env.new_long_array(2)?;
         env.set_long_array_region(&arr, 0, &[code, id])?;
         Ok(arr.into_raw())
