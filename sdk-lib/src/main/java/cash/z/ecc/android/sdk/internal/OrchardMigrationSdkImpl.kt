@@ -12,14 +12,13 @@ import android.content.Context
 import cash.z.ecc.android.sdk.AttentionReason
 import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
+import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
 import cash.z.ecc.android.sdk.MigrationBlocker
 import cash.z.ecc.android.sdk.MigrationNextAction
 import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
-import cash.z.ecc.android.sdk.PreparationStep
-import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
 import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
@@ -27,6 +26,7 @@ import cash.z.ecc.android.sdk.MigrationTransferStates
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
+import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
@@ -43,11 +43,11 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPcz
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
-import cash.z.ecc.android.sdk.internal.model.migration.JniPreparationStep
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferState
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
+import cash.z.ecc.android.sdk.internal.model.migration.JniPreparationStep
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
-import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
+import cash.z.ecc.android.sdk.internal.storage.preference.PreferenceHolder
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
@@ -111,7 +111,13 @@ internal class OrchardMigrationSdkImpl(
     private val migrationBackend: TypesafeMigrationBackend,
     private val chainTipEstimator: ChainTipEstimator = NoOpChainTipEstimator,
     private val defaultSubmitEndpoint: LightWalletEndpoint,
-    private val preferenceProviderHolder: EncryptedPreferenceProvider,
+    // Widened from the concrete EncryptedPreferenceProvider to the PreferenceHolder base type
+    // (Task 1, spec §2a): EncryptedPreferenceProvider backs onto real EncryptedSharedPreferences /
+    // AndroidX Security Crypto, which needs a real Android Keystore and cannot run in a plain JVM
+    // unit test — this class's own suite has no way to seed/observe MIGRATION_BROADCAST_IN_FLIGHT_UNTIL
+    // without a substitutable PreferenceHolder. Production callers are unaffected: MigrationSdk.new()
+    // still passes a real EncryptedPreferenceProvider, which is a PreferenceHolder.
+    private val preferenceProviderHolder: PreferenceHolder,
 ) : OrchardMigrationSdk {
     /**
      * [NetworkPrivacyOptions.useTor] is a per-migration setting, independent of the app's global
@@ -195,8 +201,9 @@ internal class OrchardMigrationSdkImpl(
                 // foreground synchronizer was mid-sync. Transient by nature: the lock clears when
                 // that write transaction commits, so it gets the same bounded retry as the
                 // InsufficientFunds sync race.
-                val looksLikeSyncRace = e.message?.contains("InsufficientFunds") == true ||
-                    e.message?.contains("database is locked") == true
+                val looksLikeSyncRace =
+                    e.message?.contains("InsufficientFunds") == true ||
+                        e.message?.contains("database is locked") == true
                 if (looksLikeSyncRace && attempt <= RACE_RETRY_MAX_ATTEMPTS) {
                     Twig.error(e) {
                         "MIGRATION_DIAG OrchardMigrationSdk: $operation failed (attempt $attempt/" +
@@ -472,13 +479,49 @@ internal class OrchardMigrationSdkImpl(
             val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account, est)
             when (dueResult.status) {
                 0 -> return@logged TransferAttemptOutcome.NothingDue
+
                 2 -> return@logged TransferAttemptOutcome.AwaitingProof(
                     dueResult.awaitingProofTransferId
                         ?: error("nextDueTransfer returned status=2 (AwaitingProof) with null transferId — Rust contract violation")
                 )
+
                 else -> Unit // status 1: fall through to broadcast
             }
             val prepared = dueResult.prepared ?: return@logged TransferAttemptOutcome.NothingDue
+            // Entry guard (spec §2a): a prior send may have reached the network but never
+            // persisted its mark (outer timeout / cancellation between send and record). The
+            // in-flight flag is still set; if this exact txid is already mined/in-mempool, record
+            // success instead of re-broadcasting the identical tx — re-sending an already-landed
+            // transaction is a duplicate-submit privacy signal, not a retry.
+            run {
+                val inFlightUntil =
+                    preferenceProviderHolder()
+                        .getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)
+                        ?.toLongOrNull() ?: 0L
+                if (isBroadcastInFlight(Clock.System.now().epochSeconds, inFlightUntil)) {
+                    val alreadyMined = migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
+                    if (alreadyMined >= 0L) {
+                        val outcome =
+                            withContext(NonCancellable) {
+                                migrationBackend.recordTransferResult(
+                                    dbDataPath,
+                                    network,
+                                    account,
+                                    prepared.id,
+                                    0, // tag = Success
+                                    false, // retryable
+                                    prepared.txid,
+                                )
+                                preferenceProviderHolder().putString(
+                                    EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
+                                    "0",
+                                )
+                                TransferAttemptOutcome.Executed(TransferResult.Success(prepared.txid.toHexReversed()))
+                            }
+                        return@logged outcome
+                    }
+                }
+            }
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
             // Mark the broadcast as in-flight before attempting the network call so the sync engine
@@ -494,31 +537,38 @@ internal class OrchardMigrationSdkImpl(
             // otherwise a duplicate rejection after a submit-then-crash kills the whole pre-signed
             // plan (and, for Keystone, forces a fresh signing ceremony). Probe the prepared txid's
             // mined height before mapping; the rejection text is the mempool-duplicate fallback.
+            // Deliberately left OUTSIDE the NonCancellable block below (with broadcast() itself) so
+            // the worker's own outer timeout can still kill a hung Tor send — only the post-send
+            // commit (record + clear-mark + sync-resume write) must be uncancellable.
             val minedHeight: Long =
                 if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
                     migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
                 } else {
                     -1L
                 }
-            val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
-            migrationBackend.recordTransferResult(
-                dbDataPath,
-                network,
-                account,
-                prepared.id,
-                mapped.tag,
-                mapped.retryable,
-                mapped.txIdBytes,
-            )
-            // Clear the in-flight mark now that the result is recorded.
-            prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
-            if (wasOverdue && mapped.transferResult is TransferResult.Success) {
-                prefs.putString(
-                    EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key,
-                    (Clock.System.now().epochSeconds + privacySyncBufferDuration().inWholeSeconds).toString(),
-                )
-            }
-            TransferAttemptOutcome.Executed(mapped.transferResult)
+            val transferResult =
+                withContext(NonCancellable) {
+                    val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
+                    migrationBackend.recordTransferResult(
+                        dbDataPath,
+                        network,
+                        account,
+                        prepared.id,
+                        mapped.tag,
+                        mapped.retryable,
+                        mapped.txIdBytes,
+                    )
+                    // Clear the in-flight mark now that the result is recorded.
+                    prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
+                    if (wasOverdue && mapped.transferResult is TransferResult.Success) {
+                        prefs.putString(
+                            EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key,
+                            (Clock.System.now().epochSeconds + privacySyncBufferDuration().inWholeSeconds).toString(),
+                        )
+                    }
+                    mapped.transferResult
+                }
+            TransferAttemptOutcome.Executed(transferResult)
         }
 
     // ── Sync coordination ────────────────────────────────────────────────────
@@ -539,8 +589,7 @@ internal class OrchardMigrationSdkImpl(
                         runCatching { isSyncBlockedNow(preferenceProvider) }
                             .onFailure { Twig.warn(it) { "isSyncBlocked tick failed (transient) — skipping" } }
                             .getOrNull()
-                    }
-                    .distinctUntilChanged()
+                    }.distinctUntilChanged()
             )
         }
 
@@ -862,31 +911,34 @@ private fun mapSubmitResult(
 
         is TransactionSubmitResult.Failure -> {
             when {
-                result.grpcError ->
+                result.grpcError -> {
                     MappedTransferResult(
                         TransferResult.NetworkError(retryable = true, isTorFailure = result.isTorFailure),
                         tag = 1,
                         retryable = true,
                         txIdBytes = ByteArray(0),
                     )
+                }
 
                 // F2: duplicate / already-on-chain rejection → this is our own transaction, treat
                 // as Success (tag=0) so the pre-signed plan is not terminally failed.
-                classifyNonGrpcFailure(result.description, minedHeight) ->
+                classifyNonGrpcFailure(result.description, minedHeight) -> {
                     MappedTransferResult(
                         TransferResult.Success(preparedTxid.toHexReversed()),
                         tag = 0,
                         retryable = false,
                         txIdBytes = preparedTxid,
                     )
+                }
 
-                else ->
+                else -> {
                     MappedTransferResult(
                         TransferResult.InvalidNote,
                         tag = 2,
                         retryable = false,
                         txIdBytes = ByteArray(0),
                     )
+                }
             }
         }
 
