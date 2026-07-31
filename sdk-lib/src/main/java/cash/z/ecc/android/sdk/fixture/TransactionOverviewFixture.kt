@@ -6,7 +6,6 @@ import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionState
 import cash.z.ecc.android.sdk.model.Zatoshi
-import cash.z.ecc.android.sdk.model.Zip318Kind
 
 @Suppress("MagicNumber")
 object TransactionOverviewFixture {
@@ -32,7 +31,6 @@ object TransactionOverviewFixture {
     const val SPENT_NOTE_COUNT: Int = 0
     val POOL_CROSSING_VALUE: Zatoshi? = null
     const val IS_TRUSTED: Boolean = false
-    val ZIP318_KIND = Zip318Kind.NOT_CLASSIFIED
 
     @Suppress("LongParameterList")
     fun new(
@@ -55,8 +53,7 @@ object TransactionOverviewFixture {
         isShielding: Boolean = IS_SHIELDING,
         spentNoteCount: Int = SPENT_NOTE_COUNT,
         poolCrossingValue: Zatoshi? = POOL_CROSSING_VALUE,
-        isTrusted: Boolean = IS_TRUSTED,
-        zip318Kind: Zip318Kind = ZIP318_KIND
+        isTrusted: Boolean = IS_TRUSTED
     ) = TransactionOverview(
         txId = txId,
         minedHeight = minedHeight,
@@ -78,6 +75,5 @@ object TransactionOverviewFixture {
         spentNoteCount = spentNoteCount,
         poolCrossingValue = poolCrossingValue,
         isTrusted = isTrusted,
-        zip318Kind = zip318Kind,
     )
 }
