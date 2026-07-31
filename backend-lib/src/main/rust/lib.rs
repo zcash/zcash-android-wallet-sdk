@@ -2290,8 +2290,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
         let mut db_data = wallet_db(env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
-        let proposal =
-            crate::migration::propose_orchard_to_ironwood(env, &mut db_data, &network, account_uuid)?;
+        let proposal = crate::migration::propose_orchard_to_ironwood(
+            env,
+            &mut db_data,
+            &network,
+            account_uuid,
+        )?;
 
         Ok(utils::rust_bytes_to_java(
             env,
