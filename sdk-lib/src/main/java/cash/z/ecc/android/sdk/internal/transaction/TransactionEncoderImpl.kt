@@ -314,7 +314,11 @@ private inline fun Throwable.asProposalException(
     fallback: () -> TransactionEncoderException
 ): TransactionEncoderException =
     when (this) {
-        is ProposalAnchorNotFoundException ->
+        is ProposalAnchorNotFoundException -> {
             TransactionEncoderException.AnchorNotFoundException(BlockHeight.new(anchorHeight))
-        else -> fallback()
+        }
+
+        else -> {
+            fallback()
+        }
     }
