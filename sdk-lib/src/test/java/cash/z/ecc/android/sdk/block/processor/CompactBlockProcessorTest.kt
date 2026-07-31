@@ -251,7 +251,8 @@ class CompactBlockProcessorTest {
                 memoCount = 0,
                 blockTimeEpochSeconds = null,
                 isShielding = false,
-                isExpiredUnmined = false
+                isExpiredUnmined = false,
+                poolCrossingValue = null
             )
 
         private fun encodedTransaction(txId: FirstClassByteArray) =
