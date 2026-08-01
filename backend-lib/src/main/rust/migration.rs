@@ -5224,6 +5224,55 @@ mod next_due_transfer_tests {
         }
     }
 
+    /// A reported rejection the wallet cannot yet explain WITHHOLDS everything: the node saw chain
+    /// state below a tip this wallet has not scanned to, so the answer is "sync, then ask again"
+    /// rather than the broadcast that was otherwise due. Nothing is marked — the report is
+    /// testimony, and this step is what the engine offers while it stands.
+    #[test]
+    fn an_unadjudicable_broadcast_failure_report_withholds_every_step() {
+        let mut st = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
+        );
+        assert_eq!(
+            step_at(&st, 995, 1001),
+            (STEP_BROADCAST, 7),
+            "precondition: without a report this transfer is due for broadcast"
+        );
+
+        // The node reported a tip well above what this wallet has scanned, so its rejection
+        // cannot be checked against anything yet.
+        st.report_broadcast_failure(
+            MigrationTransferId::new(7),
+            BlockHeight::from_u32(995 + 200),
+        );
+
+        assert_eq!(
+            step_at(&st, 995, 1001),
+            (STEP_REEVALUATE, -1),
+            "a standing report outranks the due broadcast: sync to the reported tip first"
+        );
+    }
+
+    /// Once the wallet HAS scanned past the reported tip, the same report is adjudicated rather
+    /// than obeyed. Against a chain showing nothing wrong it is cleared and the broadcast
+    /// re-offered in the same call — which is what makes a wrong or stale node verdict
+    /// self-healing, and why a consumer re-reports freely instead of debouncing.
+    #[test]
+    fn an_adjudicable_report_clears_and_the_broadcast_is_reoffered() {
+        let mut st = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
+        );
+        st.report_broadcast_failure(MigrationTransferId::new(7), BlockHeight::from_u32(995 - 5));
+
+        assert_eq!(
+            step_at(&st, 995, 1001),
+            (STEP_BROADCAST, 7),
+            "the wallet has scanned past the reported tip and sees no obstruction"
+        );
+    }
+
     #[test]
     fn broadcast_due_at_estimated_but_not_scanned_returns_broadcast() {
         // proved transfer scheduled at 1000; scanned tip behind (target 995), estimated at/after 1000.
