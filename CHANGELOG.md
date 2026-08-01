@@ -40,6 +40,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
   (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
   boundaries rather than 16).
+- Whether a pool-migration transaction has been mined is now derived from the wallet's own scan
+  data by the migration engine, instead of being observed by the SDK and recorded with an explicit
+  mark. A migration transaction is promoted to mined only once the wallet has scanned to the height
+  carrying it, so the promotion can no longer outlive a rollback of the block that justified it.
+- A pool-migration transfer whose expiry has probably passed — at or above the wallet's fully
+  scanned height, but below its estimate of the chain tip — is now withheld from the broadcast and
+  prove queues rather than offered. This is protective and reversible: nothing is recorded and no
+  artifact is discarded, and such a transfer becomes available again if the wallet's own scan shows
+  it has not in fact lapsed.
 - A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
   that covers the payment and its fee, falling back to ordinary multi-note funding
   when no such note exists. Canonical-denomination payments that previously lost
