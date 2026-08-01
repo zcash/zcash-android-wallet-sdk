@@ -1,6 +1,7 @@
 import com.google.protobuf.gradle.id
 import com.google.protobuf.gradle.proto
 import org.gradle.api.GradleException
+import java.io.File
 
 plugins {
     id("org.mozilla.rust-android-gradle.rust-android")
@@ -144,6 +145,18 @@ cargo {
     // https://developer.android.com/about/versions/15/behavior-changes-all#16-kb
     exec = { spec, _ ->
         spec.environment["RUST_ANDROID_GRADLE_CC_LINK_ARG"] = "-Wl,-z,max-page-size=16384"
+    }
+    // GUI-launched IDEs (Android Studio from Finder/Dock) inherit a minimal PATH that omits
+    // ~/.cargo/bin, so the rustup `cargo`/`rustc` shims are not found and cargoBuild fails with
+    // "Cannot run program 'rustc'". When rustup is installed in its default location, point the
+    // plugin at the absolute shim paths so the native build no longer depends on the daemon's PATH.
+    File(System.getProperty("user.home"), ".cargo/bin").let { cargoBin ->
+        val rustc = File(cargoBin, "rustc")
+        val cargo = File(cargoBin, "cargo")
+        if (rustc.exists() && cargo.exists()) {
+            rustcCommand = rustc.absolutePath
+            cargoCommand = cargo.absolutePath
+        }
     }
 }
 
