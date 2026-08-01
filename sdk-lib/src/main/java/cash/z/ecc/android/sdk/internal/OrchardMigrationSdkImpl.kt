@@ -27,6 +27,7 @@ import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
 import cash.z.ecc.android.sdk.MigrationTransferStates
+import cash.z.ecc.android.sdk.MigrationUnsatisfiableKind
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
@@ -1638,6 +1639,17 @@ private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
                 8 -> MigrationBlocker.AWAITING_REEVALUATION
                 9 -> MigrationBlocker.UNSATISFIABLE
                 else -> null
+            },
+        unsatisfiableKind =
+            when (unsatisfiableKind) {
+                1 -> MigrationUnsatisfiableKind.INPUTS_SPENT
+                2 -> MigrationUnsatisfiableKind.INPUTS_INVALIDATED
+                3 -> MigrationUnsatisfiableKind.ANCHOR_INVALIDATED
+                4 -> MigrationUnsatisfiableKind.INHERITED
+                // Any further cause the engine adds still means "can never execute"; reading it as
+                // "not marked" would be the one wrong answer.
+                0 -> null
+                else -> MigrationUnsatisfiableKind.OTHER
             },
         amountZatoshi = amountZatoshi.takeIf { it >= 0 },
         prepLayer = prepLayer.takeIf { it >= 0 },

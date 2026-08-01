@@ -216,6 +216,13 @@ data class MigrationTransferState(
     val action: MigrationNextAction? = null,
     /** Why a waiting transaction is not yet actionable, or null when none/ready. */
     val blocker: MigrationBlocker? = null,
+    /**
+     * Why the engine marked this transaction as one that can never execute, or null when it holds
+     * no such mark. Independent of [blocker]: the mark carries the cause and the blocker carries
+     * no payload, so a marked transaction can report a higher-precedence blocker and still answer
+     * here.
+     */
+    val unsatisfiableKind: MigrationUnsatisfiableKind? = null,
     /** The engine-persisted crossing value in zatoshi; null for preparations. */
     val amountZatoshi: Long? = null,
     /** Preparation layer/index within the note-split tree; null for transfers. */
@@ -291,6 +298,28 @@ enum class MigrationBlocker {
      * migration-level replan — more syncing can never help.
      */
     UNSATISFIABLE,
+}
+
+/**
+ * Why the engine marked a migration transaction as one that can never execute. The mark is
+ * evidence-stamped against scanned chain data, so it is cleared exactly by a reorg that removes
+ * the evidence — and by the transaction mining, which outranks any prior judgment.
+ */
+enum class MigrationUnsatisfiableKind {
+    /** The wallet saw this transaction's inputs spent: their nullifiers appeared in mined blocks. */
+    INPUTS_SPENT,
+
+    /** Its inputs' creating transaction can never mine, so those inputs will never exist. */
+    INPUTS_INVALIDATED,
+
+    /** It is broadcast but unmined, and a settled reorg removed the anchor it was proven against. */
+    ANCHOR_INVALIDATED,
+
+    /** Dead only through the dependency closure — its own inputs are intact. */
+    INHERITED,
+
+    /** A cause added upstream that this SDK version does not name yet; treat as unsatisfiable. */
+    OTHER,
 }
 
 /**

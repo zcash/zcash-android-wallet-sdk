@@ -7,6 +7,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `MigrationAdvanceStep.Reevaluate` and `MigrationAdvanceStep.Replan`. `Reevaluate` is returned
+  while a broadcast-failure report stands: a node refused a broadcast citing chain state this
+  wallet has not scanned, so sync — at least to the tip observed with the rejection — and ask
+  `nextStep` again. `Replan` means enough of the committed plan's value can never mine that the
+  plan itself must be rebuilt; `nextStep()` marks the plan superseded before returning it, so the
+  ordinary planning flow accepts a replacement — re-propose the remaining balance.
+- `MigrationBlocker.UNSATISFIABLE`, `.AWAITING_REEVALUATION` and `.EXPIRY_IMMINENT`, plus
+  `MigrationTransferState.unsatisfiableKind` (`MigrationUnsatisfiableKind`) carrying why a
+  transaction can never execute. The kind is a separate field because `UNSATISFIABLE` carries no
+  payload, and the two are independent: a marked transaction may report a different blocker.
 - `CompactBlockProcessor.enhanceTransactionDetails` and the per-transaction `enhanceTransaction`
   step now emit structured diagnostic logs at each step of an enhance cycle — cycle start with
   request count, per-request type, fetch response shape (whether a tx was returned, whether it

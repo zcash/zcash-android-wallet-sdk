@@ -66,7 +66,8 @@ use zcash_pool_migration::{
     },
     preparation::{PrepInput, PreparationPlan},
     satisfiability::{
-        AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
+        AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, UnsatisfiableKind,
+        advance_migration,
     },
     state::{AdvanceStep, NextAction, StepKind},
 };
@@ -2655,6 +2656,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             bool,
             i32,
             i32,
+            i32,
             i64,
             i32,
             i32,
@@ -2677,6 +2679,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         | MigrationTxState::Broadcast { .. }
                         | MigrationTxState::Mined { .. }
                 );
+                // Read from the transaction's own persisted mark, not from the blocker: the
+                // blocker carries no payload, and the two are independent — a row can be marked
+                // while a higher-precedence blocker is what it reports.
+                let unsatisfiable_kind = match t.unsatisfiable_kind() {
+                    None => UNSATISFIABLE_KIND_NONE,
+                    Some(UnsatisfiableKind::InputsSpent) => UNSATISFIABLE_KIND_INPUTS_SPENT,
+                    Some(UnsatisfiableKind::InputsInvalidated) => {
+                        UNSATISFIABLE_KIND_INPUTS_INVALIDATED
+                    }
+                    Some(UnsatisfiableKind::AnchorInvalidated) => {
+                        UNSATISFIABLE_KIND_ANCHOR_INVALIDATED
+                    }
+                    Some(UnsatisfiableKind::Inherited) => UNSATISFIABLE_KIND_INHERITED,
+                    // `#[non_exhaustive]`: a cause added upstream reads as "marked, kind not yet
+                    // surfaced here" rather than as "not marked", which would be a lie.
+                    Some(_) => UNSATISFIABLE_KIND_OTHER,
+                };
                 let (ready, action, blocker) = {
                     let action = match status.action() {
                         Some(zcash_pool_migration::state::NextAction::Prove) => ACTION_PROVE,
@@ -2736,6 +2755,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     ready,
                     action,
                     blocker,
+                    unsatisfiable_kind,
                     amount_zatoshi,
                     prep_layer,
                     prep_index,
@@ -2761,6 +2781,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 ready,
                 action,
                 blocker,
+                unsatisfiable_kind,
                 amount_zatoshi,
                 prep_layer,
                 prep_index,
@@ -2772,7 +2793,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 env.set_long_array_region(&jdeps, 0, &depends_on)?;
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(JZZZJJZIIJII[JJJ)V",
+                    "(JZZZJJZIIIJII[JJJ)V",
                     &[
                         JValue::Long(encode_transfer_id(id)),
                         JValue::Bool(is_transfer as jboolean),
@@ -2783,6 +2804,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Bool(ready as jboolean),
                         JValue::Int(action),
                         JValue::Int(blocker),
+                        JValue::Int(unsatisfiable_kind),
                         JValue::Long(amount_zatoshi),
                         JValue::Int(prep_layer),
                         JValue::Int(prep_index),
@@ -7425,6 +7447,19 @@ const BLOCKER_AWAITING_REEVALUATION: i32 = 8;
 /// The transaction can never mine — marked unsatisfiable, or stranded behind one that is. The
 /// remedy is a migration-level replan, never more syncing. New in `zcash_pool_migration 0.1.0-rc.6`.
 const BLOCKER_UNSATISFIABLE: i32 = 9;
+
+// The cause recorded beside a transaction's unsatisfiability mark, surfaced as its own field
+// because `Blocker::Unsatisfiable` carries no payload. The mark is orthogonal to both the blocker
+// and the lifecycle state: a marked row keeps its `Proved`/`Broadcast` state, and can report a
+// different (higher-precedence) blocker while still carrying its cause.
+const UNSATISFIABLE_KIND_NONE: i32 = 0;
+const UNSATISFIABLE_KIND_INPUTS_SPENT: i32 = 1;
+const UNSATISFIABLE_KIND_INPUTS_INVALIDATED: i32 = 2;
+const UNSATISFIABLE_KIND_ANCHOR_INVALIDATED: i32 = 3;
+/// Dead only through the dependency closure — this transaction's own inputs are intact.
+const UNSATISFIABLE_KIND_INHERITED: i32 = 4;
+/// A cause added to the upstream `#[non_exhaustive]` enum that this boundary does not name yet.
+const UNSATISFIABLE_KIND_OTHER: i32 = 5;
 
 /// Two-tip decision (spec §3): the underlying `advance_migration` call is driven by
 /// `DuenessTargets::new(scanned, estimated)`, which folds the ESTIMATED tip into its `effective`
