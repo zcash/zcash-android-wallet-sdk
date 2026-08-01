@@ -28,6 +28,7 @@ import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
 import cash.z.ecc.android.sdk.MigrationTransferStates
+import cash.z.ecc.android.sdk.MigrationUnsatisfiableKind
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
@@ -1794,6 +1795,7 @@ private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
                 9 -> MigrationBlocker.UNSATISFIABLE
                 else -> null
             },
+        unsatisfiableKind = unsatisfiableKind.toUnsatisfiableKind(),
         amountZatoshi = amountZatoshi.takeIf { it >= 0 },
         prepLayer = prepLayer.takeIf { it >= 0 },
         prepIndex = prepIndex.takeIf { it >= 0 },
@@ -1804,6 +1806,23 @@ private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
         // natural anchor).
         anchorBoundaryHeight = anchorBoundaryHeight.takeIf { it >= 0L },
     )
+
+private const val JNI_UNSATISFIABLE_INPUTS_SPENT = 1
+private const val JNI_UNSATISFIABLE_INPUTS_INVALIDATED = 2
+private const val JNI_UNSATISFIABLE_ANCHOR_INVALIDATED = 3
+private const val JNI_UNSATISFIABLE_INHERITED = 4
+
+// Any further cause the engine adds still means "can never execute"; reading it as "not marked"
+// would be the one wrong answer.
+private fun Int.toUnsatisfiableKind(): MigrationUnsatisfiableKind? =
+    when (this) {
+        JNI_UNSATISFIABLE_INPUTS_SPENT -> MigrationUnsatisfiableKind.INPUTS_SPENT
+        JNI_UNSATISFIABLE_INPUTS_INVALIDATED -> MigrationUnsatisfiableKind.INPUTS_INVALIDATED
+        JNI_UNSATISFIABLE_ANCHOR_INVALIDATED -> MigrationUnsatisfiableKind.ANCHOR_INVALIDATED
+        JNI_UNSATISFIABLE_INHERITED -> MigrationUnsatisfiableKind.INHERITED
+        0 -> null
+        else -> MigrationUnsatisfiableKind.OTHER
+    }
 
 private fun JniMigrationTransferStates.toPublic(): MigrationTransferStates =
     MigrationTransferStates(

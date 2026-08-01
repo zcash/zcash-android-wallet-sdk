@@ -6,6 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MigrationTransferState.unsatisfiableKind` (`MigrationUnsatisfiableKind`) now carries why a
+  pool-migration transaction can never execute. The kind is a separate field because
+  `MigrationBlocker.UNSATISFIABLE` carries no payload, and the two are independent: a marked
+  transaction may report a different blocker.
+
 ### Changed
 
 - Whether a pool-migration transaction has been mined is now derived from the wallet's own scan
