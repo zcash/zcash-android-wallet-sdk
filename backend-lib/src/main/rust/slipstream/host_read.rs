@@ -197,7 +197,10 @@ fn list_transactions_sql(is_recovering: bool, has_account_filter: bool) -> Strin
          tx.block_time, tx.is_shielding, tx.expired_unmined FROM v_transactions AS tx",
     );
     if is_recovering {
-        sql.push_str(" LEFT JOIN slipstream_v_tx_reconciled AS r ON r.txid = tx.txid");
+        sql.push_str(&format!(
+            " LEFT JOIN {} AS r ON r.txid = tx.txid",
+            slipstream_core::reconcile::RECONCILE_VIEW_NAME
+        ));
     }
     let mut conditions: Vec<&str> = Vec::new();
     if is_recovering {

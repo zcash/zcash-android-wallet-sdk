@@ -201,7 +201,7 @@ pub(crate) fn wallet_summary_object<'local>(
             // Direction-B collapse (rust/src/ffi.rs:399): the whole clamped recovery net
             // becomes orchard `spendableValue`, every other component zero; `total()` == net.
             // ironwood is reported as a zero pool here deliberately (not a forward-field gap):
-            // the recovery net comes from `slipstream_v_recovery_balance`
+            // the recovery net comes from `ext_slipstream_v_recovery_balance`
             // (core/src/reconcile.rs:96-103), which sums pool-agnostic
             // `v_transactions.account_balance_delta` — ironwood value is already folded into that
             // single collapsed net, so surfacing it again as a pool object would double-count it.
@@ -381,10 +381,12 @@ fn scan_progress<'local>(
     )?)
 }
 
-/// Reads the engine-owned `slipstream_v_recovery_balance` view into a per-account net map
-/// (`account_uuid` blob → Σ fully-reconciled tx deltas). Its own read-only rusqlite
-/// connection with `busy_timeout` 5 s (concurrent with the engine writer; HOSTING.md §7.3).
-/// Verbatim in behavior from the C-ABI recovery branch (rust/src/lib.rs:5465).
+/// Reads the engine-owned `ext_slipstream_v_recovery_balance` view into a per-account net map
+/// (`account_uuid` blob → Σ fully-reconciled tx deltas), via `slipstream_core::reconcile`'s
+/// own accessor rather than a locally hand-rolled query — the view name is an implementation
+/// detail of the pinned engine crate, not a contract this crate should duplicate. Its own
+/// read-only rusqlite connection with `busy_timeout` 5 s (concurrent with the engine writer;
+/// HOSTING.md §7.3). Verbatim in behavior from the C-ABI recovery branch (rust/src/lib.rs:5465).
 fn read_recovery_nets(
     db_path: &std::path::Path,
 ) -> anyhow::Result<std::collections::HashMap<[u8; 16], i64>> {
@@ -392,23 +394,10 @@ fn read_recovery_nets(
         rusqlite::Connection::open(db_path).map_err(|e| anyhow!("recovery balance open: {e}"))?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| anyhow!("recovery balance busy_timeout: {e}"))?;
-    let mut nets: std::collections::HashMap<[u8; 16], i64> = std::collections::HashMap::new();
-    let mut stmt = conn
-        .prepare("SELECT account_uuid, balance_zat FROM slipstream_v_recovery_balance")
-        .map_err(|e| anyhow!("recovery balance prepare: {e}"))?;
-    let mut rows = stmt
-        .query([])
+    let rows = slipstream_core::reconcile::recovery_balances(&conn)
         .map_err(|e| anyhow!("recovery balance query: {e}"))?;
-    while let Some(row) = rows
-        .next()
-        .map_err(|e| anyhow!("recovery balance row: {e}"))?
-    {
-        let uuid: Vec<u8> = row
-            .get(0)
-            .map_err(|e| anyhow!("recovery balance uuid: {e}"))?;
-        let net: i64 = row
-            .get(1)
-            .map_err(|e| anyhow!("recovery balance net: {e}"))?;
+    let mut nets: std::collections::HashMap<[u8; 16], i64> = std::collections::HashMap::new();
+    for (uuid, net) in rows {
         if let Ok(uuid16) = <[u8; 16]>::try_from(uuid.as_slice()) {
             nets.insert(uuid16, net);
         }
