@@ -849,7 +849,9 @@ class MigrationRustBackend private constructor() {
             signedPczt: ByteArray
         ): Boolean
 
-    private external fun keystoneSigningRoundBudgetNative(): IntArray
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun keystoneSigningRoundBudgetNative(): IntArray
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -914,12 +916,14 @@ class MigrationRustBackend private constructor() {
             proposalHandle: Long
         ): Array<JniUnsignedTransferPczt>?
 
-    private external fun createUnsignedPreparationPcztsNative(
-        dbDataPath: String,
-        networkId: Int,
-        accountUuidBytes: ByteArray,
-        proposalHandle: Long,
-    ): Array<JniUnsignedPreparationPczt>?
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun createUnsignedPreparationPcztsNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long,
+        ): Array<JniUnsignedPreparationPczt>?
 
         @JvmStatic
         @Throws(RuntimeException::class)
