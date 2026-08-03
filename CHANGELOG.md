@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `TransactionOverview.zip318Kind`, a new `Zip318Kind` reporting how a transaction
+  classifies against ZIP 318, the Orchard to Ironwood pool migration. It is a
+  trailing constructor parameter, so positional construction of `TransactionOverview`
+  will not compile until it is supplied; named construction needs no edit.
+  `Zip318Kind.NOT_CLASSIFIED` means the wallet has not looked at the transaction,
+  not that the transaction is not a migration, and warrants no label in a UI; a
+  transaction the wallet has examined and rejected is `NONCONFORMING` instead. Only
+  `PREPARATION` and `TRANSFER` are the wallet's own migration.
+
 ### Changed
 - Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
   `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
@@ -396,7 +406,7 @@ Both of the following were picked up from the librustzcash update:
 
 ### Fixed
 - Checkpoints update
-- Migrated to `zcash_client_sqlite 0.19.4`, `shardtree 0.6.2`. This fixes 
+- Migrated to `zcash_client_sqlite 0.19.4`, `shardtree 0.6.2`. This fixes
   an error that could cause note commitment tree corruption (which required
   a rescan to remediate when encountered).
 
@@ -436,11 +446,11 @@ Both of the following were picked up from the librustzcash update:
 ## [2.4.0] - 2025-11-05
 
 ### Added
-- `Synchronizer.fetchUtxosByAddress` function added to query light wallet server to find any UTXOs associated with 
+- `Synchronizer.fetchUtxosByAddress` function added to query light wallet server to find any UTXOs associated with
   given transparent address
-- `Synchronizer.getSingleUseTransparentAddress` function added that returns an ephemeral transparent address for 
+- `Synchronizer.getSingleUseTransparentAddress` function added that returns an ephemeral transparent address for
   one-time use
-- `Synchronizer.checkSingleUseTransparentAddress` function added to check for most overdue ephemeral address within 
+- `Synchronizer.checkSingleUseTransparentAddress` function added to check for most overdue ephemeral address within
   24h window to retrieve and store it's UTXOs.
 
 ### Changed

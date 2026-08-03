@@ -11,6 +11,7 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.Zip318Kind
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import java.util.Locale
@@ -126,6 +127,12 @@ internal class AllTransactionView(
             val blockTimeIndex = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_INTEGER_BLOCK_TIME)
             val isShielding = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_BOOLEAN_IS_SHIELDING)
             val isExpiredUnmined = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_EXPIRED_UNMINED)
+            val spentNoteCountIndex =
+                cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_INTEGER_SPENT_NOTE_COUNT)
+            val poolCrossingValueIndex =
+                cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_LONG_POOL_CROSSING_VALUE)
+            val trustStatusIndex = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_BOOLEAN_TRUST_STATUS)
+            val zip318KindIndex = cursor.getColumnIndex(AllTransactionViewDefinition.COLUMN_INTEGER_ZIP318_KIND)
 
             val netValueLong = cursor.getLong(netValueIndex)
             val isSent = netValueLong < 0
@@ -163,6 +170,17 @@ internal class AllTransactionView(
                         1 -> true
                         null -> null
                         else -> false
+                    },
+                spentNoteCount = cursor.getInt(spentNoteCountIndex),
+                poolCrossingValue = cursor.getLongOrNull(poolCrossingValueIndex)?.let { Zatoshi(it) },
+                isTrusted = cursor.getIntOrNull(trustStatusIndex) == 1,
+                // The column is absent on databases created before librustzcash added it, which
+                // tells us as little about the transaction as an unrecognized code does.
+                zip318Kind =
+                    if (zip318KindIndex < 0) {
+                        Zip318Kind.NOT_CLASSIFIED
+                    } else {
+                        Zip318Kind.new(cursor.getIntOrNull(zip318KindIndex))
                     }
             )
         }
@@ -269,4 +287,12 @@ internal object AllTransactionViewDefinition {
     const val COLUMN_BLOB_ACCOUNT_UUID = "account_uuid" // $NON-NLS
 
     const val COLUMN_EXPIRED_UNMINED = "expired_unmined"
+
+    const val COLUMN_INTEGER_SPENT_NOTE_COUNT = "spent_note_count" // $NON-NLS
+
+    const val COLUMN_LONG_POOL_CROSSING_VALUE = "pool_crossing_value" // $NON-NLS
+
+    const val COLUMN_BOOLEAN_TRUST_STATUS = "trust_status" // $NON-NLS
+
+    const val COLUMN_INTEGER_ZIP318_KIND = "zip318_kind" // $NON-NLS
 }
