@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.ext.masked
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
+import cash.z.ecc.android.sdk.internal.jni.ProposalAnchorNotFoundException
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
@@ -39,9 +40,13 @@ internal class TransactionEncoderImpl(
      *
      * @return the proposal or an exception
      *
+     * @throws TransactionEncoderException.AnchorNotFoundException
      * @throws TransactionEncoderException.ProposalFromUriException
      */
-    @Throws(TransactionEncoderException.ProposalFromUriException::class)
+    @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
+        TransactionEncoderException.ProposalFromUriException::class
+    )
     override suspend fun proposeTransferFromUri(
         account: Account,
         uri: String
@@ -60,11 +65,14 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal from URI String." }
         }.getOrElse {
-            throw TransactionEncoderException.ProposalFromUriException(it)
+            throw it.asProposalException { TransactionEncoderException.ProposalFromUriException(it) }
         }
     }
 
-    @Throws(TransactionEncoderException.ProposalFromParametersException::class)
+    @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
     override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal {
         Twig.debug { "creating proposal to migrate the Orchard balance into Ironwood" }
 
@@ -75,11 +83,14 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating the migration proposal." }
         }.getOrElse {
-            throw TransactionEncoderException.ProposalFromParametersException(it)
+            throw it.asProposalException { TransactionEncoderException.ProposalFromParametersException(it) }
         }
     }
 
-    @Throws(TransactionEncoderException.ProposalFromParametersException::class)
+    @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
     override suspend fun proposeTransfer(
         account: Account,
         recipient: String,
@@ -103,7 +114,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal." }
         }.getOrElse {
-            throw TransactionEncoderException.ProposalFromParametersException(it)
+            throw it.asProposalException { TransactionEncoderException.ProposalFromParametersException(it) }
         }
     }
 
@@ -293,3 +304,21 @@ internal class TransactionEncoderImpl(
         return backend.getBranchIdForHeight(height)
     }
 }
+
+/**
+ * Maps a failure from a proposal call to the typed [TransactionEncoderException] to throw:
+ * [TransactionEncoderException.AnchorNotFoundException] when the native layer reported that no
+ * anchor was computable at the proposal's anchor height, and [fallback] otherwise.
+ */
+private inline fun Throwable.asProposalException(
+    fallback: () -> TransactionEncoderException
+): TransactionEncoderException =
+    when (this) {
+        is ProposalAnchorNotFoundException -> {
+            TransactionEncoderException.AnchorNotFoundException(BlockHeight.new(anchorHeight))
+        }
+
+        else -> {
+            fallback()
+        }
+    }

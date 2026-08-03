@@ -12,6 +12,7 @@
 //! themselves, because the fee depends on which inputs the selector picks.
 
 use anyhow::anyhow;
+use jni::JNIEnv;
 use rand::rngs::OsRng;
 use zcash_address::{ToAddress, ZcashAddress, unified, unified::Encoding as _};
 use zcash_client_backend::{
@@ -64,6 +65,7 @@ type MigrationProposal = Proposal<StandardFeeRule, <Db as InputSource>::NoteRef>
 /// off the chain. Splitting a crossing into less-identifying denominations is
 /// a separate mechanism; this deliberately does not attempt it.
 pub(crate) fn propose_orchard_to_ironwood(
+    env: &mut JNIEnv,
     db_data: &mut Db,
     network: &Network,
     account: AccountUuid,
@@ -148,5 +150,5 @@ pub(crate) fn propose_orchard_to_ironwood(
         &locked_input_policy,
         lock_inputs,
     )
-    .map_err(|e| anyhow!("Error creating the migration proposal: {}", e))
+    .map_err(|e| crate::map_proposal_error(env, "Error creating the migration proposal", e))
 }
