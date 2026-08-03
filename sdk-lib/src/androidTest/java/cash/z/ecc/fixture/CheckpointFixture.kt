@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.internal.model.Checkpoint
 import cash.z.ecc.android.sdk.internal.model.ext.KEY_EPOCH_SECONDS
 import cash.z.ecc.android.sdk.internal.model.ext.KEY_HASH
 import cash.z.ecc.android.sdk.internal.model.ext.KEY_HEIGHT
+import cash.z.ecc.android.sdk.internal.model.ext.KEY_IRONWOOD_TREE
 import cash.z.ecc.android.sdk.internal.model.ext.KEY_ORCHARD_TREE
 import cash.z.ecc.android.sdk.internal.model.ext.KEY_SAPLING_TREE
 import cash.z.ecc.android.sdk.internal.model.ext.KEY_VERSION
@@ -26,18 +27,21 @@ object CheckpointFixture {
     @Suppress("MaxLineLength", "ktlint:standard:max-line-length")
     const val ORCHARD_TREE = "01ffe841309dd0d9fd5073282a966b5daaf3a36834b62ac25e350dd581cfce6e2f01f6be2fb34b7ead63fcf256751c7839f138121c5237b745f6bd1bf17b4b16da1e1f0102c2cc2ee89c7561d05e34d642efa5eb991141579cca7b0ff2c7faf7a253501d013490d36beed18879794594a1b9bf0def458e30cd99ddc5ae716c2eb121ccce37000001941b26a7f09a7a3887aec0879dfc1275225b83efbcef54674930c3c2dfe3322200000123f80f8c4446da4a147c92340b492788dca810ce0a997860f151a86927e86f390000000000000000000000000000000000000000000000"
 
+    @Suppress("LongParameterList")
     internal fun new(
         height: BlockHeight = HEIGHT,
         hash: String = HASH,
         time: Long = EPOCH_SECONDS,
         saplingTree: String = SAPLING_TREE,
-        orchardTree: String = ORCHARD_TREE
+        orchardTree: String = ORCHARD_TREE,
+        ironwoodTree: String? = null
     ) = Checkpoint(
         height = height,
         hash = hash,
         epochSeconds = time,
         saplingTree = saplingTree,
-        orchardTree = orchardTree
+        orchardTree = orchardTree,
+        ironwoodTree = ironwoodTree
     )
 }
 
@@ -50,4 +54,5 @@ internal fun Checkpoint.toJson() =
             put(Checkpoint.KEY_EPOCH_SECONDS, epochSeconds)
             put(Checkpoint.KEY_SAPLING_TREE, saplingTree)
             put(Checkpoint.KEY_ORCHARD_TREE, orchardTree)
+            ironwoodTree?.let { put(Checkpoint.KEY_IRONWOOD_TREE, it) }
         }.toString()

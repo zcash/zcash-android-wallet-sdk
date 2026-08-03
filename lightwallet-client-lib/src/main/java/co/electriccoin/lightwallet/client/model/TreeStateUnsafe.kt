@@ -8,12 +8,14 @@ class TreeStateUnsafe(
     companion object {
         fun new(treeState: TreeState): TreeStateUnsafe = TreeStateUnsafe(treeState.toByteArray())
 
+        @Suppress("LongParameterList")
         fun fromParts(
             height: Long,
             hash: String,
             time: Int,
             saplingTree: String,
-            orchardTree: String
+            orchardTree: String,
+            ironwoodTree: String?
         ): TreeStateUnsafe {
             val treeState =
                 TreeState
@@ -23,6 +25,7 @@ class TreeStateUnsafe(
                     .setTime(time)
                     .setSaplingTree(saplingTree)
                     .setOrchardTree(orchardTree)
+                    .apply { ironwoodTree?.let { setIronwoodTree(it) } }
                     .build()
             return new(treeState)
         }
