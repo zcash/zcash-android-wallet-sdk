@@ -16,6 +16,7 @@ import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
+import cash.z.ecc.android.sdk.model.Zip318Kind
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -251,7 +252,8 @@ class CompactBlockProcessorTest {
                 memoCount = 0,
                 blockTimeEpochSeconds = null,
                 isShielding = false,
-                isExpiredUnmined = false
+                isExpiredUnmined = false,
+                zip318Kind = Zip318Kind.NOT_CLASSIFIED
             )
 
         private fun encodedTransaction(txId: FirstClassByteArray) =

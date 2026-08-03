@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionState
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.Zip318Kind
 
 @Suppress("MagicNumber")
 object TransactionOverviewFixture {
@@ -28,6 +29,7 @@ object TransactionOverviewFixture {
     const val BLOCK_TIME_EPOCH_SECONDS: Long = 1234
     val STATE = TransactionState.Confirmed
     const val IS_SHIELDING = false
+    val ZIP318_KIND = Zip318Kind.NOT_CLASSIFIED
 
     @Suppress("LongParameterList")
     fun new(
@@ -47,7 +49,8 @@ object TransactionOverviewFixture {
         memoCount: Int = MEMO_COUNT,
         blockTimeEpochSeconds: Long = BLOCK_TIME_EPOCH_SECONDS,
         transactionState: TransactionState = STATE,
-        isShielding: Boolean = IS_SHIELDING
+        isShielding: Boolean = IS_SHIELDING,
+        zip318Kind: Zip318Kind = ZIP318_KIND
     ) = TransactionOverview(
         txId = txId,
         minedHeight = minedHeight,
@@ -66,5 +69,6 @@ object TransactionOverviewFixture {
         blockTimeEpochSeconds = blockTimeEpochSeconds,
         transactionState = transactionState,
         isShielding = isShielding,
+        zip318Kind = zip318Kind,
     )
 }

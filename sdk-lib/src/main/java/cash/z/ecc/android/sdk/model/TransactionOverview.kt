@@ -30,7 +30,14 @@ data class TransactionOverview(
     val memoCount: Int,
     val blockTimeEpochSeconds: Long?,
     val transactionState: TransactionState,
-    val isShielding: Boolean
+    val isShielding: Boolean,
+    /**
+     * How this transaction classifies against ZIP 318, the Orchard to Ironwood pool migration.
+     *
+     * [Zip318Kind.NOT_CLASSIFIED] means the wallet has not looked, not that the transaction is
+     * not a migration, so it warrants no label at all.
+     */
+    val zip318Kind: Zip318Kind
 ) {
     override fun toString() = "TransactionOverview"
 
@@ -62,7 +69,8 @@ data class TransactionOverview(
                     ),
                 isShielding = dbTransactionOverview.isShielding,
                 totalSpent = dbTransactionOverview.totalSpent,
-                totalReceived = dbTransactionOverview.totalReceived
+                totalReceived = dbTransactionOverview.totalReceived,
+                zip318Kind = dbTransactionOverview.zip318Kind
             )
     }
 
