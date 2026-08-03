@@ -1,0 +1,71 @@
+# Checks each hop of the maintenance chain (maint/v2.7.x -> maint/v2.8.x -> main)
+# still merges once a PR lands. One job per hop, so the failing hop is visible
+# from the checks list without opening the run.
+#
+# Advisory only: continue-on-error keeps these from blocking, since a
+# merge-forward conflict is often legitimate and is resolved by hand at merge
+# time. Read the detail in the run summary.
+#
+# No paths-ignore, unlike pull-request.yml: a conflict in README.md or docs/
+# counts just as much as one in Kotlin.
+#
+# Run locally with:
+#   ./.github/scripts/check-merge-forward.sh maint/v2.7.x maint/v2.8.x
+#
+# A new release line needs a new job here.
+
+name: Merge Forward
+
+on:
+  pull_request:
+    branches:
+      - 'maint/v*'
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  merge_forward_v2_7_into_v2_8:
+    name: maint/v2.7.x into maint/v2.8.x
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 5
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # Merge bases are needed across branches.
+          fetch-depth: 0
+      - name: Check hop
+        timeout-minutes: 5
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --quiet --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          ./.github/scripts/check-merge-forward.sh \
+            maint/v2.7.x maint/v2.8.x "${BASE_REF}"
+
+  merge_forward_v2_8_into_main:
+    name: maint/v2.8.x into main
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 5
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+      - name: Check hop
+        timeout-minutes: 5
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --quiet --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          ./.github/scripts/check-merge-forward.sh \
+            maint/v2.8.x main "${BASE_REF}"
