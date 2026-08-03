@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.Zip318Kind
 import com.zodl.slipstream.model.SlipstreamTransactionRow
 import kotlin.math.absoluteValue
 
@@ -55,7 +56,11 @@ internal object TransactionOverviewCursor {
                     expiryHeight = expiryBlockHeight,
                     isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L }
                 ),
-            isShielding = row.isShielding
+            isShielding = row.isShielding,
+            // `zip318_kind` is selected from `v_transactions` by our own `host_read.rs`
+            // (backend-lib, not the external slipstream-core crate) — see that file's 2026-08-03
+            // doc update.
+            zip318Kind = Zip318Kind.new(row.zip318Kind)
         )
     }
 }

@@ -2,8 +2,12 @@
 //! replacing the JSON `readQuery` lane (`read_query.rs`, now debug-only) as
 //! `SlipstreamTransactionReader`'s read path. Each export constructs `com.zodl.slipstream.model`
 //! objects field-by-field — the same JNI-constructs-objects rule §4.1 already uses for
-//! `snapshot`/`walletSummary` — instead of crossing a JSON string. SQL text below is moved
-//! VERBATIM from the Kotlin reader it replaces; no query is rewritten in the port.
+//! `snapshot`/`walletSummary` — instead of crossing a JSON string. SQL text below was moved
+//! VERBATIM from the Kotlin reader it replaces (no query rewritten in the port), except
+//! `listTransactions`' projection, which since 2026-08-03 also selects `zip318_kind` (see
+//! [`has_zip318_kind_column`] — the column librustzcash's not-yet-released zip318-classification
+//! work adds to `v_transactions`; degrades to a literal `0` when absent) — appended as the LAST
+//! column/ctor arg so the JNI binding contract's existing field order stays untouched.
 //!
 //! Connections are opened via `read_query::open_read_only` — the same bundled rusqlite
 //! instance the engine's own writer uses (`SQLITE_OPEN_READ_ONLY`, `busy_timeout` 5 s; see
@@ -30,7 +34,7 @@ const JNI_RAW_TX: &str = "com/zodl/slipstream/model/SlipstreamRawTransaction";
 const JNI_TX_OUTPUT_ROW: &str = "com/zodl/slipstream/model/SlipstreamTxOutputRow";
 const JNI_RESUBMISSION_ROW: &str = "com/zodl/slipstream/model/SlipstreamResubmissionRow";
 
-const TX_ROW_CTOR: &str = "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;ZIIILjava/lang/Long;ZLjava/lang/Long;)V";
+const TX_ROW_CTOR: &str = "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;ZIIILjava/lang/Long;ZLjava/lang/Long;I)V";
 const RAW_TX_CTOR: &str = "([BJ)V";
 const TX_OUTPUT_ROW_CTOR: &str = "([BIILjava/lang/String;[B)V";
 const RESUBMISSION_ROW_CTOR: &str = "([B[B)V";
@@ -53,6 +57,10 @@ struct TxRow {
     block_time: Option<i64>,
     is_shielding: bool,
     is_expired_unmined: Option<i64>,
+    /// How the transaction classifies against ZIP 318 (the Orchard-to-Ironwood pool migration),
+    /// as `transactions.zip318_kind` decodes it — see `Zip318Kind` on the Kotlin side. Appended
+    /// as the LAST field (never reordered — the JNI binding contract keys ctor args by position).
+    zip318_kind: i32,
 }
 
 impl TxRow {
@@ -74,6 +82,7 @@ impl TxRow {
             block_time: row.get(13)?,
             is_shielding: row.get(14)?,
             is_expired_unmined: row.get(15)?,
+            zip318_kind: row.get(16)?,
         })
     }
 }
@@ -162,6 +171,7 @@ fn tx_row_object<'local>(env: &mut JNIEnv<'local>, row: &TxRow) -> anyhow::Resul
             JValue::Object(&block_time),
             JValue::Bool(u8::from(row.is_shielding)),
             JValue::Object(&is_expired_unmined),
+            JValue::Int(row.zip318_kind),
         ],
     )?)
 }
@@ -186,15 +196,29 @@ fn tx_output_row_object<'local>(
     )?)
 }
 
+/// Whether the open connection's `v_transactions` view exposes `zip318_kind` — the column the
+/// librustzcash zip318-classification patch adds (not yet in the crates.io release this crate
+/// otherwise depends on). Checked at runtime, once per `listTransactions` call, rather than
+/// assumed from a compile-time feature flag, so this code is safe to ship independent of whether
+/// that patch happens to be pinned in `Cargo.toml` right now — the same "column may be absent"
+/// posture `AllTransactionView.kt` already takes on the Kotlin side of the ordinary (non-Slipstream)
+/// reader.
+fn has_zip318_kind_column(conn: &rusqlite::Connection) -> bool {
+    conn.prepare("SELECT zip318_kind FROM v_transactions LIMIT 0").is_ok()
+}
+
 /// Builds `listTransactions`' SQL: base projection, an optional reconciliation LEFT JOIN +
 /// filter when `is_recovering`, an optional account filter, ORDER BY. Verbatim from the
-/// Kotlin `VisibleTransactionsQuery` this replaces — see FFI_JNI_CONTRACT.md §9.3.
-fn list_transactions_sql(is_recovering: bool, has_account_filter: bool) -> String {
-    let mut sql = String::from(
+/// Kotlin `VisibleTransactionsQuery` this replaces — see FFI_JNI_CONTRACT.md §9.3 — except the
+/// trailing `zip318_kind` projection (see [`has_zip318_kind_column`]), added 2026-08-03: a
+/// literal `0` (== `Zip318Kind.NOT_CLASSIFIED`) stands in when the column doesn't exist yet.
+fn list_transactions_sql(is_recovering: bool, has_account_filter: bool, has_zip318_kind: bool) -> String {
+    let zip318_kind_projection = if has_zip318_kind { "tx.zip318_kind" } else { "0" };
+    let mut sql = format!(
         "SELECT tx.txid, tx.mined_height, tx.expiry_height, tx.tx_index, tx.raw, \
          tx.account_balance_delta, tx.total_spent, tx.total_received, tx.fee_paid, \
          tx.has_change, tx.sent_note_count, tx.received_note_count, tx.memo_count, \
-         tx.block_time, tx.is_shielding, tx.expired_unmined FROM v_transactions AS tx",
+         tx.block_time, tx.is_shielding, tx.expired_unmined, {zip318_kind_projection} FROM v_transactions AS tx",
     );
     if is_recovering {
         sql.push_str(&format!(
@@ -237,7 +261,8 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listTransactions<'lo
         };
         let conn = read_query::open_read_only(&db_path)?;
 
-        let sql = list_transactions_sql(is_recovering != 0, account_uuid_bytes.is_some());
+        let has_zip318_kind = has_zip318_kind_column(&conn);
+        let sql = list_transactions_sql(is_recovering != 0, account_uuid_bytes.is_some(), has_zip318_kind);
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| anyhow!("listTransactions prepare: {e}"))?;

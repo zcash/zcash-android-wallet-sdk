@@ -32,7 +32,8 @@ class TransactionOverviewCursorTest {
                         memoCount = 0,
                         blockTime = 1_700_000_000,
                         isShielding = false,
-                        isExpiredUnmined = 0L
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 0
                     ),
                 latestHeight = BlockHeight.new(1_009)
             )
@@ -63,7 +64,8 @@ class TransactionOverviewCursorTest {
                         memoCount = 1,
                         blockTime = null,
                         isShielding = false,
-                        isExpiredUnmined = 0L
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 0
                     ),
                 latestHeight = BlockHeight.new(1_000)
             )
@@ -96,7 +98,8 @@ class TransactionOverviewCursorTest {
                         memoCount = 0,
                         blockTime = null,
                         isShielding = false,
-                        isExpiredUnmined = 0L
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 0
                     ),
                 latestHeight = BlockHeight.new(1_000_000)
             )
@@ -127,7 +130,8 @@ class TransactionOverviewCursorTest {
                         memoCount = 0,
                         blockTime = null,
                         isShielding = true,
-                        isExpiredUnmined = null
+                        isExpiredUnmined = null,
+                        zip318Kind = 0
                     ),
                 latestHeight = null
             )

@@ -30,7 +30,9 @@ data class SlipstreamTransactionRow(
     val memoCount: Int,
     val blockTime: Long?,
     val isShielding: Boolean,
-    val isExpiredUnmined: Long?
+    val isExpiredUnmined: Long?,
+    /** How the row classifies against ZIP 318 — `Zip318Kind.new(this)` decodes the raw code. */
+    val zip318Kind: Int
 )
 
 /**
