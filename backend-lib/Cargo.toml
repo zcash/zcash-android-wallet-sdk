@@ -45,14 +45,14 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_voting)'] }
 # shipped library. Re-enabling voting means asking for it again — see the shielded-voting
 # block below.
 orchard = "0.15"
-zcash_pool_migration = { version = "0.1.0-rc.3", features = ["wallet"] }
+zcash_pool_migration = { version = "0.1.0-rc.6", features = ["wallet"] }
 # `signer` is this branch's addition, for the Keystone batch-signing recipe below
 # (`pczt::roles::signer::batch`).
-pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling", "signer"] }
+pczt = { version = "0.9.2", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.6", features = [
+zcash_client_backend = { version = "0.24.0-rc.7", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -60,11 +60,11 @@ zcash_client_backend = { version = "0.24.0-rc.6", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.6", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.7", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
-zcash_protocol = "0.10"
+zcash_protocol = "0.10.4"
 zcash_script = "0.4"
 zip32 = "0.2"
 eip681 = "0.1.0"
@@ -207,17 +207,4 @@ slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "b
 # Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
 # entry for a crate that is not in the graph. Uncomment together with it.
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
-
-## Uncomment and modify the following block to use librustzcash crates at a pinned revision.
-#pczt = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
-#zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 
