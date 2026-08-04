@@ -59,7 +59,7 @@ use zcash_pool_migration::{
     engine::{
         self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction,
         MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead,
-        PoolMigrationWrite, ProveError,
+        PoolMigrationWrite, ProveError, ProveOutcome,
     },
     preparation::{PrepInput, PreparationPlan},
     satisfiability::{DuenessTargets, ReplanThreshold},
@@ -1091,38 +1091,53 @@ fn is_prove_ready(
 /// boundary and proves against the wallet's current natural anchor instead, matching
 /// `zcash_pool_migration`'s own `prove_chain_sim.rs` integration test.
 ///
-/// Returns `Ok(true)` if proved (`state` now has this transaction `Proved`, with the proven PCZT
-/// replacing the stored one), `Ok(false)` if its witness/anchor isn't resolvable yet — the funding
-/// note hasn't been observed as spendable yet, or its checkpoint hasn't been reached or was pruned
-/// (`WalletProveError::UnknownSpentNote`/`AnchorNotFound`/`WitnessNotFound`) — this is the ordinary
-/// transient "not ready yet" condition, not a failure, matching the old stopgap's `Ok(None)`
+/// Proves only — it does NOT persist. Returns the raw [`ProveOutcome`]
+/// (`Proved(ProvedTransaction)` | `NotYetProvable` | `MarkedUnsatisfiable`) to the caller, which
+/// must persist it (`Backend::store_proved_transaction` for `Proved`,
+/// `Backend::replace_migration` for `MarkedUnsatisfiable`) AFTER this function returns — a
+/// `Backend` cannot be constructed while this function still holds `wallet` mutably through
+/// `WalletMigrationProver`; see this module's rewire notes and `zcash_pool_migration::engine`'s
+/// `ProvedTransaction` doc ("a wallet-backed prover and a wallet-database store borrow the same
+/// wallet mutably, so they can only ever be used in sequence, never side by side in one call").
+///
+/// A transient witness/anchor failure — the funding note hasn't been observed as spendable yet, or
+/// its checkpoint hasn't been reached or was pruned
+/// (`WalletProveError::UnknownSpentNote`/`AnchorNotFound`/`WitnessNotFound`/`Tree`) — is folded
+/// into `Ok(ProveOutcome::NotYetProvable)`, not a failure, matching the old stopgap's `Ok(None)`
 /// contract. Any other error is propagated.
 fn try_prove(
+    network: &Network,
     wallet: &mut Wallet,
     account: AccountUuid,
     fvk: orchard::keys::FullViewingKey,
     state: &mut MigrationState,
     id: MigrationTransferId,
     kind: MigrationTxKind,
-) -> anyhow::Result<bool> {
+    scanned_tip: BlockHeight,
+) -> anyhow::Result<ProveOutcome> {
     let anchor = match kind {
         MigrationTxKind::Transfer { .. } => None,
         MigrationTxKind::Preparation { .. } => Some(natural_anchor_height(wallet)?),
     };
     let mut prover = WalletMigrationProver::new(wallet, account, fvk);
-    let result = match anchor {
-        None => engine::prove_transfer(&mut prover, state, id),
+    let outcome = match anchor {
+        None => {
+            let mut rng = OsRng;
+            engine::prove_transfer(network, &mut prover, state, id, scanned_tip, &mut rng)
+        }
         Some(anchor) => engine::prove_preparation(&mut prover, state, id, anchor),
     };
-    match result {
-        Ok(()) => Ok(true),
+    // `prover` (and its mutable borrow of `wallet`) goes out of scope here — the caller is now
+    // free to construct a `Backend` (which borrows `wallet` immutably) without conflict.
+    match outcome {
+        Ok(outcome) => Ok(outcome),
         Err(ProveError::Prover(reason)) if is_transient_prove_error(&reason) => {
             tracing::debug!(
                 "MIGRATION_DIAG try_prove: {:?} not yet provable (transient): {}",
                 id,
                 reason
             );
-            Ok(false)
+            Ok(ProveOutcome::NotYetProvable)
         }
         Err(e) => Err(anyhow!(
             "Error proving migration transaction {:?}: {}",
@@ -1188,18 +1203,42 @@ fn finalize_note_split(
         .find(|t| t.id() == id)
         .map(|t| t.kind())
         .ok_or_else(|| anyhow!("Note-split transaction not found in migration state"))?;
-    let proved = try_prove(wallet, account, fvk, state, id, kind)
+    let scanned_tip = target_height(wallet)?;
+    let outcome = try_prove(network, wallet, account, fvk, state, id, kind, scanned_tip)
         .map_err(|e| anyhow!("Error finalizing note split: {}", e))?;
-    if !proved {
-        return Err(anyhow!(
-            "Note-split transaction is not yet finalizable — its funding note isn't witnessable yet"
-        ));
-    }
-    {
-        let mut backend = Backend::new(network, wallet, account, None, store_conn)?;
-        backend
-            .replace_migration(state)
-            .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
+    // NOTE the transaction is not actually `Proved` — in `state` or in the wallet's own
+    // transaction records — until `store_proved_transaction` below returns. Everything that reads
+    // the proven PCZT (the extraction a few lines down) must happen AFTER that call, never
+    // between here and there.
+    match outcome {
+        ProveOutcome::Proved(proven) => {
+            let mut backend = Backend::new(network, wallet, account, None, store_conn)?;
+            backend
+                .store_proved_transaction(state, proven)
+                .map_err(|e| {
+                    anyhow!("Error persisting proved note-split transaction {:?}: {}", id, e)
+                })?;
+        }
+        ProveOutcome::NotYetProvable => {
+            return Err(anyhow!(
+                "Note-split transaction is not yet finalizable — its funding note isn't witnessable yet"
+            ));
+        }
+        ProveOutcome::MarkedUnsatisfiable { replan_required } => {
+            let mut backend = Backend::new(network, wallet, account, None, store_conn)?;
+            backend.replace_migration(state).map_err(|e| {
+                anyhow!(
+                    "Error persisting unsatisfiable mark for note-split transaction {:?}: {}",
+                    id,
+                    e
+                )
+            })?;
+            return Err(anyhow!(
+                "Note-split transaction {:?} was marked unsatisfiable (replan_required={})",
+                id,
+                replan_required
+            ));
+        }
     }
     let tx = state
         .transactions()
@@ -2324,7 +2363,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             ready.len(),
         );
 
-        let mut finalized_count = 0;
+        // Prove everything ready FIRST — `try_prove` needs `wallet` mutably (through
+        // `WalletMigrationProver`) and does not persist. Collect every outcome, then, once the
+        // prove loop is done and `wallet`'s mutable borrow from proving has ended, build a
+        // `Backend` (which borrows `wallet` immutably) to persist them — matching `try_prove`'s
+        // new caller-persists-after contract; see its doc comment.
+        let mut outcomes: Vec<(MigrationTransferId, MigrationTxKind, ProveOutcome)> = Vec::new();
         for (id, kind) in ready {
             let (boundary, scheduled) = state
                 .transactions()
@@ -2332,10 +2376,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 .find(|t| t.id() == id)
                 .map(|t| (t.anchor_boundary(), Some(t.scheduled_height())))
                 .unwrap_or((None, None));
-            if try_prove(&mut wallet, account, fvk.clone(), &mut state, id, kind)
-                .map_err(|e| anyhow!("Error proving transfer {:?}: {}", id, e))?
-            {
-                finalized_count += 1;
+            let outcome = try_prove(
+                &network,
+                &mut wallet,
+                account,
+                fvk.clone(),
+                &mut state,
+                id,
+                kind,
+                target,
+            )
+            .map_err(|e| anyhow!("Error proving transfer {:?}: {}", id, e))?;
+            if matches!(outcome, ProveOutcome::Proved(_)) {
                 tracing::debug!(
                     "MIGRATION_DIAG finalizeReadyTransfers: PROVED {:?} kind={:?} boundary={:?} scheduled={:?}",
                     id,
@@ -2344,12 +2396,46 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     scheduled,
                 );
             }
+            outcomes.push((id, kind, outcome));
         }
-        if finalized_count > 0 {
+
+        let mut finalized_count = 0;
+        if !outcomes.is_empty() {
             let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
-            backend
-                .replace_migration(&state)
-                .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
+            let mut marks_changed = false;
+            for (id, _kind, outcome) in outcomes {
+                match outcome {
+                    ProveOutcome::Proved(proven) => {
+                        backend
+                            .store_proved_transaction(&mut state, proven)
+                            .map_err(|e| {
+                                anyhow!(
+                                    "Error persisting proved migration transaction {:?}: {}",
+                                    id,
+                                    e
+                                )
+                            })?;
+                        finalized_count += 1;
+                    }
+                    ProveOutcome::NotYetProvable => { /* skip, retry later */ }
+                    ProveOutcome::MarkedUnsatisfiable { replan_required } => {
+                        // MUST persist through `replace_migration` — the marks and the dependency
+                        // closure changed, and an unpersisted mark would be lost on the next
+                        // launch (`engine.rs`, `prove_transfer` doc).
+                        marks_changed = true;
+                        tracing::debug!(
+                            "MIGRATION_DIAG try_prove: {:?} marked unsatisfiable (replan_required={})",
+                            id,
+                            replan_required
+                        );
+                    }
+                }
+            }
+            if marks_changed {
+                backend
+                    .replace_migration(&state)
+                    .map_err(|e| anyhow!("Error persisting unsatisfiable mark(s): {:?}", e))?;
+            }
         }
         Ok(finalized_count)
     });
@@ -3847,17 +3933,34 @@ mod live_wallet_signing_tests {
         let mut finalized = 0;
         let mut transient = 0;
         for (id, kind) in ids_and_kinds {
-            match try_prove(&mut wallet, account, fvk.clone(), &mut state, id, kind) {
-                Ok(true) => {
+            // Test-only: proves locally and never persists (no `Backend`/`store_proved_transaction`
+            // call here either before or after this change) — this test only exercises build+prove,
+            // matching its original behavior of discarding `state` at the end.
+            match try_prove(
+                &network,
+                &mut wallet,
+                account,
+                fvk.clone(),
+                &mut state,
+                id,
+                kind,
+                target,
+            ) {
+                Ok(ProveOutcome::Proved(_)) => {
                     finalized += 1;
                     println!(
                         "id={id:?} kind={kind:?} finalized (built+proven locally only — this \
                          test never submits anything to the network)",
                     );
                 }
-                Ok(false) => {
+                Ok(ProveOutcome::NotYetProvable) => {
                     transient += 1;
                     println!("id={id:?} kind={kind:?} not yet finalizable (transient)");
+                }
+                Ok(ProveOutcome::MarkedUnsatisfiable { replan_required }) => {
+                    panic!(
+                        "id={id:?} kind={kind:?} marked unsatisfiable (replan_required={replan_required})"
+                    );
                 }
                 Err(e) => panic!("id={id:?} kind={kind:?} FAILED: {e}"),
             }
