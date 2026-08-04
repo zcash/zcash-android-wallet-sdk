@@ -261,7 +261,8 @@ class SynchronizerWalletInitializationTest {
                 hash = "hash-$height",
                 time = height.toInt(),
                 saplingTree = "sapling-tree-$height",
-                orchardTree = "orchard-tree-$height"
+                orchardTree = "orchard-tree-$height",
+                ironwoodTree = "ironwood-tree-$height"
             )
 
         fun <T> failure(): Response.Failure<T> =
