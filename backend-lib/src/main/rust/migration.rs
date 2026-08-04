@@ -62,7 +62,7 @@ use zcash_pool_migration::{
         PoolMigrationWrite, ProveError,
     },
     preparation::{PrepInput, PreparationPlan},
-    satisfiability::ReplanThreshold,
+    satisfiability::{DuenessTargets, ReplanThreshold},
 };
 
 use crate::migration_engine::Backend;
@@ -2577,7 +2577,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Engine per-tx status view (ready/action/blocker), with the guard veto applied on top —
         // see the driver-surface note: a guard-vetoed (unprovable-anchor) transfer must never be
         // reported READY-to-Prove; it gets the synthetic UNPROVABLE_ANCHOR blocker instead.
-        let engine_statuses = state.transaction_statuses(tip + 1);
+        let engine_statuses = state.transaction_statuses(DuenessTargets::at(tip + 1));
 
         // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary, ready, action,
         //  blocker, amount_zatoshi, prep_layer, prep_index, depends_on, expiry_height, mined_height)
