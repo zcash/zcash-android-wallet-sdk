@@ -46,6 +46,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferState
 import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
 import cash.z.ecc.android.sdk.internal.model.migration.JniPreparationStep
+import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
 import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.storage.preference.PreferenceHolder
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
@@ -462,14 +463,124 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.finalizeReadyTransfers(dbDataPath, network, account)
         }
 
-    // Left whole on purpose. This is one cancellation-safety-critical sequence: the in-flight mark,
-    // the entry guard, the send, and the uncancellable post-send commit are ordered against each
-    // other, and that ordering — not the individual steps — is what the long comments here
-    // document. Splitting it into helpers would move suspension points and `withContext`
-    // boundaries relative to one another, which is a behavioural change deserving its own review
-    // and its own tests rather than a drive-by during a merge. Note also that both thresholds are
-    // measured over a body that is more comment than code.
-    @Suppress("LongMethod", "CyclomaticComplexMethod")
+    /**
+     * Everything one broadcast attempt needs once the due-transfer triage has resolved.
+     *
+     * [prefs] is resolved once and shared: `preferenceProviderHolder()` is idempotent/cached, but
+     * reading it a single time keeps the entry guard's read and the commit's writes unambiguously
+     * against the same provider instance. [wasOverdue] is sampled *before* the transfer is drawn,
+     * because it is the "was this call itself an out-of-band 'send now' resume" signal that the
+     * post-broadcast privacy buffer keys off; `next_due_transfer()`'s `PreparedTransfer` carries no
+     * schedule window of its own, so the aggregate `hasOverdueTransfers()` reading is the best
+     * available proxy.
+     */
+    private class BroadcastAttempt(
+        val dbDataPath: String,
+        val account: AccountUuid,
+        val prepared: JniPreparedTransfer,
+        val prefs: PreferenceProvider,
+        val wasOverdue: Boolean,
+    )
+
+    /**
+     * Entry guard (spec §2a). A prior send may have reached the network but never persisted its
+     * result, if an outer timeout or cancellation landed between the send and the record. The
+     * in-flight mark is then still set while the transaction is already on chain.
+     *
+     * When the wallet can already see that transaction mined, records the success the interrupted
+     * call could not and returns its outcome; returns `null` otherwise, and the caller broadcasts
+     * normally.
+     *
+     * This is an OPTIMISATION, not a guarantee against re-sending, and deliberately so:
+     *
+     * - It is a purely local read ([TypesafeMigrationBackend.transactionMinedHeight] is a
+     *   passthrough over `Wallet::get_tx_height`, which reads what sync has already scanned). It
+     *   sees nothing that is only in a mempool, so during the ordinary case — sent, accepted, not
+     *   yet mined — it does not fire and the transfer is re-sent.
+     * - That is fine. Submissions go out over Tor, on their own circuit, so a second submission of
+     *   the same txid is not a linkability signal; and the network's duplicate rejection is
+     *   classified back into a success by [classifyNonGrpcFailure], which is what actually keeps a
+     *   re-send from terminally failing the pre-signed plan.
+     *
+     * So the guard's value is skipping avoidable work when the answer is already sitting in the
+     * local database, not protecting a privacy property. [classifyNonGrpcFailure] is the layer that
+     * has to be right.
+     */
+    private suspend fun recoverAlreadyBroadcastTransfer(attempt: BroadcastAttempt): TransferAttemptOutcome? {
+        val inFlightUntil =
+            attempt.prefs
+                .getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)
+                ?.toLongOrNull() ?: 0L
+        val nowEpochSeconds = Clock.System.now().epochSeconds
+        // Only probe the mined height (a DB read) once we already know a broadcast is marked
+        // in-flight — shouldSkipReSendAlreadyMined re-checks that same condition internally, so
+        // this is deliberately a cheap, redundant re-confirmation rather than a second
+        // independent gate.
+        if (!isBroadcastInFlight(nowEpochSeconds, inFlightUntil)) return null
+        val alreadyMined =
+            migrationBackend.transactionMinedHeight(attempt.dbDataPath, network, attempt.prepared.txid)
+        return if (!shouldSkipReSendAlreadyMined(inFlightUntil, nowEpochSeconds, alreadyMined)) {
+            null
+        } else {
+            withContext(NonCancellable) {
+                migrationBackend.recordTransferResult(
+                    attempt.dbDataPath,
+                    network,
+                    attempt.account,
+                    attempt.prepared.id,
+                    0, // tag = Success
+                    false, // retryable
+                    attempt.prepared.txid,
+                )
+                attempt.prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
+                // No MIGRATION_SYNC_RESUME_AT write here (unlike the normal success path in
+                // [commitBroadcastOutcome]), deliberately: this guard only fires when the txid is
+                // already MINED, i.e. already public/on-chain, so the post-broadcast de-correlation
+                // buffer has no privacy value left to protect on this recovery path — arming
+                // `now + buffer` would just needlessly block sync for no privacy benefit.
+                TransferAttemptOutcome.Executed(TransferResult.Success(attempt.prepared.txid.toHexReversed()))
+            }
+        }
+    }
+
+    /**
+     * The post-send commit: map the submit outcome, record it, clear the in-flight mark, and — on a
+     * success that resumed an overdue transfer — arm the post-broadcast de-correlation buffer.
+     *
+     * Runs wholly inside [NonCancellable], and must. By the time this is called the send has already
+     * happened, so a cancellation landing between the send and the record is precisely the state
+     * [recoverAlreadyBroadcastTransfer] exists to clean up after; keeping the whole commit
+     * uncancellable is what makes that state rare rather than routine. Everything that may
+     * legitimately be cancelled — the send itself, and the mined-height probe that classifies its
+     * failure — belongs to the caller and stays outside this boundary.
+     */
+    private suspend fun commitBroadcastOutcome(
+        attempt: BroadcastAttempt,
+        submitResult: TransactionSubmitResult,
+        minedHeight: Long,
+    ): TransferResult =
+        withContext(NonCancellable) {
+            val mapped = mapSubmitResult(submitResult, attempt.prepared.txid, minedHeight)
+            migrationBackend.recordTransferResult(
+                attempt.dbDataPath,
+                network,
+                attempt.account,
+                attempt.prepared.id,
+                mapped.tag,
+                mapped.retryable,
+                mapped.txIdBytes,
+            )
+            // Clear the in-flight mark now that the result is recorded.
+            attempt.prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
+            if (attempt.wasOverdue && mapped.transferResult is TransferResult.Success) {
+                attempt.prefs.putString(
+                    EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key,
+                    (Clock.System.now().epochSeconds + privacySyncBufferDuration().inWholeSeconds).toString(),
+                )
+            }
+            mapped.transferResult
+        }
+
     override suspend fun executeNextPendingTransfer(
         options: NetworkPrivacyOptions,
         useEstimatedTip: Boolean,
@@ -478,78 +589,45 @@ internal class OrchardMigrationSdkImpl(
             val dbDataPath = dbDataPath()
             val account = account ?: return@logged TransferAttemptOutcome.NothingDue
             val est = if (useEstimatedTip) chainTipEstimator.estimatedTip() else -1L
-            // Checked before broadcasting: this is the "was this call itself an out-of-band 'send
-            // now' resume" signal for the post-broadcast privacy buffer below. next_due_transfer()'s
-            // PreparedTransfer carries no schedule window of its own to check per-transfer, so this
-            // uses the aggregate hasOverdueTransfers() signal as the best available proxy.
             val wasOverdue = migrationBackend.hasOverdueTransfers(dbDataPath, network, account, est)
-            // nextDueTransfer returns a tri-state: NOTHING_DUE (0), READY (1), or AWAITING_PROOF (2).
             val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account, est)
-            when (dueResult.status) {
-                0 -> return@logged TransferAttemptOutcome.NothingDue
-
-                2 -> return@logged TransferAttemptOutcome.AwaitingProof(
-                    dueResult.awaitingProofTransferId
-                        ?: error("nextDueTransfer returned status=2 (AwaitingProof) with null transferId — Rust contract violation")
-                )
-
-                else -> Unit // status 1: fall through to broadcast
-            }
-            val prepared = dueResult.prepared ?: return@logged TransferAttemptOutcome.NothingDue
-            // Single resolution — preferenceProviderHolder() is idempotent/cached, but reading
-            // this once and reusing it for every get/put in this call keeps the guard's read and
-            // this call's writes unambiguously on the same provider instance.
-            val prefs = preferenceProviderHolder()
-            // Entry guard (spec §2a): a prior send may have reached the network but never
-            // persisted its mark (outer timeout / cancellation between send and record). The
-            // in-flight flag is still set; if this exact txid is already mined/in-mempool, record
-            // success instead of re-broadcasting the identical tx — re-sending an already-landed
-            // transaction is a duplicate-submit privacy signal, not a retry.
-            run {
-                val inFlightUntil =
-                    prefs
-                        .getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)
-                        ?.toLongOrNull() ?: 0L
-                val nowEpochSeconds = Clock.System.now().epochSeconds
-                // Only probe the mined height (a DB read) once we already know a broadcast is
-                // marked in-flight — shouldSkipReSendAlreadyMined re-checks that same condition
-                // internally, so this is deliberately a cheap, redundant re-confirmation rather
-                // than a second independent gate.
-                if (isBroadcastInFlight(nowEpochSeconds, inFlightUntil)) {
-                    val alreadyMined = migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
-                    if (shouldSkipReSendAlreadyMined(inFlightUntil, nowEpochSeconds, alreadyMined)) {
-                        val outcome =
-                            withContext(NonCancellable) {
-                                migrationBackend.recordTransferResult(
-                                    dbDataPath,
-                                    network,
-                                    account,
-                                    prepared.id,
-                                    0, // tag = Success
-                                    false, // retryable
-                                    prepared.txid,
-                                )
-                                prefs.putString(
-                                    EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
-                                    "0",
-                                )
-                                // No MIGRATION_SYNC_RESUME_AT write here (unlike the normal success
-                                // path below), deliberately: this guard only fires when the txid is
-                                // already MINED, i.e. already public/on-chain, so the post-broadcast
-                                // de-correlation buffer has no privacy value left to protect on this
-                                // recovery path — arming `now + buffer` would just needlessly block
-                                // sync for no privacy benefit.
-                                TransferAttemptOutcome.Executed(TransferResult.Success(prepared.txid.toHexReversed()))
-                            }
-                        return@logged outcome
+            val prepared =
+                when (dueResult.status) {
+                    DUE_READY -> {
+                        dueResult.prepared
                     }
-                }
-            }
+
+                    DUE_AWAITING_PROOF -> {
+                        return@logged TransferAttemptOutcome.AwaitingProof(
+                            dueResult.awaitingProofTransferId
+                                ?: error(
+                                    "nextDueTransfer returned status=2 (AwaitingProof) with null " +
+                                        "transferId — Rust contract violation"
+                                )
+                        )
+                    }
+
+                    else -> {
+                        null
+                    }
+                } ?: return@logged TransferAttemptOutcome.NothingDue
+
+            val attempt =
+                BroadcastAttempt(
+                    dbDataPath = dbDataPath,
+                    account = account,
+                    prepared = prepared,
+                    prefs = preferenceProviderHolder(),
+                    wasOverdue = wasOverdue,
+                )
+            recoverAlreadyBroadcastTransfer(attempt)?.let { return@logged it }
+
             val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
             val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
             // Mark the broadcast as in-flight before attempting the network call so the sync engine
-            // is gated for the duration. A stale mark from a crash self-expires in BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
-            prefs.putString(
+            // is gated for the duration. A stale mark from a crash self-expires in
+            // BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
+            attempt.prefs.putString(
                 EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
                 (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
             )
@@ -559,38 +637,15 @@ internal class OrchardMigrationSdkImpl(
             // otherwise a duplicate rejection after a submit-then-crash kills the whole pre-signed
             // plan (and, for Keystone, forces a fresh signing ceremony). Probe the prepared txid's
             // mined height before mapping; the rejection text is the mempool-duplicate fallback.
-            // Deliberately left OUTSIDE the NonCancellable block below (with broadcast() itself) so
-            // the worker's own outer timeout can still kill a hung Tor send — only the post-send
-            // commit (record + clear-mark + sync-resume write) must be uncancellable.
+            // Deliberately OUTSIDE commitBroadcastOutcome's NonCancellable boundary (with
+            // broadcast() itself) so the worker's own outer timeout can still kill a hung Tor send.
             val minedHeight: Long =
                 if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
                     migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
                 } else {
                     -1L
                 }
-            val transferResult =
-                withContext(NonCancellable) {
-                    val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
-                    migrationBackend.recordTransferResult(
-                        dbDataPath,
-                        network,
-                        account,
-                        prepared.id,
-                        mapped.tag,
-                        mapped.retryable,
-                        mapped.txIdBytes,
-                    )
-                    // Clear the in-flight mark now that the result is recorded.
-                    prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
-                    if (wasOverdue && mapped.transferResult is TransferResult.Success) {
-                        prefs.putString(
-                            EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key,
-                            (Clock.System.now().epochSeconds + privacySyncBufferDuration().inWholeSeconds).toString(),
-                        )
-                    }
-                    mapped.transferResult
-                }
-            TransferAttemptOutcome.Executed(transferResult)
+            TransferAttemptOutcome.Executed(commitBroadcastOutcome(attempt, submitResult, minedHeight))
         }
 
     // ── Sync coordination ────────────────────────────────────────────────────
@@ -977,6 +1032,12 @@ private fun mapSubmitResult(
         }
     }
 
+// `next_due_transfer`'s tri-state status, as documented on [JniDueTransferResult]. NOTHING_DUE (0)
+// needs no name here: it is the `else` branch, reached both by that status and by a READY result
+// that carried no prepared transfer.
+private const val DUE_READY = 1
+private const val DUE_AWAITING_PROOF = 2
+
 // The `nextStep` step codes, mirroring the `STEP_*` constants that own the contract in
 // `migration.rs`. Kept in the same order so the two lists can be diffed by eye.
 private const val STEP_WAITING = 0L
@@ -1066,12 +1127,17 @@ internal fun isBroadcastInFlight(
 ): Boolean = inFlightUntilEpochSeconds > nowEpochSeconds
 
 /**
- * Task 1 (spec §2a) entry-guard predicate: `true` iff a broadcast is still marked in-flight AND
- * the prepared txid this call would otherwise re-send is already mined/in-mempool (`minedHeight
- * >= 0`) — i.e. a prior send reached the network but its mark never persisted (outer timeout /
- * cancellation between send and record). When `true`,
- * [OrchardMigrationSdkImpl.executeNextPendingTransfer] must record success directly instead of
- * calling `extractBroadcastTx`/`broadcast` again for the identical transaction.
+ * Task 1 (spec §2a) entry-guard predicate: `true` iff a broadcast is still marked in-flight AND the
+ * prepared txid this call would otherwise re-send is one the wallet already knows a mined height
+ * for (`minedHeight >= 0`) — i.e. a prior send reached the network but its mark never persisted
+ * (outer timeout / cancellation between send and record). When `true`,
+ * [OrchardMigrationSdkImpl.executeNextPendingTransfer] records success directly instead of calling
+ * `extractBroadcastTx`/`broadcast` again for the identical transaction.
+ *
+ * `minedHeight` comes from a local read of already-scanned data, so a transaction that is merely
+ * sitting in a mempool reads as `-1` here and this returns `false`. Re-sending is the intended
+ * behaviour in that case; see [OrchardMigrationSdkImpl.recoverAlreadyBroadcastTransfer] for why
+ * that is safe.
  *
  * Top-level, `internal`, and pure so it is unit-testable without an [OrchardMigrationSdkImpl]
  * instance, a fake backend, or any prefs/coroutine plumbing.

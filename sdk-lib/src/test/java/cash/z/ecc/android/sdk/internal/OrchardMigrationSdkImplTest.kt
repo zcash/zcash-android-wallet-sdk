@@ -418,6 +418,64 @@ class OrchardMigrationSdkImplTest {
             assertEquals(0, fakeBackend.broadcastCallCount, "must NOT re-broadcast an already-mined in-flight tx")
         }
 
+    /**
+     * The sibling of [executeNextPendingTransfer_entry_guard_record_survives_caller_cancellation]
+     * for the NORMAL path, which had no cancellation coverage at all. The post-send commit is the
+     * more consequential of the two `NonCancellable` boundaries: the entry guard's exists to clean
+     * up after a send whose result was never recorded, and this one is what stops that state from
+     * arising in the first place.
+     *
+     * No in-flight mark is seeded, so the entry guard falls through and a real broadcast is
+     * attempted. It fails (nothing is listening on the endpoint), which is immaterial — a recorded
+     * failure exercises the same commit segment as a recorded success. The caller is then cancelled
+     * while suspended inside `recordTransferResult`; if it still runs to completion, the result is
+     * durable and the in-flight mark cannot be orphaned.
+     */
+    @Test
+    fun executeNextPendingTransfer_post_send_commit_survives_caller_cancellation() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val enteredRecord = CompletableDeferred<Unit>()
+            val recordGate = CompletableDeferred<Unit>()
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    onRecordTransferResultEntered = enteredRecord,
+                    recordTransferResultGate = recordGate,
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    // No in-flight mark: the entry guard must fall through to a real send.
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider(emptyMap())),
+                )
+
+            val job =
+                launch {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
+            enteredRecord.await() // suspended inside the post-send NonCancellable commit
+            job.cancel() // cancel the caller mid-commit
+            recordGate.complete(Unit)
+            job.join()
+
+            assertTrue(
+                fakeBackend.recordTransferResultCompleted,
+                "the post-send commit must run to completion even after the caller is cancelled"
+            )
+            assertEquals(1, fakeBackend.broadcastCallCount, "the entry guard must fall through to a send here")
+        }
+
     private fun preparedTransfer(): JniPreparedTransfer =
         JniPreparedTransfer(
             id = 1L,
