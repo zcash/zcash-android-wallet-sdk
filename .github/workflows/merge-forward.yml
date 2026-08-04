@@ -40,6 +40,10 @@ jobs:
         with:
           # Merge bases are needed across branches.
           fetch-depth: 0
+          # Read-only job, and the `git fetch origin` below works unauthenticated against
+          # this public repository, so the credential is not needed past checkout and
+          # should not be left in .git/config.
+          persist-credentials: false
       - name: Check hop
         timeout-minutes: 5
         env:
@@ -61,6 +65,8 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           fetch-depth: 0
+          # As above: read-only, and the fetch works unauthenticated on a public repo.
+          persist-credentials: false
       - name: Check hop
         timeout-minutes: 5
         env:

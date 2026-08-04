@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
-        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
   check_firebase_secrets:
     runs-on: ubuntu-latest
@@ -89,6 +89,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Shellcheck
         timeout-minutes: 1
         run: |
@@ -324,6 +328,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # The check only reads Cargo.lock and curls a public URL, so it needs no
+          # credential; keep it out of .git/config.
+          persist-credentials: false
       - name: Check proposal.proto matches the pinned zcash_client_backend
         timeout-minutes: 5
         run: |
