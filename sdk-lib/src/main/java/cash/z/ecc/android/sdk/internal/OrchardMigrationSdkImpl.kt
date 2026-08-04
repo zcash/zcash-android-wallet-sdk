@@ -675,6 +675,8 @@ internal class OrchardMigrationSdkImpl(
                     STEP_BROADCAST -> MigrationAdvanceStep.Broadcast(id)
                     STEP_REBUILD -> MigrationAdvanceStep.Rebuild(id)
                     STEP_COMPLETE -> MigrationAdvanceStep.Complete
+                    STEP_REPLAN -> MigrationAdvanceStep.Replan
+                    STEP_REEVALUATE -> MigrationAdvanceStep.Reevaluate
                     else -> MigrationAdvanceStep.Waiting
                 }
             }
@@ -982,6 +984,8 @@ private const val STEP_PROVE = 1L
 private const val STEP_BROADCAST = 2L
 private const val STEP_REBUILD = 3L
 private const val STEP_COMPLETE = 4L
+private const val STEP_REPLAN = 5L
+private const val STEP_REEVALUATE = 6L
 
 /**
  * How long [broadcast] waits for a submit call (including Tor circuit bootstrap, when [useTor])

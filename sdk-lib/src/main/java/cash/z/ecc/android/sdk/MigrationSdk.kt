@@ -316,6 +316,27 @@ sealed class MigrationAdvanceStep {
     object Complete : MigrationAdvanceStep() {
         override fun toString() = "Complete"
     }
+
+    /**
+     * Enough of the migration's planned value can never mine — or dead value is stranded with no
+     * live work left — so the run cannot finish as planned. Supersede it and re-plan the remaining
+     * balance through the ordinary planning flow. Re-signing the same notes will not help.
+     */
+    object Replan : MigrationAdvanceStep() {
+        override fun toString() = "Replan"
+    }
+
+    /**
+     * A node rejected a broadcast and the wallet cannot yet explain why: its view rests on chain
+     * state below the tip that node reported. Sync to at least that tip and ask again.
+     *
+     * Nothing else is offered while this stands, deliberately: a rejection means another observer
+     * saw chain state this wallet has not, so acting on the rest of the plan would act on a view
+     * already known to be stale.
+     */
+    object Reevaluate : MigrationAdvanceStep() {
+        override fun toString() = "Reevaluate"
+    }
 }
 
 /** One sync/prove wake-up of the engine's schedule: wake at [height], prove [covers]. */

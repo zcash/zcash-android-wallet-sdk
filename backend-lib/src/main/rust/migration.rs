@@ -65,8 +65,10 @@ use zcash_pool_migration::{
         PoolMigrationWrite, ProveError,
     },
     preparation::{PrepInput, PreparationPlan},
-    satisfiability::{DuenessTargets, ReplanThreshold},
-    state::NextAction,
+    satisfiability::{
+        AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
+    },
+    state::{AdvanceStep, NextAction},
 };
 
 use crate::migration_engine::Backend;
@@ -4639,9 +4641,16 @@ mod live_wallet_edge_case_tests {
             "reopening the DB connection must not lose or reorder committed migration transactions"
         );
 
+        // This module has no in-memory store to drive `advance_migration` against, and the point
+        // here is that the RELOAD is intact, not what the engine decides next; the per-transaction
+        // status projection is the read-only surface that shows the reloaded plan is coherent.
         let tip2 = wallet2.chain_height().expect("chain height").expect("tip");
-        let step = guarded_next_step(&reloaded, tip2 + 1, tip2 + 1);
-        println!("next step after simulated restart: {step:?}");
+        let statuses = reloaded.transaction_statuses(DuenessTargets::at(tip2 + 1));
+        assert_eq!(
+            statuses.len(),
+            reloaded_ids.len(),
+            "every reloaded transaction must be accounted for in the status projection"
+        );
     }
 
     /// `plan_migration` is documented as pure/read-only ("nothing is built, signed, or
@@ -4913,10 +4922,101 @@ mod next_due_transfer_tests {
     }
 
     // -----------------------------------------------------------------------
-    // `guarded_next_step` two-tip tests (spec §3): broadcast timing runs at the
-    // ESTIMATED tip, proving stays on the SCANNED tip. Reuses this module's
+    // Two-tip step-selection tests (spec §3): broadcast timing runs at the ESTIMATED tip, proving
+    // stays on the SCANNED tip. These now drive the engine's own `advance_migration` — the same
+    // call `nextStepNative` makes — over an in-memory store, which is the shape the trait
+    // documents for a backend with no wallet-level transaction records. Reuses this module's
     // `make_state`/`transfer` helpers directly rather than duplicating them.
     // -----------------------------------------------------------------------
+
+    /// An in-memory `PoolMigrationRead`/`PoolMigrationWrite` over a single `MigrationState`.
+    ///
+    /// The oracle answers `Satisfiable` unconditionally: these tests are about step SELECTION —
+    /// which transaction is offered, and at which of the two targets — not about the satisfiability
+    /// sweep, which needs a real note/nullifier view to exercise and belongs with the wallet-backed
+    /// tests.
+    struct InMemoryStore {
+        state: MigrationState,
+        as_of: BlockHeight,
+    }
+
+    impl PoolMigrationRead for InMemoryStore {
+        type Error = anyhow::Error;
+
+        fn get_migration(&self) -> Result<Option<MigrationState>, Self::Error> {
+            Ok(Some(self.state.clone()))
+        }
+
+        fn check_step_satisfiability(
+            &self,
+            _tx: &MigrationTransaction,
+            _settle: zcash_pool_migration::satisfiability::ReorgSettleDepth,
+        ) -> Result<zcash_pool_migration::satisfiability::StepSatisfiability, Self::Error> {
+            Ok(
+                zcash_pool_migration::satisfiability::StepSatisfiability::Satisfiable {
+                    as_of_height: self.as_of,
+                },
+            )
+        }
+
+        fn mined_height(
+            &self,
+            _txid: zcash_protocol::TxId,
+        ) -> Result<Option<BlockHeight>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    impl PoolMigrationWrite for InMemoryStore {
+        fn replace_migration(&mut self, state: &MigrationState) -> Result<(), Self::Error> {
+            self.state = state.clone();
+            Ok(())
+        }
+
+        fn update_transaction(
+            &mut self,
+            _id: MigrationTransferId,
+            _state: MigrationTxState,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn store_proved_transaction(
+            &mut self,
+            state: &mut MigrationState,
+            proven: zcash_pool_migration::engine::ProvedTransaction,
+        ) -> Result<(), Self::Error> {
+            proven.apply(state);
+            self.replace_migration(state)
+        }
+    }
+
+    /// Drives one `advance_migration` decision, mapped to the same `(code, id)` pair the JNI
+    /// surface returns.
+    fn step_at(state: &MigrationState, scanned: u32, estimated: u32) -> (i64, i64) {
+        let scanned = BlockHeight::from_u32(scanned);
+        let mut store = InMemoryStore {
+            state: state.clone(),
+            as_of: scanned,
+        };
+        let mut st = state.clone();
+        let step = advance_migration(
+            &mut store,
+            &mut st,
+            DuenessTargets::new(scanned, BlockHeight::from_u32(estimated)),
+            &AdvanceConfig::new(SETTLE_DEPTH),
+        )
+        .expect("in-memory store never errors");
+        match step {
+            AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
+            AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
+            AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
+            AdvanceStep::Replan => (STEP_REPLAN, -1),
+            AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
+            AdvanceStep::Waiting => (STEP_WAITING, -1),
+            AdvanceStep::Complete => (STEP_COMPLETE, -1),
+        }
+    }
 
     #[test]
     fn broadcast_due_at_estimated_but_not_scanned_returns_broadcast() {
@@ -4925,8 +5025,7 @@ mod next_due_transfer_tests {
             MigrationStatus::InProgress,
             vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
         );
-        let (code, id) =
-            guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) = step_at(&st, 995, 1001);
         assert_eq!((code, id), (STEP_BROADCAST, 7)); // engine says Broadcast on the estimated tip
     }
 
@@ -4940,8 +5039,7 @@ mod next_due_transfer_tests {
                 transfer(4, MigrationTxState::Signed, 1000, 0), // prove-ready at scanned (boundary=990<995)
             ],
         );
-        let (code, id) =
-            guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) = step_at(&st, 995, 1001);
         assert_eq!((code, id), (STEP_BROADCAST, 7)); // spec §3.1 broadcast-first
     }
 
@@ -4953,8 +5051,7 @@ mod next_due_transfer_tests {
             MigrationStatus::InProgress,
             vec![transfer(4, MigrationTxState::Signed, 990, 0)],
         );
-        let (code, id) =
-            guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) = step_at(&st, 995, 1001);
         assert_eq!((code, id), (STEP_PROVE, 4));
     }
 }
@@ -6578,11 +6675,27 @@ mod state_machine_trace_tests {
 // contributes no sync wake-ups.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
+/// How far the chain must advance past a divergence before a displacement counts as PERMANENT —
+/// caller policy that `zcash_pool_migration` deliberately does not default, since the right value
+/// tracks block spacing. Ten blocks is ~12 minutes at the 75-second target. A depth judged too
+/// aggressively self-corrects: the marks it produces are cleared by reorg truncation if the chain
+/// swings back.
+const SETTLE_DEPTH: ReorgSettleDepth = ReorgSettleDepth::new(10);
+
 const STEP_WAITING: i64 = 0;
 const STEP_PROVE: i64 = 1;
 const STEP_BROADCAST: i64 = 2;
 const STEP_REBUILD: i64 = 3;
 const STEP_COMPLETE: i64 = 4;
+/// Enough planned value can never mine (or dead value is stranded with no live work left): the
+/// consumer supersedes this migration and re-plans the remaining balance. New with the engine's
+/// drive loop; no hand-rolled equivalent existed.
+const STEP_REPLAN: i64 = 5;
+/// A node REJECTED a broadcast and the wallet cannot yet say why, its answers resting on chain
+/// state below the tip that node reported. The consumer SYNCS to at least that tip and asks again.
+/// Outranks every other step but Complete: a rejection means some other observer saw chain state
+/// this wallet has not, so proceeding would act on a view already known to be stale.
+const STEP_REEVALUATE: i64 = 6;
 
 const ACTION_NONE: i32 = 0;
 const ACTION_PROVE: i32 = 1;
@@ -6636,51 +6749,39 @@ fn is_unprovable_anchor(
         && !is_prove_ready(state, t, target_height)
 }
 
-/// Two-tip decision (spec §3): broadcast timing runs on the ESTIMATED tip (a proved tx is ready
-/// to send from prove time; it only needs `scheduled_height` reached), while proving stays on the
-/// SCANNED tip (a witness needs a real settled checkpoint). Broadcast-first is a retention-
-/// justified override of the engine's prove-first order (spec §3.1) — with always-on anchor
-/// retention a deferred prove costs nothing, and broadcasting proved transfers is direct progress.
-fn guarded_next_step(
-    state: &zcash_pool_migration::engine::MigrationState,
+/// The single "what now?" decision, delegated to the engine's own drive loop.
+///
+/// `advance_migration` supersedes the two-tip selector this file used to hand-roll:
+/// `DuenessTargets::new(scanned, estimated)` IS broadcast-at-the-estimate /
+/// prove-at-the-scanned-frontier, with the same `height + 1` target convention and the same clamp,
+/// and the crate now enforces the invariant that only reversible judgments may rest on the
+/// estimate while every persisted verdict rests on scanned chain data.
+///
+/// Unlike the hand-rolled version this is NOT a pure read. Before naming a step the engine sweeps
+/// every in-flight transaction: it promotes the ones the wallet has scanned as mined (including a
+/// `Proved` row whose broadcast record was lost to a crash, which nothing else would ever
+/// promote), and marks the ones that can no longer mine — a foreign spend of their inputs, or an
+/// anchor no longer on the chain judged settled per `SETTLE_DEPTH`. Those determinations are
+/// persisted through the store, which is why this takes a mutable backend.
+fn advance_step(
+    backend: &mut Backend<'_, Wallet>,
+    state: &mut MigrationState,
     scanned_target: BlockHeight,
     estimated_target: BlockHeight,
-) -> (i64, i64) {
-    use zcash_pool_migration::engine::{MigrationTxKind, MigrationTxState};
-    if state.is_terminal() {
-        return (STEP_COMPLETE, -1);
-    }
-    if let Some(id) =
-        next_broadcastable(state, DuenessTargets::new(scanned_target, estimated_target))
-    {
-        return (STEP_BROADCAST, i64::from(u32::from(id)));
-    }
-    if let Some(t) = state.transactions().iter().find(|t| {
-        matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(state, t, scanned_target)
-    }) {
-        return (STEP_PROVE, i64::from(u32::from(t.id())));
-    }
-    // Rebuild + completion stay on the SCANNED target (real mined/expiry facts).
-    if let Some(t) = state.transactions().iter().find(|t| {
-        matches!(t.kind(), MigrationTxKind::Transfer { .. })
-            && !matches!(t.state(), MigrationTxState::Mined { .. })
-            && {
-                let expiry = u32::from(t.expiry_height());
-                expiry != 0 && expiry < u32::from(scanned_target)
-            }
-    }) {
-        return (STEP_REBUILD, i64::from(u32::from(t.id())));
-    }
-    let all_mined = !state.transactions().is_empty()
-        && state
-            .transactions()
-            .iter()
-            .all(|t| matches!(t.state(), MigrationTxState::Mined { .. }));
-    if all_mined {
-        (STEP_COMPLETE, -1)
-    } else {
-        (STEP_WAITING, -1)
-    }
+) -> anyhow::Result<(i64, i64)> {
+    let targets = DuenessTargets::new(scanned_target, estimated_target);
+    let config = AdvanceConfig::new(SETTLE_DEPTH);
+    let step = advance_migration(backend, state, targets, &config)
+        .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
+    Ok(match step {
+        AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
+        AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
+        AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
+        AdvanceStep::Replan => (STEP_REPLAN, -1),
+        AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
+        AdvanceStep::Waiting => (STEP_WAITING, -1),
+        AdvanceStep::Complete => (STEP_COMPLETE, -1),
+    })
 }
 
 /// The single "what now?" read the app worker loops on. Returns `[stepCode, transferId]`
@@ -6711,14 +6812,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             std::cmp::max(scanned, BlockHeight::from_u32(estimated_tip as u32) + 1)
         };
-        let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
-        let Some(state) = backend
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
+        let Some(mut state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
         else {
             return Ok(ptr::null_mut());
         };
-        let (code, id) = guarded_next_step(&state, scanned, estimated);
+        let (code, id) = advance_step(&mut backend, &mut state, scanned, estimated)?;
         let arr = env.new_long_array(2)?;
         env.set_long_array_region(&arr, 0, &[code, id])?;
         Ok(arr.into_raw())
