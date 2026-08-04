@@ -63,6 +63,7 @@ use zcash_pool_migration::{
     },
     preparation::{PrepInput, PreparationPlan},
     satisfiability::{DuenessTargets, ReplanThreshold},
+    state::NextAction,
 };
 
 use crate::migration_engine::Backend;
@@ -613,7 +614,10 @@ fn derive_migration_state<'a>(
         .iter()
         .filter(|t| matches!(t.state(), MigrationTxState::Mined { .. }))
         .count();
-    let next_ready = state.next_broadcastable(tip);
+    let statuses = state.transaction_statuses(DuenessTargets::at(tip));
+    let next_ready = statuses.iter().find_map(|s| {
+        (s.ready() && matches!(s.action(), Some(NextAction::Broadcast))).then_some(s.id())
+    });
     let next_transfer_ready_at_height = next_ready
         .and_then(|id| transactions.iter().find(|t| t.id() == id))
         .map_or(-1i64, |_| i64::from(u32::from(tip)));
@@ -1392,13 +1396,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             // Success: record the broadcast txid. `mark_mined` has no old-crate equivalent call
             // site (the old crate didn't track a separate "mined" event either) — left unwired.
             0 => {
-                let txid = crate::parse_txid(env, tx_id)?;
+                // Validate the txid bytes even though the engine no longer takes them: it now
+                // derives the broadcast txid from the row's own built transaction (mismatched ids
+                // used to be a way to lose track of an on-chain transaction).
+                let _txid = crate::parse_txid(env, tx_id)?;
                 let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
                 let mut state = backend
                     .get_migration()
                     .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
                     .ok_or_else(|| anyhow!("No migration in progress"))?;
-                state.mark_broadcast(id, txid);
+                state.mark_broadcast(id);
                 backend
                     .replace_migration(&state)
                     .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))
@@ -1667,8 +1674,8 @@ fn reconcile_invalidated(
         }
     }
     if !promotions.is_empty() {
-        for (id, txid, height) in &promotions {
-            state.mark_broadcast(*id, *txid);
+        for (id, _txid, height) in &promotions {
+            state.mark_broadcast(*id);
             state.mark_mined(*id, *height);
         }
         let mut backend = Backend::new(network, &*wallet, account, None, store_conn)?;
@@ -1900,7 +1907,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     .iter()
                     .filter(|t| matches!(t.state(), MigrationTxState::Mined { .. }))
                     .count();
-                let next_ready_height = if state.next_broadcastable(tip).is_some() {
+                let statuses = state.transaction_statuses(DuenessTargets::at(tip));
+                let next_ready_height = if statuses
+                    .iter()
+                    .any(|s| s.ready() && matches!(s.action(), Some(NextAction::Broadcast)))
+                {
                     i64::from(u32::from(tip))
                 } else {
                     -1
@@ -2714,6 +2725,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         Some(zcash_pool_migration::state::Blocker::AnchorBoundary) => BLOCKER_ANCHOR_BOUNDARY,
                         Some(zcash_pool_migration::state::Blocker::Signature) => BLOCKER_SIGNATURE,
                         Some(zcash_pool_migration::state::Blocker::Expired) => BLOCKER_EXPIRED,
+                        // New in rc.6 (report_broadcast_failure / Reevaluate machinery): not part
+                        // of this task's brief, added here only because they make this match
+                        // non-exhaustive. Reported as distinct, new blocker codes rather than
+                        // folded into an existing one, since the crate's own doc explicitly calls
+                        // out that ExpiryImminent/Expired and Unsatisfiable are disjoint by design.
+                        Some(zcash_pool_migration::state::Blocker::ExpiryImminent) => {
+                            BLOCKER_EXPIRY_IMMINENT
+                        }
+                        Some(zcash_pool_migration::state::Blocker::AwaitingReevaluation) => {
+                            BLOCKER_AWAITING_REEVALUATION
+                        }
+                        Some(zcash_pool_migration::state::Blocker::Unsatisfiable) => {
+                            BLOCKER_UNSATISFIABLE
+                        }
                         None => BLOCKER_NONE,
                     };
                     (status.ready(), action, blocker)
@@ -3178,7 +3203,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
-                match state.next_broadcastable(tip).and_then(|id| {
+                let statuses = state.transaction_statuses(DuenessTargets::at(tip));
+                let next_ready = statuses.iter().find_map(|s| {
+                    (s.ready() && matches!(s.action(), Some(NextAction::Broadcast))).then_some(s.id())
+                });
+                match next_ready.and_then(|id| {
                     state
                         .transactions()
                         .iter()
@@ -6408,6 +6437,15 @@ const BLOCKER_SIGNATURE: i32 = 4;
 const BLOCKER_EXPIRED: i32 = 5;
 /// Synthetic, app-facing only — the engine has no such variant yet (see the guard-veto note).
 const BLOCKER_UNPROVABLE_ANCHOR: i32 = 6;
+/// `Blocker::ExpiryImminent` (rc.6): the caller's ESTIMATED tip has passed expiry but the wallet's
+/// own scan has not caught up yet, so the kernel withholds without recording anything.
+const BLOCKER_EXPIRY_IMMINENT: i32 = 7;
+/// `Blocker::AwaitingReevaluation` (rc.6): a broadcast this wallet sent was rejected and is
+/// withheld pending `advance_migration`'s adjudication against fresher chain data.
+const BLOCKER_AWAITING_REEVALUATION: i32 = 8;
+/// `Blocker::Unsatisfiable` (rc.6): determined dead — its inputs can never again all exist unspent
+/// on chain. Resolved only by a migration-level replan (`AdvanceStep::Replan`).
+const BLOCKER_UNSATISFIABLE: i32 = 9;
 
 /// Whether `t` is wedged behind the late-dependency guard: pre-signed, dependencies mined, boundary
 /// settled — yet un-provable because a dependency mined PAST the drawn anchor boundary.
