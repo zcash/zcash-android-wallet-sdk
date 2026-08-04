@@ -6078,18 +6078,80 @@ mod reanchor_healing_tests {
     }
 }
 
-// DISABLED BY THE rc.7 MERGE, NOT DELETED.
-//
-// This module drives `MigrationState::next_step`, which `zcash_pool_migration 0.1.0-rc.6` made
-// private, and pattern-matches `AdvanceStep` variants that gained a `kind` field. Both are the
-// door that `satisfiability::advance_migration` now replaces, and re-pointing these traces at it
-// requires a write-capable store, which is precisely the follow-up commit (B) that adopts
-// `advance_migration` in `nextStepNative`. Restoring this coverage belongs in that commit, where
-// the traces can assert against the drive loop the SDK actually ships.
-//
-// Until then this file's engine-trace coverage is NOT running. `guarded_next_step`'s own two-tip
-// tests, which cover the step selection the SDK currently uses, are unaffected and still run.
-#[cfg(any())]
+/// A `PoolMigrationRead`/`PoolMigrationWrite` store that answers every chain-fact query with the
+/// healthy "nothing new to report" default (`Satisfiable`, never mined, no persisted migration) and
+/// records writes nowhere. `next_step` (the pure decision the trace/synthetic tests used to call
+/// directly) is `pub(crate)` in `zcash_pool_migration` — visible only WITHIN that crate, not to this
+/// one's test code, in-crate `#[cfg(test)]` module or not, because the crate boundary that governs
+/// `pub(crate)` is `zcash_pool_migration`'s, not this crate's. `advance_migration` is the only
+/// remaining path to the same decision, and it always asks a store — this is the minimal one that
+/// asks nothing the test's own `MigrationTxState` transitions don't already encode, so driving
+/// `advance_migration` through it reproduces exactly what the old direct `next_step` calls exercised.
+/// Modelled on `zcash_pool_migration::satisfiability::advance_tests::TestStore`'s default arm (a
+/// private, in-crate-only fixture there), minus the configurable answer table this file's tests
+/// don't need.
+#[cfg(test)]
+#[derive(Default)]
+struct NoOpPoolMigrationStore;
+
+#[cfg(test)]
+impl PoolMigrationRead for NoOpPoolMigrationStore {
+    type Error = EngineError;
+
+    fn get_migration(&self) -> Result<Option<MigrationState>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Always `Satisfiable`: the healthy default, and the one that makes `advance_migration` take
+    /// its offered candidate immediately (see its main loop) rather than deferring or marking it —
+    /// exactly the pure `next_step`'s behaviour, which never consulted a store at all.
+    fn check_step_satisfiability(
+        &self,
+        _tx: &MigrationTransaction,
+        _settle: ReorgSettleDepth,
+    ) -> Result<zcash_pool_migration::satisfiability::StepSatisfiability, Self::Error> {
+        Ok(
+            zcash_pool_migration::satisfiability::StepSatisfiability::Satisfiable {
+                as_of_height: BlockHeight::from_u32(0),
+            },
+        )
+    }
+
+    /// Never mined: these tests drive mining themselves (`Driver::mine` / directly setting
+    /// `MigrationTxState::Mined`), so the in-flight sweep this answers must find nothing new.
+    fn mined_height(
+        &self,
+        _txid: zcash_protocol::TxId,
+    ) -> Result<Option<BlockHeight>, Self::Error> {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+impl PoolMigrationWrite for NoOpPoolMigrationStore {
+    fn replace_migration(&mut self, _state: &MigrationState) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn update_transaction(
+        &mut self,
+        _id: MigrationTransferId,
+        _state: MigrationTxState,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn store_proved_transaction(
+        &mut self,
+        state: &mut MigrationState,
+        proven: zcash_pool_migration::engine::ProvedTransaction,
+    ) -> Result<(), Self::Error> {
+        proven.apply(state);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod state_machine_trace_tests {
     //! Golden execution traces over the pure `zcash_pool_migration` state machine — the contract
     //! the app's single-lane worker obeys (design:
@@ -6111,10 +6173,15 @@ mod state_machine_trace_tests {
             MigrationTxKind, MigrationTxState,
         },
         preparation::PreparationPlan,
+        satisfiability::{
+            AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
+        },
         scheduling::{AnchorBucketInterval, WakeupParams},
         state::{AdvanceStep, Blocker},
     };
     use zcash_protocol::consensus::BlockHeight;
+
+    use super::NoOpPoolMigrationStore;
 
     const EXPIRY: u32 = 4_285_440;
     const BUCKET: u32 = 12;
@@ -6201,8 +6268,8 @@ mod state_machine_trace_tests {
             self.set(
                 id,
                 MigrationTxState::Mined {
-                    height: BlockHeight::from_u32(height),
                     txid: zcash_protocol::TxId::from_bytes([id as u8; 32]),
+                    height: BlockHeight::from_u32(height),
                 },
             );
         }
@@ -6225,11 +6292,11 @@ mod state_machine_trace_tests {
                         BlockHeight::from_u32(EXPIRY),
                         s.boundary.map(BlockHeight::from_u32),
                         zcash_protocol::TxId::from_bytes([s.id as u8; 32]),
-                        st.clone(),
-                        None,
-                        None,
-                        vec![[s.id as u8; 32]],
-                        None,
+                        *st,
+                        None,   // lock_owner
+                        None,   // unsatisfiable
+                        vec![], // spend_nullifiers
+                        None,   // broadcast_failure_at
                     )
                 })
                 .collect();
@@ -6252,6 +6319,25 @@ mod state_machine_trace_tests {
             )
         }
 
+        /// Drives one `advance_migration` call over a fresh `NoOpPoolMigrationStore` (see its doc:
+        /// `next_step` is `pub(crate)` to `zcash_pool_migration`, not reachable from this crate's
+        /// test code, so `advance_migration` — the only remaining public path to the same decision
+        /// — is what every trace below actually drives). The store answers every chain-fact query
+        /// with the healthy default, so it contributes nothing this test's own `MigrationTxState`
+        /// transitions (`set`/`mine`, applied by the caller between calls) don't already encode —
+        /// reproducing exactly what the old direct `next_step` calls exercised.
+        fn advance(&self, target: BlockHeight) -> AdvanceStep {
+            let mut store = NoOpPoolMigrationStore;
+            let mut state = self.build();
+            advance_migration(
+                &mut store,
+                &mut state,
+                DuenessTargets::at(target),
+                &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+            )
+            .expect("advance_migration over the no-op store")
+        }
+
         /// Applies every step the engine emits at `tip` until it settles on Waiting/Complete/
         /// Rebuild: Prove{id} flips the tx to Proved, Broadcast{id} to Broadcast. Returns the
         /// applied step sequence plus the settling step. Mirrors exactly what the app worker will
@@ -6260,9 +6346,9 @@ mod state_machine_trace_tests {
             let target = BlockHeight::from_u32(tip + 1);
             let mut applied = Vec::new();
             loop {
-                let step = self.build().next_step(target);
+                let step = self.advance(target);
                 match step {
-                    AdvanceStep::Prove { id } => {
+                    AdvanceStep::Prove { id, kind: _ } => {
                         self.set(id_of(id), MigrationTxState::Proved);
                         applied.push(step);
                     }
@@ -6295,12 +6381,12 @@ mod state_machine_trace_tests {
             let target = BlockHeight::from_u32(tip + 1);
             let mut applied = Vec::new();
             loop {
-                let step = self.build().next_step(target);
+                let step = self.advance(target);
                 match step {
-                    AdvanceStep::Prove { id } if failing.contains(&id_of(id)) => {
+                    AdvanceStep::Prove { id, kind: _ } if failing.contains(&id_of(id)) => {
                         return (applied, step);
                     }
-                    AdvanceStep::Prove { id } => {
+                    AdvanceStep::Prove { id, kind: _ } => {
                         self.set(id_of(id), MigrationTxState::Proved);
                         applied.push(step);
                     }
@@ -6323,9 +6409,34 @@ mod state_machine_trace_tests {
         u32::from(id)
     }
 
+    /// `live_plan()`'s own kind for each transaction id, as evaluated by `next_step`
+    /// (Preparation for ids 0-3 by layer/index, Transfer for ids 4-14 by crossing) — kept here
+    /// rather than threaded through every `prove(N)` call site.
+    fn live_plan_kind(id: u32) -> MigrationTxKind {
+        match id {
+            0 => MigrationTxKind::Preparation { layer: 0, index: 0 },
+            1 => MigrationTxKind::Preparation { layer: 0, index: 1 },
+            2 => MigrationTxKind::Preparation { layer: 1, index: 0 },
+            3 => MigrationTxKind::Preparation { layer: 2, index: 0 },
+            4 => MigrationTxKind::Transfer { crossing: 0 },
+            5 => MigrationTxKind::Transfer { crossing: 1 },
+            6 => MigrationTxKind::Transfer { crossing: 2 },
+            7 => MigrationTxKind::Transfer { crossing: 3 },
+            8 => MigrationTxKind::Transfer { crossing: 4 },
+            9 => MigrationTxKind::Transfer { crossing: 5 },
+            10 => MigrationTxKind::Transfer { crossing: 6 },
+            11 => MigrationTxKind::Transfer { crossing: 7 },
+            12 => MigrationTxKind::Transfer { crossing: 8 },
+            13 => MigrationTxKind::Transfer { crossing: 9 },
+            14 => MigrationTxKind::Transfer { crossing: 10 },
+            other => panic!("live_plan_kind: no fixture entry for id {other}"),
+        }
+    }
+
     fn prove(id: u32) -> AdvanceStep {
         AdvanceStep::Prove {
             id: MigrationTransferId::new(id),
+            kind: live_plan_kind(id),
         }
     }
 
@@ -6337,7 +6448,7 @@ mod state_machine_trace_tests {
 
     fn blocker_of(state: &MigrationState, tip: u32, id: u32) -> Option<Blocker> {
         state
-            .transaction_statuses(BlockHeight::from_u32(tip + 1))
+            .transaction_statuses(DuenessTargets::at(BlockHeight::from_u32(tip + 1)))
             .into_iter()
             .find(|s| id_of(s.id()) == id)
             .expect("status for id")
@@ -6349,13 +6460,19 @@ mod state_machine_trace_tests {
     /// executes to Complete. This is the end-to-end contract for the single-lane worker: the
     /// engine emits prove-first batches, then broadcasts in schedule order, and settles Waiting
     /// between events.
+    ///
+    /// Under the librustzcash#2874 (zip318_kind) pin, a PREPARATION is only ever surfaced for
+    /// proving once its own broadcast schedule is due (see `AdvanceStep::Prove`'s `kind` field
+    /// doc), so it is proved and broadcast within the SAME wake-up rather than batched — hence
+    /// the interleaved prove/broadcast order per prep below (list order across preps is
+    /// unchanged).
     #[test]
     fn live_plan_happy_trace_completes_with_late_but_in_margin_prep() {
         let mut d = Driver::new(live_plan());
 
-        // Layer 0 due: both preps prove (natural anchor) then broadcast, in list order.
+        // Layer 0 due: each prep proves (natural anchor) then broadcasts immediately, in list order.
         let (steps, settle) = d.drain(4_224_542);
-        assert_eq!(steps, vec![prove(0), prove(1), broadcast(0), broadcast(1)]);
+        assert_eq!(steps, vec![prove(0), broadcast(0), prove(1), broadcast(1)]);
         assert_eq!(settle, AdvanceStep::Waiting);
         d.mine(0, 4_224_544);
         d.mine(1, 4_224_546);
@@ -6377,42 +6494,48 @@ mod state_machine_trace_tests {
         assert_eq!(steps, vec![prove(5), prove(8), prove(9)]);
         assert_eq!(settle, AdvanceStep::Waiting);
 
-        // tx8's schedule arrives; boundary 4224588 also settled → prove-first, then broadcast.
+        // tx8's schedule arrives; boundary 4224588 also settled. Under the librustzcash#2874
+        // pin, an already-due broadcast is prioritised over an opportunistic early prove (proving
+        // tx4 now is a pruning-safety optimisation, not urgent — see `AdvanceStep::Prove`'s
+        // `kind` doc), so broadcast(8) comes first.
         let (steps, _) = d.drain(4_224_593);
-        assert_eq!(steps, vec![prove(4), broadcast(8)]);
+        assert_eq!(steps, vec![broadcast(8), prove(4)]);
         d.mine(8, 4_224_601);
 
-        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out.
+        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out. Under
+        // the librustzcash#2874 pin, already-due broadcasts are prioritised over the opportunistic
+        // early proves of tx11/tx13 (see the tx4/tx8 case above).
         let (steps, _) = d.drain(4_224_612);
         assert_eq!(
             steps,
             vec![
-                prove(11),
-                prove(13),
                 broadcast(4),
                 broadcast(5),
-                broadcast(9)
+                broadcast(9),
+                prove(11),
+                prove(13)
             ]
         );
         d.mine(4, 4_224_616);
         d.mine(5, 4_224_616);
         d.mine(9, 4_224_616);
 
-        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast.
+        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast. Under the
+        // librustzcash#2874 pin: tx11 was already proved (prior batch) and its broadcast is due,
+        // so it goes out before any new proving this call. tx7 becomes both provable AND
+        // immediately broadcast-due in this same call, so its prove/broadcast pair stays
+        // adjacent; tx6/10/12/14 are provable but not yet broadcast-due, so they only prove.
         let (steps, _) = d.drain(4_224_638);
         assert_eq!(
             steps,
             vec![
+                broadcast(11),
                 prove(6),
                 prove(7),
+                broadcast(7),
                 prove(10),
                 prove(12),
                 prove(14),
-                // FINDING (documented): among simultaneously-due transactions,
-                // `next_broadcastable` serves VEC (id) order, not scheduled order — tx7
-                // (sched 4224627) goes before tx11 (sched 4224617).
-                broadcast(7),
-                broadcast(11)
             ]
         );
         d.mine(11, 4_224_642);
@@ -6605,7 +6728,7 @@ mod state_machine_trace_tests {
         assert!(
             steps
                 .iter()
-                .all(|s| !matches!(s, AdvanceStep::Prove { id } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
+                .all(|s| !matches!(s, AdvanceStep::Prove { id, kind: _ } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
             "an AwaitingSignature tx is driven by apply_signature, not the automatic loop"
         );
         assert_eq!(settle, AdvanceStep::Waiting);
