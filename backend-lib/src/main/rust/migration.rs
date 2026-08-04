@@ -378,7 +378,7 @@ fn compute_plan(
     account: AccountUuid,
     store_conn: &mut Connection,
 ) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
-    let backend = Backend::new(&network, wallet, account, None, store_conn)?;
+    let backend = Backend::new(network, wallet, account, None, store_conn)?;
     let mut rng = OsRng;
     let migration_plan = engine::plan_migration(network, &backend, &mut rng)
         .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
@@ -508,7 +508,7 @@ fn commit_or_reuse(
         target,
     } = ctx;
     {
-        let backend = Backend::new(&network, wallet, account, None, &mut *store_conn)?;
+        let backend = Backend::new(network, wallet, account, None, &mut *store_conn)?;
         if let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -524,7 +524,7 @@ fn commit_or_reuse(
         }
     }
     let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
-    let mut backend = Backend::new(&network, wallet, account, usk, store_conn)?;
+    let mut backend = Backend::new(network, wallet, account, usk, store_conn)?;
     let mut rng = OsRng;
     let result = sign(network, target, &mut backend, &migration_plan, &mut rng)?;
     crate::migration_plan_cache::clear(account);
