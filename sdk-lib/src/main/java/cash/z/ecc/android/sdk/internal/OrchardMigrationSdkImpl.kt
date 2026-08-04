@@ -662,16 +662,21 @@ internal class OrchardMigrationSdkImpl(
             val est = chainTipEstimator.estimatedTip()
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
-                when (arr.getOrElse(0) { 0L }) {
-                    1L -> MigrationAdvanceStep.Prove(id)
-                    2L -> MigrationAdvanceStep.Broadcast(id)
-                    3L -> MigrationAdvanceStep.Rebuild(id)
-                    4L -> MigrationAdvanceStep.Complete
+                when (arr.getOrElse(0) { STEP_WAITING }) {
+                    STEP_PROVE -> MigrationAdvanceStep.Prove(id)
+
+                    STEP_BROADCAST -> MigrationAdvanceStep.Broadcast(id)
+
+                    STEP_REBUILD -> MigrationAdvanceStep.Rebuild(id)
+
+                    STEP_COMPLETE -> MigrationAdvanceStep.Complete
+
                     // The migration is dead and needs re-planning — the ONLY channel for this
                     // signal. Must NOT fall through to the `else -> Waiting` default below: doing
                     // so would poll as "Waiting" forever with funds stranded and no
                     // needs-attention state ever raised.
-                    5L -> MigrationAdvanceStep.Replan
+                    STEP_REPLAN -> MigrationAdvanceStep.Replan
+
                     // A rejected broadcast the wallet cannot yet explain; the backend's own
                     // `advance_migration` call re-adjudicates it on the next sync + poll, so from
                     // this driver's perspective it is indistinguishable from ordinary waiting.
@@ -679,7 +684,8 @@ internal class OrchardMigrationSdkImpl(
                     // call sites in this codebase — but handled explicitly rather than falling
                     // through the `else`, so a future caller doesn't inherit an accidental
                     // default.
-                    6L -> MigrationAdvanceStep.Waiting
+                    STEP_REEVALUATE -> MigrationAdvanceStep.Waiting
+
                     else -> MigrationAdvanceStep.Waiting
                 }
             }
@@ -833,6 +839,16 @@ internal class OrchardMigrationSdkImpl(
         val MIGRATION_DB_ACCESS_MUTEX = Mutex()
 
         val SYNC_BLOCK_TICK = 15.seconds
+
+        // Mirrors the STEP_* constants in backend-lib's migration.rs — the JNI step codes
+        // migrationBackend.nextStep()'s array element 0 carries.
+        const val STEP_WAITING = 0L
+        const val STEP_PROVE = 1L
+        const val STEP_BROADCAST = 2L
+        const val STEP_REBUILD = 3L
+        const val STEP_COMPLETE = 4L
+        const val STEP_REPLAN = 5L
+        const val STEP_REEVALUATE = 6L
 
         // Fields in the migrationSummary() native array:
         // [totalMigratedZatoshi, transferCount, firstMinedEpochSeconds, lastMinedEpochSeconds].

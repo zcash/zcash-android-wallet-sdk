@@ -3,11 +3,13 @@
   <ManuallySuppressedIssues></ManuallySuppressedIssues>
   <CurrentIssues>
     <ID>CompositionLocalAllowlist:ScreenTimeout.kt$LocalScreenTimeout</ID>
+    <ID>CyclomaticComplexMethod:OrchardMigrationSdkImpl.kt$OrchardMigrationSdkImpl$override suspend fun executeNextPendingTransfer( options: NetworkPrivacyOptions, useEstimatedTip: Boolean, ): TransferAttemptOutcome</ID>
     <ID>EmptyClassBlock:TestWallet.kt$TestWallet.Companion${ }</ID>
     <ID>EmptyFunctionBlock:ReproduceZ2TFailureTest.kt$ReproduceZ2TFailureTest${ }</ID>
     <ID>EmptyFunctionBlock:SampleCodeTest.kt$SampleCodeTest${ }</ID>
     <ID>EmptyFunctionBlock:TransparentTest.kt$TransparentTest.Companion${ }</ID>
     <ID>ForbiddenComment:BalancePrinterUtil.kt$BalancePrinterUtil$// TODO: clear the dataDb but leave the cacheDb</ID>
+    <ID>ForbiddenComment:MigrationSdk.kt$MigrationBlocker.UNPROVABLE_ANCHOR$* SYNTHETIC (backend guard veto — TODO(remove) once the engine surfaces it): a dependency * mined PAST this transfer's drawn anchor boundary, so no witness can ever be built against * it. Needs a plan-level reschedule/rebuild; more syncing can never help.</ID>
     <ID>ForbiddenComment:SampleCodeTest.kt$SampleCodeTest$// TODO: call: Mnemonic::from_phrase(seed_phrase, Language::English).unwrap().entropy()</ID>
     <ID>ForbiddenComment:SampleCodeTest.kt$SampleCodeTest$// TODO: call: bip39::Seed::new(&amp;Mnemonic::from_entropy(&amp;seed_bytes, Language::English).unwrap(), "")</ID>
     <ID>ForbiddenComment:SampleCodeTest.kt$SampleCodeTest$// TODO: let mnemonic = Mnemonic::from_entropy(entropy, Language::English).unwrap();</ID>
@@ -17,9 +19,27 @@
     <ID>InvalidPackageDeclaration:Global.kt$package cash.z.ecc.android.sdk.test</ID>
     <ID>LongMethod:DatabaseCoordinatorTest.kt$DatabaseCoordinatorTest$@Test @SmallTest @OptIn(ExperimentalCoroutinesApi::class) fun data_database_files_move_test()</ID>
     <ID>LongMethod:DatabaseCoordinatorTest.kt$DatabaseCoordinatorTest$@Test @SmallTest @OptIn(ExperimentalCoroutinesApi::class) fun delete_all_legacy_database_files_test()</ID>
+    <ID>LongMethod:OrchardMigrationSdkImpl.kt$OrchardMigrationSdkImpl$override suspend fun executeNextPendingTransfer( options: NetworkPrivacyOptions, useEstimatedTip: Boolean, ): TransferAttemptOutcome</ID>
+    <ID>LongParameterList:JniMigrationModels.kt$JniMigrationTransferState$( val id: Long, val isTransfer: Boolean, val isSent: Boolean, val isProved: Boolean, val scheduledHeight: Long, val anchorBoundaryHeight: Long, /** Actionable RIGHT NOW ([action] says how) per the engine's `transaction_statuses`. */ val ready: Boolean, /** 0 = none, 1 = prove, 2 = broadcast. */ val action: Int, /** * Why it is waiting: 0 none, 1 dependencies, 2 schedule, 3 anchor boundary, 4 signature, * 5 expired, 6 unprovable anchor (LEGACY — no longer emitted by the backend: the late-dependency * guard veto that produced it was resolved upstream in zcash_pool_migration rc.6, whose * `prove_transfer` re-draws the boundary at prove time. The value is kept RESERVED and the * `MigrationBlocker.UNPROVABLE_ANCHOR` mapping retained for wire compatibility), * 7 expiry imminent, 8 awaiting reevaluation, 9 unsatisfiable. */ val blocker: Int, /** The engine-persisted crossing value (`transfer_crossing_value`); -1 for preparations. */ val amountZatoshi: Long, /** Preparation layer/index within the note-split tree; -1/-1 for transfers. */ val prepLayer: Int, val prepIndex: Int, /** Ids of the transactions that must mine before this one can build/broadcast. */ val dependsOn: LongArray, /** ZIP 203 expiry height; 0 = never expires. */ val expiryHeight: Long, /** Height this transaction mined at; -1 while unmined. */ val minedHeight: Long, )</ID>
+    <ID>LongParameterList:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest.FakeTypesafeMigrationBackend$( private val proposeImmediateSendMaxResult: ByteArray = ByteArray(0), private val migrationDustThresholdZatoshiResult: Long = 100_000L, private val migrationSummaryResult: LongArray = LongArray(0), private val hasOverdueTransfersResult: Boolean = false, private val dueTransferResult: JniDueTransferResult = JniDueTransferResult(status = 0, awaitingProofTransferId = null, prepared = null), private val transactionMinedHeightResult: Long = -1L, // Task 1 cancellation-safety test hooks: when set, recordTransferResult signals // [onRecordTransferResultEntered] on entry, then suspends on [recordTransferResultGate] // until the test releases it, so a test can cancel the caller while this call is // mid-flight and assert it still ran to completion (see // executeNextPendingTransfer_entry_guard_record_survives_caller_cancellation). private val onRecordTransferResultEntered: CompletableDeferred&lt;Unit&gt;? = null, private val recordTransferResultGate: CompletableDeferred&lt;Unit&gt;? = null )</ID>
+    <ID>MagicNumber:ChainTipEstimator.kt$4</ID>
+    <ID>MagicNumber:CompactBlockProcessor.kt$CompactBlockProcessor.Companion$12L</ID>
+    <ID>MagicNumber:CompactBlockProcessor.kt$CompactBlockProcessor.Companion$144L</ID>
+    <ID>MaxLineLength:MigrationSdk.kt$OrchardMigrationSdk$suspend</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$JniPreparationStep(id = 2, layer = 1, index = 0, broadcastHeight = 4219055, dependsOn = longArrayOf(0, 1))</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 0, nowEpochSeconds = 100, minedHeight = 0L))</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = -1L))</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 50, nowEpochSeconds = 100, minedHeight = 0L))</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$assertTrue(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = 0L))</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$assertTrue(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = 4_226_000L))</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$dueTransferResult = JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = prepared)</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$dueTransferResult = JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = preparedTransfer())</ID>
+    <ID>MaxLineLength:OrchardMigrationSdkImplTest.kt$OrchardMigrationSdkImplTest$val job = launch { sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false) }</ID>
     <ID>MayBeConst:TestnetIntegrationTest.kt$TestnetIntegrationTest.Companion$val address = "zs1m30y59wxut4zk9w24d6ujrdnfnl42hpy0ugvhgyhr8s0guszutqhdj05c7j472dndjstulph74m"</ID>
     <ID>MayBeConst:TestnetIntegrationTest.kt$TestnetIntegrationTest.Companion$val toAddress = "zs1vp7kvlqr4n9gpehztr76lcn6skkss9p8keqs3nv8avkdtjrcctrvmk9a7u494kluv756jeee5k0"</ID>
     <ID>MultipleEmitters:HomeView.kt$DebugMenu</ID>
+    <ID>ReturnCount:OrchardMigrationSdkImpl.kt$internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Boolean</ID>
+    <ID>TooGenericExceptionCaught:ChainTipEstimator.kt$LazyDataDbChainTipEstimator$e: Exception</ID>
     <ID>UnstableCollections:Transactions.kt$List&lt;TransactionOverview&gt;</ID>
     <ID>UnusedPrivateMember:BalancePrinterUtil.kt$BalancePrinterUtil$private suspend fun deleteDb(dbName: String)</ID>
     <ID>UnusedPrivateMember:DataDbScannerUtil.kt$DataDbScannerUtil$private fun cacheBlocks()</ID>

@@ -193,11 +193,6 @@ class JniMigrationTransferStates(
 )
 
 /**
- * Serves as cross layer (Kotlin, Rust) communication class. One transfer's unsigned, proven (self-
- * funding transfers are the exception: not yet proven, per the sign-now/prove-later scheme) PCZT,
- * staged in the engine and awaiting an external signer (e.g. Keystone).
- */
-/**
  * Serves as cross layer (Kotlin, Rust) communication class. One PREPARATION transaction's
  * unsigned, ZIP32-annotated PCZT — the whole note-split tree is built (and therefore
  * pre-signable) at commit; [layer]/[index] locate the transaction within that tree.
@@ -216,6 +211,11 @@ class JniUnsignedPreparationPczt(
     }
 }
 
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class. One transfer's unsigned, proven (self-
+ * funding transfers are the exception: not yet proven, per the sign-now/prove-later scheme) PCZT,
+ * staged in the engine and awaiting an external signer (e.g. Keystone).
+ */
 @Keep
 class JniUnsignedTransferPczt(
     val id: Long,

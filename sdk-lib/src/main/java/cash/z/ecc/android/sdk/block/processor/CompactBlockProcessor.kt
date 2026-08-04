@@ -25,7 +25,6 @@ import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.EnhanceTr
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.EnhanceTransactionError.EnhanceTxSetStatusError
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.MismatchedConsensusBranch
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.MismatchedNetwork
-import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.LightWalletException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
@@ -81,6 +80,7 @@ import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.GetAddressUtxosReplyUnsafe
@@ -1892,12 +1892,13 @@ class CompactBlockProcessor internal constructor(
                             )
                     }
 
-                    end = clampBatchEndToAnchorGrid(
-                        start = start,
-                        end = end,
-                        syncRangeEnd = syncRange.endInclusive.value,
-                        gridInterval = anchorGridIntervalFor(network)
-                    )
+                    end =
+                        clampBatchEndToAnchorGrid(
+                            start = start,
+                            end = end,
+                            syncRangeEnd = syncRange.endInclusive.value,
+                            gridInterval = anchorGridIntervalFor(network)
+                        )
 
                     val range = BlockHeight.new(start)..BlockHeight.new(end)
                     add(

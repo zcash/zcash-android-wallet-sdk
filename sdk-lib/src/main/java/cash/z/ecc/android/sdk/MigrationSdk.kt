@@ -276,13 +276,19 @@ enum class MigrationBlocker {
  */
 sealed class MigrationAdvanceStep {
     /** Sync + prove now (the given transaction's anchor is resolvable). */
-    data class Prove(val transferId: Long) : MigrationAdvanceStep()
+    data class Prove(
+        val transferId: Long
+    ) : MigrationAdvanceStep()
 
     /** Broadcast the given already-proven transaction (its scheduled height arrived). */
-    data class Broadcast(val transferId: Long) : MigrationAdvanceStep()
+    data class Broadcast(
+        val transferId: Long
+    ) : MigrationAdvanceStep()
 
     /** The given transfer expired unmined — reconstruct + re-sign it (needs spend authority). */
-    data class Rebuild(val transferId: Long) : MigrationAdvanceStep()
+    data class Rebuild(
+        val transferId: Long
+    ) : MigrationAdvanceStep()
 
     /** Nothing actionable right now — re-arm from [OrchardMigrationSdk.syncWakeupSchedule]. */
     object Waiting : MigrationAdvanceStep() {
@@ -452,8 +458,14 @@ sealed class TransferResult {
 
 sealed class TransferAttemptOutcome {
     object NothingDue : TransferAttemptOutcome()
-    data class AwaitingProof(val transferId: Long) : TransferAttemptOutcome()
-    data class Executed(val result: TransferResult) : TransferAttemptOutcome()
+
+    data class AwaitingProof(
+        val transferId: Long
+    ) : TransferAttemptOutcome()
+
+    data class Executed(
+        val result: TransferResult
+    ) : TransferAttemptOutcome()
 }
 
 // ─── Main interface ───────────────────────────────────────────────────────────

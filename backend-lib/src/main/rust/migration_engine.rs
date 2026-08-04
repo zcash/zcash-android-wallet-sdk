@@ -161,9 +161,7 @@ where
     /// are scaled from that same grid, which reproduces the ZIP 318 schedule exactly at the ZIP 318
     /// interval and compresses it proportionally on a test network.
     fn scheduling_params(&self) -> SchedulingParams {
-        SchedulingParams::new_with_default_distributions(
-            self.wallet.anchor_retention_interval().into(),
-        )
+        SchedulingParams::new_with_default_distributions(self.wallet.anchor_retention_interval())
     }
 }
 

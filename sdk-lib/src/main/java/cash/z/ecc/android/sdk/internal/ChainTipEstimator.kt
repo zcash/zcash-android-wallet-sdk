@@ -27,6 +27,7 @@ internal object NoOpChainTipEstimator : ChainTipEstimator {
 
     override suspend fun estimatedSecondsPerBlock(): Long = FALLBACK_SECONDS_PER_BLOCK
 }
+
 internal const val MIN_SECONDS_PER_BLOCK = 5L
 internal const val MAX_SECONDS_PER_BLOCK = 150L
 

@@ -327,13 +327,6 @@ class SlipstreamSynchronizer internal constructor(
             .getOrElse { throw InitializeException.GetAccountsException(it) }
 
     /**
-     * The keyless engine restart every stop-then-restart call site below runs from a
-     * [NonCancellable] context, so the engine always comes back up even when the caller itself
-     * was cancelled; a restart failure is logged rather than thrown, so it can never mask
-     * whatever outcome the caller was already returning or throwing. [operation] is a short,
-     * human-readable name for the log message only (e.g. "account import", "rewind").
-     */
-    /**
      * [MOB-1455 follow-up] The engine session's anchor-retention floor
      * (`min_pending_migration_anchor_boundary` → `EngineConfig.anchor_retention`) is computed once,
      * at `start_session`. A session that was already live when a migration plan committed has NO
@@ -351,6 +344,13 @@ class SlipstreamSynchronizer internal constructor(
         return true
     }
 
+    /**
+     * The keyless engine restart every stop-then-restart call site below runs from a
+     * [NonCancellable] context, so the engine always comes back up even when the caller itself
+     * was cancelled; a restart failure is logged rather than thrown, so it can never mask
+     * whatever outcome the caller was already returning or throwing. [operation] is a short,
+     * human-readable name for the log message only (e.g. "account import", "rewind").
+     */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun restartEngineAfter(operation: String) {
         withContext(NonCancellable) {

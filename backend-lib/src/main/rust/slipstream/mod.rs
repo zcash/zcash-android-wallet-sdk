@@ -460,9 +460,11 @@ fn max_scanned_height(db_path: &str) -> anyhow::Result<Option<u32>> {
         row.get::<_, Option<i64>>(0)
     });
     match h {
-        Ok(Some(h)) => Ok(Some(
-            u32::try_from(h).map_err(|_| anyhow!("scanned height {h} out of u32 range"))?,
-        )),
+        Ok(Some(h)) => {
+            Ok(Some(u32::try_from(h).map_err(|_| {
+                anyhow!("scanned height {h} out of u32 range")
+            })?))
+        }
         Ok(None) => Ok(None),
         Err(rusqlite::Error::SqliteFailure(_, Some(ref msg))) if msg.contains("no such table") => {
             Ok(None)
@@ -524,7 +526,9 @@ fn start_session(
     // protection" is itself worth knowing about.
     let db_path_str: Option<&str> = h.wallet_db_path.to_str();
     if db_path_str.is_none() {
-        tracing::warn!("wallet_db_path is not valid UTF-8 — starting sync without anchor retention");
+        tracing::warn!(
+            "wallet_db_path is not valid UTF-8 — starting sync without anchor retention"
+        );
     }
     let pending_floor = db_path_str
         .map_or(Ok(None), min_pending_migration_anchor_boundary)
@@ -544,10 +548,9 @@ fn start_session(
     // draw-window (16 + slack) of buckets below the current scanned tip so every future scan
     // creates and retains the grid checkpoints any later commit can draw; the pending-plan floor
     // still applies when it is lower (protecting an in-flight plan's older boundaries).
-    let interval =
-        crate::anchor_retention_interval(zcash_protocol::consensus::Parameters::network_type(
-            &h.network,
-        ));
+    let interval = crate::anchor_retention_interval(
+        zcash_protocol::consensus::Parameters::network_type(&h.network),
+    );
     let baseline_floor = db_path_str
         .map_or(Ok(None), max_scanned_height)
         .unwrap_or_else(|e| {

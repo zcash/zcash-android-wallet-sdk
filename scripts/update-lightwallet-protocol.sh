@@ -32,7 +32,8 @@ readonly SRC_DIR="${PREFIX}/walletrpc"
 readonly DEST_DIR="lightwallet-client-lib/src/main/proto"
 readonly JAVA_PACKAGE="cash.z.wallet.sdk.internal.rpc"
 
-readonly REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+readonly REPO_ROOT
 cd "${REPO_ROOT}"
 
 usage() {
