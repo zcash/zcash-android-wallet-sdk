@@ -462,6 +462,14 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.finalizeReadyTransfers(dbDataPath, network, account)
         }
 
+    // Left whole on purpose. This is one cancellation-safety-critical sequence: the in-flight mark,
+    // the entry guard, the send, and the uncancellable post-send commit are ordered against each
+    // other, and that ordering — not the individual steps — is what the long comments here
+    // document. Splitting it into helpers would move suspension points and `withContext`
+    // boundaries relative to one another, which is a behavioural change deserving its own review
+    // and its own tests rather than a drive-by during a merge. Note also that both thresholds are
+    // measured over a body that is more comment than code.
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
     override suspend fun executeNextPendingTransfer(
         options: NetworkPrivacyOptions,
         useEstimatedTip: Boolean,
@@ -662,11 +670,11 @@ internal class OrchardMigrationSdkImpl(
             val est = chainTipEstimator.estimatedTip()
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
-                when (arr.getOrElse(0) { 0L }) {
-                    1L -> MigrationAdvanceStep.Prove(id)
-                    2L -> MigrationAdvanceStep.Broadcast(id)
-                    3L -> MigrationAdvanceStep.Rebuild(id)
-                    4L -> MigrationAdvanceStep.Complete
+                when (arr.getOrElse(0) { STEP_WAITING }) {
+                    STEP_PROVE -> MigrationAdvanceStep.Prove(id)
+                    STEP_BROADCAST -> MigrationAdvanceStep.Broadcast(id)
+                    STEP_REBUILD -> MigrationAdvanceStep.Rebuild(id)
+                    STEP_COMPLETE -> MigrationAdvanceStep.Complete
                     else -> MigrationAdvanceStep.Waiting
                 }
             }
@@ -887,11 +895,9 @@ private val DUPLICATE_REJECTION_MARKERS =
  * the single most important behavioural fix in F2: since Task 3 made tag=2 terminally Fail the
  * whole pre-signed plan, a false positive here forces a Keystone re-sign ceremony.
  */
-internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Boolean {
-    if (minedHeight >= 0) return true
-    val text = description?.lowercase() ?: return false
-    return DUPLICATE_REJECTION_MARKERS.any { text.contains(it) }
-}
+internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Boolean =
+    minedHeight >= 0 ||
+        description?.lowercase()?.let { text -> DUPLICATE_REJECTION_MARKERS.any { text.contains(it) } } == true
 
 /**
  * Maps a raw submission outcome to the engine's [TransferResult], both as the public value and
@@ -968,6 +974,14 @@ private fun mapSubmitResult(
             )
         }
     }
+
+// The `nextStep` step codes, mirroring the `STEP_*` constants that own the contract in
+// `migration.rs`. Kept in the same order so the two lists can be diffed by eye.
+private const val STEP_WAITING = 0L
+private const val STEP_PROVE = 1L
+private const val STEP_BROADCAST = 2L
+private const val STEP_REBUILD = 3L
+private const val STEP_COMPLETE = 4L
 
 /**
  * How long [broadcast] waits for a submit call (including Tor circuit bootstrap, when [useTor])

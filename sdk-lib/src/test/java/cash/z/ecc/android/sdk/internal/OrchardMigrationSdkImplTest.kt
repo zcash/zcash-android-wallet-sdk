@@ -253,7 +253,13 @@ class OrchardMigrationSdkImplTest {
                 transfers = emptyArray(),
                 preparations =
                     arrayOf(
-                        JniPreparationStep(id = 2, layer = 1, index = 0, broadcastHeight = 4219055, dependsOn = longArrayOf(0, 1))
+                        JniPreparationStep(
+                            id = 2,
+                            layer = 1,
+                            index = 0,
+                            broadcastHeight = 4219055,
+                            dependsOn = longArrayOf(0, 1)
+                        )
                     ),
                 estimatedDurationHours = 1,
                 proposalHandle = 7,
@@ -276,17 +282,31 @@ class OrchardMigrationSdkImplTest {
      */
     @Test
     fun `shouldSkipReSendAlreadyMined is true only when in-flight and mined`() {
-        assertTrue(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = 0L))
-        assertTrue(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = 4_226_000L))
+        assertTrue(
+            shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = 0L)
+        )
+        assertTrue(
+            shouldSkipReSendAlreadyMined(
+                inFlightUntilEpochSeconds = 200,
+                nowEpochSeconds = 100,
+                minedHeight = 4_226_000L
+            )
+        )
     }
 
     @Test
     fun `shouldSkipReSendAlreadyMined is false when not in-flight or not mined`() {
         // In-flight mark already expired/cleared, even though the txid happens to be mined.
-        assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 50, nowEpochSeconds = 100, minedHeight = 0L))
-        assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 0, nowEpochSeconds = 100, minedHeight = 0L))
+        assertFalse(
+            shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 50, nowEpochSeconds = 100, minedHeight = 0L)
+        )
+        assertFalse(
+            shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 0, nowEpochSeconds = 100, minedHeight = 0L)
+        )
         // Still in-flight, but the txid probe found no mined height.
-        assertFalse(shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = -1L))
+        assertFalse(
+            shouldSkipReSendAlreadyMined(inFlightUntilEpochSeconds = 200, nowEpochSeconds = 100, minedHeight = -1L)
+        )
     }
 
     /**
@@ -304,7 +324,8 @@ class OrchardMigrationSdkImplTest {
             val prepared = preparedTransfer()
             val fakeBackend =
                 FakeTypesafeMigrationBackend(
-                    dueTransferResult = JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = prepared),
+                    dueTransferResult =
+                        JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = prepared),
                     transactionMinedHeightResult = 4_226_000L, // already mined
                 )
             val sdk =
@@ -355,7 +376,12 @@ class OrchardMigrationSdkImplTest {
             val recordGate = CompletableDeferred<Unit>()
             val fakeBackend =
                 FakeTypesafeMigrationBackend(
-                    dueTransferResult = JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = preparedTransfer()),
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
                     transactionMinedHeightResult = 4_226_000L, // already mined -> takes the entry-guard path
                     onRecordTransferResultEntered = enteredRecord,
                     recordTransferResultGate = recordGate,
@@ -376,7 +402,10 @@ class OrchardMigrationSdkImplTest {
                         ),
                 )
 
-            val job = launch { sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false) }
+            val job =
+                launch {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
             enteredRecord.await() // wait until execution is suspended inside the NonCancellable record segment
             job.cancel() // cancel the caller while the mark write is mid-flight
             recordGate.complete(Unit) // now let the (uncancellable) record segment proceed
@@ -469,7 +498,9 @@ class OrchardMigrationSdkImplTest {
         return context
     }
 
-    @Suppress("TooManyFunctions")
+    // A hand-rolled fake standing in for the whole typesafe backend surface, so both its width and
+    // its function count track that interface rather than any design choice of its own.
+    @Suppress("TooManyFunctions", "LongParameterList")
     private class FakeTypesafeMigrationBackend(
         private val proposeImmediateSendMaxResult: ByteArray = ByteArray(0),
         private val migrationDustThresholdZatoshiResult: Long = 100_000L,

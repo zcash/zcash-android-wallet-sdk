@@ -263,9 +263,10 @@ enum class MigrationBlocker {
     EXPIRED,
 
     /**
-     * SYNTHETIC (backend guard veto — TODO(remove) once the engine surfaces it): a dependency
-     * mined PAST this transfer's drawn anchor boundary, so no witness can ever be built against
-     * it. Needs a plan-level reschedule/rebuild; more syncing can never help.
+     * SYNTHETIC (the backend's own guard veto, reported here only until the engine surfaces the
+     * condition natively): a dependency mined PAST this transfer's drawn anchor boundary, so no
+     * witness can ever be built against it. Needs a plan-level reschedule/rebuild; more syncing
+     * can never help.
      */
     UNPROVABLE_ANCHOR,
 }
@@ -752,7 +753,10 @@ interface OrchardMigrationSdk {
      * every call — there is no separate "claim" step, so a retried/interrupted call is safe to
      * simply call again.
      */
-    suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions, useEstimatedTip: Boolean): TransferAttemptOutcome
+    suspend fun executeNextPendingTransfer(
+        options: NetworkPrivacyOptions,
+        useEstimatedTip: Boolean
+    ): TransferAttemptOutcome
 
     // ── Sync coordination ────────────────────────────────────────────────────
 

@@ -138,7 +138,11 @@ class JniMigrationSchedule(
  * once the engine holds a proof (`Proved`/`Broadcast`/`Mined`). [anchorBoundaryHeight] is the
  * committed ZIP 318 bucket boundary the transaction proves against, or `-1` when the engine
  * committed none (preparations prove at their natural anchor).
+ *
+ * The parameter list is the JNI constructor descriptor the Rust side builds this with, so its
+ * width is a wire contract rather than a design choice — as for the other `Jni*` models.
  */
+@Suppress("LongParameterList")
 @Keep
 class JniMigrationTransferState(
     val id: Long,
@@ -154,7 +158,7 @@ class JniMigrationTransferState(
     /**
      * Why it is waiting: 0 none, 1 dependencies, 2 schedule, 3 anchor boundary, 4 signature,
      * 5 expired, 6 unprovable anchor (synthetic — the backend guard veto; see the driver-surface
-     * note in migration.rs, TODO(remove) once the engine surfaces it natively).
+     * note in migration.rs, which stands only until the engine surfaces the condition natively).
      */
     val blocker: Int,
     /** The engine-persisted crossing value (`transfer_crossing_value`); -1 for preparations. */
