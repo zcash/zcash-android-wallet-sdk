@@ -64,7 +64,13 @@ runs:
       if: inputs.slipstream-app-id != '' && inputs.slipstream-app-private-key != ''
       uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
       with:
-        app-id: ${{ inputs.slipstream-app-id }}
+        # `client-id`, not the deprecated `app-id`. The action reads
+        # `getInput("client-id") || getInput("app-id")` into a single value and uses it as the
+        # JWT issuer, and GitHub accepts either an App ID or a Client ID there — so this keeps
+        # taking the numeric App ID that SLIPSTREAM_APP_ID holds, and only stops the deprecation
+        # warning. Switching the secret to a real Client ID would also work, and needs no change
+        # here.
+        client-id: ${{ inputs.slipstream-app-id }}
         private-key: ${{ inputs.slipstream-app-private-key }}
         # The App is installed on zodl-inc, not on this repository's owner, so the installation
         # to mint against has to be named explicitly.
