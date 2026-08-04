@@ -136,6 +136,7 @@ import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -463,8 +464,15 @@ class SlipstreamSynchronizer internal constructor(
      * detached and re-attached is therefore invoked once per attachment; that repeat is benign,
      * since the host maps it onto the same latched error state.
      *
+     * The two sides run on different threads - [runPrepare] fails on `Dispatchers.IO` while the host
+     * attaches from its own - so the `@Volatile` backing field pairs with the atomic
+     * [latchedSetupError]: each side stores into its own before loading the other's, which makes at
+     * least one of the two loads observe the other's store. Neither side can therefore miss the
+     * error; the worst case is the benign double invocation above.
+     *
      * Server-mismatch and runtime sync problems still surface through [onProcessorErrorHandler].
      */
+    @Volatile
     override var onSetupErrorHandler: ((Throwable?) -> Boolean)? = null
         set(value) {
             field = value
@@ -1941,6 +1949,65 @@ class SlipstreamSynchronizer internal constructor(
                 startBirthday = requestedBirthday ?: zcashNetwork.saplingActivationHeight,
                 prepareInputs = prepareInputs
             )
+        }
+
+        /** `@JvmStatic`-shaped twin of their `newBlocking` for Java callers (C2). */
+        @JvmStatic
+        fun newBlocking(
+            alias: String = ZcashSdk.DEFAULT_ALIAS,
+            birthday: BlockHeight?,
+            context: Context,
+            lightWalletEndpoint: LightWalletEndpoint,
+            setup: AccountCreateSetup?,
+            walletInitMode: WalletInitMode,
+            zcashNetwork: ZcashNetwork,
+            isTorEnabled: Boolean,
+            isExchangeRateEnabled: Boolean
+        ): CloseableSynchronizer =
+            runBlocking {
+                new(
+                    alias = alias,
+                    birthday = birthday,
+                    context = context,
+                    lightWalletEndpoint = lightWalletEndpoint,
+                    setup = setup,
+                    walletInitMode = walletInitMode,
+                    zcashNetwork = zcashNetwork,
+                    isTorEnabled = isTorEnabled,
+                    isExchangeRateEnabled = isExchangeRateEnabled
+                )
+            }
+
+        /**
+         * Deletes `data.sqlite3` + `-wal` + `-shm`; refuses while an instance is `Active`. No
+         * separate on-disk block cache directory to delete alongside it - every persisted fact
+         * Slipstream keeps lives inside `data.sqlite3` itself.
+         *
+         * Like `SdkSynchronizer.erase`, this awaits an in-flight shutdown of the same key before
+         * deleting, and holds the [InstanceGuard] mutex across the deletion. That await is what
+         * makes the reset path safe: [close] marks the key shutting down synchronously, but the
+         * engine teardown that drops the database handles runs asynchronously afterwards, and
+         * unlinking the files under a live engine mmap is corruption territory.
+         */
+        suspend fun erase(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String = ZcashSdk.DEFAULT_ALIAS
+        ): Boolean {
+            val key = SlipstreamKey(network, alias)
+            return InstanceGuard.withKeyInactive(key) {
+                withContext(Dispatchers.IO) {
+                    val dbFile =
+                        DataDbPath.dataDbFile(
+                            appContext.applicationContext.getNoBackupFilesDirSuspend(),
+                            alias,
+                            network
+                        )
+                    val walFile = File("${dbFile.path}-wal")
+                    val shmFile = File("${dbFile.path}-shm")
+                    listOf(dbFile, walFile, shmFile).map { !it.exists() || it.delete() }.all { it }
+                }
+            }
         }
 
         private const val ENGINE_TOR_SUBDIR = "slipstream_tor"

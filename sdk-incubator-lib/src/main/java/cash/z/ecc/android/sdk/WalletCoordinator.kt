@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.PersistableWallet
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import com.zodl.slipstream.SlipstreamSynchronizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -240,11 +241,12 @@ class WalletCoordinator(
                         .filter { it.id == lockoutId }
                         .onFirst {
                             synchronizerMutex.withLock {
-                                val didDelete =
+                                val didDeleteSdk =
                                     Synchronizer.erase(
                                         appContext = applicationContext,
                                         network = zcashNetwork
                                     )
+                                val didDelete = eraseSlipstreamData(zcashNetwork) && didDeleteSdk
                                 Twig.info { "SDK erase result: $didDelete" }
                             }
                         }
@@ -266,11 +268,12 @@ class WalletCoordinator(
                 val zcashNetwork = persistableWallet.first()?.network
                 if (null != zcashNetwork) {
                     synchronizerMutex.withLock {
-                        val didDelete =
+                        val didDeleteSdk =
                             Synchronizer.erase(
                                 appContext = applicationContext,
                                 network = zcashNetwork
                             )
+                        val didDelete = eraseSlipstreamData(zcashNetwork) && didDeleteSdk
                         Twig.info { "SDK erase result: $didDelete" }
                         trySend(didDelete)
                     }
@@ -280,6 +283,28 @@ class WalletCoordinator(
                 // Nothing to close here
             }
         }
+
+    /**
+     * Deletes Slipstream's own `data.sqlite3` alongside the upstream SDK databases, since the two
+     * engines persist to separate files and [Synchronizer.erase] only knows about the latter.
+     * A no-op reporting success when Slipstream is not the active engine.
+     *
+     * [SlipstreamSynchronizer.erase] throws when a synchronizer for the same key is still active;
+     * that is a caller error rather than a reason to kill [walletScope]'s coroutine and leave the
+     * flow's collector waiting forever, so it is logged and reported as a failed delete.
+     */
+    private suspend fun eraseSlipstreamData(zcashNetwork: ZcashNetwork): Boolean {
+        if (!isSlipstreamEnabled) return true
+        return runCatching {
+            SlipstreamSynchronizer.erase(
+                appContext = applicationContext,
+                network = zcashNetwork
+            )
+        }.getOrElse {
+            Twig.error(it) { "Slipstream erase failed" }
+            false
+        }
+    }
 
     // Allows for extension functions
     companion object
