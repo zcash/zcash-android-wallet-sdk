@@ -667,6 +667,19 @@ internal class OrchardMigrationSdkImpl(
                     2L -> MigrationAdvanceStep.Broadcast(id)
                     3L -> MigrationAdvanceStep.Rebuild(id)
                     4L -> MigrationAdvanceStep.Complete
+                    // The migration is dead and needs re-planning — the ONLY channel for this
+                    // signal. Must NOT fall through to the `else -> Waiting` default below: doing
+                    // so would poll as "Waiting" forever with funds stranded and no
+                    // needs-attention state ever raised.
+                    5L -> MigrationAdvanceStep.Replan
+                    // A rejected broadcast the wallet cannot yet explain; the backend's own
+                    // `advance_migration` call re-adjudicates it on the next sync + poll, so from
+                    // this driver's perspective it is indistinguishable from ordinary waiting.
+                    // Currently unreachable in practice — `report_broadcast_failure` has zero
+                    // call sites in this codebase — but handled explicitly rather than falling
+                    // through the `else`, so a future caller doesn't inherit an accidental
+                    // default.
+                    6L -> MigrationAdvanceStep.Waiting
                     else -> MigrationAdvanceStep.Waiting
                 }
             }

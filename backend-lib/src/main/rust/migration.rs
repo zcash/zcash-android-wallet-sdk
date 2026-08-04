@@ -62,11 +62,13 @@ use zcash_pool_migration::{
         PoolMigrationWrite, ProveError, ProveOutcome,
     },
     preparation::{PrepInput, PreparationPlan},
-    satisfiability::{DuenessTargets, ReplanThreshold},
-    state::NextAction,
+    satisfiability::{
+        AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
+    },
+    state::{AdvanceStep, NextAction},
 };
 
-use crate::migration_engine::Backend;
+use crate::migration_engine::{Backend, EngineError};
 use crate::utils::{catch_unwind, exception::unwrap_exc_or};
 
 const JNI_MIGRATION_PROGRESS: &str =
@@ -6424,6 +6426,15 @@ const STEP_PROVE: i64 = 1;
 const STEP_BROADCAST: i64 = 2;
 const STEP_REBUILD: i64 = 3;
 const STEP_COMPLETE: i64 = 4;
+/// The migration needs re-planning (`AdvanceStep::Replan`): a dead plan, surfaced so the driver
+/// can mark it superseded and re-propose the remaining balance, rather than polling `Waiting`
+/// forever with funds stranded and no needs-attention signal.
+const STEP_REPLAN: i64 = 5;
+/// A broadcast this app made was rejected and the wallet cannot yet say why (`AdvanceStep::
+/// Reevaluate`); currently unreachable in practice since `report_broadcast_failure` has zero
+/// call sites in this codebase, but handled explicitly (see Kotlin-side mapping) rather than
+/// silently falling through to `Waiting`.
+const STEP_REEVALUATE: i64 = 6;
 
 const ACTION_NONE: i32 = 0;
 const ACTION_PROVE: i32 = 1;
@@ -6476,49 +6487,38 @@ fn is_unprovable_anchor(
         && !is_prove_ready(state, t, target_height)
 }
 
-/// Two-tip decision (spec §3): broadcast timing runs on the ESTIMATED tip (a proved tx is ready
-/// to send from prove time; it only needs `scheduled_height` reached), while proving stays on the
-/// SCANNED tip (a witness needs a real settled checkpoint). Broadcast-first is a retention-
-/// justified override of the engine's prove-first order (spec §3.1) — with always-on anchor
-/// retention a deferred prove costs nothing, and broadcasting proved transfers is direct progress.
+/// Two-tip decision (spec §3): the underlying `advance_migration` call is driven by
+/// `DuenessTargets::new(scanned, estimated)`, which folds the ESTIMATED tip into its `effective`
+/// target (broadcast timing, an optimistic estimate that only ever accelerates) while keeping the
+/// SCANNED tip as its `scanned` target (proving/rebuild/expiry, which need real chain facts, not
+/// an estimate) — see `DuenessTargets::new`'s doc. This now delegates step selection entirely to
+/// the crate's own `advance_migration`, rather than re-implementing next-broadcastable/prove-ready/
+/// rebuild-on-expiry locally: the TEMPORARY GUARD VETO note above is about the SEPARATE
+/// `is_unprovable_anchor`/`BLOCKER_UNPROVABLE_ANCHOR` reporting surface (`transactionStates`,
+/// `syncWakeupSchedule`), which is unchanged by this call and still applies its local guard.
 fn guarded_next_step(
-    state: &zcash_pool_migration::engine::MigrationState,
+    backend: &mut impl PoolMigrationWrite<Error = EngineError>,
+    state: &mut MigrationState,
     scanned_target: BlockHeight,
     estimated_target: BlockHeight,
-) -> (i64, i64) {
-    use zcash_pool_migration::engine::{MigrationTxKind, MigrationTxState};
+) -> anyhow::Result<(i64, i64)> {
     if state.is_terminal() {
-        return (STEP_COMPLETE, -1);
+        return Ok((STEP_COMPLETE, -1));
     }
-    if let Some(id) = state.next_broadcastable(estimated_target) {
-        return (STEP_BROADCAST, i64::from(u32::from(id)));
-    }
-    if let Some(t) = state.transactions().iter().find(|t| {
-        matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(state, t, scanned_target)
-    }) {
-        return (STEP_PROVE, i64::from(u32::from(t.id())));
-    }
-    // Rebuild + completion stay on the SCANNED target (real mined/expiry facts).
-    if let Some(t) = state.transactions().iter().find(|t| {
-        matches!(t.kind(), MigrationTxKind::Transfer { .. })
-            && !matches!(t.state(), MigrationTxState::Mined { .. })
-            && {
-                let expiry = u32::from(t.expiry_height());
-                expiry != 0 && expiry < u32::from(scanned_target)
-            }
-    }) {
-        return (STEP_REBUILD, i64::from(u32::from(t.id())));
-    }
-    let all_mined = !state.transactions().is_empty()
-        && state
-            .transactions()
-            .iter()
-            .all(|t| matches!(t.state(), MigrationTxState::Mined { .. }));
-    if all_mined {
-        (STEP_COMPLETE, -1)
-    } else {
-        (STEP_WAITING, -1)
-    }
+    let targets = DuenessTargets::new(scanned_target, estimated_target);
+    // Open Question 1's recommended value — confirm before shipping.
+    let config = AdvanceConfig::new(ReorgSettleDepth::new(10));
+    let step = advance_migration(backend, state, targets, &config)
+        .map_err(|e| anyhow::anyhow!("advance_migration failed: {e:?}"))?;
+    Ok(match step {
+        AdvanceStep::Complete => (STEP_COMPLETE, -1),
+        AdvanceStep::Waiting => (STEP_WAITING, -1),
+        AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
+        AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
+        AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
+        AdvanceStep::Replan => (STEP_REPLAN, -1),
+        AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
+    })
 }
 
 /// The single "what now?" read the app worker loops on. Returns `[stepCode, transferId]`
@@ -6549,14 +6549,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             std::cmp::max(scanned, BlockHeight::from_u32(estimated_tip as u32) + 1)
         };
-        let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
-        let Some(state) = backend
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
+        let Some(mut state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
         else {
             return Ok(ptr::null_mut());
         };
-        let (code, id) = guarded_next_step(&state, scanned, estimated);
+        // `guarded_next_step` (via `advance_migration`) persists any determination it records
+        // through `backend` itself — no separate `replace_migration` call needed here.
+        let (code, id) = guarded_next_step(&mut backend, &mut state, scanned, estimated)?;
         let arr = env.new_long_array(2)?;
         env.set_long_array_region(&arr, 0, &[code, id])?;
         Ok(arr.into_raw())

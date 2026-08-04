@@ -293,6 +293,17 @@ sealed class MigrationAdvanceStep {
     object Complete : MigrationAdvanceStep() {
         override fun toString() = "Complete"
     }
+
+    /**
+     * The migration is dead and needs re-planning: enough of its planned value can never mine
+     * (past the committed replan threshold), or dead value is stranded with no live work left.
+     * This is the ONLY channel that signals a dead plan — unlike the other steps, more syncing
+     * or retrying can never resolve it. The worker's response is to mark the migration
+     * superseded and re-propose the remaining balance through the ordinary planning flow.
+     */
+    object Replan : MigrationAdvanceStep() {
+        override fun toString() = "Replan"
+    }
 }
 
 /** One sync/prove wake-up of the engine's schedule: wake at [height], prove [covers]. */
