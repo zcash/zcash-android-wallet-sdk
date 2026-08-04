@@ -157,8 +157,11 @@ class JniMigrationTransferState(
     val action: Int,
     /**
      * Why it is waiting: 0 none, 1 dependencies, 2 schedule, 3 anchor boundary, 4 signature,
-     * 5 expired, 6 unprovable anchor (synthetic — the backend guard veto; see the driver-surface
-     * note in migration.rs, which stands only until the engine surfaces the condition natively).
+     * 5 expired, 6 unprovable anchor (LEGACY — no longer emitted by the backend: the late-dependency
+     * guard veto that produced it was resolved upstream in zcash_pool_migration rc.6, whose
+     * `prove_transfer` re-draws the boundary at prove time. The value is kept RESERVED and the
+     * `MigrationBlocker.UNPROVABLE_ANCHOR` mapping retained for wire compatibility),
+     * 7 expiry imminent, 8 awaiting reevaluation, 9 unsatisfiable.
      */
     val blocker: Int,
     /** The engine-persisted crossing value (`transfer_crossing_value`); -1 for preparations. */
