@@ -62,6 +62,7 @@ use zcash_pool_migration::{
         PoolMigrationWrite, ProveError,
     },
     preparation::{PrepInput, PreparationPlan},
+    satisfiability::ReplanThreshold,
 };
 
 use crate::migration_engine::Backend;
@@ -1261,9 +1262,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
-                let state =
-                    engine::commit_preparation(network, target, backend, migration_plan, rng)
-                        .map_err(|e| anyhow!("Error committing migration: {:?}", e))?;
+                let state = engine::commit_preparation(
+                    network,
+                    target,
+                    backend,
+                    migration_plan,
+                    rng,
+                    ReplanThreshold::DEFAULT,
+                )
+                .map_err(|e| anyhow!("Error committing migration: {:?}", e))?;
                 Ok((state, Vec::new()))
             },
         )?;
@@ -1389,6 +1396,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                                 state.preparation().clone(),
                                 state.transactions().clone(),
                                 state.anchor_bucket_interval(),
+                                ReplanThreshold::DEFAULT,
                             ))
                         } else {
                             None
@@ -1718,6 +1726,7 @@ fn reconcile_invalidated(
         state.preparation().clone(),
         state.transactions().clone(),
         state.anchor_bucket_interval(),
+        ReplanThreshold::DEFAULT,
     );
     let mut backend = Backend::new(network, &*wallet, account, None, store_conn)?;
     backend
@@ -2048,9 +2057,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
-                let state =
-                    engine::commit_preparation(network, target, backend, migration_plan, rng)
-                        .map_err(|e| anyhow!("Error committing migration schedule: {:?}", e))?;
+                let state = engine::commit_preparation(
+                    network,
+                    target,
+                    backend,
+                    migration_plan,
+                    rng,
+                    ReplanThreshold::DEFAULT,
+                )
+                .map_err(|e| anyhow!("Error committing migration schedule: {:?}", e))?;
                 Ok((state, Vec::new()))
             },
         )?;
@@ -2103,6 +2118,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     state.preparation().clone(),
                     state.transactions().clone(),
                     state.anchor_bucket_interval(),
+                    ReplanThreshold::DEFAULT,
                 );
                 let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
                 backend
@@ -3045,6 +3061,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             state.preparation().clone(),
             state.transactions().clone(),
             state.anchor_bucket_interval(),
+            ReplanThreshold::DEFAULT,
         );
         backend
             .replace_migration(&cancelled)
@@ -3184,6 +3201,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     backend,
                     migration_plan,
                     rng,
+                    ReplanThreshold::DEFAULT,
                 )
                 .map_err(|e| anyhow!("Error building unsigned migration PCZTs: {:?}", e))?;
                 Ok((
@@ -3314,6 +3332,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     backend,
                     migration_plan,
                     rng,
+                    ReplanThreshold::DEFAULT,
                 )
                 .map_err(|e| anyhow!("Error building unsigned migration PCZTs: {:?}", e))?;
                 Ok((
@@ -3408,6 +3427,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     backend,
                     migration_plan,
                     rng,
+                    ReplanThreshold::DEFAULT,
                 )
                 .map_err(|e| anyhow!("Error building unsigned migration PCZTs: {:?}", e))?;
                 Ok((
