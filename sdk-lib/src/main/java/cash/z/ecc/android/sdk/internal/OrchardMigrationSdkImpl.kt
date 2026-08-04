@@ -1140,6 +1140,9 @@ private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
                 4 -> MigrationBlocker.SIGNATURE
                 5 -> MigrationBlocker.EXPIRED
                 6 -> MigrationBlocker.UNPROVABLE_ANCHOR
+                7 -> MigrationBlocker.EXPIRY_IMMINENT
+                8 -> MigrationBlocker.AWAITING_REEVALUATION
+                9 -> MigrationBlocker.UNSATISFIABLE
                 else -> null
             },
         amountZatoshi = amountZatoshi.takeIf { it >= 0 },

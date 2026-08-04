@@ -269,6 +269,28 @@ enum class MigrationBlocker {
      * can never help.
      */
     UNPROVABLE_ANCHOR,
+
+    /**
+     * Its expiry has probably passed, but only according to the wallet's ESTIMATE of the chain
+     * tip — its own scan has not reached the expiry height yet. The transfer is withheld from
+     * broadcast protectively; nothing has been determined and the reading reverses itself once
+     * the scan arrives, at which point it becomes [EXPIRED]. Do not present it as failed.
+     */
+    EXPIRY_IMMINENT,
+
+    /**
+     * A node REJECTED a broadcast of this transaction, and the wallet has not scanned far enough
+     * to explain why. It is withheld rather than re-submitted, since repeating a submission known
+     * to fail achieves nothing; the wallet resolves it as sync catches up.
+     */
+    AWAITING_REEVALUATION,
+
+    /**
+     * It can never mine: its inputs were seen spent by something else, its anchor no longer exists
+     * on the chain, or it is stranded behind a transaction in that position. The remedy is a
+     * migration-level replan — more syncing can never help.
+     */
+    UNSATISFIABLE,
 }
 
 /**
