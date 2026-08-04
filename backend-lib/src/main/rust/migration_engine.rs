@@ -30,6 +30,7 @@ use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::proposal::Proposal;
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::ShieldedPool;
+use zcash_protocol::TxId;
 use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 
@@ -37,9 +38,10 @@ use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_pool_migration::build::AccountDerivation;
 use zcash_pool_migration::engine::{
-    MigrationBackend, MigrationCrypto, MigrationState, MigrationTransferId, MigrationTxState,
-    PoolMigrationRead, PoolMigrationWrite,
+    MigrationBackend, MigrationCrypto, MigrationState, MigrationTransaction, MigrationTransferId,
+    MigrationTxState, PoolMigrationRead, PoolMigrationWrite,
 };
+use zcash_pool_migration::satisfiability::{ReorgSettleDepth, StepSatisfiability};
 use zcash_pool_migration::scheduling::SchedulingParams;
 
 use crate::migration::Wallet;
@@ -239,6 +241,22 @@ where
             .get_migration()
             .map_err(|e| anyhow::anyhow!("reading persisted migration failed: {e:?}"))
     }
+
+    fn check_step_satisfiability(
+        &self,
+        tx: &MigrationTransaction,
+        settle: ReorgSettleDepth,
+    ) -> Result<StepSatisfiability, Self::Error> {
+        self.store
+            .check_step_satisfiability(tx, settle)
+            .map_err(|e| anyhow::anyhow!("checking step satisfiability failed: {e:?}"))
+    }
+
+    fn mined_height(&self, txid: TxId) -> Result<Option<BlockHeight>, Self::Error> {
+        self.store
+            .mined_height(txid)
+            .map_err(|e| anyhow::anyhow!("reading mined height failed: {e:?}"))
+    }
 }
 
 impl<'a, W> PoolMigrationWrite for Backend<'a, W>
@@ -261,6 +279,16 @@ where
         self.store
             .update_transaction(id, state)
             .map_err(|e| anyhow::anyhow!("updating migration transaction failed: {e:?}"))
+    }
+
+    fn store_proved_transaction(
+        &mut self,
+        state: &mut MigrationState,
+        proven: zcash_pool_migration::engine::ProvedTransaction,
+    ) -> Result<(), Self::Error> {
+        self.store
+            .store_proved_transaction(state, proven)
+            .map_err(|e| anyhow::anyhow!("storing proved transaction failed: {e:?}"))
     }
 }
 
