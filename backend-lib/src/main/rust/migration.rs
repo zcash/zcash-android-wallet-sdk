@@ -1042,6 +1042,26 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// transaction — looping it would re-return the same id forever on a transient witness/anchor
 /// failure (see `try_prove`'s doc comment), whereas our JNI contract proves every ready transaction
 /// in one call.
+///
+/// # No local late-dependency guard (resolved upstream in rc.6)
+///
+/// This function once carried a "LATE-DEPENDENCY GUARD": a transfer whose funding dependency mined
+/// PAST its drawn `anchor_boundary` was withheld here, because the note funding it is not in the
+/// commitment tree at that anchor and proving would miss with `Query(NotContained)`. That guard was
+/// always a documented stopgap (see `spec/2026-07-30-engine-change-request-unprovable-boundary.md`),
+/// requested to be upstreamed. `zcash_pool_migration` 0.1.0-rc.6 shipped the fix in
+/// `engine::prove_transfer`: at PROVE time it re-validates the persisted boundary against the
+/// funding preparations' REAL mined heights and, when a note postdates the drawn boundary, RE-DRAWS
+/// the boundary to a fresh grid bucket at-or-past the note's creation (persisting it via
+/// `set_transfer_anchor_boundary`) and proves against that — no new signing ceremony, since ZIP 374
+/// defers the anchor/witnesses to proving. When no valid bucket has settled yet it answers
+/// `ProveOutcome::NotYetProvable` (retry after further sync), never a wedge.
+///
+/// So a late-dependency transfer must now be OFFERED as prove-ready: only by entering the prove
+/// batch does it reach `prove_transfer`, which heals it. Keeping the local guard would EXCLUDE it
+/// and re-strand it forever (the exact regression the whole rc.6 adoption promised not to
+/// introduce). The only readiness gate that remains is that the (currently persisted) boundary has
+/// settled — the redraw takes over from there.
 fn is_prove_ready(
     state: &MigrationState,
     tx: &engine::MigrationTransaction,
@@ -1054,33 +1074,14 @@ fn is_prove_ready(
         Some(boundary) => {
             // The boundary must have SETTLED: it must be strictly below the chain tip so its
             // checkpoint exists in the tree. `target_height` is `tip + 1`, so `boundary < tip` is
-            // `boundary + 1 < target_height`.
-            if u32::from(boundary) + 1 >= u32::from(target_height) {
-                return false;
-            }
-            // LATE-DEPENDENCY GUARD (fixes the live `finalizeReadyTransfers` crash): a transfer
-            // proves against the commitment tree AS OF ITS `boundary`. Its funding notes are the
-            // outputs of the preparations it `depends_on`, so each of those must have been mined
-            // AT OR BEFORE `boundary` — otherwise that output note is NOT yet in the tree at the
-            // anchor and the prover's tree query misses with `Query(NotContained(..))`, which can
-            // never be satisfied against this anchor.
+            // `boundary + 1 < target_height`. That is the ONLY gate.
             //
-            // The plan guarantees this by construction (every transfer's anchor is >= its
-            // dependency's SCHEDULED mining), but EXECUTION can violate it: a dependency deferred at
-            // commit or stalled in the foreground can mine LATER than the dependent transfer's
-            // anchor (live: prep id1 mined at 4220802, after tx8's anchor 4220724). Such a transfer
-            // is un-provable against its committed anchor and must NOT be offered as prove-ready —
-            // it needs re-anchoring by a separate reschedule step. `deps_mined` alone only checks a
-            // dependency is mined AT ALL, not that it mined in time, which is why this extra guard
-            // is required.
-            tx.depends_on().iter().all(|dep| {
-                state
-                    .transactions()
-                    .iter()
-                    .find(|t| t.id() == *dep)
-                    .and_then(|t| t.state().mined_height())
-                    .is_some_and(|mined| u32::from(mined) <= u32::from(boundary))
-            })
+            // No late-dependency guard here: a transfer whose funding dependency mined PAST this
+            // boundary is intentionally still offered as prove-ready, because `engine::prove_transfer`
+            // now re-draws the boundary at prove time to cover the note's real mined height (rc.6 —
+            // see this function's doc comment). Excluding it here would keep it out of the prove batch
+            // and re-strand it forever.
+            u32::from(boundary) + 1 < u32::from(target_height)
         }
         // A preparation carries no drawn boundary and anchors to a fresh checkpoint at the tip when
         // proved, so it is prove-ready once its dependencies are mined and its schedule is due.
@@ -1168,8 +1169,10 @@ fn try_prove(
 ///   funding preparation id1 mined LATE at 4220802, so id1's output note was NOT in the tree at
 ///   tx8's anchor and the tree query for its position missed. Left un-classified it PROPAGATED,
 ///   crashed `finalizeReadyTransfers`, rolled back the whole prove batch, and looped forever. It is
-///   transient in the same sense as the others: it must defer (the transfer needs re-anchoring by a
-///   separate reschedule step) rather than take down every other ready transfer with it.
+///   transient in the same sense as the others: it must defer rather than take down every other
+///   ready transfer with it. As of rc.6 the primary cure for a late dependency is upstream —
+///   `engine::prove_transfer` re-draws the boundary at prove time — so this classification is now a
+///   defence-in-depth backstop for any residual tree-query miss, not the sole recovery path.
 ///
 /// A non-transient prover error (e.g. `IronwoodTreeUnavailable`) is NOT swallowed here — it still
 /// surfaces so a real failure is not silently dropped.
@@ -2673,9 +2676,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // The app now carries this same id on its cached `MigrationTransfer.id` (see
         // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
         //
-        // Engine per-tx status view (ready/action/blocker), with the guard veto applied on top —
-        // see the driver-surface note: a guard-vetoed (unprovable-anchor) transfer must never be
-        // reported READY-to-Prove; it gets the synthetic UNPROVABLE_ANCHOR blocker instead.
+        // Engine per-tx status view (ready/action/blocker), taken as-is. The former local
+        // late-dependency guard veto is gone (resolved upstream in rc.6 — see the driver-surface
+        // banner): a transfer whose dependency mined past its anchor boundary is now honestly
+        // reported READY-to-Prove, because `engine::prove_transfer` re-draws the boundary at prove
+        // time so that Prove genuinely completes.
         let engine_statuses = state.transaction_statuses(DuenessTargets::at(tip + 1));
 
         // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary, ready, action,
@@ -2713,9 +2718,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         | MigrationTxState::Broadcast { .. }
                         | MigrationTxState::Mined { .. }
                 );
-                let (ready, action, blocker) = if is_unprovable_anchor(&state, t, tip + 1) {
-                    (false, ACTION_NONE, BLOCKER_UNPROVABLE_ANCHOR)
-                } else {
+                let (ready, action, blocker) = {
                     let action = match status.action() {
                         Some(zcash_pool_migration::state::NextAction::Prove) => ACTION_PROVE,
                         Some(zcash_pool_migration::state::NextAction::Broadcast) => ACTION_BROADCAST,
@@ -5663,15 +5666,15 @@ mod preparation_schedule_entries_tests {
     }
 }
 
-/// Deterministic reproduction of the LATE-DEPENDENCY anchor break that crashed
+/// Deterministic exercise of the LATE-DEPENDENCY anchor scenario that once crashed
 /// `finalizeReadyTransfers` in a live migration, driven entirely through the
 /// `zcash_pool_migration` engine's public state surface (`MigrationState::from_parts`,
 /// `MigrationTransaction::from_parts`, `mark_broadcast`, `mark_mined`) — no wallet DB, no real
-/// crypto, so it runs in a plain `cargo test`. The bug is in the prove-SELECTION logic
+/// crypto, so it runs in a plain `cargo test`. The relevant logic is the prove-SELECTION filter
 /// (`is_prove_ready` / the `finalizeReadyTransfers` filter) and the error CLASSIFICATION
-/// (`try_prove`), not the prover, so a state-level flow simulation exercises it exactly.
+/// (`try_prove`), so a state-level flow simulation exercises it exactly.
 ///
-/// The live crash:
+/// The historical live crash:
 /// ```text
 /// Error proving transfer MigrationTransferId(8): ... proving the transfer failed:
 /// commitment-tree query failed: Query(NotContained(Address { level: Level(0), index: 242174 }))
@@ -5679,11 +5682,14 @@ mod preparation_schedule_entries_tests {
 /// Root cause verified against the wallet DB: transfer tx8 committed `anchor_boundary = 4220724`
 /// and depends on preparation `id1`; `id1` was mined LATE at height 4220802 (deferred at commit +
 /// a foreground stall), i.e. AFTER tx8's anchor. So `id1`'s output note — the note that funds tx8 —
-/// is NOT in the commitment tree at tx8's anchor 4220724, and proving tx8 against that anchor can
-/// never succeed (`Query(NotContained)`). Yet `is_prove_ready` returned TRUE (it only checked that
-/// deps were mined AT ALL, not that they mined at-or-before the anchor), so `finalizeReadyTransfers`
-/// attempted the impossible prove, the `Tree` error PROPAGATED (not caught as transient), the whole
-/// prove batch rolled back, nothing persisted, and the wallet re-proved forever.
+/// is NOT in the commitment tree at tx8's anchor 4220724.
+///
+/// CURRENT CONTRACT (rc.6): the cure lives upstream. `engine::prove_transfer` re-draws a late
+/// transfer's boundary at prove time to cover its funding note's real mined height, so a late
+/// transfer is now correctly OFFERED as prove-ready (it must enter the prove batch to be healed).
+/// These tests therefore assert that `is_prove_ready` INCLUDES a late-dependency transfer once its
+/// boundary has settled, and that `try_prove` still classifies the tree-query miss as transient (a
+/// defence-in-depth backstop, so a residual miss defers instead of crashing the batch).
 #[cfg(test)]
 mod late_dependency_anchor_tests {
     use super::*;
@@ -5804,12 +5810,15 @@ mod late_dependency_anchor_tests {
         );
     }
 
-    /// LATE dependency (THE BUG): the prep mines AFTER the transfer's anchor, so its funding note is
-    /// absent from the tree at the anchor and the transfer can never prove against it. `is_prove_ready`
-    /// MUST be FALSE. Before the fix this asserts RED (the old code returned TRUE because it only
-    /// checked deps were mined at all, never that they mined at-or-before the anchor).
+    /// LATE dependency: the prep mines AFTER the transfer's anchor. Its funding note is absent from
+    /// the tree at the DRAWN anchor — but as of rc.6 that is healed at prove time by
+    /// `engine::prove_transfer`, which re-draws the boundary to cover the note's real mined height.
+    /// So `is_prove_ready` MUST be TRUE (boundary settled, deps mined): the transfer has to enter the
+    /// prove batch to reach the heal. (Before the guard was removed this asserted FALSE — the local
+    /// stopgap withheld it, which re-stranded it forever once `advance_migration` stopped offering a
+    /// separate reschedule step.)
     #[test]
-    fn late_dependency_is_not_prove_ready() {
+    fn late_dependency_is_now_prove_ready() {
         let mut state = state_with(vec![
             preparation(1, MigrationTxState::Signed),
             transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
@@ -5820,18 +5829,18 @@ mod late_dependency_anchor_tests {
 
         let t8 = find(&state, 8);
         assert!(
-            !is_prove_ready(&state, t8, tip1()),
-            "a transfer whose funding dependency mined AFTER its anchor can never prove against \
-             that anchor (the note is not yet in the tree at the anchor => Query(NotContained)); \
-             it must NOT be offered as prove-ready"
+            is_prove_ready(&state, t8, tip1()),
+            "a late-dependency transfer with a settled boundary must be offered as prove-ready so \
+             it enters the prove batch, where engine::prove_transfer re-draws its boundary and \
+             heals it (rc.6); withholding it here would strand it forever"
         );
     }
 
-    /// finalize-level: the late-dep transfer must be EXCLUDED from the prove-ready set that
-    /// `finalizeReadyTransfers` (line ~2231) collects, so the batch never even attempts the
-    /// impossible prove. This mirrors that exact filter.
+    /// finalize-level: the late-dep transfer must be INCLUDED in the prove-ready set that
+    /// `finalizeReadyTransfers` collects, so the batch attempts the prove and `engine::prove_transfer`
+    /// gets the chance to re-draw the boundary and heal it. This mirrors that exact filter.
     #[test]
-    fn late_dependency_excluded_from_finalize_ready_set() {
+    fn late_dependency_included_in_finalize_ready_set() {
         let mut state = state_with(vec![
             preparation(1, MigrationTxState::Signed),
             transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
@@ -5850,16 +5859,15 @@ mod late_dependency_anchor_tests {
             .collect();
 
         assert!(
-            !ready.contains(&MigrationTransferId::new(8)),
-            "the late-dependency transfer must never enter the prove batch"
+            ready.contains(&MigrationTransferId::new(8)),
+            "the late-dependency transfer must enter the prove batch so prove_transfer can heal it"
         );
     }
 
-    /// The transfer defers only until the anchor problem is resolved from the outside: it is NOT
-    /// marked failed or dropped — `is_prove_ready` simply returns false (a separate, larger concern,
-    /// `rescheduleUnprovenTransfer`, re-anchors it; out of scope here). Sanity: with the SAME late
-    /// dep, an EARLIER anchor (>= the dep's mined height) would be provable, proving it's the
-    /// anchor-vs-mined ordering that matters, not the dep being late in the abstract.
+    /// Sanity: with the SAME late dep, an anchor already AT-OR-AFTER the dep's mined height is
+    /// provable with no redraw needed — confirming it is the anchor-vs-mined ordering that governs
+    /// tree membership, and that a covering boundary (exactly what `prove_transfer`'s redraw produces)
+    /// is prove-ready.
     #[test]
     fn later_anchor_covering_the_late_dep_is_prove_ready() {
         let covering_anchor = LATE_MINED + 10; // anchor now AFTER the dep's mined height
@@ -5927,88 +5935,44 @@ mod late_dependency_anchor_tests {
     }
 }
 
-/// RE-ANCHOR HEALING contract for a late-dependency-stuck transfer, and a documented UPSTREAM GAP.
+/// RE-ANCHOR HEALING for a late-dependency-stuck transfer — now resolved UPSTREAM (rc.6).
 ///
-/// `late_dependency_anchor_tests` proves the DEFER half: a transfer whose funding dependency mined
-/// AFTER its committed `anchor_boundary` is (correctly) withheld from the prove-ready set, so it no
-/// longer crashes `finalizeReadyTransfers` with `Query(NotContained)`. But deferral alone does not
-/// HEAL it: nothing advances such a transfer, so it waits forever. Healing requires RE-ANCHORING —
-/// redrawing its `anchor_boundary` to a later bucket, at or after the dependency's ACTUAL mined
-/// height, so the funding note is in the commitment tree at the new anchor and the transfer becomes
-/// provable again.
+/// A transfer whose funding dependency mined AFTER its committed `anchor_boundary` cannot be proven
+/// against that boundary (the note is not in the commitment tree there). Healing requires
+/// RE-ANCHORING: redrawing its `anchor_boundary` to a later bucket at-or-after the dependency's
+/// ACTUAL mined height, so the funding note IS in the tree at the new anchor and the transfer proves
+/// again.
 ///
-/// These tests pin the CONTRACT a re-anchor must satisfy and DOCUMENT that the engine
-/// (`zcash_pool_migration` 0.1.0-rc.4) exposes no non-expired redraw entry point to satisfy it:
-///
-/// - The only anchor-redraw API is [`zcash_pool_migration::engine::rebuild_expired_transfer`] /
-///   `..._unsigned`, which internally reschedules from the tip and calls
-///   `scheduling::draw_anchor_boundary(.., funding_creation, ..)` with `funding_creation` taken from
-///   the MAX mined height of the transfer's dependencies — EXACTLY the boundary a late-dep heal
-///   needs. BUT it is gated on `is_expired` (`expiry != 0 && expiry < target_height`) and returns
-///   `RebuildError::NotExpired` otherwise. A transfer stuck by a late dependency is typically NOT yet
-///   expired, so this API cannot be driven to heal it.
-/// - `MigrationState::next_step` surfaces `AdvanceStep::Rebuild` only via `next_rebuildable`, which
-///   is likewise expiry-based; a non-expired but un-provable late-dep transfer falls through to
-///   `AdvanceStep::Waiting` forever. There is no `rescheduleUnprovenTransfer` / re-anchor step.
-/// - The engine's own `MigrationState::prove_ready` still has the late-dependency BUG (it checks
-///   only `boundary + 1 < target_height`, never that deps mined at-or-before the boundary), which is
-///   why our `is_prove_ready` re-implements it with the extra guard. So even if a redraw happened,
-///   the covering-anchor logic we depend on to confirm healing lives in OUR guard, not the engine's.
-///
-/// GAP TO ESCALATE (Kris's crate): a public re-anchor entry point that redraws a NON-EXPIRED
-/// transfer's `anchor_boundary` to `>= max(dep mined heights)` — either a new
-/// `reanchor_late_transfer` engine fn, or relaxing `rebuild_expired_transfer`'s `NotExpired` gate to
-/// also admit a transfer whose committed anchor was overtaken by a late dependency. Until then, Lane
-/// A can DEFER (done) but cannot HEAL; the stuck transfer is stranded pending upstream.
-///
-/// The tests below drive the heal through the ONLY public surface available for constructing a
-/// re-anchored transfer — `MigrationTransaction::from_parts` with a redrawn boundary (what such an
-/// API would ultimately persist) — so the desired end-state is pinned and will keep passing once a
-/// real redraw path is wired to produce it.
+/// When these tests were first written (`zcash_pool_migration` 0.1.0-rc.4) the engine exposed NO
+/// non-expired redraw entry point, so backend-lib could only DEFER such a transfer via its local
+/// late-dependency guard and the heal was pinned only as a hypothetical end-state constructed by
+/// hand. That gap — escalated in `spec/2026-07-30-engine-change-request-unprovable-boundary.md` — is
+/// now CLOSED: `engine::prove_transfer` re-validates the persisted boundary against the funding
+/// note's real mined height and re-draws it to a covering grid bucket at prove time (its preferred
+/// "lighter, no re-sign" option), keeping the pre-signed PCZT valid. The local guard has been
+/// removed accordingly; the two tests that pinned the guard's DEFER/exclusion behavior
+/// (`stuck_transfer_stays_unprovable_without_reanchor`, `reanchor_below_the_dep_mine_does_not_heal`)
+/// tested a backend-lib-local mechanism that no longer exists and were deleted — the new
+/// `late_dependency_anchor_tests` positively assert the transfer is now offered prove-ready, and the
+/// covering-boundary end state remains pinned below.
 #[cfg(test)]
 mod reanchor_healing_tests {
     use super::late_dependency_anchor_tests::*;
     use super::*;
 
-    /// A transfer stuck by a late dependency is NOT healed by the late-dependency GUARD alone: with
-    /// its ORIGINAL (overtaken) anchor it stays un-prove-ready even after the dep is mined and the
-    /// chain moves well past everything. Deferral is not repair.
-    #[test]
-    fn stuck_transfer_stays_unprovable_without_reanchor() {
-        let mut state = state_with(vec![
-            preparation(1, MigrationTxState::Signed),
-            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
-        ]);
-        state.mark_broadcast(MigrationTransferId::new(1));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
-
-        // Chain advanced far past both the anchor and the late mine — still un-provable, because the
-        // committed anchor 4220724 predates the note's mine at 4220802: the note is not in the tree
-        // at that anchor and no passage of time changes that. Only a re-anchor can.
-        let far_tip = BlockHeight::from_u32(LATE_MINED + 10_000);
-        let t8 = find(&state, 8);
-        assert!(
-            !is_prove_ready(&state, t8, far_tip),
-            "the committed anchor was overtaken by the late dependency; the transfer can never \
-             prove against it no matter how far the chain advances — it must be re-anchored"
-        );
-    }
-
-    /// THE HEAL: re-anchoring the stuck transfer to a boundary at-or-after the dependency's ACTUAL
-    /// mined height makes it prove-ready again. This is the desired behavior a redraw API must
-    /// produce; we construct the re-anchored transfer through the only public surface
-    /// (`from_parts` with the redrawn boundary) that can express it.
+    /// THE HEALED END STATE: a transfer anchored to a boundary at-or-after the dependency's ACTUAL
+    /// mined height is prove-ready — the funding note is in the tree at that anchor. This is exactly
+    /// the boundary `engine::prove_transfer` now re-draws at prove time
+    /// (`funding_creation = max(dep mined heights)` fed to `draw_anchor_boundary`); here we construct
+    /// that end state directly (via `from_parts`) to pin the property the redraw must produce.
     #[test]
     fn reanchor_to_covering_boundary_heals_stuck_transfer() {
-        // The dep mined LATE; the redraw picks a boundary at-or-after that mine (as
-        // `rebuild_expired_transfer_inner` does via `funding_creation = max(dep mined heights)` fed
-        // to `draw_anchor_boundary`). A bucket boundary >= the mine height is what a redraw yields.
         let redrawn_anchor = LATE_MINED + 24; // >= the dependency's actual mined height
 
         let mut state = state_with(vec![
             preparation(1, MigrationTxState::Signed),
-            // The re-anchored transfer: same id/kind/deps, NEW covering anchor_boundary. This is the
-            // state a `reanchor`/`rebuild` step would persist for the stuck transfer.
+            // The re-anchored transfer: same id/kind/deps, NEW covering anchor_boundary — the state
+            // prove_transfer's redraw persists for a stuck transfer.
             transfer(8, MigrationTxState::Signed, redrawn_anchor, vec![1]),
         ]);
         state.mark_broadcast(MigrationTransferId::new(1));
@@ -6020,30 +5984,8 @@ mod reanchor_healing_tests {
         assert!(
             is_prove_ready(&state, t8, target),
             "after re-anchoring to a boundary >= the dependency's mined height, the funding note IS \
-             in the tree at the new anchor and the transfer is prove-ready again — this is the \
-             healing a redraw/reschedule step must deliver"
-        );
-    }
-
-    /// The redrawn boundary must COVER the dependency's mined height: a re-anchor to a boundary that
-    /// is STILL below the late mine does not heal (it just relocates the same bug). Pins that the
-    /// redraw target is `>= max(dep mined heights)`, not merely "some later anchor".
-    #[test]
-    fn reanchor_below_the_dep_mine_does_not_heal() {
-        let insufficient_anchor = LATE_MINED - 5; // still BELOW the dependency's mined height
-        let mut state = state_with(vec![
-            preparation(1, MigrationTxState::Signed),
-            transfer(8, MigrationTxState::Signed, insufficient_anchor, vec![1]),
-        ]);
-        state.mark_broadcast(MigrationTransferId::new(1));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
-
-        let target = BlockHeight::from_u32(insufficient_anchor + 10_000);
-        let t8 = find(&state, 8);
-        assert!(
-            !is_prove_ready(&state, t8, target),
-            "a redraw target below the dependency's actual mined height still leaves the note out \
-             of the tree at the anchor; the covering boundary must be >= that mined height"
+             in the tree at the new anchor and the transfer is prove-ready again — the end state the \
+             upstream prove-time redraw delivers"
         );
     }
 }
@@ -6461,22 +6403,26 @@ mod state_machine_trace_tests {
     }
 
     /// (c) THE tx9 CASE, exactly as captured live: tx3 mines at 4224587 — 11 blocks PAST tx9's
-    /// boundary. Documents the PURE state machine's CURRENT behaviour, which is one step WORSE
-    /// than what we observed live (backend-lib's `is_prove_ready` duplicate carries a
-    /// late-dependency guard the pure `state.rs::prove_ready` does NOT have):
+    /// boundary (4224576). This is the ACCEPTANCE ORACLE for the change request
+    /// (`spec/2026-07-30-engine-change-request-unprovable-boundary.md`). It used to document a
+    /// three-part GAP (a wedged `Prove {9}`, a dishonest READY status, a perpetual wake-up); the
+    /// request's preferred fix shipped in `zcash_pool_migration` 0.1.0-rc.6, so those assertions
+    /// have FLIPPED to their healed form:
     ///
-    ///  GAP 0: `next_step` insists on `Prove { 9 }` — an instruction that can never succeed
-    ///         (`prove_transfer` fails with `Query(NotContained)`: the funding note is not in the
-    ///         tree at the anchor). A raw consumer is WEDGED: asking again returns the same step.
-    ///  GAP 1: `transaction_statuses` reports tx9 as READY to prove (no honest blocker at all).
-    ///  GAP 2: `sync_wakeup_schedule` emits a PERPETUAL immediate wake-up covering tx9.
+    ///  HEAL 0: `next_step` still offers `Prove { 9 }`, but that instruction now COMPLETES — the
+    ///          consumer's `engine::prove_transfer` re-draws tx9's boundary to a bucket covering
+    ///          tx3's real mined height and proves against it. So a normal `drain` (which applies the
+    ///          prove) advances tx9 all the way to Broadcast — no wedge.
+    ///  HEAL 1: `transaction_statuses` reporting tx9 READY-to-Prove with no blocker is now HONEST:
+    ///          the prove genuinely succeeds.
+    ///  HEAL 2: the immediate wake-up covering tx9 is now correct work, not a dead poll.
     ///
-    /// The change request (`2026-07-30-engine-change-request-unprovable-boundary.md`) asks to
-    /// close all three: upstream the late-dependency guard into `prove_ready`, surface a distinct
-    /// blocker (or early `Rebuild`), and stop scheduling wake-ups for it. When it ships, the GAP
-    /// assertions below are expected to FLIP — update them alongside.
+    /// Note this trace drives the PURE state machine with a `NoOpPoolMigrationStore` and simulates
+    /// proving by flipping state (it never calls `prove_transfer`); the heal it models is that the
+    /// prover NO LONGER fails on tx9, so `drain` — which applies every offered prove — is the
+    /// faithful model, where before only `drain_with_failing_prover` was.
     #[test]
-    fn unprovable_boundary_documented_gap() {
+    fn unprovable_boundary_heals_via_prove_time_redraw() {
         let mut d = Driver::new(live_plan());
         // Preps execute as live; tx3 mines LATE, past tx9's boundary.
         d.drain(4_224_542);
@@ -6487,30 +6433,19 @@ mod state_machine_trace_tests {
         d.drain(4_224_563);
         d.mine(3, 4_224_587);
 
-        // GAP 0: the machine wedges on the impossible Prove { 9 } while healthy work remains
-        // possible (the failing-prover drain returns the moment the impossible instruction
-        // appears; a real consumer erroring on it and re-asking would loop forever).
-        let (applied, wedge) = d.drain_with_failing_prover(4_224_700, &[9]);
-        assert_eq!(
-            wedge,
-            prove(9),
-            "pure prove_ready lacks the late-dependency guard — it offers the impossible prove"
-        );
-        // Everything provable before the wedge point got applied.
-        assert!(applied.iter().all(
-            |s| !matches!(s, AdvanceStep::Broadcast { id } if id_of(*id) == 9)
-        ));
-
-        // GAP 1: the status view claims tx9 is READY (action = Prove), with no blocker.
-        let statuses = d.build().transaction_statuses(DuenessTargets::at(BlockHeight::from_u32(4_224_701)));
+        // HEAL 1: with tx3 mined (late), tx9's boundary settled and deps mined, the status view
+        // honestly reports tx9 as READY to Prove with no blocker — the prove will now succeed.
+        let statuses = d
+            .build()
+            .transaction_statuses(DuenessTargets::at(BlockHeight::from_u32(4_224_701)));
         let tx9 = statuses
             .iter()
             .find(|st| id_of(st.id()) == 9)
             .expect("tx9 status");
-        assert!(tx9.ready(), "reported ready even though proving cannot succeed");
-        assert_eq!(tx9.blocked_on(), None);
+        assert!(tx9.ready(), "tx9 is ready to prove — the redraw heals it at prove time");
+        assert_eq!(tx9.blocked_on(), None, "no blocker: the offered Prove now completes");
 
-        // GAP 2: a perpetual immediate wake-up keeps covering tx9.
+        // HEAL 2: an immediate wake-up covers tx9 — now legitimate work, not a dead poll.
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
         let wakeups = d
             .build()
@@ -6524,13 +6459,35 @@ mod state_machine_trace_tests {
             wakeups
                 .iter()
                 .any(|w| w.covers().iter().any(|t| id_of(*t) == 9)),
-            "wake-ups keep being scheduled for a transfer that can never prove"
+            "the wake-up covering tx9 now drives a prove that succeeds"
         );
+
+        // HEAL 0: a NORMAL drain (the prover no longer fails on tx9) proves AND broadcasts tx9 —
+        // no wedge. Everything is due at this tip, so the whole transfer set proves and broadcasts.
+        let (applied, settle) = d.drain(4_224_700);
+        assert!(
+            applied.contains(&prove(9)),
+            "tx9 is proved — prove_transfer's boundary redraw makes the offered Prove succeed"
+        );
+        assert!(
+            applied.contains(&broadcast(9)),
+            "tx9 advances to Broadcast; it is not wedged on an impossible prove"
+        );
+        assert_eq!(settle, AdvanceStep::Waiting, "settles Waiting for mines, not wedged");
+
+        // And the migration runs to Complete once everything mines — tx9 included.
+        for id in 4..=14 {
+            d.mine(id, 4_224_706);
+        }
+        let (_steps, settle) = d.drain(4_224_720);
+        assert_eq!(settle, AdvanceStep::Complete, "the plan completes with tx9 healed");
     }
 
-    /// (d) EXPIRY heals the stuck transfer via the existing rebuild path: once the chain passes
-    /// tx9's expiry height, `next_step` finally emits `Rebuild { 9 }` and the status flips to the
-    /// honest `Blocker::Expired`. This is the machinery our change request asks to trigger EARLY.
+    /// (d) EXPIRY still surfaces the rebuild path (independent of the late-dependency heal): if a
+    /// transfer stays un-proved until its expiry height (here modelled with a failing prover on tx9),
+    /// `next_step` emits `Rebuild { 9 }` and the status flips to the honest `Blocker::Expired`. The
+    /// rc.6 prove-time redraw handles the late-dependency case earlier, but this expiry-driven
+    /// rebuild remains the backstop for any transfer that never proves for other reasons.
     #[test]
     fn expiry_surfaces_rebuild_for_the_stuck_transfer() {
         let mut d = Driver::new(live_plan());
@@ -6605,14 +6562,15 @@ mod state_machine_trace_tests {
 // obeys these three reads (`nextStep`, extended `transactionStates`, `syncWakeupSchedule`) plus
 // `applySignature`; it never selects, orders or schedules transactions itself.
 //
-// TEMPORARY GUARD VETO — TODO(remove: upstream late-dependency guard, engine change request
-// `2026-07-30-engine-change-request-unprovable-boundary.md`): the pure `state.rs::prove_ready`
-// lacks the late-dependency guard this file's `is_prove_ready` carries, so a raw
-// `MigrationState::next_step` wedges forever on `Prove` for a transfer whose dependency mined
-// past its anchor boundary (pinned by `state_machine_trace_tests::unprovable_boundary_documented_gap`).
-// Until the guard is upstreamed, the driver surface below applies it locally: such a transfer is
-// never offered for Prove, is reported with the synthetic UNPROVABLE_ANCHOR blocker, and
-// contributes no sync wake-ups.
+// LATE-DEPENDENCY GUARD VETO — REMOVED (resolved upstream, rc.6). This surface once applied a local
+// veto on top of the engine's reads: a transfer whose dependency mined past its anchor boundary was
+// withheld from Prove, reported with a synthetic UNPROVABLE_ANCHOR blocker, and dropped from sync
+// wake-ups, because the pure `state.rs::prove_ready` offered a Prove that could never succeed
+// (change request `spec/2026-07-30-engine-change-request-unprovable-boundary.md`). That request's
+// preferred fix shipped in `zcash_pool_migration` 0.1.0-rc.6: `engine::prove_transfer` re-draws the
+// boundary at prove time so the Prove the engine offers now genuinely completes. The engine's reads
+// are therefore HONEST as-is, and the local veto is gone — the driver surface below delegates
+// entirely to `advance_migration` / `transaction_statuses` / `sync_wakeup_schedule`.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 
 const STEP_WAITING: i64 = 0;
@@ -6640,8 +6598,11 @@ const BLOCKER_SCHEDULE: i32 = 2;
 const BLOCKER_ANCHOR_BOUNDARY: i32 = 3;
 const BLOCKER_SIGNATURE: i32 = 4;
 const BLOCKER_EXPIRED: i32 = 5;
-/// Synthetic, app-facing only — the engine has no such variant yet (see the guard-veto note).
-const BLOCKER_UNPROVABLE_ANCHOR: i32 = 6;
+// Code 6 (BLOCKER_UNPROVABLE_ANCHOR) was a synthetic, app-facing blocker emitted by the now-removed
+// late-dependency guard veto (resolved upstream in rc.6; see the driver-surface banner above). The
+// backend no longer produces it. The value stays RESERVED — the Kotlin `MigrationBlocker` mapping
+// keeps a legacy `6 -> UNPROVABLE_ANCHOR` arm for wire compatibility, and no new blocker should
+// reuse the number.
 /// `Blocker::ExpiryImminent` (rc.6): the caller's ESTIMATED tip has passed expiry but the wallet's
 /// own scan has not caught up yet, so the kernel withholds without recording anything.
 const BLOCKER_EXPIRY_IMMINENT: i32 = 7;
@@ -6652,44 +6613,15 @@ const BLOCKER_AWAITING_REEVALUATION: i32 = 8;
 /// on chain. Resolved only by a migration-level replan (`AdvanceStep::Replan`).
 const BLOCKER_UNSATISFIABLE: i32 = 9;
 
-/// Whether `t` is wedged behind the late-dependency guard: pre-signed, dependencies mined, boundary
-/// settled — yet un-provable because a dependency mined PAST the drawn anchor boundary.
-fn is_unprovable_anchor(
-    state: &zcash_pool_migration::engine::MigrationState,
-    t: &zcash_pool_migration::engine::MigrationTransaction,
-    target_height: BlockHeight,
-) -> bool {
-    use zcash_pool_migration::engine::MigrationTxState;
-    if !matches!(
-        t.state(),
-        MigrationTxState::Signed | MigrationTxState::AwaitingSignature
-    ) {
-        return false;
-    }
-    let Some(boundary) = t.anchor_boundary() else {
-        return false;
-    };
-    // Boundary settled and deps mined, yet the guarded readiness check refuses: the only remaining
-    // cause is a dependency mined past the boundary (the guard's own condition).
-    let expired = {
-        let expiry = u32::from(t.expiry_height());
-        expiry != 0 && expiry < u32::from(target_height)
-    };
-    !expired
-        && state.deps_mined(t.depends_on())
-        && u32::from(boundary) + 1 < u32::from(target_height)
-        && !is_prove_ready(state, t, target_height)
-}
-
 /// Two-tip decision (spec §3): the underlying `advance_migration` call is driven by
 /// `DuenessTargets::new(scanned, estimated)`, which folds the ESTIMATED tip into its `effective`
 /// target (broadcast timing, an optimistic estimate that only ever accelerates) while keeping the
 /// SCANNED tip as its `scanned` target (proving/rebuild/expiry, which need real chain facts, not
-/// an estimate) — see `DuenessTargets::new`'s doc. This now delegates step selection entirely to
-/// the crate's own `advance_migration`, rather than re-implementing next-broadcastable/prove-ready/
-/// rebuild-on-expiry locally: the TEMPORARY GUARD VETO note above is about the SEPARATE
-/// `is_unprovable_anchor`/`BLOCKER_UNPROVABLE_ANCHOR` reporting surface (`transactionStates`,
-/// `syncWakeupSchedule`), which is unchanged by this call and still applies its local guard.
+/// an estimate) — see `DuenessTargets::new`'s doc. This delegates step selection entirely to the
+/// crate's own `advance_migration`, rather than re-implementing next-broadcastable/prove-ready/
+/// rebuild-on-expiry locally. (Historically the reporting surfaces applied a local late-dependency
+/// guard veto on top; that veto has been removed now that rc.6's `engine::prove_transfer` heals the
+/// condition at prove time — see the driver-surface banner above.)
 fn guarded_next_step(
     backend: &mut impl PoolMigrationWrite<Error = EngineError>,
     state: &mut MigrationState,
@@ -6761,9 +6693,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// The minimal sync/prove wake-up schedule for the app's worker, from the engine's
-/// `sync_wakeup_schedule` (windows, minimality, jitter, immediate-overdue) — with guard-vetoed
-/// (unprovable-anchor) transfers dropped from coverage so a wedged transfer cannot demand
-/// perpetual immediate wake-ups (see the guard-veto note; pinned by the golden traces).
+/// `sync_wakeup_schedule` (windows, minimality, jitter, immediate-overdue), taken as-is. The former
+/// guard-veto that dropped unprovable-anchor transfers from coverage is gone (resolved upstream in
+/// rc.6 — see the driver-surface banner): a late-dependency transfer is no longer a permanent wedge
+/// (`engine::prove_transfer` heals it at prove time), so waking to prove it is correct.
 /// Encoding: an array of long-arrays, each `[wakeHeight, coveredId...]`; empty wake-ups are
 /// dropped.
 #[unsafe(no_mangle)]
@@ -6788,12 +6721,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         else {
             return Ok(ptr::null_mut());
         };
-        let vetoed: Vec<u32> = state
-            .transactions()
-            .iter()
-            .filter(|t| is_unprovable_anchor(&state, t, target))
-            .map(|t| u32::from(t.id()))
-            .collect();
         let mut rng = OsRng;
         let wakeups = state
             .sync_wakeup_schedule(
@@ -6808,9 +6735,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 let ids: Vec<i64> = w
                     .covers()
                     .iter()
-                    .map(|t| u32::from(*t))
-                    .filter(|id| !vetoed.contains(id))
-                    .map(i64::from)
+                    .map(|t| i64::from(u32::from(*t)))
                     .collect();
                 if ids.is_empty() {
                     None
