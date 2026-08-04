@@ -5,8 +5,12 @@ package cash.z.ecc.android.sdk.model
  *
  * This is a conformance class, not a provenance: it describes the shape a transaction has on
  * chain, and can never establish that a transaction came from this wallet's own migration run.
- * Only [PREPARATION] and [TRANSFER] are the wallet's own migration; [CROSSING_PAYMENT] has the
- * same shape by design but pays a third party.
+ * [PREPARATION] and [TRANSFER] are the only migration shapes, and [TRANSFER] does not say who the
+ * crossing pays: the ordinary send path deliberately builds canonical-denomination payments to
+ * third parties in that same shape, so that they join the migration anonymity set. Nothing
+ * observable on chain separates such a payment from a wallet's own transfer, which is the point
+ * of the shape. A wallet that knows the recipient of its own transaction may draw the distinction
+ * from its own records; this classification cannot.
  */
 @Suppress("MagicNumber")
 enum class Zip318Kind(
@@ -26,15 +30,8 @@ enum class Zip318Kind(
     /** A note-preparation self-send that a migration run makes before it crosses. */
     PREPARATION(2),
 
-    /** A pool crossing paying the account's own internal address, so a migration transfer. */
-    TRANSFER(3),
-
-    /**
-     * A canonical crossing that pays an external third party. The ordinary send path builds such
-     * payments deliberately, so that they join the migration anonymity set; it is a payment and
-     * must not be presented as a migration.
-     */
-    CROSSING_PAYMENT(4);
+    /** A pool crossing of a canonical denomination, in the canonical shape. */
+    TRANSFER(3);
 
     companion object {
         /**

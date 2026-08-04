@@ -29,6 +29,9 @@ object TransactionOverviewFixture {
     const val BLOCK_TIME_EPOCH_SECONDS: Long = 1234
     val STATE = TransactionState.Confirmed
     const val IS_SHIELDING = false
+    const val SPENT_NOTE_COUNT: Int = 0
+    val POOL_CROSSING_VALUE: Zatoshi? = null
+    const val IS_TRUSTED: Boolean = false
     val ZIP318_KIND = Zip318Kind.NOT_CLASSIFIED
 
     @Suppress("LongParameterList")
@@ -50,6 +53,9 @@ object TransactionOverviewFixture {
         blockTimeEpochSeconds: Long = BLOCK_TIME_EPOCH_SECONDS,
         transactionState: TransactionState = STATE,
         isShielding: Boolean = IS_SHIELDING,
+        spentNoteCount: Int = SPENT_NOTE_COUNT,
+        poolCrossingValue: Zatoshi? = POOL_CROSSING_VALUE,
+        isTrusted: Boolean = IS_TRUSTED,
         zip318Kind: Zip318Kind = ZIP318_KIND
     ) = TransactionOverview(
         txId = txId,
@@ -69,6 +75,9 @@ object TransactionOverviewFixture {
         blockTimeEpochSeconds = blockTimeEpochSeconds,
         transactionState = transactionState,
         isShielding = isShielding,
+        spentNoteCount = spentNoteCount,
+        poolCrossingValue = poolCrossingValue,
+        isTrusted = isTrusted,
         zip318Kind = zip318Kind,
     )
 }

@@ -16,9 +16,9 @@ import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
-import cash.z.ecc.android.sdk.model.Zip318Kind
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.Zip318Kind
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -253,6 +253,9 @@ class CompactBlockProcessorTest {
                 blockTimeEpochSeconds = null,
                 isShielding = false,
                 isExpiredUnmined = false,
+                spentNoteCount = 1,
+                poolCrossingValue = null,
+                isTrusted = false,
                 zip318Kind = Zip318Kind.NOT_CLASSIFIED
             )
 

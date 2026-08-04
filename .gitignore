@@ -101,3 +101,5 @@ backup-dbs/
 /.idea/kotlinc.xml
 /.idea/runConfigurations.xml
 /.worktrees
+
+.plans/
