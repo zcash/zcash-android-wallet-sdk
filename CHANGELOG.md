@@ -14,11 +14,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Zip318Kind.NOT_CLASSIFIED` means the wallet has not looked at the transaction,
   not that the transaction is not a migration, and warrants no label in a UI; a
   transaction the wallet has examined and rejected is `NONCONFORMING` instead. Only
-  `PREPARATION` and `TRANSFER` are the wallet's own migration.
+  `PREPARATION` and `TRANSFER` are the wallet's own migration. Transactions already
+  in the wallet's history are not classified retroactively on upgrade: they read
+  `NOT_CLASSIFIED` until rescanned.
 
 ### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
-  `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
+  `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
   (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
   boundaries rather than 16).
 - A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
@@ -30,6 +32,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 All of the following were picked up from the librustzcash update:
 
+- `Synchronizer.createTransactionFromPczt` now records the transaction's Ironwood
+  outputs. Every Ironwood output was previously dropped when the transaction was
+  stored: for a post-NU6.3 PCZT that delivers its payment through the Ironwood pool,
+  the external recipient's address and decrypted memo were never persisted and are
+  not recoverable afterwards, and the wallet's own Ironwood outputs stayed invisible
+  until the transaction was mined and scanned.
 - A wallet whose database was upgraded by a build using
   `zcash_client_sqlite 0.22.0-rc.1` (the 2.6.6 internal build) no longer fails
   every scan. Such a wallet's `orchard_ironwood_migrations` table never acquired
