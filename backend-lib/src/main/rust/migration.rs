@@ -298,7 +298,7 @@ pub(crate) fn min_pending_anchor_boundary(
 
     let mut min_height: Option<BlockHeight> = None;
     for account in account_ids {
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let Some(state) = backend.get_migration().map_err(|e| {
             anyhow!(
                 "Error reading migration state for account {:?}: {:?}",
@@ -378,7 +378,7 @@ fn compute_plan(
     account: AccountUuid,
     store_conn: &mut Connection,
 ) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
-    let backend = Backend::new(wallet, account, None, store_conn)?;
+    let backend = Backend::new(&network, wallet, account, None, store_conn)?;
     let mut rng = OsRng;
     let migration_plan = engine::plan_migration(network, &backend, &mut rng)
         .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
@@ -508,7 +508,7 @@ fn commit_or_reuse(
         target,
     } = ctx;
     {
-        let backend = Backend::new(wallet, account, None, &mut *store_conn)?;
+        let backend = Backend::new(&network, wallet, account, None, &mut *store_conn)?;
         if let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -524,7 +524,7 @@ fn commit_or_reuse(
         }
     }
     let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
-    let mut backend = Backend::new(wallet, account, usk, store_conn)?;
+    let mut backend = Backend::new(&network, wallet, account, usk, store_conn)?;
     let mut rng = OsRng;
     let result = sign(network, target, &mut backend, &migration_plan, &mut rng)?;
     crate::migration_plan_cache::clear(account);
@@ -1168,6 +1168,7 @@ fn is_transient_prove_error<TE, NE, RE>(err: &WalletProveError<TE, NE, RE>) -> b
 /// `extractBroadcastTxNative` fails with `OrchardParse(MissingAnchor)` on the merely-signed PCZT
 /// (confirmed live: the Keystone path originally skipped this step entirely).
 fn finalize_note_split(
+    network: &Network,
     wallet: &mut Wallet,
     account: AccountUuid,
     store_conn: &mut Connection,
@@ -1175,7 +1176,7 @@ fn finalize_note_split(
     id: MigrationTransferId,
 ) -> anyhow::Result<(Vec<u8>, [u8; 32])> {
     let fvk = {
-        let backend = Backend::new(wallet, account, None, store_conn)?;
+        let backend = Backend::new(network, wallet, account, None, store_conn)?;
         backend
             .orchard_fvk()
             .map_err(|e| anyhow!("Error reading account FVK: {:?}", e))?
@@ -1194,7 +1195,7 @@ fn finalize_note_split(
         ));
     }
     {
-        let mut backend = Backend::new(wallet, account, None, store_conn)?;
+        let mut backend = Backend::new(network, wallet, account, None, store_conn)?;
         backend
             .replace_migration(state)
             .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
@@ -1273,7 +1274,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .map(|t| t.id())
             .ok_or_else(|| anyhow!("Migration has no note-split preparation transaction"))?;
         let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
+            finalize_note_split(&network, &mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
         let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -1334,7 +1335,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     tx_id: JByteArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let id = decode_transfer_id(transfer_id)?;
         // The invalidation side table stores the id as TEXT (see INVALIDATION_DDL) — render the
@@ -1346,7 +1347,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             // site (the old crate didn't track a separate "mined" event either) — left unwired.
             0 => {
                 let txid = crate::parse_txid(env, tx_id)?;
-                let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+                let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
                 let mut state = backend
                     .get_migration()
                     .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -1372,7 +1373,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 // call `record_invalidation` (which needs `&store_conn`) and before we re-create
                 // `backend` for the `replace_migration` write.
                 let failed_opt: Option<MigrationState> = {
-                    let backend_read = Backend::new(&wallet, account, None, &mut store_conn)?;
+                    let backend_read = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
                     let current = backend_read
                         .get_migration()
                         .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
@@ -1415,7 +1416,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         Some(&transfer_id_str),
                     )
                     .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
-                    let mut backend_write = Backend::new(&wallet, account, None, &mut store_conn)?;
+                    let mut backend_write = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
                     backend_write
                         .replace_migration(&failed)
                         .map_err(|e| anyhow!("Error persisting failed migration: {:?}", e))?;
@@ -1581,6 +1582,7 @@ fn decide_foreign_spend(
 ///      nullifier set. Absent from unspent ⇒ spent; steps 1–2 already resolved every own broadcast,
 ///      so this is a foreign spend ⇒ invalidate.
 fn reconcile_invalidated(
+    network: &Network,
     wallet: &mut Wallet,
     account: AccountUuid,
     account_bytes: &[u8],
@@ -1588,7 +1590,7 @@ fn reconcile_invalidated(
 ) -> anyhow::Result<bool> {
     // --- Pass 1 + load current state (read_reconciled persists any Broadcast→Mined promotions). ---
     let mut state = {
-        let mut backend = Backend::new(&*wallet, account, None, store_conn)?;
+        let mut backend = Backend::new(network, &*wallet, account, None, store_conn)?;
         match read_reconciled(wallet, &mut backend)? {
             Some(s) => s,
             None => return Ok(false),
@@ -1622,7 +1624,7 @@ fn reconcile_invalidated(
             state.mark_broadcast(*id, *txid);
             state.mark_mined(*id, *height);
         }
-        let mut backend = Backend::new(&*wallet, account, None, store_conn)?;
+        let mut backend = Backend::new(network, &*wallet, account, None, store_conn)?;
         backend
             .replace_migration(&state)
             .map_err(|e| anyhow!("Error persisting submit-crash-probe promotions: {:?}", e))?;
@@ -1717,7 +1719,7 @@ fn reconcile_invalidated(
         state.transactions().clone(),
         state.anchor_bucket_interval(),
     );
-    let mut backend = Backend::new(&*wallet, account, None, store_conn)?;
+    let mut backend = Backend::new(network, &*wallet, account, None, store_conn)?;
     backend
         .replace_migration(&failed)
         .map_err(|e| anyhow!("Error persisting invalidated migration: {:?}", e))?;
@@ -1751,11 +1753,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
         Ok(
-            if reconcile_invalidated(&mut wallet, account, &account_bytes, &mut store_conn)? {
+            if reconcile_invalidated(&network, &mut wallet, account, &account_bytes, &mut store_conn)? {
                 JNI_TRUE
             } else {
                 JNI_FALSE
@@ -1816,10 +1818,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
         Ok(derive_migration_state(env, persisted, tip, &store_conn, &account_bytes)?.into_raw())
@@ -1838,10 +1840,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
@@ -1918,7 +1920,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let mut rng = OsRng;
         let estimate = engine::estimate_migration_runs(&network, &backend, &mut rng)
             .map_err(|e| anyhow!("Error estimating migration runs: {:?}", e))?;
@@ -1961,7 +1963,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     estimated_tip: jlong,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned_tip = target_height(&wallet)? - 1;
         let effective_tip = if estimated_tip >= 0 {
@@ -1969,7 +1971,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             scanned_tip
         };
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) => {
@@ -1996,9 +1998,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) => match state.status() {
@@ -2056,7 +2058,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // (the proposal's `anchorHeight` shown to the app is only a duration-display reference —
         // the per-transfer bucket boundaries exist first here, post-commit).
         let committed_state = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
             backend
                 .get_migration()
                 .map_err(|e| anyhow!("Error re-reading committed migration state: {:?}", e))?
@@ -2102,7 +2104,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     state.transactions().clone(),
                     state.anchor_bucket_interval(),
                 );
-                let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+                let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
                 backend
                     .replace_migration(&cancelled)
                     .map_err(|e| anyhow!("Error cancelling checkpoint-invalid migration: {}", e))?;
@@ -2249,12 +2251,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
 
         let (mut state, fvk) = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
             let Some(state) = backend
                 .get_migration()
                 .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -2328,7 +2330,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             }
         }
         if finalized_count > 0 {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
             backend
                 .replace_migration(&state)
                 .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
@@ -2403,7 +2405,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     estimated_tip: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned_tip = target_height(&wallet)? - 1;
         let effective_tip = if estimated_tip >= 0 {
@@ -2411,7 +2413,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             scanned_tip
         };
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let Some(state) = read_reconciled(&wallet, &mut backend)? else {
             // No migration: status=0, both nullable fields null.
             return Ok(env.new_object(
@@ -2537,10 +2539,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -3020,10 +3022,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration: {}", e))?
@@ -3066,10 +3068,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
@@ -3225,11 +3227,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     signed_pczt: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let signed_pczt_bytes = crate::utils::java_bytes_to_rust(env, &signed_pczt)?;
         let mut state = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
             backend
                 .get_migration()
                 .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -3245,7 +3247,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             return Err(anyhow!("Error applying note-split signature"));
         }
         {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
             backend
                 .replace_migration(&state)
                 .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
@@ -3254,7 +3256,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // `extractBroadcastTxNative` fails with `OrchardParse(MissingAnchor)` on the
         // merely-signed-but-unproven bytes just applied above (confirmed live).
         let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
+            finalize_note_split(&network, &mut wallet, account, &mut store_conn, &mut state, split_id)?;
 
         let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -3477,14 +3479,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     pczt_bytes_list: JObjectArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let count = env.get_array_length(&ids)?;
         // A `long[]` is read as a region rather than element-by-element: the ids are primitives,
         // not objects.
         let mut raw_ids = vec![0i64; count as usize];
         env.get_long_array_region(&ids, 0, &mut raw_ids)?;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let mut state = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -3798,7 +3800,7 @@ mod live_wallet_signing_tests {
         let target = tip + 1;
 
         let mut state = {
-            let mut backend = Backend::new(&wallet, account, Some(usk), &mut store_conn)
+            let mut backend = Backend::new(&network, &wallet, account, Some(usk), &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             engine::commit_preparation(&network, target, &mut backend, &migration_plan, &mut rng)
@@ -3812,7 +3814,7 @@ mod live_wallet_signing_tests {
         );
 
         let fvk = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
                 .expect("account exists for migration store");
             backend.orchard_fvk().expect("fvk")
         };
@@ -3937,7 +3939,7 @@ mod live_wallet_signing_tests {
         // Mirrors `createUnsignedNoteSplitPcztNative`: build unsigned, leaving every transaction
         // (including the split) `AwaitingSignature` — nothing is signed by this call.
         let (mut state, unsigned) = {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             engine::build_preparation_unsigned(
@@ -3981,7 +3983,7 @@ mod live_wallet_signing_tests {
             "apply_signature should accept the freshly-signed split pczt"
         );
         let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)
+            finalize_note_split(&network, &mut wallet, account, &mut store_conn, &mut state, split_id)
                 .expect(
                     "finalize_note_split should resolve the anchor, not fail with MissingAnchor",
                 );
@@ -4116,7 +4118,7 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account_a, &mut store_conn).expect("plan_for account_a");
         let target = tip + 1;
         {
-            let mut backend_a = Backend::new(&wallet, account_a, None, &mut store_conn)
+            let mut backend_a = Backend::new(&network, &wallet, account_a, None, &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             engine::build_preparation_unsigned(&network, target, &mut backend_a, &plan_a, &mut rng)
@@ -4126,7 +4128,7 @@ mod live_wallet_edge_case_tests {
         // Asking for account B's migration state goes through the exact same code path
         // (`migrationStateNative`/`commit_or_reuse` do this) — it must see nothing, since B has
         // no migration of its own. Instead it leaks A's.
-        let backend_b = Backend::new(&wallet, account_b, None, &mut store_conn)
+        let backend_b = Backend::new(&network, &wallet, account_b, None, &mut store_conn)
             .expect("account exists for migration store");
         let leaked = backend_b
             .get_migration()
@@ -4176,7 +4178,7 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         let mut state = {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             let (state, _unsigned) =
@@ -4188,7 +4190,7 @@ mod live_wallet_edge_case_tests {
         let mined_txid = a_mined_txid_in_fixture(&store_conn);
         state.mark_broadcast(some_tx_id, mined_txid);
 
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
             .expect("account exists for migration store");
         backend
             .replace_migration(&state)
@@ -4398,14 +4400,14 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
                 .expect("first commit");
         }
 
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
             .expect("account exists for migration store");
         let mut rng = OsRng;
         let result =
@@ -4434,7 +4436,7 @@ mod live_wallet_edge_case_tests {
             let (plan, tip, _handle) =
                 plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
             let target = tip + 1;
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             let (state, _unsigned) =
@@ -4446,7 +4448,7 @@ mod live_wallet_edge_case_tests {
 
         let (wallet2, mut store_conn2) = open_at(&db_path, network).expect("reopen wallet");
         let account = first_account(&wallet2);
-        let backend2 = Backend::new(&wallet2, account, None, &mut store_conn2)
+        let backend2 = Backend::new(&network, &wallet2, account, None, &mut store_conn2)
             .expect("account exists for migration store");
         let reloaded = backend2
             .get_migration()
@@ -4481,7 +4483,7 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan before commit");
         let target = target_height(&wallet).expect("target height");
         {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             engine::build_preparation_unsigned(
@@ -4516,7 +4518,7 @@ mod live_wallet_edge_case_tests {
         let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account_b = create_synthetic_account(&mut wallet, 0x43, "edge-case-empty-account");
 
-        let backend = Backend::new(&wallet, account_b, None, &mut store_conn)
+        let backend = Backend::new(&network, &wallet, account_b, None, &mut store_conn)
             .expect("account exists for migration store");
         let mut rng = OsRng;
         let result = engine::plan_migration(&network, &backend, &mut rng);
@@ -5185,7 +5187,7 @@ mod reconcile_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         let mut state = {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             let (state, _unsigned) =
@@ -5890,7 +5892,7 @@ mod state_machine_trace_tests {
             loop {
                 let step = self.build().next_step(target);
                 match step {
-                    AdvanceStep::Prove { id } => {
+                    AdvanceStep::Prove { id, kind: _ } => {
                         self.set(id_of(id), MigrationTxState::Proved);
                         applied.push(step);
                     }
@@ -5925,10 +5927,10 @@ mod state_machine_trace_tests {
             loop {
                 let step = self.build().next_step(target);
                 match step {
-                    AdvanceStep::Prove { id } if failing.contains(&id_of(id)) => {
+                    AdvanceStep::Prove { id, kind: _ } if failing.contains(&id_of(id)) => {
                         return (applied, step);
                     }
-                    AdvanceStep::Prove { id } => {
+                    AdvanceStep::Prove { id, kind: _ } => {
                         self.set(id_of(id), MigrationTxState::Proved);
                         applied.push(step);
                     }
@@ -5951,9 +5953,34 @@ mod state_machine_trace_tests {
         u32::from(id)
     }
 
+    /// `live_plan()`'s own kind for each transaction id, as evaluated by `next_step`
+    /// (Preparation for ids 0-3 by layer/index, Transfer for ids 4-14 by crossing) — kept here
+    /// rather than threaded through every `prove(N)` call site.
+    fn live_plan_kind(id: u32) -> MigrationTxKind {
+        match id {
+            0 => MigrationTxKind::Preparation { layer: 0, index: 0 },
+            1 => MigrationTxKind::Preparation { layer: 0, index: 1 },
+            2 => MigrationTxKind::Preparation { layer: 1, index: 0 },
+            3 => MigrationTxKind::Preparation { layer: 2, index: 0 },
+            4 => MigrationTxKind::Transfer { crossing: 0 },
+            5 => MigrationTxKind::Transfer { crossing: 1 },
+            6 => MigrationTxKind::Transfer { crossing: 2 },
+            7 => MigrationTxKind::Transfer { crossing: 3 },
+            8 => MigrationTxKind::Transfer { crossing: 4 },
+            9 => MigrationTxKind::Transfer { crossing: 5 },
+            10 => MigrationTxKind::Transfer { crossing: 6 },
+            11 => MigrationTxKind::Transfer { crossing: 7 },
+            12 => MigrationTxKind::Transfer { crossing: 8 },
+            13 => MigrationTxKind::Transfer { crossing: 9 },
+            14 => MigrationTxKind::Transfer { crossing: 10 },
+            other => panic!("live_plan_kind: no fixture entry for id {other}"),
+        }
+    }
+
     fn prove(id: u32) -> AdvanceStep {
         AdvanceStep::Prove {
             id: MigrationTransferId::new(id),
+            kind: live_plan_kind(id),
         }
     }
 
@@ -5977,13 +6004,19 @@ mod state_machine_trace_tests {
     /// executes to Complete. This is the end-to-end contract for the single-lane worker: the
     /// engine emits prove-first batches, then broadcasts in schedule order, and settles Waiting
     /// between events.
+    ///
+    /// Under the librustzcash#2874 (zip318_kind) pin, a PREPARATION is only ever surfaced for
+    /// proving once its own broadcast schedule is due (see `AdvanceStep::Prove`'s `kind` field
+    /// doc), so it is proved and broadcast within the SAME wake-up rather than batched — hence
+    /// the interleaved prove/broadcast order per prep below (list order across preps is
+    /// unchanged).
     #[test]
     fn live_plan_happy_trace_completes_with_late_but_in_margin_prep() {
         let mut d = Driver::new(live_plan());
 
-        // Layer 0 due: both preps prove (natural anchor) then broadcast, in list order.
+        // Layer 0 due: each prep proves (natural anchor) then broadcasts immediately, in list order.
         let (steps, settle) = d.drain(4_224_542);
-        assert_eq!(steps, vec![prove(0), prove(1), broadcast(0), broadcast(1)]);
+        assert_eq!(steps, vec![prove(0), broadcast(0), prove(1), broadcast(1)]);
         assert_eq!(settle, AdvanceStep::Waiting);
         d.mine(0, 4_224_544);
         d.mine(1, 4_224_546);
@@ -6005,36 +6038,42 @@ mod state_machine_trace_tests {
         assert_eq!(steps, vec![prove(5), prove(8), prove(9)]);
         assert_eq!(settle, AdvanceStep::Waiting);
 
-        // tx8's schedule arrives; boundary 4224588 also settled → prove-first, then broadcast.
+        // tx8's schedule arrives; boundary 4224588 also settled. Under the librustzcash#2874
+        // pin, an already-due broadcast is prioritised over an opportunistic early prove (proving
+        // tx4 now is a pruning-safety optimisation, not urgent — see `AdvanceStep::Prove`'s
+        // `kind` doc), so broadcast(8) comes first.
         let (steps, _) = d.drain(4_224_593);
-        assert_eq!(steps, vec![prove(4), broadcast(8)]);
+        assert_eq!(steps, vec![broadcast(8), prove(4)]);
         d.mine(8, 4_224_601);
 
-        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out.
+        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out. Under
+        // the librustzcash#2874 pin, already-due broadcasts are prioritised over the opportunistic
+        // early proves of tx11/tx13 (see the tx4/tx8 case above).
         let (steps, _) = d.drain(4_224_612);
         assert_eq!(
             steps,
-            vec![prove(11), prove(13), broadcast(4), broadcast(5), broadcast(9)]
+            vec![broadcast(4), broadcast(5), broadcast(9), prove(11), prove(13)]
         );
         d.mine(4, 4_224_616);
         d.mine(5, 4_224_616);
         d.mine(9, 4_224_616);
 
-        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast.
+        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast. Under the
+        // librustzcash#2874 pin: tx11 was already proved (prior batch) and its broadcast is due,
+        // so it goes out before any new proving this call. tx7 becomes both provable AND
+        // immediately broadcast-due in this same call, so its prove/broadcast pair stays
+        // adjacent; tx6/10/12/14 are provable but not yet broadcast-due, so they only prove.
         let (steps, _) = d.drain(4_224_638);
         assert_eq!(
             steps,
             vec![
+                broadcast(11),
                 prove(6),
                 prove(7),
+                broadcast(7),
                 prove(10),
                 prove(12),
                 prove(14),
-                // FINDING (documented): among simultaneously-due transactions,
-                // `next_broadcastable` serves VEC (id) order, not scheduled order — tx7
-                // (sched 4224627) goes before tx11 (sched 4224617).
-                broadcast(7),
-                broadcast(11)
             ]
         );
         d.mine(11, 4_224_642);
@@ -6106,9 +6145,7 @@ mod state_machine_trace_tests {
         let (applied, wedge) = d.drain_with_failing_prover(4_224_700, &[9]);
         assert_eq!(
             wedge,
-            AdvanceStep::Prove {
-                id: MigrationTransferId::new(9)
-            },
+            prove(9),
             "pure prove_ready lacks the late-dependency guard — it offers the impossible prove"
         );
         // Everything provable before the wedge point got applied.
@@ -6196,7 +6233,7 @@ mod state_machine_trace_tests {
         assert!(
             steps
                 .iter()
-                .all(|s| !matches!(s, AdvanceStep::Prove { id } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
+                .all(|s| !matches!(s, AdvanceStep::Prove { id, kind: _ } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
             "an AwaitingSignature tx is driven by apply_signature, not the automatic loop"
         );
         assert_eq!(settle, AdvanceStep::Waiting);
@@ -6342,7 +6379,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     estimated_tip: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned = target_height(&wallet)?; // scanned tip + 1
         // estimated_tip < 0 → unavailable → no acceleration (estimated == scanned).
@@ -6351,7 +6388,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             std::cmp::max(scanned, BlockHeight::from_u32(estimated_tip as u32) + 1)
         };
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -6383,11 +6420,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         let tip = target - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -6459,11 +6496,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     signed_pczt: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let id = decode_transfer_id(transfer_id)?;
         let pczt_bytes = env.convert_byte_array(signed_pczt)?;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&network, &wallet, account, None, &mut store_conn)?;
         let mut state = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?

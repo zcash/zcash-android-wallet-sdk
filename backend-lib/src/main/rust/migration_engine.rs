@@ -34,6 +34,7 @@ use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 
 use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
+use zcash_client_sqlite::util::SystemClock;
 use zcash_pool_migration::build::AccountDerivation;
 use zcash_pool_migration::engine::{
     MigrationBackend, MigrationCrypto, MigrationState, MigrationTransferId, MigrationTxState,
@@ -57,7 +58,7 @@ pub struct Backend<'a, W> {
     wallet: &'a W,
     account: AccountUuid,
     usk: Option<UnifiedSpendingKey>,
-    store: PoolMigrations<&'a mut Connection>,
+    store: PoolMigrations<&'a mut Connection, Network, SystemClock>,
 }
 
 impl<'a, W> Backend<'a, W>
@@ -69,12 +70,13 @@ where
     /// Fails if `account` has no row in the wallet's `accounts` table (the store is now scoped to
     /// the account row, not a per-wallet singleton — see `PoolMigrations::for_account`).
     pub fn new(
+        network: &Network,
         wallet: &'a W,
         account: AccountUuid,
         usk: Option<UnifiedSpendingKey>,
         conn: &'a mut Connection,
     ) -> Result<Self, EngineError> {
-        let store = PoolMigrations::for_account(conn, account)
+        let store = PoolMigrations::for_account(*network, SystemClock, conn, account)
             .map_err(|e| anyhow::anyhow!("opening pool-migration store failed: {e:?}"))?;
         Ok(Self {
             wallet,
