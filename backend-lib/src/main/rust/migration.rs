@@ -35,7 +35,10 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv,
     objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
-    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jintArray, jlong, jlongArray, jobject, jobjectArray},
+    sys::{
+        JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jintArray, jlong, jlongArray, jobject,
+        jobjectArray,
+    },
 };
 use prost::Message;
 use rand::rngs::OsRng;
@@ -873,7 +876,8 @@ fn encode_migration_schedule<'a>(
         |env, entry| -> jni::errors::Result<JObject<'_>> {
             let depends_on_array = env.new_long_array(entry.depends_on.len() as i32)?;
             if !entry.depends_on.is_empty() {
-                let longs: Vec<jlong> = entry.depends_on.iter().map(|&id| jlong::from(id)).collect();
+                let longs: Vec<jlong> =
+                    entry.depends_on.iter().map(|&id| jlong::from(id)).collect();
                 env.set_long_array_region(&depends_on_array, 0, &longs)?;
             }
             env.new_object(
@@ -1481,7 +1485,6 @@ fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
     Some(*extracted.txid().as_ref())
 }
 
-
 /// The funding nullifier of a single-Orchard-spend migration transfer, read straight from its PCZT.
 ///
 /// The PCZT's Orchard `Spend` carries the funding note's `nullifier` as a required Constructor-set
@@ -1551,7 +1554,9 @@ fn decide_foreign_spend(
             continue;
         }
         // (b) Own txid unreadable → ambiguous; cannot confirm spender is foreign → skip.
-        let Some(own_txid_bytes) = own_txid else { continue };
+        let Some(own_txid_bytes) = own_txid else {
+            continue;
+        };
         // (c) Own txid is on-chain → our own (possibly crashed) broadcast; pass 2 should handle it.
         if own_txids_on_chain.contains(own_txid_bytes) {
             continue;
@@ -1638,7 +1643,10 @@ fn reconcile_invalidated(
         .iter()
         .filter(|t| {
             matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                && matches!(t.state(), MigrationTxState::Signed | MigrationTxState::Proved)
+                && matches!(
+                    t.state(),
+                    MigrationTxState::Signed | MigrationTxState::Proved
+                )
                 && state.deps_mined(t.depends_on())
         })
         .map(|t| {
@@ -1706,8 +1714,13 @@ fn reconcile_invalidated(
     // Failed with reason "invalid_transfer", reason-first ordering (identical to
     // `recordTransferResultNative` tag 2 — see its ordering comment for the rationale).
     let invalid_id_str = u32::from(invalid_id).to_string();
-    record_invalidation(store_conn, account_bytes, "invalid_transfer", Some(&invalid_id_str))
-        .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
+    record_invalidation(
+        store_conn,
+        account_bytes,
+        "invalid_transfer",
+        Some(&invalid_id_str),
+    )
+    .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
     // Status-only swap: sub-state passed through verbatim (no cancel/fail primitive in the rc.1
     // engine) — the committed plan itself is never rewritten here.
     let failed = MigrationState::from_parts(
@@ -2168,8 +2181,8 @@ fn backfill_boundary_checkpoint_for_pool(
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| anyhow!("Error reading gap blocks for {cp_table}: {}", e))?;
-    let empty_gap = scanned_all == gap_len
-        && matches!((size_prev, size_at), (Some(a), Some(b)) if a == b);
+    let empty_gap =
+        scanned_all == gap_len && matches!((size_prev, size_at), (Some(a), Some(b)) if a == b);
     if !empty_gap {
         return Ok(false);
     }
@@ -2198,7 +2211,11 @@ fn ensure_boundary_checkpoints(
     scanned_tip: BlockHeight,
 ) -> anyhow::Result<Vec<(MigrationTransferId, BlockHeight)>> {
     let ironwood_has_rows: bool = conn
-        .query_row("SELECT EXISTS(SELECT 1 FROM ironwood_tree_checkpoints)", [], |r| r.get(0))
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM ironwood_tree_checkpoints)",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| anyhow!("Error probing ironwood checkpoints: {}", e))?;
     let mut missing = Vec::new();
     for t in state.transactions() {
@@ -2379,10 +2396,16 @@ fn next_due_transfer_result<'a>(
         .collect();
     due.sort_by_key(|t| t.scheduled_height());
     // First Proved -> READY; else first Signed -> AWAITING_PROOF; else NOTHING_DUE.
-    if let Some(tx) = due.iter().find(|t| matches!(t.state(), MigrationTxState::Proved)) {
+    if let Some(tx) = due
+        .iter()
+        .find(|t| matches!(t.state(), MigrationTxState::Proved))
+    {
         return DueTransferResult::Ready(tx);
     }
-    if let Some(tx) = due.iter().find(|t| matches!(t.state(), MigrationTxState::Signed)) {
+    if let Some(tx) = due
+        .iter()
+        .find(|t| matches!(t.state(), MigrationTxState::Signed))
+    {
         return DueTransferResult::AwaitingProof(tx.id());
     }
     DueTransferResult::NothingDue
@@ -2414,15 +2437,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
         let Some(state) = read_reconciled(&wallet, &mut backend)? else {
             // No migration: status=0, both nullable fields null.
-            return Ok(env.new_object(
-                JNI_DUE_TRANSFER_RESULT,
-                format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
-                &[
-                    JValue::Int(0),
-                    JValue::Object(&JObject::null()),
-                    JValue::Object(&JObject::null()),
-                ],
-            )?.into_raw());
+            return Ok(env
+                .new_object(
+                    JNI_DUE_TRANSFER_RESULT,
+                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
+                    &[
+                        JValue::Int(0),
+                        JValue::Object(&JObject::null()),
+                        JValue::Object(&JObject::null()),
+                    ],
+                )?
+                .into_raw());
         };
 
         tracing::debug!(
@@ -2431,16 +2456,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             scanned_tip,
             effective_tip,
             estimated_tip,
-            state.transactions().iter().filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. })).count(),
-            state.transactions().iter()
+            state
+                .transactions()
+                .iter()
+                .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
+                .count(),
+            state
+                .transactions()
+                .iter()
                 .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
                 .map(|t| (t.id(), t.state(), t.scheduled_height()))
                 .collect::<Vec<_>>(),
         );
 
         match next_due_transfer_result(&state, scanned_tip, effective_tip) {
-            DueTransferResult::NothingDue => {
-                Ok(env.new_object(
+            DueTransferResult::NothingDue => Ok(env
+                .new_object(
                     JNI_DUE_TRANSFER_RESULT,
                     format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
                     &[
@@ -2448,8 +2479,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Object(&JObject::null()),
                         JValue::Object(&JObject::null()),
                     ],
-                )?.into_raw())
-            }
+                )?
+                .into_raw()),
             DueTransferResult::AwaitingProof(id) => {
                 let id_obj = env
                     .call_static_method(
@@ -2459,22 +2490,25 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         &[JValue::Long(encode_transfer_id(id))],
                     )?
                     .l()?;
-                Ok(env.new_object(
-                    JNI_DUE_TRANSFER_RESULT,
-                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
-                    &[
-                        JValue::Int(2),
-                        JValue::Object(&id_obj),
-                        JValue::Object(&JObject::null()),
-                    ],
-                )?.into_raw())
+                Ok(env
+                    .new_object(
+                        JNI_DUE_TRANSFER_RESULT,
+                        format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
+                        &[
+                            JValue::Int(2),
+                            JValue::Object(&id_obj),
+                            JValue::Object(&JObject::null()),
+                        ],
+                    )?
+                    .into_raw())
             }
             DueTransferResult::Ready(tx) => {
                 // `Proved` carries the fully witnessed/anchored/proven PCZT bytes (installed by
                 // `finalizeReadyTransfersNative`'s `try_prove`) — extract the txid directly from them.
                 let bytes = tx.pczt();
                 let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
-                    pczt::Pczt::parse(bytes).map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
+                    pczt::Pczt::parse(bytes)
+                        .map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
                 )
                 .extract()
                 .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
@@ -2490,15 +2524,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Object(&pczt_obj),
                     ],
                 )?;
-                Ok(env.new_object(
-                    JNI_DUE_TRANSFER_RESULT,
-                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
-                    &[
-                        JValue::Int(1),
-                        JValue::Object(&JObject::null()),
-                        JValue::Object(&prepared),
-                    ],
-                )?.into_raw())
+                Ok(env
+                    .new_object(
+                        JNI_DUE_TRANSFER_RESULT,
+                        format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
+                        &[
+                            JValue::Int(1),
+                            JValue::Object(&JObject::null()),
+                            JValue::Object(&prepared),
+                        ],
+                    )?
+                    .into_raw())
             }
         }
     });
@@ -2601,13 +2637,19 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 } else {
                     let action = match status.action() {
                         Some(zcash_pool_migration::state::NextAction::Prove) => ACTION_PROVE,
-                        Some(zcash_pool_migration::state::NextAction::Broadcast) => ACTION_BROADCAST,
+                        Some(zcash_pool_migration::state::NextAction::Broadcast) => {
+                            ACTION_BROADCAST
+                        }
                         None => ACTION_NONE,
                     };
                     let blocker = match status.blocked_on() {
-                        Some(zcash_pool_migration::state::Blocker::Dependencies) => BLOCKER_DEPENDENCIES,
+                        Some(zcash_pool_migration::state::Blocker::Dependencies) => {
+                            BLOCKER_DEPENDENCIES
+                        }
                         Some(zcash_pool_migration::state::Blocker::Schedule) => BLOCKER_SCHEDULE,
-                        Some(zcash_pool_migration::state::Blocker::AnchorBoundary) => BLOCKER_ANCHOR_BOUNDARY,
+                        Some(zcash_pool_migration::state::Blocker::AnchorBoundary) => {
+                            BLOCKER_ANCHOR_BOUNDARY
+                        }
                         Some(zcash_pool_migration::state::Blocker::Signature) => BLOCKER_SIGNATURE,
                         Some(zcash_pool_migration::state::Blocker::Expired) => BLOCKER_EXPIRED,
                         None => BLOCKER_NONE,
@@ -2685,9 +2727,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Bool(is_sent as jboolean),
                         JValue::Bool(is_proved as jboolean),
                         JValue::Long(i64::from(u32::from(scheduled_height))),
-                        JValue::Long(
-                            anchor_boundary.map_or(-1i64, |b| i64::from(u32::from(b))),
-                        ),
+                        JValue::Long(anchor_boundary.map_or(-1i64, |b| i64::from(u32::from(b)))),
                         JValue::Bool(ready as jboolean),
                         JValue::Int(action),
                         JValue::Int(blocker),
@@ -4532,11 +4572,11 @@ mod live_wallet_edge_case_tests {
 mod next_due_transfer_tests {
     use super::*;
     use zcash_pool_migration::{
-        engine::{
-            MigrationState, MigrationStatus, MigrationTransaction, MigrationTransferId, MigrationTxKind,
-            MigrationTxState,
-        },
         denomination::DenominationPlan,
+        engine::{
+            MigrationState, MigrationStatus, MigrationTransaction, MigrationTransferId,
+            MigrationTxKind, MigrationTxState,
+        },
         preparation::PreparationPlan,
         scheduling::AnchorBucketInterval,
     };
@@ -4623,7 +4663,11 @@ mod next_due_transfer_tests {
         let result = next_due_transfer_result(&state, tip, tip);
         match result {
             DueTransferResult::AwaitingProof(id) => {
-                assert_eq!(id, MigrationTransferId::new(42), "id must match the signed transfer");
+                assert_eq!(
+                    id,
+                    MigrationTransferId::new(42),
+                    "id must match the signed transfer"
+                );
             }
             other => panic!(
                 "expected AwaitingProof, got NothingDue: {}",
@@ -4678,7 +4722,10 @@ mod next_due_transfer_tests {
         // multi-transaction preparation layers just like transfers (kind-agnostic, matching
         // the engine's next_broadcastable; a Transfer-only filter deadlocked a live plan).
         assert!(
-            matches!(next_due_transfer_result(&state, tip, tip), DueTransferResult::Ready(_)),
+            matches!(
+                next_due_transfer_result(&state, tip, tip),
+                DueTransferResult::Ready(_)
+            ),
             "next_due_transfer_result must serve due Proved preparations"
         );
     }
@@ -4728,7 +4775,8 @@ mod next_due_transfer_tests {
             MigrationStatus::InProgress,
             vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
         );
-        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) =
+            guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
         assert_eq!((code, id), (STEP_BROADCAST, 7)); // engine says Broadcast on the estimated tip
     }
 
@@ -4742,7 +4790,8 @@ mod next_due_transfer_tests {
                 transfer(4, MigrationTxState::Signed, 1000, 0), // prove-ready at scanned (boundary=990<995)
             ],
         );
-        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) =
+            guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
         assert_eq!((code, id), (STEP_BROADCAST, 7)); // spec §3.1 broadcast-first
     }
 
@@ -4754,7 +4803,8 @@ mod next_due_transfer_tests {
             MigrationStatus::InProgress,
             vec![transfer(4, MigrationTxState::Signed, 990, 0)],
         );
-        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) =
+            guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
         assert_eq!((code, id), (STEP_PROVE, 4));
     }
 }
@@ -4778,9 +4828,7 @@ mod next_due_transfer_tests {
 mod record_transfer_result_tests {
     use super::*;
     use zcash_pool_migration::{
-        engine::MigrationStatus,
-        denomination::DenominationPlan,
-        preparation::PreparationPlan,
+        denomination::DenominationPlan, engine::MigrationStatus, preparation::PreparationPlan,
         scheduling::AnchorBucketInterval,
     };
     use zcash_protocol::value::Zatoshis;
@@ -4805,7 +4853,12 @@ mod record_transfer_result_tests {
         )
     }
 
-    fn transfer(id: u32, state: MigrationTxState, scheduled: u32, expiry: u32) -> MigrationTransaction {
+    fn transfer(
+        id: u32,
+        state: MigrationTxState,
+        scheduled: u32,
+        expiry: u32,
+    ) -> MigrationTransaction {
         MigrationTransaction::from_parts(
             MigrationTransferId::new(id),
             MigrationTxKind::Transfer { crossing: 0 },
@@ -4832,16 +4885,23 @@ mod record_transfer_result_tests {
     /// will cause the `record_transfer_result_network_error_still_noop` test to fail because
     /// that test calls this helper and then asserts both that the state is NOT terminal and
     /// that `read_invalidation` returns None.
-    fn apply_tag(conn: &Connection, state: MigrationState, result_tag: i32, transfer_id_str: &str)
-        -> anyhow::Result<MigrationState>
-    {
+    fn apply_tag(
+        conn: &Connection,
+        state: MigrationState,
+        result_tag: i32,
+        transfer_id_str: &str,
+    ) -> anyhow::Result<MigrationState> {
         match result_tag {
             1 => {
                 // Tag=1 NetworkError: transient, no state mutation and no side-table write.
                 Ok(state)
             }
             2 | 3 => {
-                let reason = if result_tag == 2 { "invalid_transfer" } else { "transfer_expired" };
+                let reason = if result_tag == 2 {
+                    "invalid_transfer"
+                } else {
+                    "transfer_expired"
+                };
                 let failed = if !state.is_terminal() {
                     MigrationState::from_parts(
                         MigrationStatus::Failed,
@@ -4858,7 +4918,10 @@ mod record_transfer_result_tests {
                 record_invalidation(conn, ACCOUNT, reason, Some(transfer_id_str))?;
                 Ok(failed)
             }
-            other => Err(anyhow::anyhow!("Unknown result tag in test helper: {}", other)),
+            other => Err(anyhow::anyhow!(
+                "Unknown result tag in test helper: {}",
+                other
+            )),
         }
     }
 
@@ -4866,7 +4929,10 @@ mod record_transfer_result_tests {
     #[test]
     fn record_transfer_result_invalid_note_marks_migration_failed_with_reason() {
         let conn = Connection::open_in_memory().unwrap();
-        let state = make_state(MigrationStatus::InProgress, vec![transfer(7, MigrationTxState::Proved, 1000, 2000)]);
+        let state = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(7, MigrationTxState::Proved, 1000, 2000)],
+        );
         assert!(!state.is_terminal(), "pre-condition: state is InProgress");
 
         let failed = apply_tag(&conn, state, 2, "7").unwrap();
@@ -4887,7 +4953,10 @@ mod record_transfer_result_tests {
     #[test]
     fn record_transfer_result_expired_marks_failed_with_expired_reason() {
         let conn = Connection::open_in_memory().unwrap();
-        let state = make_state(MigrationStatus::InProgress, vec![transfer(3, MigrationTxState::Signed, 900, 1800)]);
+        let state = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(3, MigrationTxState::Signed, 900, 1800)],
+        );
 
         let failed = apply_tag(&conn, state, 3, "3").unwrap();
 
@@ -4908,18 +4977,27 @@ mod record_transfer_result_tests {
     #[test]
     fn record_transfer_result_network_error_still_noop() {
         let conn = Connection::open_in_memory().unwrap();
-        let state = make_state(MigrationStatus::InProgress, vec![transfer(9, MigrationTxState::Proved, 500, 1500)]);
+        let state = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(9, MigrationTxState::Proved, 500, 1500)],
+        );
         assert!(!state.is_terminal(), "pre-condition: state is InProgress");
 
         let returned = apply_tag(&conn, state, 1, "9").unwrap();
 
         // (a) state must NOT be terminal — tag=1 is transient, migration stays alive.
-        assert!(!returned.is_terminal(), "tag=1 must not mark state terminal");
+        assert!(
+            !returned.is_terminal(),
+            "tag=1 must not mark state terminal"
+        );
         assert_eq!(returned.status(), MigrationStatus::InProgress);
 
         // (b) no invalidation row must exist.
         let inv = read_invalidation(&conn, ACCOUNT).unwrap();
-        assert!(inv.is_none(), "tag=1 must leave invalidation side table empty");
+        assert!(
+            inv.is_none(),
+            "tag=1 must leave invalidation side table empty"
+        );
     }
 
     // clear_invalidation removes the row.
@@ -4952,12 +5030,18 @@ mod record_transfer_result_tests {
         record_invalidation(&conn, ACCOUNT, "invalid_transfer", Some("1")).unwrap();
 
         let inv_b = read_invalidation(&conn, account_b).unwrap();
-        assert!(inv_b.is_none(), "account B must not see account A's invalidation");
+        assert!(
+            inv_b.is_none(),
+            "account B must not see account A's invalidation"
+        );
 
         record_invalidation(&conn, account_b, "transfer_expired", None).unwrap();
         let inv_a = read_invalidation(&conn, ACCOUNT).unwrap();
         let (reason_a, _) = inv_a.unwrap();
-        assert_eq!(reason_a, "invalid_transfer", "account A's reason must be unchanged");
+        assert_eq!(
+            reason_a, "invalid_transfer",
+            "account A's reason must be unchanged"
+        );
     }
 }
 
@@ -5111,9 +5195,21 @@ mod reconcile_tests {
         let unspent: HashSet<[u8; 32]> = [nf(0x01)].into_iter().collect(); // only id=1 unspent
         let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
         let candidates = vec![
-            (MigrationTransferId::new(1), Some(nf(0x01)), Some(txid(0x01))), // unspent → skip
-            (MigrationTransferId::new(2), Some(nf(0x02)), Some(txid(0x02))), // spent, not own → invalidate
-            (MigrationTransferId::new(3), Some(nf(0x03)), Some(txid(0x03))), // also spent, but id=2 wins
+            (
+                MigrationTransferId::new(1),
+                Some(nf(0x01)),
+                Some(txid(0x01)),
+            ), // unspent → skip
+            (
+                MigrationTransferId::new(2),
+                Some(nf(0x02)),
+                Some(txid(0x02)),
+            ), // spent, not own → invalidate
+            (
+                MigrationTransferId::new(3),
+                Some(nf(0x03)),
+                Some(txid(0x03)),
+            ), // also spent, but id=2 wins
         ];
 
         assert_eq!(
@@ -5210,7 +5306,10 @@ mod reconcile_tests {
             .iter()
             .filter(|t| {
                 matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                    && matches!(t.state(), MigrationTxState::Signed | MigrationTxState::Proved)
+                    && matches!(
+                        t.state(),
+                        MigrationTxState::Signed | MigrationTxState::Proved
+                    )
             })
             .map(|t| t.id())
             .collect();
@@ -5225,7 +5324,9 @@ mod reconcile_tests {
 #[cfg(test)]
 mod preparation_schedule_entries_tests {
     use super::*;
-    use zcash_pool_migration::preparation::{PrepInput, PrepOutput, PrepTransaction, PreparationPlan};
+    use zcash_pool_migration::preparation::{
+        PrepInput, PrepOutput, PrepTransaction, PreparationPlan,
+    };
     use zcash_protocol::consensus::BlockHeight;
     use zcash_protocol::value::Zatoshis;
 
@@ -5243,26 +5344,47 @@ mod preparation_schedule_entries_tests {
 
         // Layer 0 tx 0: one wallet input → one funding output
         let l0_tx0 = PrepTransaction::from_parts(
-            vec![PrepInput::Wallet { index: 0, value: dummy_value }],
+            vec![PrepInput::Wallet {
+                index: 0,
+                value: dummy_value,
+            }],
             vec![PrepOutput::Funding(dummy_value)],
         );
         // Layer 0 tx 1: one wallet input → one funding output
         let l0_tx1 = PrepTransaction::from_parts(
-            vec![PrepInput::Wallet { index: 1, value: dummy_value }],
+            vec![PrepInput::Wallet {
+                index: 1,
+                value: dummy_value,
+            }],
             vec![PrepOutput::Funding(dummy_value)],
         );
         // Layer 1 tx 0: spends outputs of L0/0 AND L0/1 → one funding output
         // (two Prior inputs referencing layer=0, transaction=0 and layer=0, transaction=1)
         let l1_tx0 = PrepTransaction::from_parts(
             vec![
-                PrepInput::Prior { layer: 0, transaction: 0, output: 0, value: dummy_value },
-                PrepInput::Prior { layer: 0, transaction: 1, output: 0, value: dummy_value },
+                PrepInput::Prior {
+                    layer: 0,
+                    transaction: 0,
+                    output: 0,
+                    value: dummy_value,
+                },
+                PrepInput::Prior {
+                    layer: 0,
+                    transaction: 1,
+                    output: 0,
+                    value: dummy_value,
+                },
             ],
             vec![PrepOutput::Funding(dummy_value)],
         );
         // Layer 2 tx 0: spends output of L1/0 → one funding output
         let l2_tx0 = PrepTransaction::from_parts(
-            vec![PrepInput::Prior { layer: 1, transaction: 0, output: 0, value: dummy_value }],
+            vec![PrepInput::Prior {
+                layer: 1,
+                transaction: 0,
+                output: 0,
+                value: dummy_value,
+            }],
             vec![PrepOutput::Funding(dummy_value)],
         );
 
@@ -5275,8 +5397,8 @@ mod preparation_schedule_entries_tests {
         // Heights chosen so each layer is clearly distinguishable in assertions.
         let prep_schedule = vec![
             vec![BlockHeight::from_u32(1000), BlockHeight::from_u32(1100)], // L0: 2 txs
-            vec![BlockHeight::from_u32(1200)],                               // L1: 1 tx
-            vec![BlockHeight::from_u32(1300)],                               // L2: 1 tx
+            vec![BlockHeight::from_u32(1200)],                              // L1: 1 tx
+            vec![BlockHeight::from_u32(1300)],                              // L2: 1 tx
         ];
 
         (preparation, prep_schedule)
@@ -5423,7 +5545,10 @@ mod late_dependency_anchor_tests {
             MigrationTransferId::new(id),
             MigrationTxKind::Transfer { crossing: 0 },
             vec![0u8; 32],
-            depends_on.into_iter().map(MigrationTransferId::new).collect(),
+            depends_on
+                .into_iter()
+                .map(MigrationTransferId::new)
+                .collect(),
             BlockHeight::from_u32(anchor + 50), // broadcast after the anchor settles
             BlockHeight::from_u32(0),           // never expires (isolate the anchor logic)
             Some(BlockHeight::from_u32(anchor)),
@@ -5468,7 +5593,10 @@ mod late_dependency_anchor_tests {
         ]);
         // Advance the flow: broadcast then mine the prep ON TIME (<= anchor).
         state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xaa));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(ON_TIME_MINED));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(ON_TIME_MINED),
+        );
 
         let t8 = find(&state, 8);
         assert!(
@@ -5489,7 +5617,10 @@ mod late_dependency_anchor_tests {
         ]);
         // Advance the flow: the prep is broadcast/mined LATE (mined_height > anchor).
         state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xbb));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         let t8 = find(&state, 8);
         assert!(
@@ -5510,7 +5641,10 @@ mod late_dependency_anchor_tests {
             transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
         ]);
         state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xcc));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         let target = tip1();
         let ready: Vec<MigrationTransferId> = state
@@ -5541,7 +5675,10 @@ mod late_dependency_anchor_tests {
             transfer(8, MigrationTxState::Signed, covering_anchor, vec![1]),
         ]);
         state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xdd));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         let t8 = find(&state, 8);
         assert!(
@@ -5658,7 +5795,10 @@ mod reanchor_healing_tests {
             transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
         ]);
         state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x11));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         // Chain advanced far past both the anchor and the late mine — still un-provable, because the
         // committed anchor 4220724 predates the note's mine at 4220802: the note is not in the tree
@@ -5690,7 +5830,10 @@ mod reanchor_healing_tests {
             transfer(8, MigrationTxState::Signed, redrawn_anchor, vec![1]),
         ]);
         state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x22));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         // Chain past the redrawn boundary so it has settled.
         let target = BlockHeight::from_u32(redrawn_anchor + 100);
@@ -5714,7 +5857,10 @@ mod reanchor_healing_tests {
             transfer(8, MigrationTxState::Signed, insufficient_anchor, vec![1]),
         ]);
         state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x33));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         let target = BlockHeight::from_u32(insufficient_anchor + 10_000);
         let t8 = find(&state, 8);
@@ -5853,7 +5999,10 @@ mod state_machine_trace_tests {
                         MigrationTransferId::new(s.id),
                         s.kind,
                         vec![0u8; 32],
-                        s.deps.iter().map(|d| MigrationTransferId::new(*d)).collect(),
+                        s.deps
+                            .iter()
+                            .map(|d| MigrationTransferId::new(*d))
+                            .collect(),
                         BlockHeight::from_u32(s.scheduled),
                         BlockHeight::from_u32(EXPIRY),
                         s.boundary.map(BlockHeight::from_u32),
@@ -6014,7 +6163,13 @@ mod state_machine_trace_tests {
         let (steps, _) = d.drain(4_224_612);
         assert_eq!(
             steps,
-            vec![prove(11), prove(13), broadcast(4), broadcast(5), broadcast(9)]
+            vec![
+                prove(11),
+                prove(13),
+                broadcast(4),
+                broadcast(5),
+                broadcast(9)
+            ]
         );
         d.mine(4, 4_224_616);
         d.mine(5, 4_224_616);
@@ -6112,17 +6267,24 @@ mod state_machine_trace_tests {
             "pure prove_ready lacks the late-dependency guard — it offers the impossible prove"
         );
         // Everything provable before the wedge point got applied.
-        assert!(applied.iter().all(
-            |s| !matches!(s, AdvanceStep::Broadcast { id } if id_of(*id) == 9)
-        ));
+        assert!(
+            applied
+                .iter()
+                .all(|s| !matches!(s, AdvanceStep::Broadcast { id } if id_of(*id) == 9))
+        );
 
         // GAP 1: the status view claims tx9 is READY (action = Prove), with no blocker.
-        let statuses = d.build().transaction_statuses(BlockHeight::from_u32(4_224_701));
+        let statuses = d
+            .build()
+            .transaction_statuses(BlockHeight::from_u32(4_224_701));
         let tx9 = statuses
             .iter()
             .find(|st| id_of(st.id()) == 9)
             .expect("tx9 status");
-        assert!(tx9.ready(), "reported ready even though proving cannot succeed");
+        assert!(
+            tx9.ready(),
+            "reported ready even though proving cannot succeed"
+        );
         assert_eq!(tx9.blocked_on(), None);
 
         // GAP 2: a perpetual immediate wake-up keeps covering tx9.
@@ -6170,7 +6332,10 @@ mod state_machine_trace_tests {
                 id: MigrationTransferId::new(9)
             }
         );
-        assert_eq!(blocker_of(&d.build(), past_expiry, 9), Some(Blocker::Expired));
+        assert_eq!(
+            blocker_of(&d.build(), past_expiry, 9),
+            Some(Blocker::Expired)
+        );
     }
 
     /// (e) EXTERNAL SIGNING round-trip: an `AwaitingSignature` transfer is reported via
@@ -6428,11 +6593,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             })
             .collect();
         let long_array_class = env.find_class("[J")?;
-        let outer = env.new_object_array(
-            entries.len() as i32,
-            long_array_class,
-            JObject::null(),
-        )?;
+        let outer =
+            env.new_object_array(entries.len() as i32, long_array_class, JObject::null())?;
         for (i, row) in entries.iter().enumerate() {
             let inner = env.new_long_array(row.len() as i32)?;
             env.set_long_array_region(&inner, 0, row)?;
@@ -6494,7 +6656,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jintArray {
     let res = catch_unwind(&mut env, |env| {
         use zcash_pool_migration::signing_rounds::{
-            SigningRoundBudget, PREPARATION_ACTIONS, TRANSFER_ACTIONS,
+            PREPARATION_ACTIONS, SigningRoundBudget, TRANSFER_ACTIONS,
         };
         let values = [
             SigningRoundBudget::KEYSTONE.max_actions() as jint,

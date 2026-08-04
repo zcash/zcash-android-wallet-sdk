@@ -204,7 +204,8 @@ fn tx_output_row_object<'local>(
 /// posture `AllTransactionView.kt` already takes on the Kotlin side of the ordinary (non-Slipstream)
 /// reader.
 fn has_zip318_kind_column(conn: &rusqlite::Connection) -> bool {
-    conn.prepare("SELECT zip318_kind FROM v_transactions LIMIT 0").is_ok()
+    conn.prepare("SELECT zip318_kind FROM v_transactions LIMIT 0")
+        .is_ok()
 }
 
 /// Builds `listTransactions`' SQL: base projection, an optional reconciliation LEFT JOIN +
@@ -212,8 +213,16 @@ fn has_zip318_kind_column(conn: &rusqlite::Connection) -> bool {
 /// Kotlin `VisibleTransactionsQuery` this replaces — see FFI_JNI_CONTRACT.md §9.3 — except the
 /// trailing `zip318_kind` projection (see [`has_zip318_kind_column`]), added 2026-08-03: a
 /// literal `0` (== `Zip318Kind.NOT_CLASSIFIED`) stands in when the column doesn't exist yet.
-fn list_transactions_sql(is_recovering: bool, has_account_filter: bool, has_zip318_kind: bool) -> String {
-    let zip318_kind_projection = if has_zip318_kind { "tx.zip318_kind" } else { "0" };
+fn list_transactions_sql(
+    is_recovering: bool,
+    has_account_filter: bool,
+    has_zip318_kind: bool,
+) -> String {
+    let zip318_kind_projection = if has_zip318_kind {
+        "tx.zip318_kind"
+    } else {
+        "0"
+    };
     let mut sql = format!(
         "SELECT tx.txid, tx.mined_height, tx.expiry_height, tx.tx_index, tx.raw, \
          tx.account_balance_delta, tx.total_spent, tx.total_received, tx.fee_paid, \
@@ -262,7 +271,11 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listTransactions<'lo
         let conn = read_query::open_read_only(&db_path)?;
 
         let has_zip318_kind = has_zip318_kind_column(&conn);
-        let sql = list_transactions_sql(is_recovering != 0, account_uuid_bytes.is_some(), has_zip318_kind);
+        let sql = list_transactions_sql(
+            is_recovering != 0,
+            account_uuid_bytes.is_some(),
+            has_zip318_kind,
+        );
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| anyhow!("listTransactions prepare: {e}"))?;

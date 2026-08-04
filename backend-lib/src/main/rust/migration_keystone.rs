@@ -129,12 +129,16 @@ pub fn build_sign_batch_qr_parts(
     let mut pczts = Vec::with_capacity(transfer_unsigned.len() + 1);
     if let Some(split) = split_unsigned {
         let parsed = pczt::parse(split).map_err(|e| anyhow::anyhow!("parse split pczt: {e:?}"))?;
-        pczts.push(strip_preexisting_spend_auth_sigs(redact_pczt_for_batch_signer(&parsed)));
+        pczts.push(strip_preexisting_spend_auth_sigs(
+            redact_pczt_for_batch_signer(&parsed),
+        ));
     }
     for bytes in transfer_unsigned {
         let parsed =
             pczt::parse(bytes).map_err(|e| anyhow::anyhow!("parse transfer pczt: {e:?}"))?;
-        pczts.push(strip_preexisting_spend_auth_sigs(redact_pczt_for_batch_signer(&parsed)));
+        pczts.push(strip_preexisting_spend_auth_sigs(
+            redact_pczt_for_batch_signer(&parsed),
+        ));
     }
 
     let request = BatchSignRequest::new(pczts);
@@ -542,7 +546,10 @@ mod tests {
                 "no action may carry a spend_auth_sig on the wire, signed or not",
             );
         }
-        assert!(presigned_count > 0, "premise: at least one pre-signed dummy");
+        assert!(
+            presigned_count > 0,
+            "premise: at least one pre-signed dummy"
+        );
     }
 
     #[test]
