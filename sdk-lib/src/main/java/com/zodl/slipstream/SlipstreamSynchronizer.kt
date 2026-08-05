@@ -625,9 +625,13 @@ class SlipstreamSynchronizer internal constructor(
             Twig.error(t) { "Slipstream synchronizer preparation failed" }
             val landedFailed =
                 prepareState.updateAndGet {
-                    if (it is PrepareState.Preparing || it is PrepareState.DbReady) PrepareState.Failed(
-                        t
-                    ) else it
+                    if (it is PrepareState.Preparing || it is PrepareState.DbReady) {
+                        PrepareState.Failed(
+                            t
+                        )
+                    } else {
+                        it
+                    }
                 } is PrepareState.Failed
             if (landedFailed) {
                 /*
@@ -727,7 +731,9 @@ class SlipstreamSynchronizer internal constructor(
                     recoverUntil = provisioning.recoverUntil
                 )
             }.getOrElse { throw InitializeException.CreateAccountException(it) }
-            /* Releases [accountsFlow], which suppressed the empty reads of the whole DbReady window. */
+            /*
+             * Releases [accountsFlow], which suppressed the empty reads of the whole DbReady window.
+             */
             accountsVersion.update { it + 1 }
         }
 
@@ -873,7 +879,7 @@ class SlipstreamSynchronizer internal constructor(
             throw InitializeException.ImportAccountCheckpointsNotReadyException(
                 IllegalStateException(
                     "Slipstream engine did not quiesce before account import; refusing to import " +
-                            "to avoid racing the still-unwinding sync pass."
+                        "to avoid racing the still-unwinding sync pass."
                 )
             )
         }
@@ -1126,21 +1132,13 @@ class SlipstreamSynchronizer internal constructor(
                     }
                 }
             val sdkBranchId =
-                runCatchingCancellable {
-                    "%x".format(
-                        Locale.ROOT,
-                        backend.getBranchIdForHeight(currentChainTip.value)
-                    )
-                }
+                runCatchingCancellable { "%x".format(Locale.ROOT, backend.getBranchIdForHeight(currentChainTip.value)) }
                     .getOrElse { return ServerValidation.InValid(it) }
             return if (remoteInfo.consensusBranchId.equals(sdkBranchId, ignoreCase = true)) {
                 ServerValidation.Valid
             } else {
                 ServerValidation.InValid(
-                    CompactBlockProcessorException.MismatchedConsensusBranch(
-                        sdkBranchId,
-                        remoteInfo.consensusBranchId
-                    )
+                    CompactBlockProcessorException.MismatchedConsensusBranch(sdkBranchId, remoteInfo.consensusBranchId)
                 )
             }
         } finally {
@@ -1257,8 +1255,10 @@ class SlipstreamSynchronizer internal constructor(
     override fun getTransactionsByMemoSubstring(query: String): Flow<List<TransactionId>> =
         flow {
             emit(
-                transactionReader.getTransactionsByMemoSubstring(query)
-                    .map { TransactionId.new(it) })
+                transactionReader
+                    .getTransactionsByMemoSubstring(query)
+                    .map { TransactionId.new(it) }
+            )
         }.onStart { awaitDbReady() }
 
     override fun getRecipients(transactionOverview: TransactionOverview): Flow<TransactionRecipient> {
@@ -1290,7 +1290,8 @@ class SlipstreamSynchronizer internal constructor(
 
     override suspend fun getTransactionOutputs(): Map<TransactionId, List<TransactionOutput>> {
         awaitDbReady()
-        return transactionReader.getAllTransactionOutputs()
+        return transactionReader
+            .getAllTransactionOutputs()
             .mapKeys { (txId, _) -> TransactionId.new(txId) }
     }
 
@@ -1310,10 +1311,13 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     override suspend fun checkSingleUseTransparentAddress(accountUuid: AccountUuid): Boolean =
-        when (val response = walletClient.checkSingleUseTransparentAddress(
-            accountUuid.value,
-            ServiceMode.UniqueTor
-        )) {
+        when (
+            val response =
+                walletClient.checkSingleUseTransparentAddress(
+                    accountUuid.value,
+                    ServiceMode.UniqueTor
+                )
+        ) {
             is Response.Success -> response.result != null
             is Response.Failure -> false
         }
@@ -1322,8 +1326,10 @@ class SlipstreamSynchronizer internal constructor(
         accountUuid: AccountUuid,
         address: String
     ): Boolean =
-        when (val response =
-            walletClient.fetchUtxosByAddress(accountUuid.value, address, ServiceMode.UniqueTor)) {
+        when (
+            val response =
+                walletClient.fetchUtxosByAddress(accountUuid.value, address, ServiceMode.UniqueTor)
+        ) {
             is Response.Success -> response.result != null
             is Response.Failure -> false
         }
@@ -1571,8 +1577,10 @@ class SlipstreamSynchronizer internal constructor(
 
     override suspend fun getTreeState(height: BlockHeight): ByteArray {
         val serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
-        return when (val response =
-            walletClient.getTreeState(BlockHeightUnsafe(height.value), serviceMode)) {
+        return when (
+            val response =
+                walletClient.getTreeState(BlockHeightUnsafe(height.value), serviceMode)
+        ) {
             is Response.Success -> response.result.encoded
             is Response.Failure -> throw response.toThrowable()
         }
@@ -1762,20 +1770,27 @@ class SlipstreamSynchronizer internal constructor(
             val noBackupRoot = applicationContext.getNoBackupFilesDirSuspend()
             val zcashNoBackupDir = Files.getZcashNoBackupSubdirectory(applicationContext)
             val engineTorDir =
-                if (isTorEnabled) File(
-                    zcashNoBackupDir,
-                    ENGINE_TOR_SUBDIR
-                ).apply { mkdirs() }.absolutePath else null
+                if (isTorEnabled) {
+                    File(
+                        zcashNoBackupDir,
+                        ENGINE_TOR_SUBDIR
+                    ).apply { mkdirs() }.absolutePath
+                } else {
+                    null
+                }
             /*
              * Fail-fast on caller bugs stays here, synchronous to `new()`: a missing restore
              * birthday must never degrade into an asynchronous setup error.
              */
             val requestedBirthday =
                 when (walletInitMode) {
-                    WalletInitMode.RestoreWallet ->
+                    WalletInitMode.RestoreWallet -> {
                         requireNotNull(birthday) { "birthday is required for WalletInitMode.RestoreWallet" }
+                    }
 
-                    WalletInitMode.NewWallet, WalletInitMode.ExistingWallet -> birthday
+                    WalletInitMode.NewWallet, WalletInitMode.ExistingWallet -> {
+                        birthday
+                    }
                 }
 
             val dbFile = DataDbPath.dataDbFile(noBackupRoot, alias, zcashNetwork)
@@ -1822,9 +1837,12 @@ class SlipstreamSynchronizer internal constructor(
             val exchangeRateFetcher =
                 if (isExchangeRateEnabled) {
                     lazyTorClient?.let { holder ->
-                        UsdExchangeRateFetcher(isolatedTorClient = LazyTorClient {
-                            holder.getOrCreate().isolatedTorClient()
-                        })
+                        UsdExchangeRateFetcher(
+                            isolatedTorClient =
+                                LazyTorClient {
+                                    holder.getOrCreate().isolatedTorClient()
+                                }
+                        )
                     }
                 } else {
                     null
@@ -1833,7 +1851,8 @@ class SlipstreamSynchronizer internal constructor(
             val walletClientFactory =
                 WalletClientFactory(
                     context = applicationContext,
-                    torClient = lazyTorClient.takeIf { isTorEnabled })
+                    torClient = lazyTorClient.takeIf { isTorEnabled }
+                )
             val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
             val fastestServerFetcher =
                 FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)

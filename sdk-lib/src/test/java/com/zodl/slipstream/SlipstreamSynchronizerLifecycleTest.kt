@@ -95,7 +95,12 @@ import kotlin.time.Duration.Companion.seconds
  * Deliberately NOT covered: `importAccountByUfvk`. Its `restoreAnchor` anchor resolution is a
  * direct call to the `SlipstreamNative` object (a `object`-scoped native binding, not an injectable
  * collaborator), which would require `mockStatic` - out of scope for this plain-Mockito suite.
+ *
+ * The suite's size tracks the lifecycle surface it pins - construction, the readiness gates, the
+ * close/prepare races, and the DbReady read phase belong to one state machine, so the class is
+ * suppressed rather than split along an artificial seam.
  */
+@Suppress("LargeClass")
 class SlipstreamSynchronizerLifecycleTest {
     @Test
     fun close_runs_engine_shutdown_steps_in_order_and_disposes_wallet_client() {
@@ -353,7 +358,9 @@ class SlipstreamSynchronizerLifecycleTest {
         runBlocking { `when`(backend.getAccounts()).thenThrow(RuntimeException("boom")) }
 
         assertFailsWith<InitializeException.GetAccountsException> {
-            /* drop(1): the flow now leads with a null "not loaded yet" emission (readiness gate). */
+            /*
+             * drop(1): the flow now leads with a null "not loaded yet" emission (readiness gate).
+             */
             runBlocking { synchronizer.accountsFlow.drop(1).first() }
         }
     }
@@ -641,7 +648,9 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
-    /* ── deferred preparation: the iOS-style constructor/prepare split ────────── */
+    /*
+     * ── deferred preparation: the iOS-style constructor/prepare split ──────────
+     */
 
     @Test
     fun construction_is_cheap_and_reports_initializing_while_preparing() {
@@ -738,7 +747,9 @@ class SlipstreamSynchronizerLifecycleTest {
         val failure = RuntimeException("anchor unreachable")
         val earlyHandlerCalls = AtomicInteger(0)
         val recorded = AtomicReference<Throwable?>()
-        /* Acquired as Companion.new would, so the "a failed preparation keeps the key" claim is real. */
+        /*
+         * Acquired as Companion.new would, so the "a failed preparation keeps the key" claim is real.
+         */
         runBlocking { InstanceGuard.acquire(key) }
         stubPrepareBackend(backend, null)
         val synchronizer =
@@ -777,7 +788,10 @@ class SlipstreamSynchronizerLifecycleTest {
             assertSameFailure(failure, thrown.cause)
 
             val lateHandlerCalls = AtomicInteger(0)
-            synchronizer.onSetupErrorHandler = { lateHandlerCalls.incrementAndGet(); false }
+            synchronizer.onSetupErrorHandler = {
+                lateHandlerCalls.incrementAndGet()
+                false
+            }
             assertEquals(1, lateHandlerCalls.get())
 
             synchronizer.onSetupErrorHandler = null
@@ -806,7 +820,10 @@ class SlipstreamSynchronizerLifecycleTest {
                 prepareInputs = prepareInputs(anchorSource = SlipstreamAnchorSource { _, _, _ -> awaitCancellation() })
             )
         try {
-            synchronizer.onSetupErrorHandler = { handlerCalls.incrementAndGet(); false }
+            synchronizer.onSetupErrorHandler = {
+                handlerCalls.incrementAndGet()
+                false
+            }
 
             synchronizer.close()
 
@@ -818,7 +835,9 @@ class SlipstreamSynchronizerLifecycleTest {
             }
             assertEquals(0, handlerCalls.get())
             assertEquals(Synchronizer.Status.INITIALIZING, engineStatus.value)
-            /* The guard was released by the completed shutdown job, so a fresh acquire succeeds. */
+            /*
+             * The guard was released by the completed shutdown job, so a fresh acquire succeeds.
+             */
             runBlocking { InstanceGuard.acquire(key) }
         } finally {
             InstanceGuard.release(key)
@@ -879,7 +898,9 @@ class SlipstreamSynchronizerLifecycleTest {
                 val order = inOrder(engine)
                 order.verify(engine, timeout(TIMEOUT_MS)).start(UFVK, ANCHOR_HEIGHT)
                 verify(engine, timeout(TIMEOUT_MS).times(2)).startPolling()
-                /* The queued block found a running engine, so it never restarted it keylessly. */
+                /*
+                 * The queued block found a running engine, so it never restarted it keylessly.
+                 */
                 verify(engine, never()).start(null, ANCHOR_HEIGHT)
             }
         } finally {
@@ -904,7 +925,9 @@ class SlipstreamSynchronizerLifecycleTest {
         try {
             runBlocking {
                 assertEquals(null, synchronizer.accountsFlow.first())
-                /* Both cold flows are served from the migrated DB while the anchor is still held. */
+                /*
+                 * Both cold flows are served from the migrated DB while the anchor is still held.
+                 */
                 assertEquals(emptyList(), withTimeout(TIMEOUT_MS) { synchronizer.accountsFlow.drop(1).first() })
                 assertEquals(emptyList(), withTimeout(TIMEOUT_MS) { synchronizer.allTransactions.first() })
                 verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
@@ -946,7 +969,7 @@ class SlipstreamSynchronizerLifecycleTest {
                         anchorSource =
                             SlipstreamAnchorSource { _, _, _ ->
                                 anchorGate.await()
-                                throw RuntimeException("anchor unreachable")
+                                error("anchor unreachable")
                             }
                     )
             )
@@ -995,7 +1018,7 @@ class SlipstreamSynchronizerLifecycleTest {
                 engineStatusOverride = engineStatus,
                 prepareInputs =
                     prepareInputs(
-                        anchorSource = SlipstreamAnchorSource { _, _, _ -> throw RuntimeException("anchor unreachable") }
+                        anchorSource = SlipstreamAnchorSource { _, _, _ -> error("anchor unreachable") }
                     )
             )
         try {
@@ -1034,7 +1057,10 @@ class SlipstreamSynchronizerLifecycleTest {
                     )
             )
         try {
-            synchronizer.onSetupErrorHandler = { handlerCalls.incrementAndGet(); false }
+            synchronizer.onSetupErrorHandler = {
+                handlerCalls.incrementAndGet()
+                false
+            }
             assertTrue(anchorEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
 
             synchronizer.close()
@@ -1093,7 +1119,9 @@ class SlipstreamSynchronizerLifecycleTest {
 
             runBlocking {
                 verify(engine, timeout(TIMEOUT_MS)).start(UFVK, ANCHOR_HEIGHT)
-                /* The queued pause() block runs once preparation publishes Ready. */
+                /*
+                 * The queued pause() block runs once preparation publishes Ready.
+                 */
                 verify(engine, timeout(TIMEOUT_MS)).stopPolling()
                 verify(engine, after(SETTLE_MS).never()).startPolling()
             }
@@ -1102,7 +1130,9 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
-    /* ── DbReady: DB-backed reads served before the tail's network anchor ─────── */
+    /*
+     * ── DbReady: DB-backed reads served before the tail's network anchor ───────
+     */
 
     @Test
     fun read_only_surfaces_are_served_at_db_ready_while_the_anchor_is_still_pending() {
@@ -1137,7 +1167,9 @@ class SlipstreamSynchronizerLifecycleTest {
                     withTimeout(TIMEOUT_MS) { synchronizer.getUnifiedAddress(Account.new(accountUuid)) }
                 )
 
-                /* A write stays gated on full readiness, so it is still suspended on the held anchor. */
+                /*
+                 * A write stays gated on full readiness, so it is still suspended on the held anchor.
+                 */
                 val pending =
                     async(Dispatchers.Default) {
                         synchronizer.rewindToHeight(BlockHeight.new(BELOW_BIRTHDAY_VALUE))
@@ -1168,16 +1200,7 @@ class SlipstreamSynchronizerLifecycleTest {
         val created = AtomicBoolean(false)
         val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES)))
         val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
-        val jniAccount =
-            JniAccount(
-                accountName = ACCOUNT_NAME,
-                accountUuid = accountUuid.value,
-                hdAccountIndex = NULL_HD_ACCOUNT_INDEX,
-                keySource = KEY_SOURCE,
-                seedFingerprint = null,
-                ufvk = UFVK,
-                uivk = null
-            )
+        val jniAccount = jniAccount(accountUuid)
         runBlocking {
             `when`(backend.initDataDb(setup.seed.byteArray)).thenReturn(0)
             `when`(backend.getAccounts()).thenAnswer { if (created.get()) listOf(jniAccount) else emptyList() }
@@ -1210,7 +1233,9 @@ class SlipstreamSynchronizerLifecycleTest {
                     }
                 try {
                     assertEquals(null, withTimeout(TIMEOUT_MS) { emissions.receive() })
-                    /* The leading null is already consumed, so any element here would be the empty read. */
+                    /*
+                     * The leading null is already consumed, so any element here would be the empty read.
+                     */
                     assertEquals(null, withTimeoutOrNull(SETTLE_MS) { emissions.receive() })
 
                     anchorGate.complete(Unit)
@@ -1241,16 +1266,7 @@ class SlipstreamSynchronizerLifecycleTest {
         val created = AtomicBoolean(false)
         val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES)))
         val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
-        val jniAccount =
-            JniAccount(
-                accountName = ACCOUNT_NAME,
-                accountUuid = accountUuid.value,
-                hdAccountIndex = NULL_HD_ACCOUNT_INDEX,
-                keySource = KEY_SOURCE,
-                seedFingerprint = null,
-                ufvk = UFVK,
-                uivk = null
-            )
+        val jniAccount = jniAccount(accountUuid)
         runBlocking {
             `when`(backend.initDataDb(setup.seed.byteArray)).thenReturn(0)
             `when`(backend.getAccounts()).thenAnswer { if (created.get()) listOf(jniAccount) else emptyList() }
@@ -1277,7 +1293,9 @@ class SlipstreamSynchronizerLifecycleTest {
         try {
             runBlocking {
                 val emissions = async(Dispatchers.Default) { synchronizer.accountsFlow.take(2).toList() }
-                /* Settles past DbReady with the anchor still held: a second emission would be the empty read. */
+                /*
+                 * Settles past DbReady with the anchor still held: a second emission would be the empty read.
+                 */
                 verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
                 assertTrue(emissions.isActive)
 
@@ -1325,7 +1343,9 @@ class SlipstreamSynchronizerLifecycleTest {
                     summary.accountBalances,
                     withTimeout(TIMEOUT_MS) { synchronizer.walletBalances.first { it != null } }
                 )
-                /* Still short of the anchor, so the seed is genuinely a DbReady-phase publish. */
+                /*
+                 * Still short of the anchor, so the seed is genuinely a DbReady-phase publish.
+                 */
                 verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
             }
         } finally {
@@ -1356,7 +1376,10 @@ class SlipstreamSynchronizerLifecycleTest {
                 prepareInputs = prepareInputs(dbWalletSummary = { error(SEED_FAILURE_MESSAGE) })
             )
         try {
-            synchronizer.onSetupErrorHandler = { handlerCalls.incrementAndGet(); false }
+            synchronizer.onSetupErrorHandler = {
+                handlerCalls.incrementAndGet()
+                false
+            }
             runBlocking {
                 verify(engine, timeout(TIMEOUT_MS)).startPolling()
                 assertEquals(null, balances.value)
@@ -1469,6 +1492,17 @@ class SlipstreamSynchronizerLifecycleTest {
         )
 
     private fun newKey() = SlipstreamKey(ZcashNetwork.Testnet, "alias_${System.nanoTime()}")
+
+    private fun jniAccount(accountUuid: AccountUuid): JniAccount =
+        JniAccount(
+            accountName = ACCOUNT_NAME,
+            accountUuid = accountUuid.value,
+            hdAccountIndex = NULL_HD_ACCOUNT_INDEX,
+            keySource = KEY_SOURCE,
+            seedFingerprint = null,
+            ufvk = UFVK,
+            uivk = null
+        )
 
     @Suppress("LongParameterList")
     private fun snapshot(
