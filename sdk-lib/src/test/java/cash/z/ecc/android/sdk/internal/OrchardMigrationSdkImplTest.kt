@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
+import cash.z.ecc.android.sdk.MigrationAdvanceStep
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
@@ -610,6 +611,36 @@ class OrchardMigrationSdkImplTest {
             assertTrue(sdk.isSyncBlocked().first())
         }
 
+    // ── mark_superseded write-through (Task 7): nextStep's Replan branch ─────
+
+    /**
+     * `nextStep()`'s `STEP_REPLAN` branch must call `markMigrationSuperseded` before returning
+     * `MigrationAdvanceStep.Replan`, so every consumer of `nextStep()` gets a superseded
+     * migration automatically (not just the app worker's own Replan handler) — see
+     * `OrchardMigrationSdkImpl.kt`'s `nextStep()`.
+     */
+    @Test
+    fun nextStep_marks_the_migration_superseded_when_the_engine_reports_replan() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(5L, -1L)) // STEP_REPLAN
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertEquals(MigrationAdvanceStep.Replan, result)
+            assertTrue(fakeBackend.markMigrationSupersededCalled)
+        }
+
     private fun preparedTransfer(): JniPreparedTransfer =
         JniPreparedTransfer(
             id = 1L,
@@ -917,6 +948,20 @@ class OrchardMigrationSdkImplTest {
             transferId: Long,
             signedPczt: ByteArray
         ): Boolean = error("Unused")
+
+        // Set true when markMigrationSuperseded is called — proves nextStep()'s STEP_REPLAN
+        // branch wires the write through (see
+        // nextStep_marks_the_migration_superseded_when_the_engine_reports_replan).
+        var markMigrationSupersededCalled = false
+
+        override suspend fun markMigrationSuperseded(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid
+        ): Boolean {
+            markMigrationSupersededCalled = true
+            return true
+        }
 
         override suspend fun keystoneSigningRoundBudget(): IntArray = error("Unused")
 

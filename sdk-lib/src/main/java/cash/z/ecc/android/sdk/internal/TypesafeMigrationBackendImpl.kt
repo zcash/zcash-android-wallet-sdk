@@ -209,6 +209,12 @@ internal class TypesafeMigrationBackendImpl(
         signedPczt: ByteArray
     ): Boolean = rustBackend().applySignature(dbDataPath, network.id, account.value, transferId, signedPczt)
 
+    override suspend fun markMigrationSuperseded(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Boolean = rustBackend().markMigrationSuperseded(dbDataPath, network.id, account.value)
+
     override suspend fun keystoneSigningRoundBudget(): IntArray = rustBackend().keystoneSigningRoundBudget()
 
     override suspend fun migrationSummary(dbDataPath: String): LongArray =

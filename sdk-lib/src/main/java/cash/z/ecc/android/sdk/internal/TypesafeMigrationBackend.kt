@@ -230,6 +230,17 @@ internal interface TypesafeMigrationBackend {
     ): Boolean
 
     /**
+     * Marks a Replan-requesting migration Superseded — see [OrchardMigrationSdkImpl.nextStep]'s
+     * Replan handling. Returns whether it actually transitioned something (false if already
+     * terminal or no migration exists).
+     */
+    suspend fun markMigrationSuperseded(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Boolean
+
+    /**
      * The engine's Keystone signing-round budget constants:
      * `[maxActionsPerRound, preparationActions, transferActions]`.
      */

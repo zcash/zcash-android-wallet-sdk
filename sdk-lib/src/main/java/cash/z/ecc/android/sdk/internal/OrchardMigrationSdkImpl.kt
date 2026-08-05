@@ -726,13 +726,36 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
                 when (arr.getOrElse(0) { STEP_WAITING }) {
-                    STEP_PROVE -> MigrationAdvanceStep.Prove(id)
-                    STEP_BROADCAST -> MigrationAdvanceStep.Broadcast(id)
-                    STEP_REBUILD -> MigrationAdvanceStep.Rebuild(id)
-                    STEP_COMPLETE -> MigrationAdvanceStep.Complete
-                    STEP_REPLAN -> MigrationAdvanceStep.Replan
-                    STEP_REEVALUATE -> MigrationAdvanceStep.Reevaluate
-                    else -> MigrationAdvanceStep.Waiting
+                    STEP_PROVE -> {
+                        MigrationAdvanceStep.Prove(id)
+                    }
+
+                    STEP_BROADCAST -> {
+                        MigrationAdvanceStep.Broadcast(id)
+                    }
+
+                    STEP_REBUILD -> {
+                        MigrationAdvanceStep.Rebuild(id)
+                    }
+
+                    STEP_COMPLETE -> {
+                        MigrationAdvanceStep.Complete
+                    }
+
+                    STEP_REPLAN -> {
+                        // Every consumer of nextStep() gets a superseded migration automatically,
+                        // not just the app worker's specific Replan handler.
+                        migrationBackend.markMigrationSuperseded(dbDataPath, network, account)
+                        MigrationAdvanceStep.Replan
+                    }
+
+                    STEP_REEVALUATE -> {
+                        MigrationAdvanceStep.Reevaluate
+                    }
+
+                    else -> {
+                        MigrationAdvanceStep.Waiting
+                    }
                 }
             }
         }

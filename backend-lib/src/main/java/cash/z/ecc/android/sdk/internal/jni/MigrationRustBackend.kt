@@ -412,6 +412,21 @@ class MigrationRustBackend private constructor() {
             applySignatureNative(dbDataPath, networkId, accountUuidBytes, transferId, signedPczt)
         }
 
+    /**
+     * Marks a Replan-requesting migration Superseded — see `OrchardMigrationSdkImpl.nextStep`'s
+     * Replan handling (sdk-lib). Returns whether it actually transitioned something (false if
+     * already terminal or no migration exists).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun markMigrationSuperseded(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            markMigrationSupersededNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun restartCurrentMigrationStep(
         dbDataPath: String,
@@ -847,6 +862,14 @@ class MigrationRustBackend private constructor() {
             accountUuidBytes: ByteArray,
             transferId: Long,
             signedPczt: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun markMigrationSupersededNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
         ): Boolean
 
         @JvmStatic
