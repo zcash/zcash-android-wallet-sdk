@@ -565,6 +565,18 @@ fn derive_migration_state<'a>(
             engine::MigrationStatus::Complete => {
                 Ok(env.new_object(format!("{JNI_MIGRATION_STATE}$Complete"), "()V", &[])?)
             }
+            // A migration `mark_superseded()` reaches (Task 7: markMigrationSupersededNative, the
+            // consumer's response to `AdvanceStep::Replan`) accepts a replacement commit
+            // immediately — `Committer::start`'s guard only checks `is_terminal()`, which
+            // `Superseded` satisfies exactly like `Complete`/`Failed`. That is precisely
+            // `ReadyToPropose`'s contract ("ready to call proposeMigrationTransfers()"), even
+            // though a prior (now-superseded) migration record still exists in the store — so map
+            // it there rather than treating a superseded plan as a NEW, uninitiated migration
+            // (`NotStarted`) or as a `Complete` one. Without this arm, any `getMigrationState()`
+            // call after a Replan (e.g. the home banner) would hit the `unreachable!` below.
+            engine::MigrationStatus::Superseded => {
+                Ok(env.new_object(format!("{JNI_MIGRATION_STATE}$ReadyToPropose"), "()V", &[])?)
+            }
             engine::MigrationStatus::Failed => {
                 // Read the persisted invalidation reason to distinguish InvalidTransfer from
                 // TransferExpired (plain cancel/debug-clear) — the side table is optional, so a
@@ -594,7 +606,7 @@ fn derive_migration_state<'a>(
                     &[JValue::Object(&reason)],
                 )?)
             }
-            _ => unreachable!("is_terminal() only returns true for Complete/Failed"),
+            _ => unreachable!("is_terminal() only returns true for Complete/Failed/Superseded"),
         };
     }
 
