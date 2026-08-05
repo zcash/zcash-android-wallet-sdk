@@ -2560,50 +2560,43 @@ enum DueTransferResult<'a> {
     Ready(&'a MigrationTransaction),
 }
 
-/// Core filtering logic for next_due_transfer: given a reconciled state and two height sentinels,
-/// returns the tri-state result. `scanned_tip` is used for expiry checks (never the estimate);
-/// `effective_tip` (may equal `scanned_tip` when no estimate) is used for schedule due-ness.
+/// Delegates entirely to `advance_step` (the same call `nextStepNative` makes) rather than
+/// re-deriving due-ness locally — see spec/2026-08-05-migration-engine-full-delegation-design.md
+/// §1. `backend` is threaded through only because `advance_step` requires it (the in-flight sweep
+/// it runs may persist determinations); callers already hold one from `open`.
+///
+/// Replaces the former hand-rolled Proved/Signed filter, which never checked
+/// `unsatisfiable`/dead-dependency status at all — a due, Proved transfer whose inputs had
+/// already been observed spent (or that was stranded behind such a transaction) was offered as
+/// `Ready` regardless. `advance_step`'s `dead_set` closure withholds it correctly; see the
+/// `next_due_transfer_delegation_tests` module below for the differential coverage pinning this
+/// down.
 fn next_due_transfer_result<'a>(
-    state: &'a MigrationState,
+    backend: &mut impl PoolMigrationWrite<Error = EngineError>,
+    state: &'a mut MigrationState,
     scanned_tip: BlockHeight,
     effective_tip: BlockHeight,
-) -> DueTransferResult<'a> {
+) -> anyhow::Result<DueTransferResult<'a>> {
     if state.is_terminal() {
-        return DueTransferResult::NothingDue;
+        return Ok(DueTransferResult::NothingDue);
     }
+    // advance_step's own convention: scanned_target = tip + 1, estimated_target = max(scanned, est
+    // + 1) — matches nextStepNative exactly (spec §1's height-convention hazard). Callers of this
+    // function already pass scanned_tip/effective_tip as raw tips (not +1), so convert here.
     let scanned_target = scanned_tip + 1;
-    let mut due: Vec<&MigrationTransaction> = state
-        .transactions()
-        .iter()
-        .filter(|t| {
-            // Deliberately kind-AGNOSTIC, matching the engine's own `next_broadcastable`:
-            // multi-transaction preparation layers (latest-main engine) are broadcast by the
-            // same driving loop as transfers. A Transfer-only filter here deadlocked a live
-            // plan (2026-07-28): a proved, due preparation had no broadcaster, while the
-            // (also kind-agnostic) overdue gate held sync blocked forever.
-            matches!(t.state(), MigrationTxState::Proved | MigrationTxState::Signed)
-                && t.scheduled_height() <= effective_tip
-                && state.deps_mined(t.depends_on())
-                // Expiry always uses scanned_tip, never the estimate.
-                && !(u32::from(t.expiry_height()) != 0
-                    && u32::from(t.expiry_height()) < u32::from(scanned_target))
-        })
-        .collect();
-    due.sort_by_key(|t| t.scheduled_height());
-    // First Proved -> READY; else first Signed -> AWAITING_PROOF; else NOTHING_DUE.
-    if let Some(tx) = due
-        .iter()
-        .find(|t| matches!(t.state(), MigrationTxState::Proved))
-    {
-        return DueTransferResult::Ready(tx);
-    }
-    if let Some(tx) = due
-        .iter()
-        .find(|t| matches!(t.state(), MigrationTxState::Signed))
-    {
-        return DueTransferResult::AwaitingProof(tx.id());
-    }
-    DueTransferResult::NothingDue
+    let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
+    let (code, id) = advance_step(backend, state, scanned_target, estimated_target)?;
+    Ok(match code {
+        STEP_BROADCAST => {
+            let tx_id = MigrationTransferId::new(id as u32);
+            match state.transactions().iter().find(|t| t.id() == tx_id) {
+                Some(tx) => DueTransferResult::Ready(tx),
+                None => DueTransferResult::NothingDue,
+            }
+        }
+        STEP_PROVE => DueTransferResult::AwaitingProof(MigrationTransferId::new(id as u32)),
+        _ => DueTransferResult::NothingDue,
+    })
 }
 
 /// The next due, deps-mined transfer: tri-state (NOTHING_DUE=0, READY=1, AWAITING_PROOF=2).
@@ -2630,7 +2623,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             scanned_tip
         };
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
-        let Some(state) = read_reconciled(&wallet, &mut backend)? else {
+        let Some(mut state) = read_reconciled(&wallet, &mut backend)? else {
             // No migration: status=0, both nullable fields null.
             return Ok(env
                 .new_object(
@@ -2664,7 +2657,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 .collect::<Vec<_>>(),
         );
 
-        match next_due_transfer_result(&state, scanned_tip, effective_tip) {
+        match next_due_transfer_result(&mut backend, &mut state, scanned_tip, effective_tip)? {
             DueTransferResult::NothingDue => Ok(env
                 .new_object(
                     JNI_DUE_TRANSFER_RESULT,
@@ -4833,7 +4826,14 @@ mod next_due_transfer_tests {
     use zcash_protocol::{consensus::BlockHeight, value::Zatoshis};
 
     /// Builds a minimal `MigrationState` with the given transactions (all transfers, no prep).
-    fn make_state(status: MigrationStatus, transfers: Vec<MigrationTransaction>) -> MigrationState {
+    ///
+    /// `pub(super)`: reused by the sibling `next_due_transfer_delegation_tests` module below, so
+    /// its differential tests build fixtures exactly the same way as this module's rather than
+    /// duplicating the builder.
+    pub(super) fn make_state(
+        status: MigrationStatus,
+        transfers: Vec<MigrationTransaction>,
+    ) -> MigrationState {
         let note_split = DenominationPlan::from_stored_parts(
             vec![Zatoshis::const_from_u64(100_000_000)],
             Zatoshis::const_from_u64(5_000),
@@ -4853,7 +4853,8 @@ mod next_due_transfer_tests {
         )
     }
 
-    fn transfer(
+    /// `pub(super)`: reused by `next_due_transfer_delegation_tests` (see `make_state`'s doc).
+    pub(super) fn transfer(
         id: u32,
         state: MigrationTxState,
         scheduled: u32,
@@ -4899,14 +4900,31 @@ mod next_due_transfer_tests {
         )
     }
 
+    /// Drives the real, delegated `next_due_transfer_result` over a fresh in-memory store built
+    /// from `state`, for tests that only care about the tri-state `DueTransferResult` and not the
+    /// raw `(code, id)` pair `step_at` (below) reports. `pub(super)`: reused by
+    /// `next_due_transfer_delegation_tests` (see `make_state`'s doc).
+    pub(super) fn due_result(
+        state: &mut MigrationState,
+        scanned: BlockHeight,
+        effective: BlockHeight,
+    ) -> DueTransferResult<'_> {
+        let mut store = InMemoryStore {
+            state: state.clone(),
+            as_of: scanned,
+        };
+        next_due_transfer_result(&mut store, state, scanned, effective)
+            .expect("in-memory store never errors")
+    }
+
     /// 1. Terminal migration (Failed status) yields NothingDue even with a Proved+due transfer.
     #[test]
     fn next_due_is_nothing_when_migration_terminal() {
         let tip = BlockHeight::from_u32(1000);
         // A Proved transfer that would normally be due
         let tx = transfer(0, MigrationTxState::Proved, 900, 2000);
-        let state = make_state(MigrationStatus::Failed, vec![tx]);
-        let result = next_due_transfer_result(&state, tip, tip);
+        let mut state = make_state(MigrationStatus::Failed, vec![tx]);
+        let result = due_result(&mut state, tip, tip);
         assert!(
             matches!(result, DueTransferResult::NothingDue),
             "terminal migration must return NothingDue, got non-NothingDue"
@@ -4918,8 +4936,8 @@ mod next_due_transfer_tests {
     fn next_due_reports_awaiting_proof_for_due_signed_transfer() {
         let tip = BlockHeight::from_u32(1000);
         let tx = transfer(42, MigrationTxState::Signed, 900, 2000);
-        let state = make_state(MigrationStatus::InProgress, vec![tx]);
-        let result = next_due_transfer_result(&state, tip, tip);
+        let mut state = make_state(MigrationStatus::InProgress, vec![tx]);
+        let result = due_result(&mut state, tip, tip);
         match result {
             DueTransferResult::AwaitingProof(id) => {
                 assert_eq!(
@@ -4935,28 +4953,62 @@ mod next_due_transfer_tests {
         }
     }
 
-    /// 3. estimated_tip accelerates due-ness: scheduled at scanned+5, estimated=scanned+6 -> AWAITING_PROOF;
-    ///    estimated=-1 (meaning use scanned) -> NothingDue.
+    /// 3. `estimated_tip` accelerates due-ness for BROADCAST (a Proved transfer): without an
+    ///    estimate a transfer scheduled ahead of the scanned tip is not yet Ready; an estimate
+    ///    reaching its scheduled height makes it Ready.
+    ///
+    ///    UPDATED 2026-08-05 (full delegation, Task 2): this test formerly asserted the identical
+    ///    schedule/estimate gate for a SIGNED transfer's AwaitingProof — true of the old hand-rolled
+    ///    filter (one `due` list, one schedule check, shared by both `Proved` and `Signed`), false
+    ///    of the delegated `advance_step`: proving is intentionally DECOUPLED from the broadcast
+    ///    schedule (see `prove_ready`'s doc in `zcash_pool_migration::state` — "decoupled from the
+    ///    (later) broadcast schedule... lets the sync-heavy proving work happen at a sync wake-up in
+    ///    a different waking session from the broadcast"). A Signed transfer becomes prove-ready as
+    ///    soon as its anchor boundary settles at the scanned tip, with no estimate needed at all —
+    ///    not a regression, the decoupling is the point of proving ahead of the ZIP 374 broadcast.
     #[test]
-    fn estimated_tip_accelerates_due_ness_only() {
+    fn estimated_tip_accelerates_due_ness_for_broadcast_not_proof() {
         let scanned = BlockHeight::from_u32(1000);
-        let scheduled = 1005u32; // scanned + 5, not due at scanned
-        let tx = transfer(1, MigrationTxState::Signed, scheduled, 3000);
-        let state = make_state(MigrationStatus::InProgress, vec![tx]);
+        let scheduled = 1005u32; // scanned + 5: not yet due on the BROADCAST schedule
 
-        // No estimate -> NothingDue (scanned=1000 < scheduled=1005)
-        let r1 = next_due_transfer_result(&state, scanned, scanned);
+        // A Signed transfer at this schedule already has a SETTLED anchor boundary
+        // (scheduled - 10 = 995, settled below scanned's target 1001) — prove-ready immediately,
+        // without any estimate, regardless of its (later) broadcast schedule.
+        let signed_tx = transfer(1, MigrationTxState::Signed, scheduled, 3000);
+        let mut signed_state = make_state(MigrationStatus::InProgress, vec![signed_tx]);
         assert!(
-            matches!(r1, DueTransferResult::NothingDue),
-            "without estimate (scanned tip), transfer not due yet"
+            matches!(
+                due_result(&mut signed_state, scanned, scanned),
+                DueTransferResult::AwaitingProof(_)
+            ),
+            "a Signed transfer's settled anchor boundary makes it prove-ready even though its \
+             broadcast schedule has not arrived and no estimate was given"
         );
 
-        // With estimate=1006 (> scheduled=1005) -> AWAITING_PROOF
-        let estimated = BlockHeight::from_u32(1006);
-        let r2 = next_due_transfer_result(&state, scanned, estimated);
+        // A Proved transfer at the SAME schedule still needs BROADCAST due-ness, which
+        // `estimated_tip` still accelerates exactly as before.
+        let proved_tx = transfer(2, MigrationTxState::Proved, scheduled, 3000);
+        let mut proved_state = make_state(MigrationStatus::InProgress, vec![proved_tx]);
+
+        // No estimate -> not due for broadcast (scanned=1000 < scheduled=1005).
         assert!(
-            matches!(r2, DueTransferResult::AwaitingProof(_)),
-            "with estimated_tip=1006 > scheduled=1005, transfer must be AWAITING_PROOF"
+            !matches!(
+                due_result(&mut proved_state, scanned, scanned),
+                DueTransferResult::Ready(_)
+            ),
+            "without an estimate, a Proved transfer is not offered for broadcast before its \
+             scheduled height"
+        );
+
+        // With estimate=1006 (> scheduled=1005) -> Ready.
+        let estimated = BlockHeight::from_u32(1006);
+        assert!(
+            matches!(
+                due_result(&mut proved_state, scanned, estimated),
+                DueTransferResult::Ready(_)
+            ),
+            "with estimated_tip=1006 > scheduled=1005, the Proved transfer must be offered for \
+             broadcast"
         );
     }
 
@@ -4968,7 +5020,7 @@ mod next_due_transfer_tests {
     fn has_overdue_counts_due_proved_preparation() {
         let tip = BlockHeight::from_u32(1000);
         let prep = preparation(99, MigrationTxState::Proved, 900, 2000);
-        let state = make_state(MigrationStatus::InProgress, vec![prep]);
+        let mut state = make_state(MigrationStatus::InProgress, vec![prep]);
 
         // The preparation is Proved, due (scheduled=900 <= tip=1000), deps empty (mined), not
         // expired (expiry=2000 > scanned_target=1001).  any_overdue must return true.
@@ -4982,43 +5034,73 @@ mod next_due_transfer_tests {
         // the engine's next_broadcastable; a Transfer-only filter deadlocked a live plan).
         assert!(
             matches!(
-                next_due_transfer_result(&state, tip, tip),
+                due_result(&mut state, tip, tip),
                 DueTransferResult::Ready(_)
             ),
             "next_due_transfer_result must serve due Proved preparations"
         );
     }
 
-    /// 4. A transfer past expiry at the SCANNED tip is never returned, even when the ESTIMATE is huge.
-    ///    Conversely, expiry between scanned and a huge estimate must NOT hide a transfer unexpired
-    ///    at the scanned tip.
+    /// 4. A transfer past expiry at the SCANNED tip is never Ready or AwaitingProof — its only
+    ///    remaining step is a REBUILD, which `next_due_transfer_result` never reports (NothingDue).
+    ///
+    ///    UPDATED 2026-08-05 (full delegation, Task 2): this test formerly also asserted that a
+    ///    transfer NOT expired at the scanned tip stays Ready even under a wildly optimistic
+    ///    `estimated_tip` that has passed its expiry — true of the old hand-rolled filter (which
+    ///    evaluated expiry only at `scanned_tip`, per its removed doc comment: "Expiry always uses
+    ///    scanned_tip, never the estimate"), false of the delegated `advance_step`:
+    ///    `MigrationState::next_broadcastable`'s doomed-window guard deliberately judges the
+    ///    broadcast WITHHOLD at the estimate too — "what stops a wallet resumed after its broadcast
+    ///    windows lapsed from broadcasting a stale, no-longer-includable transaction" (see that
+    ///    function's doc in `zcash_pool_migration::state`). This withhold RECORDS NOTHING and
+    ///    reverses itself once the scan catches up — the transaction is never marked dead or
+    ///    offered for rebuild by it, since THOSE determinations still rest on the scanned tip alone
+    ///    (verified below): only the broadcast offer is paused.
     #[test]
-    fn expiry_is_evaluated_against_scanned_tip_never_estimate() {
+    fn expiry_is_evaluated_against_scanned_tip_for_rebuild_never_for_dead() {
         let scanned = BlockHeight::from_u32(1000);
-        // expiry=999 means expired at scanned tip (expiry < scanned_target=1001)
+
+        // expiry=999 means expired at scanned tip (expiry < scanned_target=1001): its only next
+        // step is Rebuild, so next_due_transfer_result reports NothingDue, not Ready.
         let expired_tx = transfer(10, MigrationTxState::Proved, 900, 999);
-        // expiry=1500 means NOT expired at scanned (1500 >= 1001), but would be if we used estimate=2000
-        let valid_tx = transfer(11, MigrationTxState::Proved, 900, 1500);
-
-        let state = make_state(MigrationStatus::InProgress, vec![expired_tx, valid_tx]);
-
-        // Even with a huge estimate, expired transfer (id=10) must never appear
-        let huge_estimate = BlockHeight::from_u32(99_999_999);
-        let result = next_due_transfer_result(&state, scanned, huge_estimate);
-
-        match &result {
-            DueTransferResult::Ready(tx) => {
-                assert_eq!(
-                    tx.id(),
-                    MigrationTransferId::new(11),
-                    "only the unexpired transfer (id=11) may be returned"
-                );
-            }
-            other => panic!(
-                "expected Ready(id=11), got NothingDue or AwaitingProof: {}",
-                matches!(other, DueTransferResult::NothingDue)
+        let mut expired_state = make_state(MigrationStatus::InProgress, vec![expired_tx]);
+        assert!(
+            matches!(
+                due_result(&mut expired_state, scanned, scanned),
+                DueTransferResult::NothingDue
             ),
-        }
+            "a transfer expired at the scanned tip is never Ready or AwaitingProof"
+        );
+
+        // expiry=1500 is NOT expired at scanned (1500 >= scanned_target=1001): Ready when the
+        // estimate agrees with the scanned tip.
+        let valid_tx = transfer(11, MigrationTxState::Proved, 900, 1500);
+        let mut valid_state = make_state(MigrationStatus::InProgress, vec![valid_tx]);
+        assert!(
+            matches!(
+                due_result(&mut valid_state, scanned, scanned),
+                DueTransferResult::Ready(_)
+            ),
+            "a transfer unexpired at the scanned tip is Ready when the estimate agrees with it"
+        );
+
+        // A wildly optimistic estimate the scan has not confirmed (99,999,999 past a real expiry
+        // of 1500) withholds the broadcast (NothingDue from this function) rather than falsely
+        // offering it — but does NOT strand the transfer as dead or rebuildable, which stays
+        // pinned to the scanned tip regardless of the estimate.
+        let mut optimistic_state = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(11, MigrationTxState::Proved, 900, 1500)],
+        );
+        let huge_estimate = BlockHeight::from_u32(99_999_999);
+        assert!(
+            matches!(
+                due_result(&mut optimistic_state, scanned, huge_estimate),
+                DueTransferResult::NothingDue
+            ),
+            "a huge, scan-unconfirmed estimate withholds (never falsely Ready-s) a transfer whose \
+             real expiry the scan has not reached"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -5035,9 +5117,14 @@ mod next_due_transfer_tests {
     /// which transaction is offered, and at which of the two targets — not about the satisfiability
     /// sweep, which needs a real note/nullifier view to exercise and belongs with the wallet-backed
     /// tests.
-    struct InMemoryStore {
-        state: MigrationState,
-        as_of: BlockHeight,
+    ///
+    /// `pub(super)`: reused by `next_due_transfer_delegation_tests` (see `make_state`'s doc) to
+    /// drive the real, delegated `next_due_transfer_result` (which needs a
+    /// `PoolMigrationWrite<Error = EngineError>`, and `EngineError` is `anyhow::Error` — the same
+    /// `Error` type this store already uses).
+    pub(super) struct InMemoryStore {
+        pub(super) state: MigrationState,
+        pub(super) as_of: BlockHeight,
     }
 
     impl PoolMigrationRead for InMemoryStore {
@@ -5153,6 +5240,213 @@ mod next_due_transfer_tests {
         );
         let (code, id) = step_at(&st, 995, 1001);
         assert_eq!((code, id), (STEP_PROVE, 4));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Differential tests: old hand-rolled `next_due_transfer_result` vs. the delegated
+// `advance_step`-backed version above (spec/2026-08-05-migration-engine-full-delegation-design.md
+// §1). The intent is NOT blanket agreement — the whole point of delegating is that the new logic
+// is more correct in specific ways the old code never checked. Ordinary cases assert agreement;
+// the documented divergence is asserted explicitly and separately.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod next_due_transfer_delegation_tests {
+    use super::*;
+    // Reuse this file's fixture-building helpers exactly as `next_due_transfer_tests` defines them
+    // (made `pub(super)` there for this purpose) rather than duplicating them — `make_state`,
+    // `transfer`, `InMemoryStore`, and the `due_result` driver that wraps the real, delegated
+    // `next_due_transfer_result` in an in-memory store.
+    use super::next_due_transfer_tests::{due_result, make_state, transfer};
+    use zcash_pool_migration::{
+        engine::{
+            MigrationState, MigrationStatus, MigrationTransaction, MigrationTransferId,
+            MigrationTxKind, MigrationTxState,
+        },
+        satisfiability::UnsatisfiableKind,
+    };
+    use zcash_protocol::consensus::BlockHeight;
+
+    /// A minimal-diff copy of `next_due_transfer_tests::transfer` that also sets the
+    /// `unsatisfiable` mark (the one field that helper hardcodes to `None`) — needed only by the
+    /// divergence test below, so it is not worth widening the shared helper's signature for.
+    /// Every other field is built identically to `next_due_transfer_tests::transfer`.
+    fn unsatisfiable_transfer(
+        id: u32,
+        scheduled: u32,
+        expiry: u32,
+        unsatisfiable: (BlockHeight, UnsatisfiableKind),
+    ) -> MigrationTransaction {
+        MigrationTransaction::from_parts(
+            MigrationTransferId::new(id),
+            MigrationTxKind::Transfer { crossing: 0 },
+            vec![0u8; 32], // dummy pczt
+            vec![],        // no deps
+            BlockHeight::from_u32(scheduled),
+            BlockHeight::from_u32(expiry),
+            Some(BlockHeight::from_u32(scheduled.saturating_sub(10))), // anchor_boundary
+            zcash_protocol::TxId::from_bytes([id as u8; 32]),
+            MigrationTxState::Proved,
+            None,
+            Some(unsatisfiable),
+            vec![[id as u8; 32]],
+            None,
+        )
+    }
+
+    /// Drives the OLD hand-rolled filter (pre-delegation), preserved here only as the fixed
+    /// comparison point for these differential tests — it is not called anywhere else, since the
+    /// production `next_due_transfer_result` above is now the delegated version.
+    fn old_next_due_transfer_result<'a>(
+        state: &'a MigrationState,
+        scanned_tip: BlockHeight,
+        effective_tip: BlockHeight,
+    ) -> DueTransferResult<'a> {
+        if state.is_terminal() {
+            return DueTransferResult::NothingDue;
+        }
+        let scanned_target = scanned_tip + 1;
+        let mut due: Vec<&MigrationTransaction> = state
+            .transactions()
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.state(),
+                    MigrationTxState::Proved | MigrationTxState::Signed
+                ) && t.scheduled_height() <= effective_tip
+                    && state.deps_mined(t.depends_on())
+                    && !(u32::from(t.expiry_height()) != 0
+                        && u32::from(t.expiry_height()) < u32::from(scanned_target))
+            })
+            .collect();
+        due.sort_by_key(|t| t.scheduled_height());
+        if let Some(tx) = due
+            .iter()
+            .find(|t| matches!(t.state(), MigrationTxState::Proved))
+        {
+            return DueTransferResult::Ready(tx);
+        }
+        if let Some(tx) = due
+            .iter()
+            .find(|t| matches!(t.state(), MigrationTxState::Signed))
+        {
+            return DueTransferResult::AwaitingProof(tx.id());
+        }
+        DueTransferResult::NothingDue
+    }
+
+    /// A due, Proved transfer: both implementations must agree it's Ready.
+    #[test]
+    fn agrees_on_ready_proved_transfer() {
+        let tip = BlockHeight::from_u32(1000);
+        let tx = transfer(7, MigrationTxState::Proved, 900, 2000);
+        let mut state = make_state(MigrationStatus::InProgress, vec![tx]);
+
+        // Each implementation's result is matched (and its borrow of `state` released) before the
+        // other is called: `DueTransferResult<'a>` carries its lifetime parameter on the TYPE even
+        // for variants that hold no reference, so binding both concurrently would hold `state`
+        // borrowed both ways at once.
+        match old_next_due_transfer_result(&state, tip, tip) {
+            DueTransferResult::Ready(tx) => {
+                assert_eq!(
+                    tx.id(),
+                    MigrationTransferId::new(7),
+                    "old implementation: Ready(7)"
+                )
+            }
+            other => panic!(
+                "old implementation expected Ready, got NothingDue={}",
+                matches!(other, DueTransferResult::NothingDue)
+            ),
+        }
+        match due_result(&mut state, tip, tip) {
+            DueTransferResult::Ready(tx) => assert_eq!(
+                tx.id(),
+                MigrationTransferId::new(7),
+                "delegated implementation must agree: Ready(7)"
+            ),
+            other => panic!(
+                "delegated implementation expected Ready, got NothingDue={}",
+                matches!(other, DueTransferResult::NothingDue)
+            ),
+        }
+    }
+
+    /// A due, Signed (not yet proved) transfer: both must agree it's AwaitingProof.
+    #[test]
+    fn agrees_on_awaiting_proof_signed_transfer() {
+        // scheduled == 0 (already due at any tip, and prove-ready immediately: anchor_boundary
+        // saturates to 0) keeps this fixture out of the schedule-decoupling nuance the
+        // `advance_step`-backed prove queue introduces (see the `estimated_tip_accelerates_due_ness_only`
+        // update above) — both implementations agree unconditionally on an always-due transfer.
+        let tip = BlockHeight::from_u32(1000);
+        let tx = transfer(3, MigrationTxState::Signed, 0, 0);
+        let mut state = make_state(MigrationStatus::InProgress, vec![tx]);
+
+        // See the comment in `agrees_on_ready_proved_transfer` for why each result is matched (and
+        // its borrow of `state` released) before the other implementation is called.
+        assert_eq!(
+            match old_next_due_transfer_result(&state, tip, tip) {
+                DueTransferResult::AwaitingProof(id) => Some(id),
+                _ => None,
+            },
+            Some(MigrationTransferId::new(3)),
+            "old implementation must report AwaitingProof(3)"
+        );
+        assert_eq!(
+            match due_result(&mut state, tip, tip) {
+                DueTransferResult::AwaitingProof(id) => Some(id),
+                _ => None,
+            },
+            Some(MigrationTransferId::new(3)),
+            "delegated implementation must agree: AwaitingProof(3)"
+        );
+    }
+
+    /// Nothing due: both must agree NothingDue on an empty state.
+    #[test]
+    fn agrees_on_nothing_due() {
+        let tip = BlockHeight::from_u32(1000);
+        let mut state = make_state(MigrationStatus::InProgress, vec![]);
+
+        assert!(matches!(
+            old_next_due_transfer_result(&state, tip, tip),
+            DueTransferResult::NothingDue
+        ));
+        assert!(matches!(
+            due_result(&mut state, tip, tip),
+            DueTransferResult::NothingDue
+        ));
+    }
+
+    /// DIVERGENCE (intentional, documented on `next_due_transfer_result`'s doc comment above): a
+    /// due, Proved transfer marked `unsatisfiable` (its inputs were observed spent) — the OLD
+    /// hand-rolled filter never checked this at all and offers it as `Ready`; the delegated
+    /// `advance_step` correctly folds it into `dead_set` and withholds it (its only possible next
+    /// step, with no other transaction in the plan, is `Replan`, which maps to `NothingDue`). This
+    /// is NOT a regression: the old code was wrong here, and this test pins the fix, not agreement.
+    #[test]
+    fn new_delegated_version_withholds_unsatisfiable_transfer_old_code_did_not_check() {
+        let tip = BlockHeight::from_u32(1000);
+        let tx = unsatisfiable_transfer(
+            13,
+            900,
+            2000,
+            (BlockHeight::from_u32(999), UnsatisfiableKind::InputsSpent),
+        );
+        let mut state = make_state(MigrationStatus::InProgress, vec![tx]);
+
+        let old_result = old_next_due_transfer_result(&state, tip, tip);
+        assert!(
+            matches!(old_result, DueTransferResult::Ready(_)),
+            "documenting the bug: the old filter offers an unsatisfiable transfer as Ready"
+        );
+
+        let new_result = due_result(&mut state, tip, tip);
+        assert!(
+            matches!(new_result, DueTransferResult::NothingDue),
+            "the fix: advance_step's dead_set withholds an unsatisfiable transfer entirely"
+        );
     }
 }
 
