@@ -2297,22 +2297,43 @@ fn backfill_boundary_checkpoint_for_pool(
     Ok(true)
 }
 
+/// Whether Ironwood retention had already started by anchor height `b` — i.e. whether ANY
+/// checkpoint at or before `b` exists. A transfer's Ironwood bundle carries its own dummy spend
+/// (see `build_transfer_pczt`'s tests: `pczt.ironwood().anchor().is_none()` at build time is ZIP
+/// 374 deferral, not absence of a real requirement — the crossing action still needs an anchor at
+/// prove time), and that anchor resolves via the well-known empty-tree root when Ironwood was
+/// still genuinely empty AT `b`. This must be evaluated per anchor height, not once globally:
+/// checking "does Ironwood have any checkpoint right now" instead would falsely require a real
+/// checkpoint for an old anchor height that predates Ironwood's very first checkpoint, the moment
+/// ANY later transfer in the same plan mines and Ironwood retention starts elsewhere in the plan's
+/// own height range (observed live 2026-08-04: 3 transfers with anchor boundaries below Ironwood's
+/// first-ever checkpoint became permanently unprovable once sibling transfers with later anchors
+/// mined and created that first checkpoint).
+fn ironwood_retention_started_by(conn: &Connection, b: u32) -> anyhow::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM ironwood_tree_checkpoints WHERE checkpoint_id <= ?1)",
+        [b],
+        |r| r.get(0),
+    )
+    .map_err(|e| {
+        anyhow!(
+            "Error probing ironwood checkpoints at or before {}: {}",
+            b,
+            e
+        )
+    })
+}
+
 /// Ensures the checkpoints every settled, still-`Signed` transfer's anchor boundary needs exist
 /// (backfilling empty gaps per [`backfill_boundary_checkpoint_for_pool`]), and returns the
-/// boundaries that remain unprovable. Ironwood is required only once its tree has checkpoints at
-/// all (an empty post-activation tree resolves anchors via the empty-tree root).
+/// boundaries that remain unprovable. Ironwood is required only once its tree had checkpoints as
+/// of THIS transfer's own anchor height (see [`ironwood_retention_started_by`]) — an empty
+/// post-activation tree at that height resolves anchors via the empty-tree root.
 fn ensure_boundary_checkpoints(
     conn: &Connection,
     state: &MigrationState,
     scanned_tip: BlockHeight,
 ) -> anyhow::Result<Vec<(MigrationTransferId, BlockHeight)>> {
-    let ironwood_has_rows: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM ironwood_tree_checkpoints)",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| anyhow!("Error probing ironwood checkpoints: {}", e))?;
     let mut missing = Vec::new();
     for t in state.transactions() {
         if !matches!(t.state(), MigrationTxState::Signed) {
@@ -2328,7 +2349,7 @@ fn ensure_boundary_checkpoints(
                 "orchard_commitment_tree_size",
                 b,
             )?;
-            let ironwood_ok = !ironwood_has_rows
+            let ironwood_ok = !ironwood_retention_started_by(conn, b)?
                 || backfill_boundary_checkpoint_for_pool(
                     conn,
                     "ironwood_tree_checkpoints",
@@ -2341,6 +2362,90 @@ fn ensure_boundary_checkpoints(
         }
     }
     Ok(missing)
+}
+
+#[cfg(test)]
+mod ironwood_retention_started_by_tests {
+    use super::*;
+
+    /// Minimal in-memory fixture: just the one column `ironwood_retention_started_by` reads —
+    /// no need for the full wallet schema to exercise this predicate in isolation.
+    fn fixture() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE ironwood_tree_checkpoints (
+                 checkpoint_id INTEGER PRIMARY KEY,
+                 position INTEGER
+             );",
+        )
+        .expect("create fixture table");
+        conn
+    }
+
+    #[test]
+    fn no_checkpoints_at_all_is_false_at_any_height() {
+        let conn = fixture();
+        assert!(!ironwood_retention_started_by(&conn, 100).unwrap());
+        assert!(!ironwood_retention_started_by(&conn, 4_237_260).unwrap());
+    }
+
+    #[test]
+    fn height_strictly_before_the_first_checkpoint_is_false() {
+        // Regression for the live bug: an anchor boundary drawn before Ironwood's very first
+        // checkpoint must read as "retention had not started yet" — the empty-tree-root shortcut
+        // — regardless of what checkpoints exist at LATER heights.
+        let conn = fixture();
+        conn.execute(
+            "INSERT INTO ironwood_tree_checkpoints (checkpoint_id, position) VALUES (?1, 0)",
+            [4_237_284u32],
+        )
+        .unwrap();
+
+        assert!(!ironwood_retention_started_by(&conn, 4_237_260).unwrap());
+        assert!(!ironwood_retention_started_by(&conn, 4_237_272).unwrap());
+    }
+
+    #[test]
+    fn height_at_or_after_the_first_checkpoint_is_true() {
+        let conn = fixture();
+        conn.execute(
+            "INSERT INTO ironwood_tree_checkpoints (checkpoint_id, position) VALUES (?1, 0)",
+            [4_237_284u32],
+        )
+        .unwrap();
+
+        assert!(ironwood_retention_started_by(&conn, 4_237_284).unwrap());
+        assert!(ironwood_retention_started_by(&conn, 4_237_300).unwrap());
+    }
+
+    #[test]
+    fn later_checkpoints_do_not_retroactively_affect_earlier_heights() {
+        // The exact shape of the live bug: a transfer with anchor 4237248 was checked back when
+        // Ironwood had NO checkpoints at all (its own state is fine either way, since 4237248 is
+        // still before the first real one). What must NOT happen is a transfer at 4237260 —
+        // between 4237248 and Ironwood's real first checkpoint at 4237284 — reading as
+        // retention-started just because 4237284 and 4237296 exist by the time it's re-checked.
+        let conn = fixture();
+        for (id, pos) in [(4_237_284u32, 1u32), (4_237_296, 2)] {
+            conn.execute(
+                "INSERT INTO ironwood_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
+                [id, pos],
+            )
+            .unwrap();
+        }
+
+        assert!(
+            !ironwood_retention_started_by(&conn, 4_237_248).unwrap(),
+            "well before the first real checkpoint — pre-retention"
+        );
+        assert!(
+            !ironwood_retention_started_by(&conn, 4_237_260).unwrap(),
+            "4237260 sits strictly between no-checkpoint and the first real checkpoint (4237284) \
+             — later checkpoints existing must not retroactively require one here"
+        );
+        assert!(ironwood_retention_started_by(&conn, 4_237_284).unwrap());
+        assert!(ironwood_retention_started_by(&conn, 4_237_296).unwrap());
+    }
 }
 
 /// Advances every due, signed transaction's proving (ZIP 374: installs its real anchor + witness
