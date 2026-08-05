@@ -477,6 +477,53 @@ class OrchardMigrationSdkImplTest {
             assertEquals(1, fakeBackend.broadcastCallCount, "the entry guard must fall through to a send here")
         }
 
+    /**
+     * Regression test for the double-sweep collapse itself: `executeNextPendingTransfer` used to
+     * call `hasOverdueTransfers()` unconditionally (a second, redundant `advance_step` sweep) on
+     * every attempt before deriving `wasOverdue` from it. Now `wasOverdue` is derived directly from
+     * `nextDueTransfer()`'s own `DUE_READY` status (see the collapse at `OrchardMigrationSdkImpl.kt`),
+     * so `hasOverdueTransfers` must never be called from this path at all — it stays reachable only
+     * from the public `hasOverdueTransfers()` method and `isSyncBlockedNow` (unaffected here).
+     *
+     * A real network broadcast is attempted (nothing is listening on the test endpoint, so it fails
+     * with a transport-level error) — immaterial to what this test asserts, matching the sibling
+     * cancellation-safety tests above, which document the same real-broadcast constraint.
+     */
+    @Test
+    fun executeNextPendingTransfer_no_longer_calls_hasOverdueTransfers() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val prepared = preparedTransfer()
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = prepared),
+                    // If the old double-call ever regresses, this would flip wasOverdue's would-be
+                    // source to false and the call count assertion below would fail either way.
+                    hasOverdueTransfersResult = true,
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val outcome = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+
+            check(outcome is TransferAttemptOutcome.Executed) { "expected Executed, got $outcome" }
+            assertEquals(
+                0,
+                fakeBackend.hasOverdueTransfersCallCount,
+                "executeNextPendingTransfer must derive wasOverdue from nextDueTransfer's own result, " +
+                    "not from a second hasOverdueTransfers sweep"
+            )
+        }
+
     // ── isSyncBlocked: nextStep-driven, not a blanket plan-wide overdue scan ─
 
     /**
@@ -679,6 +726,10 @@ class OrchardMigrationSdkImplTest {
         // specifically there to skip on an already-mined in-flight resend.
         var broadcastCallCount = 0
 
+        // Counts calls to hasOverdueTransfers — must stay 0 across executeNextPendingTransfer now
+        // that wasOverdue is derived from nextDueTransfer's own result (Task 4's collapse).
+        var hasOverdueTransfersCallCount = 0
+
         override suspend fun migrationDustThresholdZatoshi(): Long = migrationDustThresholdZatoshiResult
 
         override suspend fun migrationState(
@@ -722,7 +773,10 @@ class OrchardMigrationSdkImplTest {
             network: ZcashNetwork,
             account: AccountUuid,
             estimatedTip: Long
-        ): Boolean = hasOverdueTransfersResult
+        ): Boolean {
+            hasOverdueTransfersCallCount++
+            return hasOverdueTransfersResult
+        }
 
         override suspend fun hasInvalidTransfers(
             dbDataPath: String,

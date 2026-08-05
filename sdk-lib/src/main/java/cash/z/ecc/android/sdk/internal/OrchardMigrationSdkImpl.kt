@@ -589,8 +589,8 @@ internal class OrchardMigrationSdkImpl(
             val dbDataPath = dbDataPath()
             val account = account ?: return@logged TransferAttemptOutcome.NothingDue
             val est = if (useEstimatedTip) chainTipEstimator.estimatedTip() else -1L
-            val wasOverdue = migrationBackend.hasOverdueTransfers(dbDataPath, network, account, est)
             val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account, est)
+            val wasOverdue = dueResult.status == DUE_READY
             val prepared =
                 when (dueResult.status) {
                     DUE_READY -> {
