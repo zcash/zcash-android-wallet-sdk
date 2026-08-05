@@ -192,6 +192,16 @@ tracing-android = { version = "0.2", optional = true }
 # (Kotlin does the mnemonic-to-seed conversion, Rust always receives already-derived seed bytes).
 bip0039 = "0.12"
 
+# Test-only: pulls in `zcash_client_sqlite::testing` (`TestDb`/`TestDbFactory`/`BlockCache`) and,
+# through it, `zcash_client_backend::data_api::testing::TestBuilder` — a synthetic, self-contained
+# wallet DB with real chain/checkpoint history, no fixture file required. Used by
+# `migration::wallet_rewind_tests` to prove the wallet's own `WalletWrite::truncate_to_height`
+# (the same call our `rewindToHeight` JNI entry point makes) demotes a `Mined` migration
+# transaction through `zcash_client_sqlite`'s internal pool-migration truncation wiring. Cargo
+# unions this feature set with the `[dependencies]` entry above only for test/bench/example
+# builds, so the release library never links tempfile/rand_chacha/ambassador.
+zcash_client_sqlite = { version = "0.22.0-rc.7", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
+
 [lib]
 name = "zcashwalletsdk"
 path = "src/main/rust/lib.rs"

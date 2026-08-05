@@ -7283,3 +7283,220 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
+
+/// Coverage for the design doc's refutation of the originally-proposed `truncate_to_height` hook
+/// (`.superpowers/sdd/2026-08-05-migration-engine-full-delegation-plan/task-8-brief.md`):
+/// `zcash_client_sqlite` already drives `MigrationState::truncate_to_height` from inside its own
+/// `WalletWrite::truncate_to_height` — the exact call our `rewindToHeight` JNI entry point makes
+/// (`lib.rs`'s `Java_..._RustBackend_rewindToHeight`, via `db_data.truncate_to_height(height)`) —
+/// so a wallet reorg demotes a `Mined` migration transaction with no hook of our own.
+///
+/// Verified directly against `zcash_client_sqlite` 0.22.0-rc.7 (the version pinned in
+/// `Cargo.lock`): `wallet::truncate_to_height_internal` calls
+/// `crate::pool_migration::orchard_ironwood::truncate_to_height(conn, truncation_height)`
+/// unconditionally, in the SAME `rusqlite::Transaction` as the rest of the wallet's own
+/// truncation, for every account with a stored migration — not just the caller's. That function
+/// (`pool_migration::store::truncate_to_height`) reads each account's persisted `MigrationState`,
+/// calls its own `MigrationState::truncate_to_height` (which demotes a `Mined` transaction whose
+/// height is above the truncation point back to `Broadcast`, clears stale marks, and reverts a
+/// `Complete` status a demotion unsettles — see that method's own doc comment in
+/// `zcash_pool_migration::state`), and re-persists it if it changed.
+///
+/// This test proves that wiring holds for OUR pinned dependency versions, end to end against a
+/// real (synthetic, in-memory) `WalletDb`. It goes around our own `Backend` adapter
+/// (`migration_engine.rs`) — irrelevant here, since truncation is driven by
+/// `WalletWrite::truncate_to_height` itself, never by anything our adapter calls — and straight at
+/// `zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations`, the exact store our
+/// adapter wraps.
+///
+/// Harness: `zcash_client_backend::data_api::testing::TestBuilder` /
+/// `zcash_client_sqlite::testing::{db::TestDbFactory, BlockCache}` — the same synthetic,
+/// self-contained wallet-DB harness `zcash_client_sqlite`'s own
+/// `tests/pool_migration_prove_chain_sim.rs`
+/// (`a_settled_reorg_below_a_broadcast_crossings_anchor_marks_it`) uses for its own reorg
+/// coverage, minus the real funding/proving machinery that test needs and this one does not (no
+/// crossing is ever proved or broadcast here — the migration transaction is planted directly in
+/// `Mined` state via `MigrationTransaction::from_parts`, following this file's own
+/// `late_dependency_anchor_tests`/`next_due_transfer_tests` fixture-builder pattern). This crate
+/// has no fixture wallet-DB file checked in — the other real-DB tests in this file all gate on
+/// `MIGRATION_TEST_WALLET_DB` and are `#[ignore]`d for exactly that reason — so a synthetic
+/// in-memory wallet is what lets this run unattended in ordinary `cargo test`.
+#[cfg(test)]
+mod wallet_rewind_tests {
+    use super::*;
+    use zcash_client_backend::data_api::testing::TestBuilder;
+    use zcash_client_backend::data_api::{Account, WalletWrite};
+    use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
+    use zcash_client_sqlite::testing::BlockCache;
+    use zcash_client_sqlite::testing::db::TestDbFactory;
+    use zcash_pool_migration::denomination::DenominationPlan;
+    use zcash_pool_migration::engine::MigrationStatus;
+    use zcash_pool_migration::scheduling::AnchorBucketInterval;
+    use zcash_primitives::block::BlockHash;
+
+    fn note_split() -> DenominationPlan {
+        DenominationPlan::from_stored_parts(
+            vec![Zatoshis::const_from_u64(100_000_000)],
+            Zatoshis::const_from_u64(5_000),
+            None,
+            Zatoshis::const_from_u64(10_000),
+            Zatoshis::const_from_u64(100_010_000),
+            Zatoshis::const_from_u64(100_000_000),
+        )
+        .expect("valid note split plan")
+    }
+
+    /// A single-transfer `MigrationState`, already `Mined` at `mined_height` and `Complete` — the
+    /// exact shape `MigrationState::truncate_to_height`'s doc comment describes rolling back: a
+    /// demotion here must also revert `Complete` back to `InProgress`.
+    fn mined_state(mined_height: BlockHeight, txid: zcash_protocol::TxId) -> MigrationState {
+        let tx = MigrationTransaction::from_parts(
+            MigrationTransferId::new(1),
+            MigrationTxKind::Transfer { crossing: 0 },
+            vec![0u8; 32], // dummy pczt — never proved/broadcast/read as PCZT bytes here
+            vec![],        // no dependencies
+            mined_height,
+            mined_height + 100,
+            Some(mined_height - 10), // anchor_boundary
+            txid,
+            MigrationTxState::Mined {
+                txid,
+                height: mined_height,
+            },
+            None,
+            None,
+            vec![[7u8; 32]],
+            None,
+        );
+        MigrationState::from_parts(
+            MigrationStatus::Complete,
+            note_split(),
+            PreparationPlan::from_parts(vec![], vec![]),
+            vec![tx],
+            AnchorBucketInterval::ZIP_318,
+            ReplanThreshold::DEFAULT,
+        )
+    }
+
+    #[test]
+    fn wallet_truncate_to_height_demotes_a_mined_migration_transaction() {
+        let mut st = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+
+        // Real, scanned chain history: 20 blocks, so a rewind 10 blocks behind the tip stays well
+        // inside the wallet's checkpoint-retention window (mirrors why
+        // `a_settled_reorg_below_a_broadcast_crossings_anchor_marks_it` in `zcash_client_sqlite`'s
+        // own test suite keeps its fork shallow — this crate retains the most recent hundred
+        // checkpoints).
+        let (first_height, _) = st.generate_empty_block();
+        for _ in 0..19 {
+            st.generate_empty_block();
+        }
+        st.scan_cached_blocks(first_height, 20);
+        let tip = st
+            .wallet()
+            .chain_height()
+            .expect("chain height lookup")
+            .expect("wallet has a chain tip after scanning");
+
+        let account = st
+            .test_account()
+            .expect("TestBuilder configured a test account")
+            .id();
+
+        // Plant a migration whose one transaction is ALREADY `Mined`, above where we're about to
+        // truncate — directly into the real SQLite pool-migration store, bypassing our own
+        // `Backend` adapter (irrelevant to this claim: nothing in `Backend`/`migration_engine.rs`
+        // is on the truncation path) and any real signing/proving/broadcast machinery.
+        let txid = zcash_protocol::TxId::from_bytes([9u8; 32]);
+        let mined_height = tip;
+        let truncate_to = tip - 10;
+        let state = mined_state(mined_height, txid);
+        let network = TestBuilder::<(), ()>::DEFAULT_NETWORK;
+        {
+            let mut store = PoolMigrations::for_account(
+                network,
+                SystemClock,
+                st.wallet_mut().conn_mut(),
+                account,
+            )
+            .expect("open pool-migration store to seed the fixture");
+            store
+                .replace_migration(&state)
+                .expect("persist synthetic Mined migration");
+        }
+
+        // Sanity: before touching the wallet, a raw read still shows Mined.
+        {
+            let store = PoolMigrations::for_account(
+                network,
+                SystemClock,
+                st.wallet_mut().conn_mut(),
+                account,
+            )
+            .expect("reopen pool-migration store");
+            let before = store
+                .get_migration()
+                .expect("read migration state")
+                .expect("migration state committed");
+            assert!(
+                matches!(
+                    before.transactions()[0].state(),
+                    MigrationTxState::Mined { .. }
+                ),
+                "fixture setup must start Mined before exercising the wallet rewind"
+            );
+        }
+
+        // The exact call our `rewindToHeight` JNI entry point makes
+        // (`db_data.truncate_to_height(height)` in `lib.rs`) — no migration-specific code of ours
+        // runs here at all.
+        let achieved = st
+            .wallet_mut()
+            .truncate_to_height(truncate_to)
+            .expect("wallet truncate_to_height");
+        assert!(
+            achieved < mined_height,
+            "the achieved truncation height ({achieved:?}) must land below the migration's Mined \
+             height ({mined_height:?}) for this test to exercise the demotion at all"
+        );
+
+        // If `zcash_client_sqlite` did NOT drive `MigrationState::truncate_to_height` from inside
+        // the wallet's own truncation, this read would still show `Mined` — the demotion would
+        // need a hook of our own to happen at all, i.e. the design doc's refutation would be
+        // WRONG for our pinned dependency versions.
+        let store =
+            PoolMigrations::for_account(network, SystemClock, st.wallet_mut().conn_mut(), account)
+                .expect("reopen pool-migration store after truncation");
+        let after = store
+            .get_migration()
+            .expect("read migration state")
+            .expect("migration state committed");
+        let after_tx = &after.transactions()[0];
+        match after_tx.state() {
+            MigrationTxState::Broadcast { txid: demoted_txid } => {
+                assert_eq!(
+                    demoted_txid, txid,
+                    "demotion must keep the txid the transaction was mined under"
+                );
+            }
+            other => panic!(
+                "expected the wallet's real WalletWrite::truncate_to_height (the same call our \
+                 rewindToHeight JNI path makes) to demote the Mined migration transaction to \
+                 Broadcast via zcash_client_sqlite's internal pool_migration truncation wiring — \
+                 got {other:?} instead. If this is failing, the design doc's refutation of the \
+                 originally-proposed truncate_to_height hook was WRONG for this pinned \
+                 zcash_client_sqlite version and that hook needs to be resurrected."
+            ),
+        }
+        assert_eq!(
+            after.status(),
+            MigrationStatus::InProgress,
+            "a demotion that leaves the migration's only transaction unmined must also revert \
+             `Complete` back to `InProgress`"
+        );
+    }
+}
