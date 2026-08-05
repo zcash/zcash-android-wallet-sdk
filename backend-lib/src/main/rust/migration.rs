@@ -46,7 +46,7 @@ use rusqlite::Connection;
 use std::ptr;
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
-use zcash_client_backend::data_api::{InputSource, NullifierQuery, OutputLockStore, WalletRead};
+use zcash_client_backend::data_api::{InputSource, OutputLockStore, WalletRead};
 use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
@@ -1539,114 +1539,30 @@ fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
     Some(*extracted.txid().as_ref())
 }
 
-/// The funding nullifier of a single-Orchard-spend migration transfer, read straight from its PCZT.
-///
-/// The PCZT's Orchard `Spend` carries the funding note's `nullifier` as a required Constructor-set
-/// field (`pczt::orchard::Spend::nullifier`) — it is present regardless of proving state (ZIP 374
-/// defers the anchor/witness, not the nullifier, which is a function of the note and the account
-/// key alone). So we do NOT need to reconstruct the `orchard::note::Note` or re-derive the nullifier
-/// via the FVK: the value the wallet compares against `get_orchard_nullifiers` is already in the
-/// PCZT. Returns `None` if the transfer has not exactly one Orchard spend.
-///
-/// # KNOWN LIMITATION (F1) — currently returns `None` for every production transfer
-///
-/// This function requires the bundle to hold EXACTLY one Orchard action. Production migration
-/// transfers are built with a PADDED 2-action Orchard bundle: one real funding spend plus one
-/// dummy/padding action (see the engine's `build/transfer.rs` — Orchard bundles are padded to a
-/// minimum action count). The real transfer therefore has `actions.len() == 2` and this function
-/// takes the `!= 1` early-return path, yielding `None`.
-///
-/// Consequence: in `reconcile_invalidated`'s pass 3 every candidate's funding nullifier is `None`,
-/// so the all-`None` early-exit fires on every run and the foreign-spend spent-check is inert in
-/// production. Correctly reading the funding nullifier out of the padded 2-action shape (i.e.
-/// identifying the real spend among the padding) is a follow-up ticket; it is deliberately NOT
-/// attempted here. Passes 1 and 2 (own-broadcast / submit-crash reconciliation) are unaffected.
-fn transfer_funding_nullifier(bytes: &[u8]) -> Option<[u8; 32]> {
-    let parsed = pczt::Pczt::parse(bytes).ok()?;
-    let actions = parsed.orchard().actions();
-    // A migration transfer spends exactly one Orchard note. Padding/dummy actions would break the
-    // "exactly one real spend" assumption, so if there is not exactly one action we decline to
-    // guess (return None → this transfer is skipped, never falsely invalidated).
-    if actions.len() != 1 {
-        return None;
-    }
-    Some(*actions[0].spend().nullifier())
-}
-
-/// Pure decision core of the spent-check (M6 step 3), factored out so it can be unit-tested without
-/// a wallet DB. Given, for each candidate `Signed`/`Proved` transfer:
-///   - its funding nullifier (`Option<[u8;32]>`),
-///   - its own PCZT-derived txid (`Option<[u8;32]>`, `None` if the PCZT is not yet extractable),
-///
-/// plus the set of nullifiers the wallet still considers unspent and the set of own-plan txids that
-/// ARE on-chain at the time of this check — decide which transfer (if any) to invalidate.
-///
-/// **Correctness bar: NEVER a false positive.** A candidate is invalidated ONLY when ALL three
-/// conditions hold:
-///   (a) Its funding nullifier is readable AND absent from the unspent set (something spent it).
-///   (b) Its own PCZT-derived txid IS readable (`pczt_txid` returned `Some`). If the txid is
-///       unreadable we cannot confirm the spender is foreign; the situation is ambiguous → skip.
-///   (c) That own txid is NOT in `own_txids_on_chain`. If it IS on-chain, the spender is our own
-///       crashed broadcast and pass 2 should promote it on the next reconciliation run → skip.
-///
-/// Condition (b)+(c) constitute the explicit own-spend guard. They complement the structural guard
-/// (pass 2 promotes every own-broadcast from the candidate set) with a per-candidate check so that
-/// the rare case where pass 2 fails to promote (e.g. `pczt_txid` parse returned `None` for the
-/// proved transfer) never yields a false invalidation.
-///
-/// One foreign-spend candidate: the transfer, its funding nullifier, and its own txid — either of
-/// the latter two unreadable from the stored PCZT, which the decision rule treats as ambiguous.
-type ForeignSpendCandidate = (MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>);
-
-/// False negatives are acceptable: submit-time rejection remains the last line of defence.
-fn decide_foreign_spend(
-    candidates: &[ForeignSpendCandidate],
-    unspent_nullifiers: &std::collections::HashSet<[u8; 32]>,
-    own_txids_on_chain: &std::collections::HashSet<[u8; 32]>,
-) -> Option<MigrationTransferId> {
-    for (id, funding_nf, own_txid) in candidates {
-        // (a) Ambiguous nullifier → skip.
-        let Some(nf) = funding_nf else { continue };
-        // (a) Still unspent → this transfer is fine.
-        if unspent_nullifiers.contains(nf) {
-            continue;
-        }
-        // (b) Own txid unreadable → ambiguous; cannot confirm spender is foreign → skip.
-        let Some(own_txid_bytes) = own_txid else {
-            continue;
-        };
-        // (c) Own txid is on-chain → our own (possibly crashed) broadcast; pass 2 should handle it.
-        if own_txids_on_chain.contains(own_txid_bytes) {
-            continue;
-        }
-        // All three conditions met: nullifier spent, own txid readable, not our on-chain tx → foreign.
-        return Some(*id);
-    }
-    None
-}
-
-/// Reconciles a committed migration against on-chain truth in three mandatory-ordered passes and, if
+/// Reconciles a committed migration against on-chain truth via two mandatory-ordered passes and, if
 /// it detects that the plan can no longer complete as built, marks it `Failed` (reason
 /// `"invalid_transfer"`, reason-first ordering — the same mechanism `recordTransferResultNative`
 /// tag 2 uses). Returns `true` iff the plan is (or already was) invalidated.
 ///
-/// ORDER IS LOAD-BEARING (see task brief M6): the own-broadcast/mined reconciliation MUST run before
-/// the spent-check, so a transfer OUR process broadcast right before crashing (whose funding note is
-/// therefore spent on-chain by us) is promoted to `Mined` and removed from the candidate set FIRST —
-/// otherwise the spent-check would misread our own crashed broadcast as a foreign spend.
 ///   1. `read_reconciled` — existing pass: any `Broadcast` transfer the wallet now knows a height
 ///      for is promoted to `Mined`.
 ///   2. Submit-crash probe: for each `Proved` transfer, extract its txid from its proven PCZT and
 ///      ask the wallet `get_tx_height`; if the wallet already knows a height, our broadcast landed
 ///      (we just never recorded it, e.g. crashed after broadcast) — `mark_broadcast` + `mark_mined`.
-///   3. Spent-check: for each remaining `Signed | Proved` transfer whose dependencies are mined,
-///      read its funding nullifier from the PCZT and compare against the wallet's UNSPENT Orchard
-///      nullifier set. Absent from unspent ⇒ spent; steps 1–2 already resolved every own broadcast,
-///      so this is a foreign spend ⇒ invalidate.
+///
+/// A third, foreign-spend-detecting pass used to run here (comparing each candidate transfer's
+/// funding nullifier against the wallet's unspent set). It was removed — see
+/// spec/2026-08-05-migration-engine-full-delegation-design.md §4: its terminal `Failed` action
+/// raced `advance_migration`'s own recoverable remedy for the same event (`InputsSpent` ->
+/// `Replan` -> `mark_superseded` -> re-propose), and its detection mechanism only ever worked for
+/// `Signed` (pre-proof) transfers, never `Proved` ones. `advance_migration`'s own candidate checks
+/// now own foreign-spend detection end to end, reached through the ordinary `nextStep` driver loop.
 fn reconcile_invalidated(
     wallet: &mut Wallet,
     account: AccountUuid,
-    account_bytes: &[u8],
+    // No longer read: was only used by the deleted Pass 3 to tag `record_invalidation` calls.
+    // Kept (unused) to leave `reconcile_invalidated`'s signature unchanged for its one JNI caller.
+    _account_bytes: &[u8],
     store_conn: &mut Connection,
 ) -> anyhow::Result<bool> {
     // --- Pass 1 + load current state (read_reconciled persists any Broadcast→Mined promotions). ---
@@ -1691,127 +1607,19 @@ fn reconcile_invalidated(
             .map_err(|e| anyhow!("Error persisting submit-crash-probe promotions: {:?}", e))?;
     }
 
-    // --- Pass 3: spent-check. Candidates are Signed|Proved transfers whose deps are mined. ---
-    // Each candidate carries: (id, funding nullifier, own PCZT-derived txid).
-    // The own txid is needed by decide_foreign_spend to satisfy the no-false-positive bar: if the
-    // txid is unreadable (b) or is on-chain (c), the situation is ambiguous and we skip rather than
-    // invalidate (see decide_foreign_spend's doc for the full decision rule).
-    let candidates: Vec<ForeignSpendCandidate> = state
-        .transactions()
-        .iter()
-        .filter(|t| {
-            matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                && matches!(
-                    t.state(),
-                    MigrationTxState::Signed | MigrationTxState::Proved
-                )
-                && state.deps_mined(t.depends_on())
-        })
-        .map(|t| {
-            (
-                t.id(),
-                transfer_funding_nullifier(t.pczt()),
-                pczt_txid(t.pczt()),
-            )
-        })
-        .collect();
-    if candidates.iter().all(|(_, nf, _)| nf.is_none()) {
-        // Nothing readable to check — no invalidation.
-        //
-        // KNOWN LIMITATION (F1): production transfers carry a padded 2-action Orchard bundle (one
-        // real funding spend + one dummy/padding action — see engine `build/transfer.rs`), so
-        // `transfer_funding_nullifier` — which requires EXACTLY one action — returns `None` for
-        // every real transfer. That makes this early-exit fire on every reconciliation run, so
-        // pass 3 (foreign-spend detection) is currently inert in production. The multi-action
-        // nullifier rework is a follow-up ticket; passes 1 and 2 (own-broadcast / submit-crash
-        // reconciliation) still function.
-        tracing::warn!(
-            "MIGRATION_DIAG reconcile: all {} candidate PCZTs unreadable — foreign-spend \
-             detection inactive (known limitation, 2-action transfers)",
-            candidates.len()
-        );
-        return Ok(false);
-    }
-
-    let unspent: std::collections::HashSet<[u8; 32]> = wallet
-        .get_orchard_nullifiers(NullifierQuery::Unspent)
-        .map_err(|e| anyhow!("Error reading unspent Orchard nullifiers: {:?}", e))?
-        .into_iter()
-        .map(|(_account, nf)| nf.to_bytes())
-        .collect();
-
-    // Build the set of own plan txids that are confirmed on-chain right now. This is the data
-    // decide_foreign_spend uses for condition (c): a candidate whose own txid IS on-chain is our
-    // own (possibly crashed) broadcast — not a foreign spend.
-    let own_txids_on_chain: std::collections::HashSet<[u8; 32]> = {
-        let mut set = std::collections::HashSet::new();
-        for tx in state.transactions() {
-            if let Some(txid_bytes) = pczt_txid(tx.pczt()) {
-                let txid = zcash_protocol::TxId::from_bytes(txid_bytes);
-                if wallet
-                    .get_tx_height(txid)
-                    .map_err(|e| anyhow!("Error reading tx height for own-txid check: {:?}", e))?
-                    .is_some()
-                {
-                    set.insert(txid_bytes);
-                }
-            }
-            // Also include any txid already recorded in broadcast state.
-            if let Some(recorded_txid) = tx.state().broadcast_txid() {
-                set.insert(recorded_txid);
-            }
-        }
-        set
-    };
-
-    let Some(invalid_id) = decide_foreign_spend(&candidates, &unspent, &own_txids_on_chain) else {
-        return Ok(false);
-    };
-
-    // Detected a foreign spend of a not-yet-broadcast transfer's funding note. Mark the migration
-    // Failed with reason "invalid_transfer", reason-first ordering (identical to
-    // `recordTransferResultNative` tag 2 — see its ordering comment for the rationale).
-    let invalid_id_str = u32::from(invalid_id).to_string();
-    record_invalidation(
-        store_conn,
-        account_bytes,
-        "invalid_transfer",
-        Some(&invalid_id_str),
-    )
-    .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
-    // Status-only swap: sub-state passed through verbatim (no cancel/fail primitive in the rc.1
-    // engine) — the committed plan itself is never rewritten here.
-    let failed = MigrationState::from_parts(
-        engine::MigrationStatus::Failed,
-        state.denominations().clone(),
-        state.preparation().clone(),
-        state.transactions().clone(),
-        state.anchor_bucket_interval(),
-        state.replan_threshold(),
-    );
-    let mut backend = Backend::new(&*wallet, account, None, store_conn, *wallet.params())?;
-    backend
-        .replace_migration(&failed)
-        .map_err(|e| anyhow!("Error persisting invalidated migration: {:?}", e))?;
-    Ok(true)
+    Ok(false)
 }
 
-/// Reconciles a committed migration against on-chain truth (own-broadcast/mined promotion, then a
-/// foreign-spend check on its funding notes) and marks it `Failed` if it can no longer complete.
-/// See `reconcile_invalidated` for the load-bearing pass ordering. Returns `JNI_TRUE` iff the plan
-/// is (or already was) invalidated.
+/// Reconciles a committed migration against on-chain truth via two passes: own-broadcast/mined
+/// promotion (submit-crash recovery), matching what `advance_migration`'s own in-flight sweep also
+/// does on every `nextStep` call. Returns `JNI_TRUE` iff the plan is (or already was) `Failed`.
 ///
-/// # KNOWN LIMITATION (F1) — foreign-spend detection (pass 3) is currently inert
-///
-/// The pass-3 spent-check reads each candidate transfer's funding nullifier via
-/// `transfer_funding_nullifier`, which requires an EXACTLY-one-action Orchard bundle. Production
-/// migration transfers carry a PADDED 2-action bundle (one real funding spend + one dummy/padding
-/// action — see the engine's `build/transfer.rs`), so that helper returns `None` for every real
-/// transfer and pass 3's all-`None` early-exit fires on every run (logged as `MIGRATION_DIAG
-/// reconcile: ... foreign-spend detection inactive`). Foreign-spend detection is therefore not
-/// active in production; supporting the padded 2-action shape is a follow-up ticket. Passes 1 and
-/// 2 (own-broadcast promotion and submit-crash reconciliation) remain fully functional, so
-/// submit-time rejection is still the effective last line of defence against a spent funding note.
+/// Foreign-spend detection (formerly a third pass here) was removed — see
+/// spec/2026-08-05-migration-engine-full-delegation-design.md §4: its terminal `Failed` action
+/// raced `advance_migration`'s own recoverable remedy for the same event (`InputsSpent` ->
+/// `Replan` -> `mark_superseded` -> re-propose), and its detection mechanism only ever worked for
+/// `Signed` (pre-proof) transfers, never `Proved` ones. `advance_migration`'s own candidate checks
+/// now own foreign-spend detection end to end, reached through the ordinary `nextStep` driver loop.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_reconcileInvalidatedTransfersNative<
     'local,
@@ -5681,25 +5489,18 @@ mod record_transfer_result_tests {
     }
 }
 
-/// Decision-logic tests for `reconcileInvalidatedTransfers`' spent-check (M6 step 3), plus the two
-/// on-chain passes exercised against a real fixture wallet DB (`#[ignore]`d, like the other
-/// `live_wallet_*` tests). The pure `decide_foreign_spend` core is tested exhaustively in-memory so
-/// the invalidation decision — the load-bearing "never a false positive" bar — is locked in without
-/// needing a wallet.
+/// Regression coverage for `reconcileInvalidatedTransfers`'s two on-chain passes (own-broadcast/
+/// mined promotion, submit-crash probe), exercised against a real fixture wallet DB (`#[ignore]`d,
+/// like the other `live_wallet_*` tests).
+///
+/// The third, foreign-spend-detecting pass this module used to also cover (`decide_foreign_spend`
+/// and its exhaustive in-memory decision-logic tests) was deleted along with the pass itself — see
+/// `reconcile_invalidated`'s doc comment for why.
 #[cfg(test)]
 mod reconcile_tests {
     use super::*;
-    use std::collections::HashSet;
-    use zcash_pool_migration::engine::{MigrationTransferId, MigrationTxState};
+    use zcash_pool_migration::engine::MigrationTxState;
     use zcash_protocol::TxId;
-
-    fn nf(byte: u8) -> [u8; 32] {
-        [byte; 32]
-    }
-
-    fn txid(byte: u8) -> [u8; 32] {
-        [byte; 32]
-    }
 
     // -------------------------------------------------------------------------
     // `pczt_txid` unit tests (Finding 2: the parser must have a regression lock)
@@ -5728,141 +5529,6 @@ mod reconcile_tests {
     #[test]
     fn pczt_txid_returns_none_for_empty_bytes() {
         assert_eq!(pczt_txid(&[]), None, "empty slice must not parse as a PCZT");
-    }
-
-    // -------------------------------------------------------------------------
-    // `decide_foreign_spend` decision-logic tests
-    // -------------------------------------------------------------------------
-
-    // --- What the test actually checks: unspent funding note → never invalidated. ---
-    // (Previously misnamed `reconcile_ignores_spends_by_the_plans_own_transactions`.)
-    #[test]
-    fn reconcile_unspent_funding_note_never_invalidated() {
-        let id = MigrationTransferId::new(3);
-        // Funding note still unspent → the transfer is fine, regardless of own-txid fields.
-        let candidates = vec![(id, Some(nf(0x42)), Some(txid(0x10)))];
-        let unspent: HashSet<[u8; 32]> = [nf(0x42)].into_iter().collect();
-        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
-
-        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
-        assert_eq!(
-            decision, None,
-            "an unspent funding note must never be invalidated (state untouched)"
-        );
-    }
-
-    // --- REAL own-spend guard (condition c): spent nullifier + own txid IS on-chain → skip. ---
-    // This is the case where our own crashed broadcast mined but pczt_txid was readable. Pass 2
-    // should have promoted it, but even if it didn't, decide_foreign_spend must not false-positive.
-    #[test]
-    fn reconcile_ignores_spends_by_the_plans_own_transactions() {
-        let id = MigrationTransferId::new(5);
-        let own = txid(0xAB);
-        // Funding note IS spent (absent from unspent), but the transfer's own txid IS on-chain.
-        let candidates = vec![(id, Some(nf(0x55)), Some(own))];
-        let unspent: HashSet<[u8; 32]> = HashSet::new(); // 0x55 not present → spent
-        // own_txids_on_chain contains our txid → spender is US, not foreign.
-        let own_on_chain: HashSet<[u8; 32]> = [own].into_iter().collect();
-
-        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
-        assert_eq!(
-            decision, None,
-            "a spent nullifier whose own txid is on-chain must NOT be invalidated \
-             (the spender is our own crashed broadcast)"
-        );
-    }
-
-    // --- Ambiguity guard b: spent nullifier + own txid UNREADABLE → skip (can't confirm foreign). ---
-    // If pczt_txid returns None (PCZT not yet extractable, e.g. Signed/AwaitingSignature), we cannot
-    // confirm the spender is foreign, so we must not invalidate.
-    #[test]
-    fn reconcile_skips_when_own_txid_is_unreadable() {
-        let id = MigrationTransferId::new(9);
-        // Funding note spent (not in unspent set), own txid unreadable (None).
-        let candidates = vec![(id, Some(nf(0x77)), None)];
-        let unspent: HashSet<[u8; 32]> = HashSet::new(); // 0x77 not present → spent
-        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
-
-        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
-        assert_eq!(
-            decision, None,
-            "when the own txid is unreadable the situation is ambiguous — must not invalidate"
-        );
-    }
-
-    // --- M6 test 2: genuine foreign spend → invalidate. ---
-    // Spent nullifier + own txid readable + own txid NOT on-chain → spender must be foreign.
-    #[test]
-    fn reconcile_invalidates_when_funding_note_spent_by_foreign_tx() {
-        let id = MigrationTransferId::new(7);
-        let own = txid(0x11);
-        // Funding note spent (absent from unspent); own txid readable; own txid NOT on-chain.
-        let candidates = vec![(id, Some(nf(0xAA)), Some(own))];
-        let unspent: HashSet<[u8; 32]> = [nf(0xBB), nf(0xCC)].into_iter().collect();
-        let own_on_chain: HashSet<[u8; 32]> = HashSet::new(); // our txid not on-chain
-
-        let decision = decide_foreign_spend(&candidates, &unspent, &own_on_chain);
-        assert_eq!(
-            decision,
-            Some(id),
-            "a Signed transfer whose funding note is spent by a foreign tx must be invalidated"
-        );
-    }
-
-    // Ambiguity guard (correctness bar: never a false positive). A candidate whose funding
-    // nullifier could not be read (None) must be SKIPPED, never invalidated — even though its
-    // (unknown) nullifier is trivially absent from the unspent set.
-    #[test]
-    fn reconcile_never_invalidates_on_unreadable_funding_nullifier() {
-        let candidates = vec![(MigrationTransferId::new(1), None, Some(txid(0x01)))];
-        let unspent: HashSet<[u8; 32]> = HashSet::new();
-        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
-
-        assert_eq!(
-            decide_foreign_spend(&candidates, &unspent, &own_on_chain),
-            None,
-            "an unreadable funding nullifier is ambiguous and must never trigger invalidation"
-        );
-    }
-
-    // Multiple candidates: the FIRST foreign-spent one is reported; unspent/own-on-chain ones skip.
-    #[test]
-    fn reconcile_reports_first_foreign_spent_candidate() {
-        let unspent: HashSet<[u8; 32]> = [nf(0x01)].into_iter().collect(); // only id=1 unspent
-        let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
-        let candidates = vec![
-            (
-                MigrationTransferId::new(1),
-                Some(nf(0x01)),
-                Some(txid(0x01)),
-            ), // unspent → skip
-            (
-                MigrationTransferId::new(2),
-                Some(nf(0x02)),
-                Some(txid(0x02)),
-            ), // spent, not own → invalidate
-            (
-                MigrationTransferId::new(3),
-                Some(nf(0x03)),
-                Some(txid(0x03)),
-            ), // also spent, but id=2 wins
-        ];
-
-        assert_eq!(
-            decide_foreign_spend(&candidates, &unspent, &own_on_chain),
-            Some(MigrationTransferId::new(2)),
-            "the first foreign-spent candidate must be the one invalidated"
-        );
-    }
-
-    // Empty candidate set → no decision.
-    #[test]
-    fn reconcile_no_candidates_no_invalidation() {
-        let candidates: Vec<ForeignSpendCandidate> = vec![];
-        assert_eq!(
-            decide_foreign_spend(&candidates, &HashSet::new(), &HashSet::new()),
-            None,
-        );
     }
 
     // --- Fixture-backed integration test for M6 test 1 (Proved transfer whose txid is on chain →
@@ -5895,16 +5561,15 @@ mod reconcile_tests {
     }
 
     /// M6 test 1: a `Proved` transfer whose extracted txid is already on chain (`get_tx_height`
-    /// returns `Some`) must be reconciled to `Broadcast`+`Mined` (own crashed broadcast), NOT
-    /// misread as a foreign spend. We can't easily forge a `Proved` PCZT whose txid matches a real
-    /// mined tx, so this test drives the pass-2 mechanism directly and asserts the transfer ends up
-    /// Mined and the migration is NOT Failed.
+    /// returns `Some`) must be reconciled to `Broadcast`+`Mined` (own crashed broadcast). We can't
+    /// easily forge a `Proved` PCZT whose txid matches a real mined tx, so this test drives the
+    /// pass-2 mechanism directly and asserts the transfer ends up Mined.
     ///
     /// Rather than build a real proven PCZT (which requires the full commit+prove pipeline), this
     /// asserts the state-machine contract pass 2 relies on: `mark_broadcast`+`mark_mined` on a
-    /// transaction promote it to `Mined`, and a `Mined` transfer is excluded from the pass-3
-    /// candidate set (so it can never be invalidated). Combined with the pure decision-logic tests
-    /// above, this covers the "own broadcast resolved before spent-check" ordering guarantee.
+    /// transaction promote it out of the `Signed`/`Proved` states (the same predicate the now-deleted
+    /// pass 3 used to build its candidate set from), so a reconciled own-broadcast can never be
+    /// mistaken for a still-outstanding transfer.
     #[test]
     #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
     fn reconcile_marks_proved_transfer_broadcast_when_its_txid_is_on_chain() {
@@ -5942,8 +5607,8 @@ mod reconcile_tests {
         state.mark_broadcast(some_tx_id);
         state.mark_mined(some_tx_id, mined_height);
 
-        // The now-Mined transfer must be excluded from the pass-3 spent-check candidate set.
-        let candidates: Vec<_> = state
+        // The now-Mined transfer must no longer match the Signed|Proved "still outstanding" filter.
+        let still_outstanding: Vec<_> = state
             .transactions()
             .iter()
             .filter(|t| {
@@ -5956,9 +5621,8 @@ mod reconcile_tests {
             .map(|t| t.id())
             .collect();
         assert!(
-            !candidates.contains(&some_tx_id),
-            "a transfer reconciled to Mined must NOT be a spent-check candidate (would misread our \
-             own broadcast as a foreign spend)"
+            !still_outstanding.contains(&some_tx_id),
+            "a transfer reconciled to Mined must no longer be Signed|Proved"
         );
     }
 }
