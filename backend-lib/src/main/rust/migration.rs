@@ -2000,10 +2000,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, 0)
 }
 
-/// Pure predicate used by `hasOverdueTransfersNative`.  A transaction is overdue when it is in
-/// `Proved` state, due at `effective_tip`, deps mined, and not yet expired at `scanned_tip`.
-/// Intentionally no kind filter — preparations also close the sync gate, matching the pre-tri-state
-/// `next_broadcastable`-based semantics.
 /// Delegates to advance_step's STEP_BROADCAST determination — the same check
 /// isSyncBlockedNow's Kotlin-side isReadyToBroadcast helper already uses (fixed earlier in this
 /// session), now also correct at the Rust layer so the public hasOverdueTransfers() API gets the
