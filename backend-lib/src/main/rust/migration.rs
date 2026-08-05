@@ -6863,6 +6863,105 @@ mod state_machine_trace_tests {
         let (steps, _) = d.drain(4_224_620);
         assert_eq!(steps, vec![prove(9), broadcast(9)]);
     }
+
+    /// (f) REPLAN → `mark_superseded`: a migration whose sole transfer is already marked
+    /// unsatisfiable has its ENTIRE planned crossing value unsatisfiable, strictly past
+    /// `ReplanThreshold::DEFAULT` (20%), so `next_step`'s EARLY replan slot fires
+    /// (`state.rs`'s `next_step`: "Above the committed threshold, the replan preempts
+    /// proving") without needing to drain anything to Complete first, and without the
+    /// `NoOpPoolMigrationStore` ever being asked a satisfiability question (the transaction is
+    /// `Signed`, never `Broadcast`/`Proved`, so the in-flight sweep skips it, and it is already
+    /// marked, so no candidate check reaches it either).
+    ///
+    /// This proves both halves of the `mark_superseded` contract this test exists for:
+    /// `advance_migration` reaching `Replan` is the sanctioned trigger, and `mark_superseded`
+    /// is the sanctioned response — moving the migration to the terminal `Superseded` status
+    /// that `Committer::start`'s commit guard (`CommitError::MigrationInProgress`, guarded by
+    /// `existing.is_some_and(|existing| !existing.is_terminal())`) checks before accepting a
+    /// replacement plan.
+    #[test]
+    fn replan_step_then_mark_superseded_unblocks_a_replacement_commit() {
+        let crossing = zcash_protocol::value::Zatoshis::const_from_u64(100_000_000);
+        let denominations = DenominationPlan::from_stored_parts(
+            vec![crossing],
+            zcash_protocol::value::Zatoshis::const_from_u64(5_000),
+            None,
+            zcash_protocol::value::Zatoshis::const_from_u64(10_000),
+            zcash_protocol::value::Zatoshis::const_from_u64(100_010_000),
+            crossing,
+        )
+        .expect("valid denomination plan");
+
+        // The sole transfer, pre-marked unsatisfiable (as `InputsSpent` would leave it) — its
+        // crossing value is the migration's entire planned value.
+        let unsatisfiable_transfer = MigrationTransaction::from_parts(
+            MigrationTransferId::new(0),
+            MigrationTxKind::Transfer { crossing: 0 },
+            vec![0u8; 32],
+            vec![], // depends_on
+            BlockHeight::from_u32(1_000),
+            BlockHeight::from_u32(EXPIRY),
+            Some(BlockHeight::from_u32(1_000)),
+            zcash_protocol::TxId::from_bytes([9; 32]),
+            MigrationTxState::Signed,
+            None, // lock_owner
+            Some((
+                BlockHeight::from_u32(999),
+                zcash_pool_migration::satisfiability::UnsatisfiableKind::InputsSpent,
+            )),
+            vec![], // spend_nullifiers
+            None,   // broadcast_failure_at
+        );
+
+        let mut state = MigrationState::from_parts(
+            MigrationStatus::Committed,
+            denominations,
+            PreparationPlan::from_parts(vec![], vec![]),
+            vec![unsatisfiable_transfer],
+            AnchorBucketInterval::custom(NonZeroU32::new(BUCKET).expect("nonzero")),
+            ReplanThreshold::DEFAULT,
+        );
+
+        // 1. `advance_step` (via `advance_migration`, the only path reachable from this crate's
+        //    tests — `next_step` itself is `pub(crate)`) settles on `Replan`.
+        let mut store = NoOpPoolMigrationStore;
+        let step = advance_migration(
+            &mut store,
+            &mut state,
+            DuenessTargets::at(BlockHeight::from_u32(1_001)),
+            &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+        )
+        .expect("advance_migration over the no-op store");
+        assert_eq!(
+            step,
+            AdvanceStep::Replan,
+            "the sole transfer's crossing value is entirely unsatisfiable, past \
+             ReplanThreshold::DEFAULT"
+        );
+        assert!(state.replan_required());
+        assert_ne!(
+            state.status(),
+            MigrationStatus::Superseded,
+            "not yet marked"
+        );
+
+        // 2. The sanctioned response.
+        state.mark_superseded();
+
+        // 3. Terminal, and specifically Superseded (not Failed/Complete).
+        assert_eq!(state.status(), MigrationStatus::Superseded);
+        assert!(state.is_terminal());
+
+        // 4. Mirror `Committer::start`'s guard directly (engine.rs: `backend.get_migration()...
+        //    .is_some_and(|existing| !existing.is_terminal())` => `Err(MigrationInProgress)`).
+        //    For `Some(state)` that reduces to `!state.is_terminal()`; asserting it's `false` is
+        //    exactly "a replacement commit is unblocked" — the documented precondition the
+        //    commit guard checks, without re-deriving the whole commit flow here.
+        assert!(
+            Some(&state).is_none_or(|existing| existing.is_terminal()),
+            "mark_superseded's terminal state satisfies Committer::start's commit guard"
+        );
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -7103,6 +7202,45 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         Ok(applied as jboolean)
     });
     unwrap_exc_or(&mut env, res, 0)
+}
+
+/// Marks a Replan-requesting migration Superseded (state.rs's `mark_superseded` — see its doc:
+/// "after this, the commit guard accepts a replacement migration for the remaining balance"),
+/// exactly matching the sim test's call sequence (immediately after `AdvanceStep::Replan`). A
+/// no-op, returning `JNI_FALSE`, if the migration is already terminal or doesn't exist —
+/// `mark_superseded` itself is a no-op on an already-terminal migration, so this is safe to call
+/// repeatedly.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_markMigrationSupersededNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
+        let Some(mut state) = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+        else {
+            return Ok(JNI_FALSE);
+        };
+        let was_terminal = state.is_terminal();
+        state.mark_superseded();
+        if was_terminal {
+            return Ok(JNI_FALSE);
+        }
+        backend
+            .replace_migration(&state)
+            .map_err(|e| anyhow!("Error persisting superseded migration: {:?}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
 /// The engine's Keystone signing-round budget constants, so the app never hardcodes them:
