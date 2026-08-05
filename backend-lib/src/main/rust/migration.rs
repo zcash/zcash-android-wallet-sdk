@@ -1395,6 +1395,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     result_tag: jint,
     _retryable: jboolean,
     tx_id: JByteArray<'local>,
+    observed_tip: jlong,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
@@ -1491,6 +1492,29 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         .map_err(|e| anyhow!("Error persisting failed migration: {:?}", e))?;
                 }
                 Ok(())
+            }
+            // AwaitingReevaluation (4): a node REJECTED the broadcast and we cannot yet say why. Report it
+            // to the engine via report_broadcast_failure rather than terminally failing the plan (tag=2's old
+            // behavior for this exact case) — see spec/2026-08-05-migration-engine-full-delegation-design.md
+            // §5. observed_tip < 0 means the follow-up tip fetch itself failed; in that case fall back to
+            // reporting at the wallet's own currently-scanned tip (still evidence the wallet possesses, just
+            // not what the rejecting node specifically reported) rather than skipping the report entirely.
+            4 => {
+                let mut backend =
+                    Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
+                let mut state = backend
+                    .get_migration()
+                    .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
+                    .ok_or_else(|| anyhow!("No migration in progress"))?;
+                let tip = if observed_tip >= 0 {
+                    BlockHeight::from_u32(observed_tip as u32)
+                } else {
+                    target_height(&wallet)? - 1
+                };
+                state.report_broadcast_failure(id, tip);
+                backend
+                    .replace_migration(&state)
+                    .map_err(|e| anyhow!("Error persisting broadcast-failure report: {:?}", e))
             }
             other => Err(anyhow!("Unknown TransferResult tag: {}", other)),
         }
@@ -5497,6 +5521,49 @@ mod record_transfer_result_tests {
         assert_eq!(
             reason_a, "invalid_transfer",
             "account A's reason must be unchanged"
+        );
+    }
+
+    /// tag=4 (AwaitingReevaluation) — the differential this task closes: a genuinely-unknown
+    /// broadcast rejection must WITHHOLD the transaction (`Blocker::AwaitingReevaluation`) rather
+    /// than terminally fail the whole plan, which is exactly what the old tag=2 path did for this
+    /// same case (see `record_transfer_result_invalid_note_marks_migration_failed_with_reason`
+    /// above — same starting state, opposite outcome). Exercises `report_broadcast_failure`
+    /// directly, mirroring `recordTransferResultNative`'s `4 =>` arm (which does nothing more than
+    /// this call plus a `replace_migration` persist — persistence itself is covered structurally by
+    /// every other tag's test in this module).
+    #[test]
+    fn record_transfer_result_tag4_reports_broadcast_failure_not_terminal_fail() {
+        let id = MigrationTransferId::new(11);
+        let tx = transfer(11, MigrationTxState::Proved, 1000, 2000);
+        let mut state = make_state(MigrationStatus::InProgress, vec![tx]);
+        assert!(!state.is_terminal(), "pre-condition: state is InProgress");
+
+        let observed_tip = BlockHeight::from_u32(1500);
+        state.report_broadcast_failure(id, observed_tip);
+
+        // The key behavioural difference from tag=2/3: status stays InProgress, NOT Failed.
+        assert!(
+            !state.is_terminal(),
+            "tag=4 must NOT terminally fail the migration plan (that is tag=2/3's job)"
+        );
+        assert_eq!(state.status(), MigrationStatus::InProgress);
+
+        // transaction_statuses reports the withheld transaction as AwaitingReevaluation.
+        let statuses = state.transaction_statuses(DuenessTargets::at(observed_tip));
+        let reported = statuses
+            .iter()
+            .find(|s| s.id() == id)
+            .expect("transfer 11 must still be present in transaction_statuses");
+        assert_eq!(
+            reported.blocked_on(),
+            Some(zcash_pool_migration::state::Blocker::AwaitingReevaluation),
+            "a reported broadcast failure must surface as Blocker::AwaitingReevaluation until \
+             advance_migration adjudicates it"
+        );
+        assert!(
+            !reported.ready(),
+            "a withheld transaction must not be reported ready"
         );
     }
 }
