@@ -807,20 +807,31 @@ internal class OrchardMigrationSdkImpl(
 
     private suspend fun isSyncBlockedNow(preferenceProvider: PreferenceProvider): Boolean {
         val dbDataPath = dbDataPath()
+        val estimatedTip = chainTipEstimator.estimatedTip()
         // Same mutex as logged() — this poll must never read the wallet DB at the same moment a
         // real migration operation (propose/sign/execute) does; see logged()'s doc comment.
-        val overdue =
+        //
+        // Driven by the same guarded `nextStep` read the worker loop itself uses (two-tip:
+        // broadcast timing at the ESTIMATED tip, proving/rebuild at the SCANNED tip — see
+        // nextStep()'s doc), not a blanket "does anything exist overdue anywhere in the plan"
+        // scan. hasOverdueTransfers() without an estimated tip answers a plan-wide existence
+        // question that's essentially permanently true once migration starts on a fast chain
+        // (e.g. testnet) — starving syncRun()'s syncToTip() call forever. What sync actually
+        // needs to know is narrower: is a transfer ready to BROADCAST right now (so the privacy
+        // buffer around it isn't disturbed by a concurrent sync)? Prove/Rebuild readiness doesn't
+        // need sync to back off — those are local, not a Tor-correlatable network action.
+        val readyToBroadcast =
             MIGRATION_DB_ACCESS_MUTEX.withLock {
                 // No account was bound at construction (the WalletCoordinatorFactory gate case,
                 // evaluated before any account is chosen) — check every account in the wallet rather
-                // than assuming one, so sync stays blocked if *any* of them has an overdue migration
-                // transfer.
+                // than assuming one, so sync stays blocked if *any* of them has a transfer ready to
+                // broadcast right now.
                 if (account != null) {
-                    migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
+                    isReadyToBroadcast(dbDataPath, account, estimatedTip)
                 } else {
                     migrationBackend
                         .getAccountUuids(dbDataPath, network)
-                        .any { migrationBackend.hasOverdueTransfers(dbDataPath, network, it) }
+                        .any { isReadyToBroadcast(dbDataPath, it, estimatedTip) }
                 }
             }
         val nowEpochSeconds = Clock.System.now().epochSeconds
@@ -831,10 +842,19 @@ internal class OrchardMigrationSdkImpl(
             preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)?.toLongOrNull()
                 ?: 0L
         val broadcastInFlight = isBroadcastInFlight(nowEpochSeconds, inFlightUntilEpochSeconds)
-        return overdue || bufferActive || broadcastInFlight
+        return readyToBroadcast || bufferActive || broadcastInFlight
     }
 
-    // Time passing alone can flip "overdue"/"buffer elapsed" even with no data change, so
+    private suspend fun isReadyToBroadcast(
+        dbDataPath: String,
+        account: AccountUuid,
+        estimatedTip: Long
+    ): Boolean =
+        migrationBackend.nextStep(dbDataPath, network, account, estimatedTip)?.let { arr ->
+            arr.getOrElse(0) { STEP_WAITING } == STEP_BROADCAST
+        } ?: false
+
+    // Time passing alone can flip "ready to broadcast"/"buffer elapsed" even with no data change, so
     // isSyncBlocked() needs to re-evaluate periodically, not just when the resume-at timestamp
     // itself changes.
     private fun tickerFlow(interval: Duration): Flow<Unit> =

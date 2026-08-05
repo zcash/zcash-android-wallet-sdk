@@ -31,7 +31,8 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -476,6 +477,92 @@ class OrchardMigrationSdkImplTest {
             assertEquals(1, fakeBackend.broadcastCallCount, "the entry guard must fall through to a send here")
         }
 
+    // ── isSyncBlocked: nextStep-driven, not a blanket plan-wide overdue scan ─
+
+    /**
+     * `isSyncBlockedNow`'s `readyToBroadcast` check is driven by the same guarded `nextStep` read
+     * the worker loop itself uses — `STEP_BROADCAST` (code 2) means "a transfer is ready to
+     * broadcast right now", so sync should back off.
+     */
+    @Test
+    fun isSyncBlocked_emits_true_when_nextStep_says_broadcast_is_ready() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    nextStepResult = longArrayOf(2L, 5L), // STEP_BROADCAST, transferId=5
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            assertTrue(sdk.isSyncBlocked().first())
+        }
+
+    /**
+     * Regression test for the fix itself: before this fix, `isSyncBlockedNow` used
+     * `hasOverdueTransfers()` (no estimated tip) — a blanket "does anything exist overdue
+     * anywhere in the plan" scan that stays true for the plan's whole duration on a fast chain
+     * (e.g. testnet), permanently starving `syncRun()`'s `syncToTip()` call. `nextStep()` reporting
+     * `Waiting` (code 0) — even while some transfer elsewhere in the plan is nominally overdue —
+     * must NOT block sync: only an imminent broadcast should.
+     */
+    @Test
+    fun isSyncBlocked_emits_false_when_nextStep_says_waiting_even_though_something_is_overdue_elsewhere_in_plan() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    hasOverdueTransfersResult = true, // old signal — must no longer gate sync
+                    nextStepResult = longArrayOf(0L, -1L), // STEP_WAITING
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            assertFalse(sdk.isSyncBlocked().first())
+        }
+
+    /** The privacy-buffer and broadcast-in-flight signals must still gate sync independently of nextStep. */
+    @Test
+    fun isSyncBlocked_emits_true_when_privacy_buffer_is_active_even_though_nextStep_says_waiting() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val resumeAt = (Clock.System.now().epochSeconds + 60).toString()
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(0L, -1L))
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder =
+                        FakePreferenceHolder(
+                            FakePreferenceProvider(
+                                mapOf(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key to resumeAt)
+                            )
+                        ),
+                )
+
+            assertTrue(sdk.isSyncBlocked().first())
+        }
+
     private fun preparedTransfer(): JniPreparedTransfer =
         JniPreparedTransfer(
             id = 1L,
@@ -500,7 +587,11 @@ class OrchardMigrationSdkImplTest {
 
         override suspend fun getString(key: PreferenceKey): String? = values[key.key]
 
-        override fun observe(key: PreferenceKey): Flow<Unit> = emptyFlow()
+        // A real PreferenceProvider.observe() emits on subscription — combine() in
+        // isSyncBlocked() depends on that to produce its first value. One-shot emission is
+        // enough for tests, which set up preference state before collecting; they don't rely on
+        // observing a live change mid-collection.
+        override fun observe(key: PreferenceKey): Flow<Unit> = flowOf(Unit)
 
         override suspend fun clearPreferences(): Boolean {
             values.clear()
@@ -564,6 +655,7 @@ class OrchardMigrationSdkImplTest {
         private val migrationDustThresholdZatoshiResult: Long = 100_000L,
         private val migrationSummaryResult: LongArray = LongArray(0),
         private val hasOverdueTransfersResult: Boolean = false,
+        private val nextStepResult: LongArray? = null,
         private val dueTransferResult: JniDueTransferResult =
             JniDueTransferResult(status = 0, awaitingProofTransferId = null, prepared = null),
         private val transactionMinedHeightResult: Long = -1L,
@@ -751,16 +843,12 @@ class OrchardMigrationSdkImplTest {
             return migrationSummaryResult
         }
 
-        // Pre-existing gap (unrelated to Task 1): these five TypesafeMigrationBackend members
-        // were added by later commits (a9a13884, e616a0dc, cbc794bd) without a matching update
-        // here, leaving this fake non-compiling against the current interface. Stubbed the same
-        // way as this class's other not-exercised-by-this-suite members.
         override suspend fun nextStep(
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid,
             estimatedTip: Long
-        ): LongArray? = error("Unused")
+        ): LongArray? = nextStepResult
 
         override suspend fun syncWakeupSchedule(
             dbDataPath: String,
