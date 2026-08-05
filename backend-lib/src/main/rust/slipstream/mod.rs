@@ -492,12 +492,12 @@ fn start_session(
         .scaled_for_device_memory(h.total_memory_bytes);
 
     // [MOB-1455 fix] Protect the checkpoint(s) any not-yet-broadcast migration transfer is
-    // anchored to from this session's own checkpoint pruning — see
-    // `min_pending_migration_anchor_boundary`'s doc comment for the full rationale (including
-    // why this queries raw SQL instead of calling into backend-lib's migration.rs). A lookup
-    // failure must never block sync from starting: fall back to no retention floor (the
-    // pre-fix behavior) and log loudly enough to notice, since silently reverting to "no
-    // protection" is itself worth knowing about.
+    // anchored to from this session's own checkpoint pruning — delegates to
+    // `migration.rs`'s `min_pending_anchor_boundary` for the typed implementation (see that
+    // function's doc comment for the full rationale). A lookup failure must never block sync
+    // from starting: fall back to no retention floor (the pre-fix behavior) and log loudly
+    // enough to notice, since silently reverting to "no protection" is itself worth knowing
+    // about.
     let db_path_str: Option<&str> = h.wallet_db_path.to_str();
     if db_path_str.is_none() {
         tracing::warn!(
