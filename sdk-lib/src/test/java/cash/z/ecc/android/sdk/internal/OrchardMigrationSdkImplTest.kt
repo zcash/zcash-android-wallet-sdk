@@ -28,7 +28,9 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import co.electriccoin.lightwallet.client.model.Response
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -86,6 +88,44 @@ class OrchardMigrationSdkImplTest {
         assertFalse(classifyNonGrpcFailure("insufficient fee", minedHeight = -1L))
         assertFalse(classifyNonGrpcFailure(null, minedHeight = -1L))
         assertFalse(classifyNonGrpcFailure("", minedHeight = -1L))
+    }
+
+    // ── Task 9: report_broadcast_failure observed_tip plumbing ──────────────
+    // recordedResultTag/parseObservedTipResponse are the two pure decision points
+    // executeNextPendingTransfer's call site wires together (see commitBroadcastOutcome /
+    // fetchObservedTipAfterRejection). Neither broadcast() nor fetchObservedTipAfterRejection()
+    // itself is unit-testable end-to-end: both construct a real WalletClientFactory/
+    // CombinedWalletClient with no injection seam in this class's constructor, so there is no way
+    // to feed executeNextPendingTransfer a controlled non-gRPC TransactionSubmitResult.Failure (a
+    // real "genuinely unknown rejection" requires a live/mocked gRPC server actually answering
+    // SendResponse with a nonzero code — this suite has no such fixture, see the entry/post-send
+    // commit cancellation tests above, whose own comments note "nothing is listening on the
+    // endpoint" produces a *gRPC-level* failure, i.e. tag=1, not tag=2/4). These two functions are
+    // exactly the reclassification/response-mapping logic pulled out to keep it testable anyway.
+
+    @Test
+    fun `recordedResultTag overrides InvalidNote (tag 2) to AwaitingReevaluation (tag 4)`() {
+        assertEquals(4, recordedResultTag(2))
+    }
+
+    @Test
+    fun `recordedResultTag passes every other tag through unchanged`() {
+        assertEquals(0, recordedResultTag(0))
+        assertEquals(1, recordedResultTag(1))
+        assertEquals(3, recordedResultTag(3))
+    }
+
+    @Test
+    fun `parseObservedTipResponse returns the height on a Success response`() {
+        val response: Response<BlockHeightUnsafe> = Response.Success(BlockHeightUnsafe(4_226_123L))
+        assertEquals(4_226_123L, parseObservedTipResponse(response))
+    }
+
+    @Test
+    fun `parseObservedTipResponse returns -1 when the follow-up call itself fails`() {
+        val response: Response<BlockHeightUnsafe> =
+            Response.Failure.Connection(cause = IllegalStateException("no route to host"))
+        assertEquals(-1L, parseObservedTipResponse(response))
     }
 
     @Test
@@ -753,6 +793,12 @@ class OrchardMigrationSdkImplTest {
         // cancellation of the caller while suspended on recordTransferResultGate above).
         var recordTransferResultCompleted = false
 
+        // Captures the args of the LAST recordTransferResult call — task 9's observed_tip plumbing
+        // coverage (resultTag == 4, not 2, for a genuinely-unknown rejection; observedTip carried
+        // through from fetchObservedTipAfterRejection).
+        var lastResultTag: Int? = null
+        var lastObservedTip: Long? = null
+
         // Counts calls that fetch the raw tx to broadcast — the call the Task 1 entry guard is
         // specifically there to skip on an already-mined in-flight resend.
         var broadcastCallCount = 0
@@ -858,8 +904,11 @@ class OrchardMigrationSdkImplTest {
             transferId: Long,
             resultTag: Int,
             retryable: Boolean,
-            txId: ByteArray
+            txId: ByteArray,
+            observedTip: Long
         ) {
+            lastResultTag = resultTag
+            lastObservedTip = observedTip
             onRecordTransferResultEntered?.complete(Unit)
             recordTransferResultGate?.await()
             recordTransferResultCompleted = true

@@ -115,7 +115,8 @@ internal class TypesafeMigrationBackendImpl(
         transferId: Long,
         resultTag: Int,
         retryable: Boolean,
-        txId: ByteArray
+        txId: ByteArray,
+        observedTip: Long
     ) = rustBackend().recordTransferResult(
         dbDataPath,
         network.id,
@@ -123,7 +124,8 @@ internal class TypesafeMigrationBackendImpl(
         transferId,
         resultTag,
         retryable,
-        txId
+        txId,
+        observedTip
     )
 
     override suspend fun proposeMigrationTransfers(

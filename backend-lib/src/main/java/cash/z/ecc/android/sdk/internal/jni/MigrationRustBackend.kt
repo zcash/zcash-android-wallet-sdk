@@ -230,8 +230,13 @@ class MigrationRustBackend private constructor() {
 
     /**
      * [resultTag]: 0 = Success (requires [txId]), 1 = NetworkError (requires [retryable]),
-     * 2 = InvalidNote, 3 = Expired. [txId] is ignored except for tag 0 — pass an empty array
-     * otherwise.
+     * 2 = InvalidNote, 3 = Expired, 4 = AwaitingReevaluation (a genuinely-unknown broadcast
+     * rejection reported via `report_broadcast_failure` rather than terminally failed — see
+     * `OrchardMigrationSdkImpl.commitBroadcastOutcome`). [txId] is ignored except for tag 0 —
+     * pass an empty array otherwise. [observedTip] is only meaningful for tag 4: the chain tip
+     * obtained by actually talking to the network right after the rejection (`fetchObservedTipAfterRejection`
+     * in `OrchardMigrationSdkImpl`); `-1` (the default) means no tip is available and the Rust
+     * side falls back to the wallet's own scanned tip.
      */
     @Throws(RuntimeException::class)
     suspend fun recordTransferResult(
@@ -241,7 +246,8 @@ class MigrationRustBackend private constructor() {
         transferId: Long,
         resultTag: Int,
         retryable: Boolean,
-        txId: ByteArray
+        txId: ByteArray,
+        observedTip: Long = -1L
     ) = withContext(SdkDispatchers.DATABASE_IO) {
         recordTransferResultNative(
             dbDataPath,
@@ -250,7 +256,8 @@ class MigrationRustBackend private constructor() {
             transferId,
             resultTag,
             retryable,
-            txId
+            txId,
+            observedTip
         )
     }
 
@@ -781,7 +788,8 @@ class MigrationRustBackend private constructor() {
             transferId: Long,
             resultTag: Int,
             retryable: Boolean,
-            txId: ByteArray
+            txId: ByteArray,
+            observedTip: Long
         )
 
         @JvmStatic

@@ -113,8 +113,11 @@ internal interface TypesafeMigrationBackend {
 
     /**
      * [resultTag]: 0 = Success (requires [txId]), 1 = NetworkError (requires [retryable]),
-     * 2 = InvalidNote, 3 = Expired. [txId] is ignored except for tag 0 — pass an empty array
-     * otherwise.
+     * 2 = InvalidNote, 3 = Expired, 4 = AwaitingReevaluation (genuinely-unknown broadcast
+     * rejection, reported via `report_broadcast_failure` instead of terminally failing the
+     * plan). [txId] is ignored except for tag 0 — pass an empty array otherwise. [observedTip]
+     * is only meaningful for tag 4: a chain tip obtained from the network right after the
+     * rejection; `-1` (the default) means no tip is available.
      */
     suspend fun recordTransferResult(
         dbDataPath: String,
@@ -123,7 +126,8 @@ internal interface TypesafeMigrationBackend {
         transferId: Long,
         resultTag: Int,
         retryable: Boolean,
-        txId: ByteArray
+        txId: ByteArray,
+        observedTip: Long = -1L
     )
 
     suspend fun proposeMigrationTransfers(

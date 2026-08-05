@@ -1,4 +1,5 @@
 @file:Suppress(
+    "LargeClass",
     "LongParameterList",
     "MaxLineLength",
     "SwallowedException",
@@ -60,7 +61,10 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.util.WalletClientFactory
+import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import co.electriccoin.lightwallet.client.model.Response
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -551,24 +555,35 @@ internal class OrchardMigrationSdkImpl(
      * happened, so a cancellation landing between the send and the record is precisely the state
      * [recoverAlreadyBroadcastTransfer] exists to clean up after; keeping the whole commit
      * uncancellable is what makes that state rare rather than routine. Everything that may
-     * legitimately be cancelled — the send itself, and the mined-height probe that classifies its
-     * failure — belongs to the caller and stays outside this boundary.
+     * legitimately be cancelled — the send itself, the mined-height probe that classifies its
+     * failure, and (per the same reasoning) [fetchObservedTipAfterRejection]'s follow-up network
+     * call — belongs to the caller and stays outside this boundary; [mapped] and [observedTip] are
+     * therefore passed in already computed, not derived here.
+     *
+     * [mapped].tag == 2 (a genuinely-unknown non-gRPC rejection, `classifyNonGrpcFailure` ruled out
+     * every known-duplicate/already-mined explanation) is recorded to the engine as tag 4
+     * (AwaitingReevaluation) instead: `report_broadcast_failure` withholds the transaction pending
+     * reevaluation once the wallet's scan reaches [observedTip], rather than [mapped].tag == 2's old
+     * behavior of terminally failing the whole pre-signed plan. [mapped].transferResult itself is
+     * untouched — the caller still sees [TransferResult.InvalidNote] for THIS attempt (see
+     * `MigrationDriveOnce.handleExecuted`'s `InvalidNote` arm for how the app now interprets that
+     * given the persisted state is InProgress, not Failed).
      */
     private suspend fun commitBroadcastOutcome(
         attempt: BroadcastAttempt,
-        submitResult: TransactionSubmitResult,
-        minedHeight: Long,
+        mapped: MappedTransferResult,
+        observedTip: Long,
     ): TransferResult =
         withContext(NonCancellable) {
-            val mapped = mapSubmitResult(submitResult, attempt.prepared.txid, minedHeight)
             migrationBackend.recordTransferResult(
                 attempt.dbDataPath,
                 network,
                 attempt.account,
                 attempt.prepared.id,
-                mapped.tag,
+                recordedResultTag(mapped.tag),
                 mapped.retryable,
                 mapped.txIdBytes,
+                observedTip,
             )
             // Clear the in-flight mark now that the result is recorded.
             attempt.prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
@@ -645,7 +660,20 @@ internal class OrchardMigrationSdkImpl(
                 } else {
                     -1L
                 }
-            TransferAttemptOutcome.Executed(commitBroadcastOutcome(attempt, submitResult, minedHeight))
+            val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
+            // Fetch a REAL network-obtained tip only when actually needed (tag=2 → about to be
+            // reported via report_broadcast_failure/tag=4 in commitBroadcastOutcome) — a second
+            // network round-trip specifically on the rejection path, not the common (success) case.
+            // Deliberately outside commitBroadcastOutcome's NonCancellable boundary (with broadcast()
+            // itself and the mined-height probe above) so the worker's own outer timeout can still
+            // kill a hung follow-up call.
+            val observedTip =
+                if (recordedResultTag(mapped.tag) == RESULT_TAG_AWAITING_REEVALUATION) {
+                    fetchObservedTipAfterRejection(options.useTor, endpoint)
+                } else {
+                    -1L
+                }
+            TransferAttemptOutcome.Executed(commitBroadcastOutcome(attempt, mapped, observedTip))
         }
 
     // ── Sync coordination ────────────────────────────────────────────────────
@@ -917,6 +945,38 @@ internal class OrchardMigrationSdkImpl(
         }
     }
 
+    /**
+     * A tip obtained by actually talking to the network right now — the shape
+     * `report_broadcast_failure`'s "observed_tip" contract requires (state.rs's doc: "the
+     * application has such a tip even when its wallet is far behind — it talked to the network in
+     * order to broadcast"). [ChainTipEstimator]'s wall-clock extrapolation does NOT satisfy this —
+     * confirmed during design (spec §5) that using it risks over-shooting and prolonging the
+     * Reevaluate freeze. Called on a FRESH client/session (the one held by [broadcast] is already
+     * disposed by the time the caller can react to its result), on the same [endpoint] and Tor
+     * preference as the rejected broadcast.
+     *
+     * Returns -1 if the follow-up call itself fails — [commitBroadcastOutcome]'s caller must treat
+     * that as "no tip available" (the Rust side then falls back to the wallet's own scanned tip),
+     * not retry indefinitely for one.
+     */
+    private suspend fun fetchObservedTipAfterRejection(
+        useTor: Boolean,
+        endpoint: LightWalletEndpoint,
+    ): Long {
+        val torClient = if (useTor) torClientLazy.getInstance(Unit) else null
+        val client = WalletClientFactory(context, torClient?.let { resolved -> LazyTorClient { resolved } }).create(endpoint)
+        val sdkFlags = SdkFlags(isTorEnabled = useTor && torClient != null, isExchangeRateEnabled = false)
+        return try {
+            parseObservedTipResponse(
+                client.getLatestBlockHeight(sdkFlags ifTor ServiceMode.Group("migration-observed-tip"))
+            )
+        } catch (e: Exception) {
+            -1L
+        } finally {
+            withContext(NonCancellable) { client.dispose() }
+        }
+    }
+
     private suspend fun migrationTorDir(context: Context): File =
         File(Files.getZcashNoBackupSubdirectory(context), MIGRATION_TOR_SUBDIR)
 
@@ -1000,6 +1060,39 @@ internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Bo
         description?.lowercase()?.let { text -> DUPLICATE_REJECTION_MARKERS.any { text.contains(it) } } == true
 
 /**
+ * Pure decision core for [OrchardMigrationSdkImpl.fetchObservedTipAfterRejection]'s network
+ * response — extracted so the exact `Response<BlockHeightUnsafe>` success/failure mapping is
+ * unit-testable without a network stack. `-1` for anything other than [Response.Success] (a gRPC
+ * failure, a Tor failure, or the JVM-level Exception the caller's own `catch` handles) — the same
+ * "no tip available" sentinel `report_broadcast_failure`'s tag=4 path treats as "fall back to the
+ * wallet's own scanned tip" (see `recordTransferResultNative`'s `4 =>` arm in migration.rs).
+ */
+internal fun parseObservedTipResponse(response: Response<BlockHeightUnsafe>): Long =
+    when (response) {
+        is Response.Success -> response.result.value
+        else -> -1L
+    }
+
+/**
+ * The tag actually persisted by `recordTransferResult` for a [MappedTransferResult.tag]. Overrides
+ * tag=2 (InvalidNote — a genuinely-unknown non-gRPC rejection, per [classifyNonGrpcFailure]) to
+ * tag=4 (AwaitingReevaluation): the Rust layer then reports it via `report_broadcast_failure`,
+ * withholding the transaction pending reevaluation, instead of tag=2's old behavior of terminally
+ * failing the whole pre-signed plan. Every other tag passes through unchanged. Top-level and
+ * `internal` so this reclassification is unit-testable without a network stack — see
+ * [OrchardMigrationSdkImpl.commitBroadcastOutcome], the one call site that uses it.
+ */
+internal fun recordedResultTag(mappedTag: Int): Int =
+    if (mappedTag == RESULT_TAG_INVALID_NOTE) RESULT_TAG_AWAITING_REEVALUATION else mappedTag
+
+// `record_transfer_result`'s InvalidNote input tag ([mapSubmitResult]'s classification for a
+// genuinely-unknown non-gRPC rejection) and the tag it is reclassified to before being persisted —
+// mirroring migration.rs's `recordTransferResultNative` match arms (2 => terminal Fail, 4 =>
+// report_broadcast_failure/AwaitingReevaluation).
+private const val RESULT_TAG_INVALID_NOTE = 2
+private const val RESULT_TAG_AWAITING_REEVALUATION = 4
+
+/**
  * Maps a raw submission outcome to the engine's [TransferResult], both as the public value and
  * as the scalar params `record_transfer_result` needs. Used by [OrchardMigrationSdkImpl.submitNoteSplit],
  * [OrchardMigrationSdkImpl.executeNextPendingTransfer], and the immediate send-max path.
@@ -1016,6 +1109,17 @@ internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Bo
  * genuinely-unknown non-network rejection can't yet be told apart from an expired anchor and is
  * treated as [TransferResult.InvalidNote]. Disambiguating those two needs either extending
  * `PreparedTransfer` or the scanned-tip expiry filter — flagged as a follow-up, not a blocker.
+ *
+ * This function itself still returns tag=2 for a genuinely-unknown rejection — it is a pure
+ * function over [TransactionSubmitResult] with no network access, so it cannot fetch the observed
+ * tip `report_broadcast_failure` needs. [OrchardMigrationSdkImpl.executeNextPendingTransfer]'s call
+ * site is the ONE place that reclassifies a tag=2 result to tag=4 (AwaitingReevaluation) before
+ * recording it, once it has fetched that tip via [OrchardMigrationSdkImpl.fetchObservedTipAfterRejection]
+ * — see [OrchardMigrationSdkImpl.commitBroadcastOutcome]. [OrchardMigrationSdkImpl.submitNoteSplit]
+ * and [OrchardMigrationSdkImpl.storeSignedNoteSplitPczt] (the other two callers) are deliberately
+ * NOT rewired: they are foreground, user-initiated signing flows outside the background broadcast
+ * loop this task's spec scoped the behavior change to, and still record a genuinely-unknown
+ * rejection as a terminal tag=2 failure.
  */
 private fun mapSubmitResult(
     result: TransactionSubmitResult,
