@@ -45,6 +45,7 @@ use rand::rngs::OsRng;
 use rusqlite::Connection;
 use std::ptr;
 
+use zcash_client_backend::data_api::locking::LockError;
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
 use zcash_client_backend::data_api::{InputSource, NullifierQuery, OutputLockStore, WalletRead};
 use zcash_client_backend::keys::UnifiedSpendingKey;
@@ -1221,16 +1222,25 @@ fn try_prove(
 ///   ready transfer with it. As of rc.6 the primary cure for a late dependency is upstream —
 ///   `engine::prove_transfer` re-draws the boundary at prove time — so this classification is now a
 ///   defence-in-depth backstop for any residual tree-query miss, not the sole recovery path.
+/// - `Lock(LockFailure(..))` — a note this transaction spends is already reserved by a different
+///   owner, i.e. another flow (typically a user payment proposed while this transaction was being
+///   proved) has committed to spending it. The conflict resolves either way without this batch's
+///   help: the other flow may release its lock or let it expire, after which a later attempt
+///   proves; or its transaction mines, after which the next attempt reports `UnknownSpentNote`,
+///   already transient here. Neither outcome is reached any sooner by taking down every other
+///   ready transfer in the batch.
 ///
-/// A non-transient prover error (e.g. `IronwoodTreeUnavailable`) is NOT swallowed here — it still
+/// A non-transient prover error (e.g. `IronwoodTreeUnavailable`, or `Lock(Storage(..))` — a
+/// genuine lock-store write failure rather than a conflict) is NOT swallowed here — it still
 /// surfaces so a real failure is not silently dropped.
-fn is_transient_prove_error<TE, NE, RE>(err: &WalletProveError<TE, NE, RE>) -> bool {
+fn is_transient_prove_error<TE, NE, RE, LE>(err: &WalletProveError<TE, NE, RE, LE>) -> bool {
     matches!(
         err,
         WalletProveError::UnknownSpentNote(_)
             | WalletProveError::AnchorNotFound(_)
             | WalletProveError::WitnessNotFound(_)
             | WalletProveError::Tree(_)
+            | WalletProveError::Lock(LockError::LockFailure(_))
     )
 }
 
@@ -5010,11 +5020,15 @@ mod next_due_transfer_tests {
             as_of: scanned,
         };
         let mut st = state.clone();
+        // Seeded: the RNG only feeds the overdue re-spread's anchor-boundary redraws, and these
+        // traces assert on the step CHOICE, which must not vary run to run.
+        let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
         let step = advance_migration(
             &mut store,
             &mut st,
             DuenessTargets::new(scanned, BlockHeight::from_u32(estimated)),
             &AdvanceConfig::new(SETTLE_DEPTH),
+            &mut rng,
         )
         .expect("in-memory store never errors");
         match step {
@@ -5980,9 +5994,10 @@ mod late_dependency_anchor_tests {
     #[test]
     fn commitment_tree_not_contained_is_transient() {
         // Reconstruct the EXACT live error value: Query(NotContained(Address{level:0, index:242174})).
-        let tree_err: WalletProveError<(), (), ()> = WalletProveError::Tree(ShardTreeError::Query(
-            QueryError::NotContained(Address::from_parts(Level::from(0u8), 242_174)),
-        ));
+        let tree_err: WalletProveError<(), (), (), ()> =
+            WalletProveError::Tree(ShardTreeError::Query(QueryError::NotContained(
+                Address::from_parts(Level::from(0u8), 242_174),
+            )));
         assert!(
             is_transient_prove_error(&tree_err),
             "a commitment-tree query miss (NotContained) is transient: the funding note is not yet \
@@ -5994,14 +6009,14 @@ mod late_dependency_anchor_tests {
     /// The three witness/anchor-resolution errors that were ALREADY transient must stay transient.
     #[test]
     fn witness_and_anchor_errors_stay_transient() {
-        let unknown: WalletProveError<(), (), ()> = WalletProveError::UnknownSpentNote(
+        let unknown: WalletProveError<(), (), (), ()> = WalletProveError::UnknownSpentNote(
             orchard::note::Nullifier::from_bytes(&[0u8; 32])
                 .into_option()
                 .expect("valid nullifier bytes"),
         );
-        let anchor: WalletProveError<(), (), ()> =
+        let anchor: WalletProveError<(), (), (), ()> =
             WalletProveError::AnchorNotFound(BlockHeight::from_u32(ANCHOR));
-        let witness: WalletProveError<(), (), ()> =
+        let witness: WalletProveError<(), (), (), ()> =
             WalletProveError::WitnessNotFound(BlockHeight::from_u32(ANCHOR));
         assert!(is_transient_prove_error(&unknown));
         assert!(is_transient_prove_error(&anchor));
@@ -6012,10 +6027,41 @@ mod late_dependency_anchor_tests {
     /// transient — it should still surface, so we don't silently swallow real failures.
     #[test]
     fn ironwood_tree_unavailable_is_not_transient() {
-        let err: WalletProveError<(), (), ()> = WalletProveError::IronwoodTreeUnavailable;
+        let err: WalletProveError<(), (), (), ()> = WalletProveError::IronwoodTreeUnavailable;
         assert!(
             !is_transient_prove_error(&err),
             "a genuinely unrecoverable prover error must not be swallowed as transient"
+        );
+    }
+
+    /// A lock CONFLICT — another flow reserved a note this transaction spends — is transient: it
+    /// resolves without this batch's help, either by the other flow releasing/expiring its lock
+    /// (a later attempt then proves) or by its transaction mining (the next attempt then reports
+    /// `UnknownSpentNote`, itself transient). Propagating it would roll back every other ready
+    /// transfer in the batch to no purpose.
+    #[test]
+    fn lock_conflict_is_transient() {
+        let conflict: WalletProveError<(), (), (), ()> =
+            WalletProveError::Lock(LockError::LockFailure(OutputRef::new(
+                zcash_protocol::TxId::from_bytes([9u8; 32]),
+                PoolType::ORCHARD,
+                0,
+            )));
+        assert!(
+            is_transient_prove_error(&conflict),
+            "a note reserved by a competing flow must defer (Ok(false)), never take down the \
+             whole prove batch"
+        );
+    }
+
+    /// A lock-store WRITE failure is not a conflict and does not self-resolve; it must surface.
+    #[test]
+    fn lock_storage_failure_is_not_transient() {
+        let broken: WalletProveError<(), (), (), ()> =
+            WalletProveError::Lock(LockError::Storage(()));
+        assert!(
+            !is_transient_prove_error(&broken),
+            "a genuine lock-store failure must not be swallowed as a conflict"
         );
     }
 }
@@ -6329,11 +6375,15 @@ mod state_machine_trace_tests {
         fn advance(&self, target: BlockHeight) -> AdvanceStep {
             let mut store = NoOpPoolMigrationStore;
             let mut state = self.build();
+            // Seeded: the RNG only feeds the overdue re-spread's anchor-boundary redraws, and
+            // these traces assert on the step SEQUENCE, which must not vary run to run.
+            let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
             advance_migration(
                 &mut store,
                 &mut state,
                 DuenessTargets::at(target),
                 &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+                &mut rng,
             )
             .expect("advance_migration over the no-op store")
         }
@@ -6545,12 +6595,14 @@ mod state_machine_trace_tests {
         let (steps, _) = d.drain(4_224_660);
         assert_eq!(
             steps,
-            // Again id order among the simultaneously due, not schedule order.
+            // Schedule order among the simultaneously due, NOT id order: the engine offers the
+            // candidate that has been ready longest — earliest scheduled height, ties by id.
+            // Here 13@4224640, 10@4224646, 12@4224649, 6@4224655, 14@4224656.
             vec![
-                broadcast(6),
+                broadcast(13),
                 broadcast(10),
                 broadcast(12),
-                broadcast(13),
+                broadcast(6),
                 broadcast(14)
             ]
         );
@@ -6827,7 +6879,11 @@ fn advance_step(
 ) -> anyhow::Result<(i64, i64)> {
     let targets = DuenessTargets::new(scanned_target, estimated_target);
     let config = AdvanceConfig::new(SETTLE_DEPTH);
-    let step = advance_migration(backend, state, targets, &config)
+    // Supplies the re-spread's anchor-boundary redraws (`scheduling::redraw_anchor_boundary`) when
+    // a step is found overdue past its shift tolerance. Those draws are privacy-bearing — they set
+    // the age an anchor is broadcast at — so this is the same `OsRng` the other engine entry
+    // points (`engine::prove_transfer`, the builders) are given, never a seeded one.
+    let step = advance_migration(backend, state, targets, &config, &mut OsRng)
         .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
     Ok(match step {
         AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
