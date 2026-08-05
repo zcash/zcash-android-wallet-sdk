@@ -1047,58 +1047,45 @@ fn next_broadcastable(
         .map(|s| s.id())
 }
 
-/// Whether transaction `tx` is ready to PROVE at `target_height` (`chain_tip + 1`) — a local copy
-/// of `zcash_pool_migration::state`'s private `MigrationState::prove_ready`, using only its
-/// public surface (`deps_mined`, `anchor_boundary`, `scheduled_height`). Duplicated rather than
-/// relying on `MigrationState::next_provable` because that returns only the SINGLE next-ready
-/// transaction — looping it would re-return the same id forever on a transient witness/anchor
-/// failure (see `try_prove`'s doc comment), whereas our JNI contract proves every ready transaction
-/// in one call.
+/// Whether transaction `tx` is ready to PROVE at `target_height` (`chain_tip + 1`). A thin wrapper
+/// around `state.transaction_statuses`'s prove-readiness classification, kept as its own function
+/// rather than looping `MigrationState::next_provable` because that returns only the SINGLE
+/// next-ready transaction — looping it would re-return the same id forever on a transient
+/// witness/anchor failure (see `try_prove`'s doc comment), whereas our JNI contract proves every
+/// ready transaction in one call. `target_height` is the SCANNED target (tip + 1) — proving is
+/// always judged on real chain data, never an estimate (see this crate's two-tip doc), so
+/// `DuenessTargets::at(target_height)` (scanned == effective) is correct here.
 ///
-/// # No local late-dependency guard (resolved upstream in rc.6)
+/// # No late-dependency guard (resolved upstream in rc.6)
 ///
-/// This function once carried a "LATE-DEPENDENCY GUARD": a transfer whose funding dependency mined
-/// PAST its drawn `anchor_boundary` was withheld here, because the note funding it is not in the
-/// commitment tree at that anchor and proving would miss with `Query(NotContained)`. That guard was
-/// always a documented stopgap (see `spec/2026-07-30-engine-change-request-unprovable-boundary.md`),
-/// requested to be upstreamed. `zcash_pool_migration` 0.1.0-rc.6 shipped the fix in
-/// `engine::prove_transfer`: at PROVE time it re-validates the persisted boundary against the
-/// funding preparations' REAL mined heights and, when a note postdates the drawn boundary, RE-DRAWS
-/// the boundary to a fresh grid bucket at-or-past the note's creation (persisting it via
-/// `set_transfer_anchor_boundary`) and proves against that — no new signing ceremony, since ZIP 374
-/// defers the anchor/witnesses to proving. When no valid bucket has settled yet it answers
-/// `ProveOutcome::NotYetProvable` (retry after further sync), never a wedge.
+/// This function once carried a hand-rolled "LATE-DEPENDENCY GUARD": a transfer whose funding
+/// dependency mined PAST its drawn `anchor_boundary` was withheld here, because the note funding it
+/// is not in the commitment tree at that anchor and proving would miss with `Query(NotContained)`.
+/// That guard was always a documented stopgap (see
+/// `spec/2026-07-30-engine-change-request-unprovable-boundary.md`), requested to be upstreamed.
+/// `zcash_pool_migration` 0.1.0-rc.6 shipped the fix in `engine::prove_transfer`: at PROVE time it
+/// re-validates the persisted boundary against the funding preparations' REAL mined heights and,
+/// when a note postdates the drawn boundary, RE-DRAWS the boundary to a fresh grid bucket
+/// at-or-past the note's creation (persisting it via `set_transfer_anchor_boundary`) and proves
+/// against that — no new signing ceremony, since ZIP 374 defers the anchor/witnesses to proving.
+/// When no valid bucket has settled yet it answers `ProveOutcome::NotYetProvable` (retry after
+/// further sync), never a wedge.
 ///
-/// So a late-dependency transfer must now be OFFERED as prove-ready: only by entering the prove
-/// batch does it reach `prove_transfer`, which heals it. Keeping the local guard would EXCLUDE it
-/// and re-strand it forever (the exact regression the whole rc.6 adoption promised not to
-/// introduce). The only readiness gate that remains is that the (currently persisted) boundary has
-/// settled — the redraw takes over from there.
+/// So a late-dependency transfer must still be OFFERED as prove-ready: only by entering the prove
+/// batch does it reach `prove_transfer`, which heals it. `state.transaction_statuses`'s own
+/// `prove_ready` (upstream, `state.rs`) carries the identical gate: deps mined, and a transfer's
+/// boundary settled (or a preparation's schedule due) — no late-dependency exclusion — so
+/// delegating here preserves the exact behavior this function used to re-derive by hand.
 fn is_prove_ready(
     state: &MigrationState,
     tx: &engine::MigrationTransaction,
     target_height: BlockHeight,
 ) -> bool {
-    if !state.deps_mined(tx.depends_on()) {
-        return false;
-    }
-    match tx.anchor_boundary() {
-        Some(boundary) => {
-            // The boundary must have SETTLED: it must be strictly below the chain tip so its
-            // checkpoint exists in the tree. `target_height` is `tip + 1`, so `boundary < tip` is
-            // `boundary + 1 < target_height`. That is the ONLY gate.
-            //
-            // No late-dependency guard here: a transfer whose funding dependency mined PAST this
-            // boundary is intentionally still offered as prove-ready, because `engine::prove_transfer`
-            // now re-draws the boundary at prove time to cover the note's real mined height (rc.6 —
-            // see this function's doc comment). Excluding it here would keep it out of the prove batch
-            // and re-strand it forever.
-            u32::from(boundary) + 1 < u32::from(target_height)
-        }
-        // A preparation carries no drawn boundary and anchors to a fresh checkpoint at the tip when
-        // proved, so it is prove-ready once its dependencies are mined and its schedule is due.
-        None => tx.scheduled_height() <= target_height,
-    }
+    state
+        .transaction_statuses(DuenessTargets::at(target_height))
+        .into_iter()
+        .find(|s| s.id() == tx.id())
+        .is_some_and(|s| s.ready() && matches!(s.action(), Some(NextAction::Prove)))
 }
 
 /// Attempts to prove one `Signed` migration transaction in place within `state` — installing its
@@ -6153,6 +6140,7 @@ mod late_dependency_anchor_tests {
     use zcash_pool_migration::engine::MigrationStatus;
     use zcash_pool_migration::preparation::PreparationPlan;
     use zcash_pool_migration::scheduling::AnchorBucketInterval;
+    use zcash_pool_migration::state::Blocker;
     use zcash_protocol::value::Zatoshis;
 
     // The exact live heights, so the scenario the test encodes is the one the wallet hit.
@@ -6353,6 +6341,87 @@ mod late_dependency_anchor_tests {
             "if the anchor is at-or-after the dependency's mined height, the note IS in the tree \
              and the transfer is provable"
         );
+    }
+
+    // --- differential: is_prove_ready agrees with transaction_statuses (task 3 delegation) ---
+
+    /// The ordinary case: deps mined, boundary settled. The OLD hand-rolled `is_prove_ready` and
+    /// the engine's own `transaction_statuses` classification must agree — both TRUE, with the
+    /// engine additionally reporting `NextAction::Prove`.
+    #[test]
+    fn is_prove_ready_agrees_with_transaction_statuses_for_ordinary_signed_transfer() {
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
+        ]);
+        state.mark_broadcast(MigrationTransferId::new(1));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(ON_TIME_MINED),
+        );
+
+        let target = tip1();
+        let t8 = find(&state, 8);
+        assert!(is_prove_ready(&state, t8, target));
+
+        let statuses = state.transaction_statuses(DuenessTargets::at(target));
+        let status = statuses
+            .iter()
+            .find(|s| s.id() == MigrationTransferId::new(8))
+            .expect("transfer 8 present in transaction_statuses");
+        assert!(status.ready());
+        assert_eq!(status.action(), Some(NextAction::Prove));
+    }
+
+    /// The boundary has not yet settled (`boundary + 1 >= target_height`). Both must agree FALSE;
+    /// the engine additionally reports `Blocker::AnchorBoundary`.
+    #[test]
+    fn is_prove_ready_agrees_when_boundary_not_settled() {
+        let mut state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
+        ]);
+        state.mark_broadcast(MigrationTransferId::new(1));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(ON_TIME_MINED),
+        );
+
+        // target_height == ANCHOR means boundary + 1 (ANCHOR + 1) >= target_height: not settled.
+        let target = BlockHeight::from_u32(ANCHOR);
+        let t8 = find(&state, 8);
+        assert!(!is_prove_ready(&state, t8, target));
+
+        let statuses = state.transaction_statuses(DuenessTargets::at(target));
+        let status = statuses
+            .iter()
+            .find(|s| s.id() == MigrationTransferId::new(8))
+            .expect("transfer 8 present in transaction_statuses");
+        assert!(!status.ready());
+        assert_eq!(status.blocked_on(), Some(Blocker::AnchorBoundary));
+    }
+
+    /// The funding dependency has not mined yet. Both must agree FALSE; the engine additionally
+    /// reports `Blocker::Dependencies`.
+    #[test]
+    fn is_prove_ready_agrees_when_deps_not_mined() {
+        let state = state_with(vec![
+            preparation(1, MigrationTxState::Signed),
+            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
+        ]);
+        // Preparation 1 is left Signed (never broadcast/mined): deps not mined.
+
+        let target = tip1();
+        let t8 = find(&state, 8);
+        assert!(!is_prove_ready(&state, t8, target));
+
+        let statuses = state.transaction_statuses(DuenessTargets::at(target));
+        let status = statuses
+            .iter()
+            .find(|s| s.id() == MigrationTransferId::new(8))
+            .expect("transfer 8 present in transaction_statuses");
+        assert!(!status.ready());
+        assert_eq!(status.blocked_on(), Some(Blocker::Dependencies));
     }
 
     // --- unit: try_prove's error classification treats the commitment-tree error as transient ---
