@@ -2004,22 +2004,24 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// `Proved` state, due at `effective_tip`, deps mined, and not yet expired at `scanned_tip`.
 /// Intentionally no kind filter — preparations also close the sync gate, matching the pre-tri-state
 /// `next_broadcastable`-based semantics.
+/// Delegates to advance_step's STEP_BROADCAST determination — the same check
+/// isSyncBlockedNow's Kotlin-side isReadyToBroadcast helper already uses (fixed earlier in this
+/// session), now also correct at the Rust layer so the public hasOverdueTransfers() API gets the
+/// same fix. A plan-wide "does anything exist overdue anywhere" blanket scan is what this
+/// replaces — see spec §A.
 fn any_overdue(
-    state: &MigrationState,
+    backend: &mut impl PoolMigrationWrite<Error = EngineError>,
+    state: &mut MigrationState,
     scanned_tip: BlockHeight,
     effective_tip: BlockHeight,
-) -> bool {
+) -> anyhow::Result<bool> {
     if state.is_terminal() {
-        return false;
+        return Ok(false);
     }
     let scanned_target = scanned_tip + 1;
-    state.transactions().iter().any(|t| {
-        matches!(t.state(), MigrationTxState::Proved)
-            && t.scheduled_height() <= effective_tip
-            && state.deps_mined(t.depends_on())
-            && !(u32::from(t.expiry_height()) != 0
-                && u32::from(t.expiry_height()) < u32::from(scanned_target))
-    })
+    let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
+    let (code, _id) = advance_step(backend, state, scanned_target, estimated_target)?;
+    Ok(code == STEP_BROADCAST)
 }
 
 #[unsafe(no_mangle)]
@@ -2045,8 +2047,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
-            Some(state) => {
-                if any_overdue(&state, scanned_tip, effective_tip) {
+            Some(mut state) => {
+                if any_overdue(&mut backend, &mut state, scanned_tip, effective_tip)? {
                     JNI_TRUE
                 } else {
                     JNI_FALSE
@@ -5011,8 +5013,12 @@ mod next_due_transfer_tests {
 
         // The preparation is Proved, due (scheduled=900 <= tip=1000), deps empty (mined), not
         // expired (expiry=2000 > scanned_target=1001).  any_overdue must return true.
+        let mut store = InMemoryStore {
+            state: state.clone(),
+            as_of: tip,
+        };
         assert!(
-            any_overdue(&state, tip, tip),
+            any_overdue(&mut store, &mut state, tip, tip).expect("in-memory store never errors"),
             "a due Proved preparation must count as overdue (sync gate must close)"
         );
 
