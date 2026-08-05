@@ -34,12 +34,15 @@ use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 
 use zcash_client_sqlite::pool_migration::orchard_ironwood::PoolMigrations;
+use zcash_client_sqlite::util::SystemClock;
 use zcash_pool_migration::build::AccountDerivation;
 use zcash_pool_migration::engine::{
-    MigrationBackend, MigrationCrypto, MigrationState, MigrationTransferId, MigrationTxState,
-    PoolMigrationRead, PoolMigrationWrite,
+    MigrationBackend, MigrationCrypto, MigrationState, MigrationTransaction, MigrationTransferId,
+    MigrationTxState, PoolMigrationRead, PoolMigrationWrite, ProvedTransaction,
 };
+use zcash_pool_migration::satisfiability::{ReorgSettleDepth, StepSatisfiability};
 use zcash_pool_migration::scheduling::SchedulingParams;
+use zcash_protocol::TxId;
 
 use crate::migration::Wallet;
 
@@ -57,7 +60,12 @@ pub struct Backend<'a, W> {
     wallet: &'a W,
     account: AccountUuid,
     usk: Option<UnifiedSpendingKey>,
-    store: PoolMigrations<&'a mut Connection>,
+    /// The store carries the network parameters and a clock because, as of
+    /// `zcash_client_sqlite 0.22.0-rc.7`, `PoolMigrationWrite::store_proved_transaction` finalizes
+    /// a proved migration transaction into the wallet's own transaction tables: it recovers the
+    /// transaction's outputs (needing `params`) and stamps the sent-transaction time (needing the
+    /// clock). Both are unused by the read/write-state methods.
+    store: PoolMigrations<&'a mut Connection, Network, SystemClock>,
 }
 
 impl<'a, W> Backend<'a, W>
@@ -73,8 +81,9 @@ where
         account: AccountUuid,
         usk: Option<UnifiedSpendingKey>,
         conn: &'a mut Connection,
+        params: Network,
     ) -> Result<Self, EngineError> {
-        let store = PoolMigrations::for_account(conn, account)
+        let store = PoolMigrations::for_account(params, SystemClock, conn, account)
             .map_err(|e| anyhow::anyhow!("opening pool-migration store failed: {e:?}"))?;
         Ok(Self {
             wallet,
@@ -157,9 +166,7 @@ where
     /// are scaled from that same grid, which reproduces the ZIP 318 schedule exactly at the ZIP 318
     /// interval and compresses it proportionally on a test network.
     fn scheduling_params(&self) -> SchedulingParams {
-        SchedulingParams::new_with_default_distributions(
-            self.wallet.anchor_retention_interval().into(),
-        )
+        SchedulingParams::new_with_default_distributions(self.wallet.anchor_retention_interval())
     }
 }
 
@@ -237,6 +244,26 @@ where
             .get_migration()
             .map_err(|e| anyhow::anyhow!("reading persisted migration failed: {e:?}"))
     }
+
+    /// Delegated wholesale. The satisfiability oracle answers per cached spend nullifier from the
+    /// wallet's own Orchard note and note-spend tables, bounded by the fully-scanned height; the
+    /// inner store is the thing that owns those tables, and answering here from anything else would
+    /// break the one-view consistency `mined_height` is required to share with it.
+    fn check_step_satisfiability(
+        &self,
+        tx: &MigrationTransaction,
+        settle: ReorgSettleDepth,
+    ) -> Result<StepSatisfiability, Self::Error> {
+        self.store
+            .check_step_satisfiability(tx, settle)
+            .map_err(|e| anyhow::anyhow!("checking migration step satisfiability failed: {e:?}"))
+    }
+
+    fn mined_height(&self, txid: TxId) -> Result<Option<BlockHeight>, Self::Error> {
+        self.store.mined_height(txid).map_err(|e| {
+            anyhow::anyhow!("reading migration transaction mined height failed: {e:?}")
+        })
+    }
 }
 
 impl<'a, W> PoolMigrationWrite for Backend<'a, W>
@@ -259,6 +286,22 @@ where
         self.store
             .update_transaction(id, state)
             .map_err(|e| anyhow::anyhow!("updating migration transaction failed: {e:?}"))
+    }
+
+    /// Delegated wholesale, which is what makes the proof visible to the wallet: the inner store
+    /// finalizes the proved transaction into the wallet's own transaction tables — raw transaction,
+    /// fee, outputs as sent notes, input notes marked spent — atomically with the migration state,
+    /// in one database transaction. From the proof onward the wallet therefore reports the inputs
+    /// spent, so an ordinary foreground send cannot consume a migration input during the
+    /// (deliberately long, for a scheduled transfer) window between proving and broadcast.
+    fn store_proved_transaction(
+        &mut self,
+        state: &mut MigrationState,
+        proven: ProvedTransaction,
+    ) -> Result<(), Self::Error> {
+        self.store
+            .store_proved_transaction(state, proven)
+            .map_err(|e| anyhow::anyhow!("storing proved migration transaction failed: {e:?}"))
     }
 }
 

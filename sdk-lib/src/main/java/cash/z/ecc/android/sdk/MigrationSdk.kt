@@ -263,11 +263,34 @@ enum class MigrationBlocker {
     EXPIRED,
 
     /**
-     * SYNTHETIC (backend guard veto — TODO(remove) once the engine surfaces it): a dependency
-     * mined PAST this transfer's drawn anchor boundary, so no witness can ever be built against
-     * it. Needs a plan-level reschedule/rebuild; more syncing can never help.
+     * SYNTHETIC (the backend's own guard veto, reported here only until the engine surfaces the
+     * condition natively): a dependency mined PAST this transfer's drawn anchor boundary, so no
+     * witness can ever be built against it. Needs a plan-level reschedule/rebuild; more syncing
+     * can never help.
      */
     UNPROVABLE_ANCHOR,
+
+    /**
+     * Its expiry has probably passed, but only according to the wallet's ESTIMATE of the chain
+     * tip — its own scan has not reached the expiry height yet. The transfer is withheld from
+     * broadcast protectively; nothing has been determined and the reading reverses itself once
+     * the scan arrives, at which point it becomes [EXPIRED]. Do not present it as failed.
+     */
+    EXPIRY_IMMINENT,
+
+    /**
+     * A node REJECTED a broadcast of this transaction, and the wallet has not scanned far enough
+     * to explain why. It is withheld rather than re-submitted, since repeating a submission known
+     * to fail achieves nothing; the wallet resolves it as sync catches up.
+     */
+    AWAITING_REEVALUATION,
+
+    /**
+     * It can never mine: its inputs were seen spent by something else, its anchor no longer exists
+     * on the chain, or it is stranded behind a transaction in that position. The remedy is a
+     * migration-level replan — more syncing can never help.
+     */
+    UNSATISFIABLE,
 }
 
 /**
@@ -276,13 +299,19 @@ enum class MigrationBlocker {
  */
 sealed class MigrationAdvanceStep {
     /** Sync + prove now (the given transaction's anchor is resolvable). */
-    data class Prove(val transferId: Long) : MigrationAdvanceStep()
+    data class Prove(
+        val transferId: Long
+    ) : MigrationAdvanceStep()
 
     /** Broadcast the given already-proven transaction (its scheduled height arrived). */
-    data class Broadcast(val transferId: Long) : MigrationAdvanceStep()
+    data class Broadcast(
+        val transferId: Long
+    ) : MigrationAdvanceStep()
 
     /** The given transfer expired unmined — reconstruct + re-sign it (needs spend authority). */
-    data class Rebuild(val transferId: Long) : MigrationAdvanceStep()
+    data class Rebuild(
+        val transferId: Long
+    ) : MigrationAdvanceStep()
 
     /** Nothing actionable right now — re-arm from [OrchardMigrationSdk.syncWakeupSchedule]. */
     object Waiting : MigrationAdvanceStep() {
@@ -292,6 +321,27 @@ sealed class MigrationAdvanceStep {
     /** Every transaction is mined. */
     object Complete : MigrationAdvanceStep() {
         override fun toString() = "Complete"
+    }
+
+    /**
+     * Enough of the migration's planned value can never mine — or dead value is stranded with no
+     * live work left — so the run cannot finish as planned. Supersede it and re-plan the remaining
+     * balance through the ordinary planning flow. Re-signing the same notes will not help.
+     */
+    object Replan : MigrationAdvanceStep() {
+        override fun toString() = "Replan"
+    }
+
+    /**
+     * A node rejected a broadcast and the wallet cannot yet explain why: its view rests on chain
+     * state below the tip that node reported. Sync to at least that tip and ask again.
+     *
+     * Nothing else is offered while this stands, deliberately: a rejection means another observer
+     * saw chain state this wallet has not, so acting on the rest of the plan would act on a view
+     * already known to be stale.
+     */
+    object Reevaluate : MigrationAdvanceStep() {
+        override fun toString() = "Reevaluate"
     }
 }
 
@@ -441,8 +491,14 @@ sealed class TransferResult {
 
 sealed class TransferAttemptOutcome {
     object NothingDue : TransferAttemptOutcome()
-    data class AwaitingProof(val transferId: Long) : TransferAttemptOutcome()
-    data class Executed(val result: TransferResult) : TransferAttemptOutcome()
+
+    data class AwaitingProof(
+        val transferId: Long
+    ) : TransferAttemptOutcome()
+
+    data class Executed(
+        val result: TransferResult
+    ) : TransferAttemptOutcome()
 }
 
 // ─── Main interface ───────────────────────────────────────────────────────────
@@ -752,7 +808,10 @@ interface OrchardMigrationSdk {
      * every call — there is no separate "claim" step, so a retried/interrupted call is safe to
      * simply call again.
      */
-    suspend fun executeNextPendingTransfer(options: NetworkPrivacyOptions, useEstimatedTip: Boolean): TransferAttemptOutcome
+    suspend fun executeNextPendingTransfer(
+        options: NetworkPrivacyOptions,
+        useEstimatedTip: Boolean
+    ): TransferAttemptOutcome
 
     // ── Sync coordination ────────────────────────────────────────────────────
 

@@ -35,7 +35,10 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv,
     objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
-    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jintArray, jlong, jlongArray, jobject, jobjectArray},
+    sys::{
+        JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jintArray, jlong, jlongArray, jobject,
+        jobjectArray,
+    },
 };
 use prost::Message;
 use rand::rngs::OsRng;
@@ -62,9 +65,13 @@ use zcash_pool_migration::{
         PoolMigrationWrite, ProveError,
     },
     preparation::{PrepInput, PreparationPlan},
+    satisfiability::{
+        AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
+    },
+    state::{AdvanceStep, NextAction},
 };
 
-use crate::migration_engine::Backend;
+use crate::migration_engine::{Backend, EngineError};
 use crate::utils::{catch_unwind, exception::unwrap_exc_or};
 
 const JNI_MIGRATION_PROGRESS: &str =
@@ -298,7 +305,7 @@ pub(crate) fn min_pending_anchor_boundary(
 
     let mut min_height: Option<BlockHeight> = None;
     for account in account_ids {
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let Some(state) = backend.get_migration().map_err(|e| {
             anyhow!(
                 "Error reading migration state for account {:?}: {:?}",
@@ -378,7 +385,7 @@ fn compute_plan(
     account: AccountUuid,
     store_conn: &mut Connection,
 ) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
-    let backend = Backend::new(wallet, account, None, store_conn)?;
+    let backend = Backend::new(wallet, account, None, store_conn, *wallet.params())?;
     let mut rng = OsRng;
     let migration_plan = engine::plan_migration(network, &backend, &mut rng)
         .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
@@ -508,7 +515,7 @@ fn commit_or_reuse(
         target,
     } = ctx;
     {
-        let backend = Backend::new(wallet, account, None, &mut *store_conn)?;
+        let backend = Backend::new(wallet, account, None, &mut *store_conn, *wallet.params())?;
         if let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -524,7 +531,7 @@ fn commit_or_reuse(
         }
     }
     let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
-    let mut backend = Backend::new(wallet, account, usk, store_conn)?;
+    let mut backend = Backend::new(wallet, account, usk, store_conn, *wallet.params())?;
     let mut rng = OsRng;
     let result = sign(network, target, &mut backend, &migration_plan, &mut rng)?;
     crate::migration_plan_cache::clear(account);
@@ -612,7 +619,7 @@ fn derive_migration_state<'a>(
         .iter()
         .filter(|t| matches!(t.state(), MigrationTxState::Mined { .. }))
         .count();
-    let next_ready = state.next_broadcastable(tip);
+    let next_ready = next_broadcastable(&state, DuenessTargets::at(tip));
     let next_transfer_ready_at_height = next_ready
         .and_then(|id| transactions.iter().find(|t| t.id() == id))
         .map_or(-1i64, |_| i64::from(u32::from(tip)));
@@ -873,7 +880,8 @@ fn encode_migration_schedule<'a>(
         |env, entry| -> jni::errors::Result<JObject<'_>> {
             let depends_on_array = env.new_long_array(entry.depends_on.len() as i32)?;
             if !entry.depends_on.is_empty() {
-                let longs: Vec<jlong> = entry.depends_on.iter().map(|&id| jlong::from(id)).collect();
+                let longs: Vec<jlong> =
+                    entry.depends_on.iter().map(|&id| jlong::from(id)).collect();
                 env.set_long_array_region(&depends_on_array, 0, &longs)?;
             }
             env.new_object(
@@ -1035,6 +1043,52 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// transaction — looping it would re-return the same id forever on a transient witness/anchor
 /// failure (see `try_prove`'s doc comment), whereas our JNI contract proves every ready transaction
 /// in one call.
+/// The id of the next transaction ready to BROADCAST.
+///
+/// `MigrationState::next_broadcastable` became private in `zcash_pool_migration 0.1.0-rc.6`;
+/// `transaction_statuses` is the supported read-only surface and answers the same question from
+/// the same kernel. It is strictly more conservative than the old free method: it additionally
+/// withholds a row carrying a broadcast-failure report, one marked unsatisfiable or stranded
+/// behind a dead dependency, and one whose expiry the caller's estimate has probably passed —
+/// none of which the wallet could see before, and each of which was a submission known to fail.
+fn next_broadcastable(
+    state: &MigrationState,
+    targets: DuenessTargets,
+) -> Option<MigrationTransferId> {
+    state
+        .transaction_statuses(targets)
+        .into_iter()
+        .find(|s| s.ready() && s.action() == Some(NextAction::Broadcast))
+        .map(|s| s.id())
+}
+
+/// Whether transaction `tx` is ready to PROVE at `target_height` (`chain_tip + 1`) — a local copy
+/// of `zcash_pool_migration::state`'s private `MigrationState::prove_ready`, using only its
+/// public surface (`deps_mined`, `anchor_boundary`, `scheduled_height`). Duplicated rather than
+/// relying on `MigrationState::next_provable` because that returns only the SINGLE next-ready
+/// transaction — looping it would re-return the same id forever on a transient witness/anchor
+/// failure (see `try_prove`'s doc comment), whereas our JNI contract proves every ready transaction
+/// in one call.
+///
+/// # No local late-dependency guard (resolved upstream in rc.6)
+///
+/// This function once carried a "LATE-DEPENDENCY GUARD": a transfer whose funding dependency mined
+/// PAST its drawn `anchor_boundary` was withheld here, because the note funding it is not in the
+/// commitment tree at that anchor and proving would miss with `Query(NotContained)`. That guard was
+/// always a documented stopgap (see `spec/2026-07-30-engine-change-request-unprovable-boundary.md`),
+/// requested to be upstreamed. `zcash_pool_migration` 0.1.0-rc.6 shipped the fix in
+/// `engine::prove_transfer`: at PROVE time it re-validates the persisted boundary against the
+/// funding preparations' REAL mined heights and, when a note postdates the drawn boundary, RE-DRAWS
+/// the boundary to a fresh grid bucket at-or-past the note's creation (persisting it via
+/// `set_transfer_anchor_boundary`) and proves against that — no new signing ceremony, since ZIP 374
+/// defers the anchor/witnesses to proving. When no valid bucket has settled yet it answers
+/// `ProveOutcome::NotYetProvable` (retry after further sync), never a wedge.
+///
+/// So a late-dependency transfer must now be OFFERED as prove-ready: only by entering the prove
+/// batch does it reach `prove_transfer`, which heals it. Keeping the local guard would EXCLUDE it
+/// and re-strand it forever (the exact regression the whole rc.6 adoption promised not to
+/// introduce). The only readiness gate that remains is that the (currently persisted) boundary has
+/// settled — the redraw takes over from there.
 fn is_prove_ready(
     state: &MigrationState,
     tx: &engine::MigrationTransaction,
@@ -1047,33 +1101,14 @@ fn is_prove_ready(
         Some(boundary) => {
             // The boundary must have SETTLED: it must be strictly below the chain tip so its
             // checkpoint exists in the tree. `target_height` is `tip + 1`, so `boundary < tip` is
-            // `boundary + 1 < target_height`.
-            if u32::from(boundary) + 1 >= u32::from(target_height) {
-                return false;
-            }
-            // LATE-DEPENDENCY GUARD (fixes the live `finalizeReadyTransfers` crash): a transfer
-            // proves against the commitment tree AS OF ITS `boundary`. Its funding notes are the
-            // outputs of the preparations it `depends_on`, so each of those must have been mined
-            // AT OR BEFORE `boundary` — otherwise that output note is NOT yet in the tree at the
-            // anchor and the prover's tree query misses with `Query(NotContained(..))`, which can
-            // never be satisfied against this anchor.
+            // `boundary + 1 < target_height`. That is the ONLY gate.
             //
-            // The plan guarantees this by construction (every transfer's anchor is >= its
-            // dependency's SCHEDULED mining), but EXECUTION can violate it: a dependency deferred at
-            // commit or stalled in the foreground can mine LATER than the dependent transfer's
-            // anchor (live: prep id1 mined at 4220802, after tx8's anchor 4220724). Such a transfer
-            // is un-provable against its committed anchor and must NOT be offered as prove-ready —
-            // it needs re-anchoring by a separate reschedule step. `deps_mined` alone only checks a
-            // dependency is mined AT ALL, not that it mined in time, which is why this extra guard
-            // is required.
-            tx.depends_on().iter().all(|dep| {
-                state
-                    .transactions()
-                    .iter()
-                    .find(|t| t.id() == *dep)
-                    .and_then(|t| t.state().mined_height())
-                    .is_some_and(|mined| u32::from(mined) <= u32::from(boundary))
-            })
+            // No late-dependency guard here: a transfer whose funding dependency mined PAST this
+            // boundary is intentionally still offered as prove-ready, because `engine::prove_transfer`
+            // now re-draws the boundary at prove time to cover the note's real mined height (rc.6 —
+            // see this function's doc comment). Excluding it here would keep it out of the prove batch
+            // and re-strand it forever.
+            u32::from(boundary) + 1 < u32::from(target_height)
         }
         // A preparation carries no drawn boundary and anchors to a fresh checkpoint at the tip when
         // proved, so it is prove-ready once its dependencies are mined and its schedule is due.
@@ -1103,18 +1138,54 @@ fn try_prove(
     state: &mut MigrationState,
     id: MigrationTransferId,
     kind: MigrationTxKind,
+    store_conn: &mut Connection,
 ) -> anyhow::Result<bool> {
     let anchor = match kind {
         MigrationTxKind::Transfer { .. } => None,
         MigrationTxKind::Preparation { .. } => Some(natural_anchor_height(wallet)?),
     };
-    let mut prover = WalletMigrationProver::new(wallet, account, fvk);
-    let result = match anchor {
-        None => engine::prove_transfer(&mut prover, state, id),
-        Some(anchor) => engine::prove_preparation(&mut prover, state, id, anchor),
+    let params = *wallet.params();
+    // The tip the wallet has actually observed and can witness at, which is what bounds the
+    // engine's anchor re-draw and its dependency-coverage reading of an absent input.
+    let scanned_tip = target_height(wallet)? - 1;
+    let mut rng = OsRng;
+    // Scoped so the prover's mutable borrow of the wallet ends before the store below takes a
+    // shared one.
+    let result = {
+        let mut prover = WalletMigrationProver::new(wallet, account, fvk);
+        match anchor {
+            None => engine::prove_transfer(&params, &mut prover, state, id, scanned_tip, &mut rng),
+            Some(anchor) => engine::prove_preparation(&mut prover, state, id, anchor),
+        }
     };
     match result {
-        Ok(()) => Ok(true),
+        // The proof is not applied to `state` — and so not persisted — by proving alone; handing
+        // it to the store is the only way to discharge it. For this wallet-backed store that also
+        // finalizes the transaction into the wallet's own tables, in the same database
+        // transaction, so its inputs read as spent from here until it is mined.
+        Ok(engine::ProveOutcome::Proved(proven)) => {
+            let mut backend = Backend::new(&*wallet, account, None, store_conn, params)?;
+            backend
+                .store_proved_transaction(state, proven)
+                .map_err(|e| anyhow!("Error storing proved migration transaction: {:?}", e))?;
+            Ok(true)
+        }
+        Ok(engine::ProveOutcome::NotYetProvable) => Ok(false),
+        // The engine wrote an unsatisfiability mark (and its dependency closure) into `state`.
+        // That is a determination, not a transient miss, so it is persisted here rather than left
+        // to a caller that may return early on the `false`.
+        Ok(engine::ProveOutcome::MarkedUnsatisfiable { replan_required }) => {
+            tracing::debug!(
+                "MIGRATION_DIAG try_prove: {:?} marked unsatisfiable (replan_required={})",
+                id,
+                replan_required
+            );
+            let mut backend = Backend::new(&*wallet, account, None, store_conn, params)?;
+            backend
+                .replace_migration(state)
+                .map_err(|e| anyhow!("Error persisting unsatisfiability mark: {:?}", e))?;
+            Ok(false)
+        }
         Err(ProveError::Prover(reason)) if is_transient_prove_error(&reason) => {
             tracing::debug!(
                 "MIGRATION_DIAG try_prove: {:?} not yet provable (transient): {}",
@@ -1146,8 +1217,10 @@ fn try_prove(
 ///   funding preparation id1 mined LATE at 4220802, so id1's output note was NOT in the tree at
 ///   tx8's anchor and the tree query for its position missed. Left un-classified it PROPAGATED,
 ///   crashed `finalizeReadyTransfers`, rolled back the whole prove batch, and looped forever. It is
-///   transient in the same sense as the others: it must defer (the transfer needs re-anchoring by a
-///   separate reschedule step) rather than take down every other ready transfer with it.
+///   transient in the same sense as the others: it must defer rather than take down every other
+///   ready transfer with it. As of rc.6 the primary cure for a late dependency is upstream —
+///   `engine::prove_transfer` re-draws the boundary at prove time — so this classification is now a
+///   defence-in-depth backstop for any residual tree-query miss, not the sole recovery path.
 ///
 /// A non-transient prover error (e.g. `IronwoodTreeUnavailable`) is NOT swallowed here — it still
 /// surfaces so a real failure is not silently dropped.
@@ -1175,7 +1248,7 @@ fn finalize_note_split(
     id: MigrationTransferId,
 ) -> anyhow::Result<(Vec<u8>, [u8; 32])> {
     let fvk = {
-        let backend = Backend::new(wallet, account, None, store_conn)?;
+        let backend = Backend::new(wallet, account, None, store_conn, *wallet.params())?;
         backend
             .orchard_fvk()
             .map_err(|e| anyhow!("Error reading account FVK: {:?}", e))?
@@ -1186,7 +1259,7 @@ fn finalize_note_split(
         .find(|t| t.id() == id)
         .map(|t| t.kind())
         .ok_or_else(|| anyhow!("Note-split transaction not found in migration state"))?;
-    let proved = try_prove(wallet, account, fvk, state, id, kind)
+    let proved = try_prove(wallet, account, fvk, state, id, kind, store_conn)
         .map_err(|e| anyhow!("Error finalizing note split: {}", e))?;
     if !proved {
         return Err(anyhow!(
@@ -1194,7 +1267,7 @@ fn finalize_note_split(
         ));
     }
     {
-        let mut backend = Backend::new(wallet, account, None, store_conn)?;
+        let mut backend = Backend::new(wallet, account, None, store_conn, *wallet.params())?;
         backend
             .replace_migration(state)
             .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
@@ -1260,9 +1333,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
-                let state =
-                    engine::commit_preparation(network, target, backend, migration_plan, rng)
-                        .map_err(|e| anyhow!("Error committing migration: {:?}", e))?;
+                let state = engine::commit_preparation(
+                    network,
+                    target,
+                    backend,
+                    migration_plan,
+                    rng,
+                    ReplanThreshold::DEFAULT,
+                )
+                .map_err(|e| anyhow!("Error committing migration: {:?}", e))?;
                 Ok((state, Vec::new()))
             },
         )?;
@@ -1345,13 +1424,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             // Success: record the broadcast txid. `mark_mined` has no old-crate equivalent call
             // site (the old crate didn't track a separate "mined" event either) — left unwired.
             0 => {
-                let txid = crate::parse_txid(env, tx_id)?;
-                let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+                // Still parsed so a malformed value is rejected at the boundary, but no longer
+                // forwarded: the engine records the txid it derived when the transaction was
+                // built, which a broadcaster cannot contradict.
+                let _txid = crate::parse_txid(env, tx_id)?;
+                let mut backend =
+                    Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
                 let mut state = backend
                     .get_migration()
                     .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
                     .ok_or_else(|| anyhow!("No migration in progress"))?;
-                state.mark_broadcast(id, txid);
+                state.mark_broadcast(id);
                 backend
                     .replace_migration(&state)
                     .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))
@@ -1372,7 +1455,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 // call `record_invalidation` (which needs `&store_conn`) and before we re-create
                 // `backend` for the `replace_migration` write.
                 let failed_opt: Option<MigrationState> = {
-                    let backend_read = Backend::new(&wallet, account, None, &mut store_conn)?;
+                    let backend_read =
+                        Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
                     let current = backend_read
                         .get_migration()
                         .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
@@ -1388,6 +1472,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                                 state.preparation().clone(),
                                 state.transactions().clone(),
                                 state.anchor_bucket_interval(),
+                                state.replan_threshold(),
                             ))
                         } else {
                             None
@@ -1415,7 +1500,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         Some(&transfer_id_str),
                     )
                     .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
-                    let mut backend_write = Backend::new(&wallet, account, None, &mut store_conn)?;
+                    let mut backend_write =
+                        Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
                     backend_write
                         .replace_migration(&failed)
                         .map_err(|e| anyhow!("Error persisting failed migration: {:?}", e))?;
@@ -1481,7 +1567,6 @@ fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
     Some(*extracted.txid().as_ref())
 }
 
-
 /// The funding nullifier of a single-Orchard-spend migration transfer, read straight from its PCZT.
 ///
 /// The PCZT's Orchard `Spend` carries the funding note's `nullifier` as a required Constructor-set
@@ -1537,9 +1622,13 @@ fn transfer_funding_nullifier(bytes: &[u8]) -> Option<[u8; 32]> {
 /// the rare case where pass 2 fails to promote (e.g. `pczt_txid` parse returned `None` for the
 /// proved transfer) never yields a false invalidation.
 ///
+/// One foreign-spend candidate: the transfer, its funding nullifier, and its own txid — either of
+/// the latter two unreadable from the stored PCZT, which the decision rule treats as ambiguous.
+type ForeignSpendCandidate = (MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>);
+
 /// False negatives are acceptable: submit-time rejection remains the last line of defence.
 fn decide_foreign_spend(
-    candidates: &[(MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>)],
+    candidates: &[ForeignSpendCandidate],
     unspent_nullifiers: &std::collections::HashSet<[u8; 32]>,
     own_txids_on_chain: &std::collections::HashSet<[u8; 32]>,
 ) -> Option<MigrationTransferId> {
@@ -1551,7 +1640,9 @@ fn decide_foreign_spend(
             continue;
         }
         // (b) Own txid unreadable → ambiguous; cannot confirm spender is foreign → skip.
-        let Some(own_txid_bytes) = own_txid else { continue };
+        let Some(own_txid_bytes) = own_txid else {
+            continue;
+        };
         // (c) Own txid is on-chain → our own (possibly crashed) broadcast; pass 2 should handle it.
         if own_txids_on_chain.contains(own_txid_bytes) {
             continue;
@@ -1588,7 +1679,7 @@ fn reconcile_invalidated(
 ) -> anyhow::Result<bool> {
     // --- Pass 1 + load current state (read_reconciled persists any Broadcast→Mined promotions). ---
     let mut state = {
-        let mut backend = Backend::new(&*wallet, account, None, store_conn)?;
+        let mut backend = Backend::new(&*wallet, account, None, store_conn, *wallet.params())?;
         match read_reconciled(wallet, &mut backend)? {
             Some(s) => s,
             None => return Ok(false),
@@ -1601,7 +1692,7 @@ fn reconcile_invalidated(
     }
 
     // --- Pass 2: submit-crash probe. Promote any Proved transfer whose txid is already on chain. ---
-    let mut promotions: Vec<(MigrationTransferId, zcash_protocol::TxId, BlockHeight)> = Vec::new();
+    let mut promotions: Vec<(MigrationTransferId, BlockHeight)> = Vec::new();
     for tx in state.transactions() {
         if !matches!(tx.state(), MigrationTxState::Proved) {
             continue;
@@ -1614,15 +1705,15 @@ fn reconcile_invalidated(
             .get_tx_height(txid)
             .map_err(|e| anyhow!("Error reading tx height for {:?}: {:?}", txid, e))?
         {
-            promotions.push((tx.id(), txid, height));
+            promotions.push((tx.id(), height));
         }
     }
     if !promotions.is_empty() {
-        for (id, txid, height) in &promotions {
-            state.mark_broadcast(*id, *txid);
+        for (id, height) in &promotions {
+            state.mark_broadcast(*id);
             state.mark_mined(*id, *height);
         }
-        let mut backend = Backend::new(&*wallet, account, None, store_conn)?;
+        let mut backend = Backend::new(&*wallet, account, None, store_conn, *wallet.params())?;
         backend
             .replace_migration(&state)
             .map_err(|e| anyhow!("Error persisting submit-crash-probe promotions: {:?}", e))?;
@@ -1633,12 +1724,15 @@ fn reconcile_invalidated(
     // The own txid is needed by decide_foreign_spend to satisfy the no-false-positive bar: if the
     // txid is unreadable (b) or is on-chain (c), the situation is ambiguous and we skip rather than
     // invalidate (see decide_foreign_spend's doc for the full decision rule).
-    let candidates: Vec<(MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>)> = state
+    let candidates: Vec<ForeignSpendCandidate> = state
         .transactions()
         .iter()
         .filter(|t| {
             matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                && matches!(t.state(), MigrationTxState::Signed | MigrationTxState::Proved)
+                && matches!(
+                    t.state(),
+                    MigrationTxState::Signed | MigrationTxState::Proved
+                )
                 && state.deps_mined(t.depends_on())
         })
         .map(|t| {
@@ -1706,8 +1800,13 @@ fn reconcile_invalidated(
     // Failed with reason "invalid_transfer", reason-first ordering (identical to
     // `recordTransferResultNative` tag 2 — see its ordering comment for the rationale).
     let invalid_id_str = u32::from(invalid_id).to_string();
-    record_invalidation(store_conn, account_bytes, "invalid_transfer", Some(&invalid_id_str))
-        .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
+    record_invalidation(
+        store_conn,
+        account_bytes,
+        "invalid_transfer",
+        Some(&invalid_id_str),
+    )
+    .map_err(|e| anyhow!("Error recording invalidation reason: {:?}", e))?;
     // Status-only swap: sub-state passed through verbatim (no cancel/fail primitive in the rc.1
     // engine) — the committed plan itself is never rewritten here.
     let failed = MigrationState::from_parts(
@@ -1716,8 +1815,9 @@ fn reconcile_invalidated(
         state.preparation().clone(),
         state.transactions().clone(),
         state.anchor_bucket_interval(),
+        state.replan_threshold(),
     );
-    let mut backend = Backend::new(&*wallet, account, None, store_conn)?;
+    let mut backend = Backend::new(&*wallet, account, None, store_conn, *wallet.params())?;
     backend
         .replace_migration(&failed)
         .map_err(|e| anyhow!("Error persisting invalidated migration: {:?}", e))?;
@@ -1819,7 +1919,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
         Ok(derive_migration_state(env, persisted, tip, &store_conn, &account_bytes)?.into_raw())
@@ -1841,7 +1941,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
@@ -1850,11 +1950,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     .iter()
                     .filter(|t| matches!(t.state(), MigrationTxState::Mined { .. }))
                     .count();
-                let next_ready_height = if state.next_broadcastable(tip).is_some() {
-                    i64::from(u32::from(tip))
-                } else {
-                    -1
-                };
+                let next_ready_height =
+                    if next_broadcastable(&state, DuenessTargets::at(tip)).is_some() {
+                        i64::from(u32::from(tip))
+                    } else {
+                        -1
+                    };
                 encode_migration_progress(env, completed, transactions.len(), next_ready_height)?
                     .into_raw()
             }
@@ -1918,7 +2019,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let mut rng = OsRng;
         let estimate = engine::estimate_migration_runs(&network, &backend, &mut rng)
             .map_err(|e| anyhow!("Error estimating migration runs: {:?}", e))?;
@@ -1969,7 +2070,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             scanned_tip
         };
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) => {
@@ -1998,7 +2099,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) => match state.status() {
@@ -2046,9 +2147,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             proposal_handle as u64,
             Some(usk),
             |network, target, backend, migration_plan, rng| {
-                let state =
-                    engine::commit_preparation(network, target, backend, migration_plan, rng)
-                        .map_err(|e| anyhow!("Error committing migration schedule: {:?}", e))?;
+                let state = engine::commit_preparation(
+                    network,
+                    target,
+                    backend,
+                    migration_plan,
+                    rng,
+                    ReplanThreshold::DEFAULT,
+                )
+                .map_err(|e| anyhow!("Error committing migration schedule: {:?}", e))?;
                 Ok((state, Vec::new()))
             },
         )?;
@@ -2056,7 +2163,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // (the proposal's `anchorHeight` shown to the app is only a duration-display reference —
         // the per-transfer bucket boundaries exist first here, post-commit).
         let committed_state = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
             backend
                 .get_migration()
                 .map_err(|e| anyhow!("Error re-reading committed migration state: {:?}", e))?
@@ -2101,8 +2208,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     state.preparation().clone(),
                     state.transactions().clone(),
                     state.anchor_bucket_interval(),
+                    state.replan_threshold(),
                 );
-                let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+                let mut backend =
+                    Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
                 backend
                     .replace_migration(&cancelled)
                     .map_err(|e| anyhow!("Error cancelling checkpoint-invalid migration: {}", e))?;
@@ -2168,8 +2277,8 @@ fn backfill_boundary_checkpoint_for_pool(
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| anyhow!("Error reading gap blocks for {cp_table}: {}", e))?;
-    let empty_gap = scanned_all == gap_len
-        && matches!((size_prev, size_at), (Some(a), Some(b)) if a == b);
+    let empty_gap =
+        scanned_all == gap_len && matches!((size_prev, size_at), (Some(a), Some(b)) if a == b);
     if !empty_gap {
         return Ok(false);
     }
@@ -2198,32 +2307,36 @@ fn ensure_boundary_checkpoints(
     scanned_tip: BlockHeight,
 ) -> anyhow::Result<Vec<(MigrationTransferId, BlockHeight)>> {
     let ironwood_has_rows: bool = conn
-        .query_row("SELECT EXISTS(SELECT 1 FROM ironwood_tree_checkpoints)", [], |r| r.get(0))
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM ironwood_tree_checkpoints)",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| anyhow!("Error probing ironwood checkpoints: {}", e))?;
     let mut missing = Vec::new();
     for t in state.transactions() {
         if !matches!(t.state(), MigrationTxState::Signed) {
             continue;
         }
-        if let Some(boundary) = t.anchor_boundary() {
-            if boundary <= scanned_tip {
-                let b = u32::from(boundary);
-                let orchard_ok = backfill_boundary_checkpoint_for_pool(
+        if let Some(boundary) = t.anchor_boundary()
+            && boundary <= scanned_tip
+        {
+            let b = u32::from(boundary);
+            let orchard_ok = backfill_boundary_checkpoint_for_pool(
+                conn,
+                "orchard_tree_checkpoints",
+                "orchard_commitment_tree_size",
+                b,
+            )?;
+            let ironwood_ok = !ironwood_has_rows
+                || backfill_boundary_checkpoint_for_pool(
                     conn,
-                    "orchard_tree_checkpoints",
-                    "orchard_commitment_tree_size",
+                    "ironwood_tree_checkpoints",
+                    "ironwood_commitment_tree_size",
                     b,
                 )?;
-                let ironwood_ok = !ironwood_has_rows
-                    || backfill_boundary_checkpoint_for_pool(
-                        conn,
-                        "ironwood_tree_checkpoints",
-                        "ironwood_commitment_tree_size",
-                        b,
-                    )?;
-                if !orchard_ok || !ironwood_ok {
-                    missing.push((t.id(), boundary));
-                }
+            if !orchard_ok || !ironwood_ok {
+                missing.push((t.id(), boundary));
             }
         }
     }
@@ -2254,7 +2367,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let target = target_height(&wallet)?;
 
         let (mut state, fvk) = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
             let Some(state) = backend
                 .get_migration()
                 .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -2314,8 +2427,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 .find(|t| t.id() == id)
                 .map(|t| (t.anchor_boundary(), Some(t.scheduled_height())))
                 .unwrap_or((None, None));
-            if try_prove(&mut wallet, account, fvk.clone(), &mut state, id, kind)
-                .map_err(|e| anyhow!("Error proving transfer {:?}: {}", id, e))?
+            if try_prove(
+                &mut wallet,
+                account,
+                fvk.clone(),
+                &mut state,
+                id,
+                kind,
+                &mut store_conn,
+            )
+            .map_err(|e| anyhow!("Error proving transfer {:?}: {}", id, e))?
             {
                 finalized_count += 1;
                 tracing::debug!(
@@ -2328,7 +2449,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             }
         }
         if finalized_count > 0 {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let mut backend =
+                Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
             backend
                 .replace_migration(&state)
                 .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
@@ -2379,10 +2501,16 @@ fn next_due_transfer_result<'a>(
         .collect();
     due.sort_by_key(|t| t.scheduled_height());
     // First Proved -> READY; else first Signed -> AWAITING_PROOF; else NOTHING_DUE.
-    if let Some(tx) = due.iter().find(|t| matches!(t.state(), MigrationTxState::Proved)) {
+    if let Some(tx) = due
+        .iter()
+        .find(|t| matches!(t.state(), MigrationTxState::Proved))
+    {
         return DueTransferResult::Ready(tx);
     }
-    if let Some(tx) = due.iter().find(|t| matches!(t.state(), MigrationTxState::Signed)) {
+    if let Some(tx) = due
+        .iter()
+        .find(|t| matches!(t.state(), MigrationTxState::Signed))
+    {
         return DueTransferResult::AwaitingProof(tx.id());
     }
     DueTransferResult::NothingDue
@@ -2411,18 +2539,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             scanned_tip
         };
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let Some(state) = read_reconciled(&wallet, &mut backend)? else {
             // No migration: status=0, both nullable fields null.
-            return Ok(env.new_object(
-                JNI_DUE_TRANSFER_RESULT,
-                format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
-                &[
-                    JValue::Int(0),
-                    JValue::Object(&JObject::null()),
-                    JValue::Object(&JObject::null()),
-                ],
-            )?.into_raw());
+            return Ok(env
+                .new_object(
+                    JNI_DUE_TRANSFER_RESULT,
+                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
+                    &[
+                        JValue::Int(0),
+                        JValue::Object(&JObject::null()),
+                        JValue::Object(&JObject::null()),
+                    ],
+                )?
+                .into_raw());
         };
 
         tracing::debug!(
@@ -2431,16 +2561,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             scanned_tip,
             effective_tip,
             estimated_tip,
-            state.transactions().iter().filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. })).count(),
-            state.transactions().iter()
+            state
+                .transactions()
+                .iter()
+                .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
+                .count(),
+            state
+                .transactions()
+                .iter()
                 .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
                 .map(|t| (t.id(), t.state(), t.scheduled_height()))
                 .collect::<Vec<_>>(),
         );
 
         match next_due_transfer_result(&state, scanned_tip, effective_tip) {
-            DueTransferResult::NothingDue => {
-                Ok(env.new_object(
+            DueTransferResult::NothingDue => Ok(env
+                .new_object(
                     JNI_DUE_TRANSFER_RESULT,
                     format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
                     &[
@@ -2448,8 +2584,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Object(&JObject::null()),
                         JValue::Object(&JObject::null()),
                     ],
-                )?.into_raw())
-            }
+                )?
+                .into_raw()),
             DueTransferResult::AwaitingProof(id) => {
                 let id_obj = env
                     .call_static_method(
@@ -2459,22 +2595,25 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         &[JValue::Long(encode_transfer_id(id))],
                     )?
                     .l()?;
-                Ok(env.new_object(
-                    JNI_DUE_TRANSFER_RESULT,
-                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
-                    &[
-                        JValue::Int(2),
-                        JValue::Object(&id_obj),
-                        JValue::Object(&JObject::null()),
-                    ],
-                )?.into_raw())
+                Ok(env
+                    .new_object(
+                        JNI_DUE_TRANSFER_RESULT,
+                        format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
+                        &[
+                            JValue::Int(2),
+                            JValue::Object(&id_obj),
+                            JValue::Object(&JObject::null()),
+                        ],
+                    )?
+                    .into_raw())
             }
             DueTransferResult::Ready(tx) => {
                 // `Proved` carries the fully witnessed/anchored/proven PCZT bytes (installed by
                 // `finalizeReadyTransfersNative`'s `try_prove`) — extract the txid directly from them.
                 let bytes = tx.pczt();
                 let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
-                    pczt::Pczt::parse(bytes).map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
+                    pczt::Pczt::parse(bytes)
+                        .map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
                 )
                 .extract()
                 .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
@@ -2490,15 +2629,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Object(&pczt_obj),
                     ],
                 )?;
-                Ok(env.new_object(
-                    JNI_DUE_TRANSFER_RESULT,
-                    format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
-                    &[
-                        JValue::Int(1),
-                        JValue::Object(&JObject::null()),
-                        JValue::Object(&prepared),
-                    ],
-                )?.into_raw())
+                Ok(env
+                    .new_object(
+                        JNI_DUE_TRANSFER_RESULT,
+                        format!("(ILjava/lang/Long;L{JNI_PREPARED_TRANSFER};)V"),
+                        &[
+                            JValue::Int(1),
+                            JValue::Object(&JObject::null()),
+                            JValue::Object(&prepared),
+                        ],
+                    )?
+                    .into_raw())
             }
         }
     });
@@ -2540,7 +2681,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -2556,10 +2697,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // The app now carries this same id on its cached `MigrationTransfer.id` (see
         // `MigrationSchedule.toMigrationPlan`), which is the only stable key the two sides share.
         //
-        // Engine per-tx status view (ready/action/blocker), with the guard veto applied on top —
-        // see the driver-surface note: a guard-vetoed (unprovable-anchor) transfer must never be
-        // reported READY-to-Prove; it gets the synthetic UNPROVABLE_ANCHOR blocker instead.
-        let engine_statuses = state.transaction_statuses(tip + 1);
+        // Engine per-tx status view (ready/action/blocker), taken as-is. The former local
+        // late-dependency guard veto is gone (resolved upstream in rc.6 — see the driver-surface
+        // banner): a transfer whose dependency mined past its anchor boundary is now honestly
+        // reported READY-to-Prove, because `engine::prove_transfer` re-draws the boundary at prove
+        // time so that Prove genuinely completes.
+        let engine_statuses = state.transaction_statuses(DuenessTargets::at(tip + 1));
 
         // (id, is_transfer, is_sent, is_proved, scheduled_height, anchor_boundary, ready, action,
         //  blocker, amount_zatoshi, prep_layer, prep_index, depends_on, expiry_height, mined_height)
@@ -2596,20 +2739,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         | MigrationTxState::Broadcast { .. }
                         | MigrationTxState::Mined { .. }
                 );
-                let (ready, action, blocker) = if is_unprovable_anchor(&state, t, tip + 1) {
-                    (false, ACTION_NONE, BLOCKER_UNPROVABLE_ANCHOR)
-                } else {
+                let (ready, action, blocker) = {
                     let action = match status.action() {
                         Some(zcash_pool_migration::state::NextAction::Prove) => ACTION_PROVE,
-                        Some(zcash_pool_migration::state::NextAction::Broadcast) => ACTION_BROADCAST,
+                        Some(zcash_pool_migration::state::NextAction::Broadcast) => {
+                            ACTION_BROADCAST
+                        }
                         None => ACTION_NONE,
                     };
                     let blocker = match status.blocked_on() {
-                        Some(zcash_pool_migration::state::Blocker::Dependencies) => BLOCKER_DEPENDENCIES,
+                        Some(zcash_pool_migration::state::Blocker::Dependencies) => {
+                            BLOCKER_DEPENDENCIES
+                        }
                         Some(zcash_pool_migration::state::Blocker::Schedule) => BLOCKER_SCHEDULE,
-                        Some(zcash_pool_migration::state::Blocker::AnchorBoundary) => BLOCKER_ANCHOR_BOUNDARY,
+                        Some(zcash_pool_migration::state::Blocker::AnchorBoundary) => {
+                            BLOCKER_ANCHOR_BOUNDARY
+                        }
                         Some(zcash_pool_migration::state::Blocker::Signature) => BLOCKER_SIGNATURE,
                         Some(zcash_pool_migration::state::Blocker::Expired) => BLOCKER_EXPIRED,
+                        Some(zcash_pool_migration::state::Blocker::ExpiryImminent) => {
+                            BLOCKER_EXPIRY_IMMINENT
+                        }
+                        Some(zcash_pool_migration::state::Blocker::AwaitingReevaluation) => {
+                            BLOCKER_AWAITING_REEVALUATION
+                        }
+                        Some(zcash_pool_migration::state::Blocker::Unsatisfiable) => {
+                            BLOCKER_UNSATISFIABLE
+                        }
                         None => BLOCKER_NONE,
                     };
                     (status.ready(), action, blocker)
@@ -2685,9 +2841,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Bool(is_sent as jboolean),
                         JValue::Bool(is_proved as jboolean),
                         JValue::Long(i64::from(u32::from(scheduled_height))),
-                        JValue::Long(
-                            anchor_boundary.map_or(-1i64, |b| i64::from(u32::from(b))),
-                        ),
+                        JValue::Long(anchor_boundary.map_or(-1i64, |b| i64::from(u32::from(b)))),
                         JValue::Bool(ready as jboolean),
                         JValue::Int(action),
                         JValue::Int(blocker),
@@ -3023,7 +3177,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration: {}", e))?
@@ -3043,6 +3197,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             state.preparation().clone(),
             state.transactions().clone(),
             state.anchor_bucket_interval(),
+            state.replan_threshold(),
         );
         backend
             .replace_migration(&cancelled)
@@ -3069,11 +3224,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(state) if !state.is_terminal() => {
-                match state.next_broadcastable(tip).and_then(|id| {
+                match next_broadcastable(&state, DuenessTargets::at(tip)).and_then(|id| {
                     state
                         .transactions()
                         .iter()
@@ -3182,6 +3337,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     backend,
                     migration_plan,
                     rng,
+                    ReplanThreshold::DEFAULT,
                 )
                 .map_err(|e| anyhow!("Error building unsigned migration PCZTs: {:?}", e))?;
                 Ok((
@@ -3229,7 +3385,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let signed_pczt_bytes = crate::utils::java_bytes_to_rust(env, &signed_pczt)?;
         let mut state = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
             backend
                 .get_migration()
                 .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -3245,7 +3401,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             return Err(anyhow!("Error applying note-split signature"));
         }
         {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+            let mut backend =
+                Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
             backend
                 .replace_migration(&state)
                 .map_err(|e| anyhow!("Error persisting migration state: {:?}", e))?;
@@ -3312,6 +3469,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     backend,
                     migration_plan,
                     rng,
+                    ReplanThreshold::DEFAULT,
                 )
                 .map_err(|e| anyhow!("Error building unsigned migration PCZTs: {:?}", e))?;
                 Ok((
@@ -3406,6 +3564,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     backend,
                     migration_plan,
                     rng,
+                    ReplanThreshold::DEFAULT,
                 )
                 .map_err(|e| anyhow!("Error building unsigned migration PCZTs: {:?}", e))?;
                 Ok((
@@ -3484,7 +3643,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // not objects.
         let mut raw_ids = vec![0i64; count as usize];
         env.get_long_array_region(&ids, 0, &mut raw_ids)?;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let mut state = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -3798,13 +3957,18 @@ mod live_wallet_signing_tests {
         let target = tip + 1;
 
         let mut state = {
-            let mut backend = Backend::new(&wallet, account, Some(usk), &mut store_conn)
+            let mut backend = Backend::new(&wallet, account, Some(usk), &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
-            engine::commit_preparation(&network, target, &mut backend, &migration_plan, &mut rng)
-                .expect(
-                    "commit_preparation (in-process signing — local only, no network/broadcast)",
-                )
+            engine::commit_preparation(
+                &network,
+                target,
+                &mut backend,
+                &migration_plan,
+                &mut rng,
+                ReplanThreshold::DEFAULT,
+            )
+            .expect("commit_preparation (in-process signing — local only, no network/broadcast)")
         };
         println!(
             "{} transaction(s) committed and signed",
@@ -3812,7 +3976,7 @@ mod live_wallet_signing_tests {
         );
 
         let fvk = {
-            let backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let backend = Backend::new(&wallet, account, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             backend.orchard_fvk().expect("fvk")
         };
@@ -3825,7 +3989,15 @@ mod live_wallet_signing_tests {
         let mut finalized = 0;
         let mut transient = 0;
         for (id, kind) in ids_and_kinds {
-            match try_prove(&mut wallet, account, fvk.clone(), &mut state, id, kind) {
+            match try_prove(
+                &mut wallet,
+                account,
+                fvk.clone(),
+                &mut state,
+                id,
+                kind,
+                &mut store_conn,
+            ) {
                 Ok(true) => {
                     finalized += 1;
                     println!(
@@ -3937,7 +4109,7 @@ mod live_wallet_signing_tests {
         // Mirrors `createUnsignedNoteSplitPcztNative`: build unsigned, leaving every transaction
         // (including the split) `AwaitingSignature` — nothing is signed by this call.
         let (mut state, unsigned) = {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             engine::build_preparation_unsigned(
@@ -3946,6 +4118,7 @@ mod live_wallet_signing_tests {
                 &mut backend,
                 &migration_plan,
                 &mut rng,
+                ReplanThreshold::DEFAULT,
             )
             .expect("build_preparation_unsigned")
         };
@@ -4025,7 +4198,6 @@ mod live_wallet_edge_case_tests {
     use zcash_client_backend::data_api::chain::ChainState;
     use zcash_client_backend::data_api::{AccountBirthday, WalletWrite};
     use zcash_primitives::block::BlockHash;
-    use zcash_protocol::TxId;
 
     fn fixture_db_path() -> std::path::PathBuf {
         std::env::var("MIGRATION_TEST_WALLET_DB")
@@ -4040,23 +4212,6 @@ mod live_wallet_edge_case_tests {
             .into_iter()
             .next()
             .expect("wallet has at least one account — restore/sync one first")
-    }
-
-    /// Finds a real, already-mined transaction's txid in the fixture wallet DB, so a test can
-    /// simulate `WalletRead::get_tx_height` returning `Some(_)` for a migration transaction
-    /// without actually broadcasting anything and waiting for it to mine. `Wallet` (`WalletDb`)
-    /// keeps its own `rusqlite::Connection` private, so this queries the public `v_transactions`
-    /// view (the supported query surface, never a wallet-internal base table) through the
-    /// migration store's own second connection to the same on-disk file.
-    fn a_mined_txid_in_fixture(store_conn: &Connection) -> TxId {
-        let txid_bytes: [u8; 32] = store_conn
-            .query_row(
-                "SELECT txid FROM v_transactions WHERE mined_height IS NOT NULL LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("fixture wallet DB has at least one mined transaction");
-        TxId::from_bytes(txid_bytes)
     }
 
     /// Creates a second, synthetic, permanently-unfunded account in `wallet` — not derived from
@@ -4084,9 +4239,15 @@ mod live_wallet_edge_case_tests {
         plan: &MigrationPlan,
         rng: &mut OsRng,
     ) -> anyhow::Result<MigrationCommitOutcome> {
-        let (state, unsigned) =
-            engine::build_preparation_unsigned(network, target, backend, plan, rng)
-                .map_err(|e| anyhow!("build_preparation_unsigned: {:?}", e))?;
+        let (state, unsigned) = engine::build_preparation_unsigned(
+            network,
+            target,
+            backend,
+            plan,
+            rng,
+            ReplanThreshold::DEFAULT,
+        )
+        .map_err(|e| anyhow!("build_preparation_unsigned: {:?}", e))?;
         Ok((
             state,
             unsigned.into_iter().map(|tx| tx.into_parts()).collect(),
@@ -4116,17 +4277,24 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account_a, &mut store_conn).expect("plan_for account_a");
         let target = tip + 1;
         {
-            let mut backend_a = Backend::new(&wallet, account_a, None, &mut store_conn)
+            let mut backend_a = Backend::new(&wallet, account_a, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
-            engine::build_preparation_unsigned(&network, target, &mut backend_a, &plan_a, &mut rng)
-                .expect("commit account_a's migration");
+            engine::build_preparation_unsigned(
+                &network,
+                target,
+                &mut backend_a,
+                &plan_a,
+                &mut rng,
+                ReplanThreshold::DEFAULT,
+            )
+            .expect("commit account_a's migration");
         }
 
         // Asking for account B's migration state goes through the exact same code path
         // (`migrationStateNative`/`commit_or_reuse` do this) — it must see nothing, since B has
         // no migration of its own. Instead it leaks A's.
-        let backend_b = Backend::new(&wallet, account_b, None, &mut store_conn)
+        let backend_b = Backend::new(&wallet, account_b, None, &mut store_conn, network)
             .expect("account exists for migration store");
         let leaked = backend_b
             .get_migration()
@@ -4176,19 +4344,24 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         let mut state = {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
-            let (state, _unsigned) =
-                engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
-                    .expect("commit migration");
+            let (state, _unsigned) = engine::build_preparation_unsigned(
+                &network,
+                target,
+                &mut backend,
+                &plan,
+                &mut rng,
+                ReplanThreshold::DEFAULT,
+            )
+            .expect("commit migration");
             state
         };
         let some_tx_id = state.transactions()[0].id();
-        let mined_txid = a_mined_txid_in_fixture(&store_conn);
-        state.mark_broadcast(some_tx_id, mined_txid);
+        state.mark_broadcast(some_tx_id);
 
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
             .expect("account exists for migration store");
         backend
             .replace_migration(&state)
@@ -4398,18 +4571,31 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
-            engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
-                .expect("first commit");
+            engine::build_preparation_unsigned(
+                &network,
+                target,
+                &mut backend,
+                &plan,
+                &mut rng,
+                ReplanThreshold::DEFAULT,
+            )
+            .expect("first commit");
         }
 
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
             .expect("account exists for migration store");
         let mut rng = OsRng;
-        let result =
-            engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng);
+        let result = engine::build_preparation_unsigned(
+            &network,
+            target,
+            &mut backend,
+            &plan,
+            &mut rng,
+            ReplanThreshold::DEFAULT,
+        );
         assert!(
             matches!(result, Err(engine::CommitError::MigrationInProgress)),
             "recommitting over a non-terminal migration must fail with MigrationInProgress, not \
@@ -4434,19 +4620,25 @@ mod live_wallet_edge_case_tests {
             let (plan, tip, _handle) =
                 plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
             let target = tip + 1;
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
-            let (state, _unsigned) =
-                engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
-                    .expect("commit");
+            let (state, _unsigned) = engine::build_preparation_unsigned(
+                &network,
+                target,
+                &mut backend,
+                &plan,
+                &mut rng,
+                ReplanThreshold::DEFAULT,
+            )
+            .expect("commit");
             state.transactions().iter().map(|t| t.id()).collect()
             // wallet / store_conn / backend all drop here — simulates process death.
         };
 
         let (wallet2, mut store_conn2) = open_at(&db_path, network).expect("reopen wallet");
         let account = first_account(&wallet2);
-        let backend2 = Backend::new(&wallet2, account, None, &mut store_conn2)
+        let backend2 = Backend::new(&wallet2, account, None, &mut store_conn2, network)
             .expect("account exists for migration store");
         let reloaded = backend2
             .get_migration()
@@ -4459,9 +4651,16 @@ mod live_wallet_edge_case_tests {
             "reopening the DB connection must not lose or reorder committed migration transactions"
         );
 
+        // This module has no in-memory store to drive `advance_migration` against, and the point
+        // here is that the RELOAD is intact, not what the engine decides next; the per-transaction
+        // status projection is the read-only surface that shows the reloaded plan is coherent.
         let tip2 = wallet2.chain_height().expect("chain height").expect("tip");
-        let step = reloaded.next_step(tip2 + 1);
-        println!("next_step after simulated restart: {step:?}");
+        let statuses = reloaded.transaction_statuses(DuenessTargets::at(tip2 + 1));
+        assert_eq!(
+            statuses.len(),
+            reloaded_ids.len(),
+            "every reloaded transaction must be accounted for in the status projection"
+        );
     }
 
     /// `plan_migration` is documented as pure/read-only ("nothing is built, signed, or
@@ -4481,7 +4680,7 @@ mod live_wallet_edge_case_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan before commit");
         let target = target_height(&wallet).expect("target height");
         {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
             engine::build_preparation_unsigned(
@@ -4490,6 +4689,7 @@ mod live_wallet_edge_case_tests {
                 &mut backend,
                 &plan_before,
                 &mut rng,
+                ReplanThreshold::DEFAULT,
             )
             .expect("commit");
         }
@@ -4516,7 +4716,7 @@ mod live_wallet_edge_case_tests {
         let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account_b = create_synthetic_account(&mut wallet, 0x43, "edge-case-empty-account");
 
-        let backend = Backend::new(&wallet, account_b, None, &mut store_conn)
+        let backend = Backend::new(&wallet, account_b, None, &mut store_conn, network)
             .expect("account exists for migration store");
         let mut rng = OsRng;
         let result = engine::plan_migration(&network, &backend, &mut rng);
@@ -4532,11 +4732,11 @@ mod live_wallet_edge_case_tests {
 mod next_due_transfer_tests {
     use super::*;
     use zcash_pool_migration::{
-        engine::{
-            MigrationState, MigrationStatus, MigrationTransaction, MigrationTransferId, MigrationTxKind,
-            MigrationTxState,
-        },
         denomination::DenominationPlan,
+        engine::{
+            MigrationState, MigrationStatus, MigrationTransaction, MigrationTransferId,
+            MigrationTxKind, MigrationTxState,
+        },
         preparation::PreparationPlan,
         scheduling::AnchorBucketInterval,
     };
@@ -4559,6 +4759,7 @@ mod next_due_transfer_tests {
             PreparationPlan::from_parts(vec![], vec![]),
             transfers,
             AnchorBucketInterval::ZIP_318,
+            ReplanThreshold::DEFAULT,
         )
     }
 
@@ -4576,7 +4777,11 @@ mod next_due_transfer_tests {
             BlockHeight::from_u32(scheduled),
             BlockHeight::from_u32(expiry),
             Some(BlockHeight::from_u32(scheduled.saturating_sub(10))), // anchor_boundary
+            zcash_protocol::TxId::from_bytes([id as u8; 32]),
             state,
+            None,
+            None,
+            vec![[id as u8; 32]],
             None,
         )
     }
@@ -4595,7 +4800,11 @@ mod next_due_transfer_tests {
             BlockHeight::from_u32(scheduled),
             BlockHeight::from_u32(expiry),
             Some(BlockHeight::from_u32(scheduled.saturating_sub(10))), // anchor_boundary
+            zcash_protocol::TxId::from_bytes([id as u8; 32]),
             state,
+            None,
+            None,
+            vec![[id as u8; 32]],
             None,
         )
     }
@@ -4623,7 +4832,11 @@ mod next_due_transfer_tests {
         let result = next_due_transfer_result(&state, tip, tip);
         match result {
             DueTransferResult::AwaitingProof(id) => {
-                assert_eq!(id, MigrationTransferId::new(42), "id must match the signed transfer");
+                assert_eq!(
+                    id,
+                    MigrationTransferId::new(42),
+                    "id must match the signed transfer"
+                );
             }
             other => panic!(
                 "expected AwaitingProof, got NothingDue: {}",
@@ -4678,7 +4891,10 @@ mod next_due_transfer_tests {
         // multi-transaction preparation layers just like transfers (kind-agnostic, matching
         // the engine's next_broadcastable; a Transfer-only filter deadlocked a live plan).
         assert!(
-            matches!(next_due_transfer_result(&state, tip, tip), DueTransferResult::Ready(_)),
+            matches!(
+                next_due_transfer_result(&state, tip, tip),
+                DueTransferResult::Ready(_)
+            ),
             "next_due_transfer_result must serve due Proved preparations"
         );
     }
@@ -4716,10 +4932,101 @@ mod next_due_transfer_tests {
     }
 
     // -----------------------------------------------------------------------
-    // `guarded_next_step` two-tip tests (spec §3): broadcast timing runs at the
-    // ESTIMATED tip, proving stays on the SCANNED tip. Reuses this module's
+    // Two-tip step-selection tests (spec §3): broadcast timing runs at the ESTIMATED tip, proving
+    // stays on the SCANNED tip. These now drive the engine's own `advance_migration` — the same
+    // call `nextStepNative` makes — over an in-memory store, which is the shape the trait
+    // documents for a backend with no wallet-level transaction records. Reuses this module's
     // `make_state`/`transfer` helpers directly rather than duplicating them.
     // -----------------------------------------------------------------------
+
+    /// An in-memory `PoolMigrationRead`/`PoolMigrationWrite` over a single `MigrationState`.
+    ///
+    /// The oracle answers `Satisfiable` unconditionally: these tests are about step SELECTION —
+    /// which transaction is offered, and at which of the two targets — not about the satisfiability
+    /// sweep, which needs a real note/nullifier view to exercise and belongs with the wallet-backed
+    /// tests.
+    struct InMemoryStore {
+        state: MigrationState,
+        as_of: BlockHeight,
+    }
+
+    impl PoolMigrationRead for InMemoryStore {
+        type Error = anyhow::Error;
+
+        fn get_migration(&self) -> Result<Option<MigrationState>, Self::Error> {
+            Ok(Some(self.state.clone()))
+        }
+
+        fn check_step_satisfiability(
+            &self,
+            _tx: &MigrationTransaction,
+            _settle: zcash_pool_migration::satisfiability::ReorgSettleDepth,
+        ) -> Result<zcash_pool_migration::satisfiability::StepSatisfiability, Self::Error> {
+            Ok(
+                zcash_pool_migration::satisfiability::StepSatisfiability::Satisfiable {
+                    as_of_height: self.as_of,
+                },
+            )
+        }
+
+        fn mined_height(
+            &self,
+            _txid: zcash_protocol::TxId,
+        ) -> Result<Option<BlockHeight>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    impl PoolMigrationWrite for InMemoryStore {
+        fn replace_migration(&mut self, state: &MigrationState) -> Result<(), Self::Error> {
+            self.state = state.clone();
+            Ok(())
+        }
+
+        fn update_transaction(
+            &mut self,
+            _id: MigrationTransferId,
+            _state: MigrationTxState,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn store_proved_transaction(
+            &mut self,
+            state: &mut MigrationState,
+            proven: zcash_pool_migration::engine::ProvedTransaction,
+        ) -> Result<(), Self::Error> {
+            proven.apply(state);
+            self.replace_migration(state)
+        }
+    }
+
+    /// Drives one `advance_migration` decision, mapped to the same `(code, id)` pair the JNI
+    /// surface returns.
+    fn step_at(state: &MigrationState, scanned: u32, estimated: u32) -> (i64, i64) {
+        let scanned = BlockHeight::from_u32(scanned);
+        let mut store = InMemoryStore {
+            state: state.clone(),
+            as_of: scanned,
+        };
+        let mut st = state.clone();
+        let step = advance_migration(
+            &mut store,
+            &mut st,
+            DuenessTargets::new(scanned, BlockHeight::from_u32(estimated)),
+            &AdvanceConfig::new(SETTLE_DEPTH),
+        )
+        .expect("in-memory store never errors");
+        match step {
+            AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
+            AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
+            AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
+            AdvanceStep::Replan => (STEP_REPLAN, -1),
+            AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
+            AdvanceStep::Waiting => (STEP_WAITING, -1),
+            AdvanceStep::Complete => (STEP_COMPLETE, -1),
+        }
+    }
 
     #[test]
     fn broadcast_due_at_estimated_but_not_scanned_returns_broadcast() {
@@ -4728,7 +5035,7 @@ mod next_due_transfer_tests {
             MigrationStatus::InProgress,
             vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
         );
-        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) = step_at(&st, 995, 1001);
         assert_eq!((code, id), (STEP_BROADCAST, 7)); // engine says Broadcast on the estimated tip
     }
 
@@ -4742,7 +5049,7 @@ mod next_due_transfer_tests {
                 transfer(4, MigrationTxState::Signed, 1000, 0), // prove-ready at scanned (boundary=990<995)
             ],
         );
-        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) = step_at(&st, 995, 1001);
         assert_eq!((code, id), (STEP_BROADCAST, 7)); // spec §3.1 broadcast-first
     }
 
@@ -4754,7 +5061,7 @@ mod next_due_transfer_tests {
             MigrationStatus::InProgress,
             vec![transfer(4, MigrationTxState::Signed, 990, 0)],
         );
-        let (code, id) = guarded_next_step(&st, BlockHeight::from_u32(995), BlockHeight::from_u32(1001));
+        let (code, id) = step_at(&st, 995, 1001);
         assert_eq!((code, id), (STEP_PROVE, 4));
     }
 }
@@ -4778,9 +5085,7 @@ mod next_due_transfer_tests {
 mod record_transfer_result_tests {
     use super::*;
     use zcash_pool_migration::{
-        engine::MigrationStatus,
-        denomination::DenominationPlan,
-        preparation::PreparationPlan,
+        denomination::DenominationPlan, engine::MigrationStatus, preparation::PreparationPlan,
         scheduling::AnchorBucketInterval,
     };
     use zcash_protocol::value::Zatoshis;
@@ -4802,10 +5107,16 @@ mod record_transfer_result_tests {
             PreparationPlan::from_parts(vec![], vec![]),
             transfers,
             AnchorBucketInterval::ZIP_318,
+            ReplanThreshold::DEFAULT,
         )
     }
 
-    fn transfer(id: u32, state: MigrationTxState, scheduled: u32, expiry: u32) -> MigrationTransaction {
+    fn transfer(
+        id: u32,
+        state: MigrationTxState,
+        scheduled: u32,
+        expiry: u32,
+    ) -> MigrationTransaction {
         MigrationTransaction::from_parts(
             MigrationTransferId::new(id),
             MigrationTxKind::Transfer { crossing: 0 },
@@ -4814,7 +5125,11 @@ mod record_transfer_result_tests {
             BlockHeight::from_u32(scheduled),
             BlockHeight::from_u32(expiry),
             Some(BlockHeight::from_u32(scheduled.saturating_sub(10))),
+            zcash_protocol::TxId::from_bytes([id as u8; 32]),
             state,
+            None,
+            None,
+            vec![[id as u8; 32]],
             None,
         )
     }
@@ -4825,23 +5140,30 @@ mod record_transfer_result_tests {
     ///
     /// - tag=1  → no-op: state returned unchanged, no invalidation write.
     /// - tag=2|3 → state set to Failed (if not already terminal) AND invalidation written
-    ///             with reason-FIRST ordering, matching production code (see ordering comment
-    ///             in `recordTransferResultNative`).
+    ///   with reason-FIRST ordering, matching production code (see ordering comment
+    ///   in `recordTransferResultNative`).
     ///
     /// A dispatch regression (e.g. `1 => Ok(())` removed so tag=1 falls into the `2|3` arm)
     /// will cause the `record_transfer_result_network_error_still_noop` test to fail because
     /// that test calls this helper and then asserts both that the state is NOT terminal and
     /// that `read_invalidation` returns None.
-    fn apply_tag(conn: &Connection, state: MigrationState, result_tag: i32, transfer_id_str: &str)
-        -> anyhow::Result<MigrationState>
-    {
+    fn apply_tag(
+        conn: &Connection,
+        state: MigrationState,
+        result_tag: i32,
+        transfer_id_str: &str,
+    ) -> anyhow::Result<MigrationState> {
         match result_tag {
             1 => {
                 // Tag=1 NetworkError: transient, no state mutation and no side-table write.
                 Ok(state)
             }
             2 | 3 => {
-                let reason = if result_tag == 2 { "invalid_transfer" } else { "transfer_expired" };
+                let reason = if result_tag == 2 {
+                    "invalid_transfer"
+                } else {
+                    "transfer_expired"
+                };
                 let failed = if !state.is_terminal() {
                     MigrationState::from_parts(
                         MigrationStatus::Failed,
@@ -4849,6 +5171,7 @@ mod record_transfer_result_tests {
                         state.preparation().clone(),
                         state.transactions().clone(),
                         state.anchor_bucket_interval(),
+                        ReplanThreshold::DEFAULT,
                     )
                 } else {
                     state
@@ -4858,7 +5181,10 @@ mod record_transfer_result_tests {
                 record_invalidation(conn, ACCOUNT, reason, Some(transfer_id_str))?;
                 Ok(failed)
             }
-            other => Err(anyhow::anyhow!("Unknown result tag in test helper: {}", other)),
+            other => Err(anyhow::anyhow!(
+                "Unknown result tag in test helper: {}",
+                other
+            )),
         }
     }
 
@@ -4866,7 +5192,10 @@ mod record_transfer_result_tests {
     #[test]
     fn record_transfer_result_invalid_note_marks_migration_failed_with_reason() {
         let conn = Connection::open_in_memory().unwrap();
-        let state = make_state(MigrationStatus::InProgress, vec![transfer(7, MigrationTxState::Proved, 1000, 2000)]);
+        let state = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(7, MigrationTxState::Proved, 1000, 2000)],
+        );
         assert!(!state.is_terminal(), "pre-condition: state is InProgress");
 
         let failed = apply_tag(&conn, state, 2, "7").unwrap();
@@ -4887,7 +5216,10 @@ mod record_transfer_result_tests {
     #[test]
     fn record_transfer_result_expired_marks_failed_with_expired_reason() {
         let conn = Connection::open_in_memory().unwrap();
-        let state = make_state(MigrationStatus::InProgress, vec![transfer(3, MigrationTxState::Signed, 900, 1800)]);
+        let state = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(3, MigrationTxState::Signed, 900, 1800)],
+        );
 
         let failed = apply_tag(&conn, state, 3, "3").unwrap();
 
@@ -4908,18 +5240,27 @@ mod record_transfer_result_tests {
     #[test]
     fn record_transfer_result_network_error_still_noop() {
         let conn = Connection::open_in_memory().unwrap();
-        let state = make_state(MigrationStatus::InProgress, vec![transfer(9, MigrationTxState::Proved, 500, 1500)]);
+        let state = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(9, MigrationTxState::Proved, 500, 1500)],
+        );
         assert!(!state.is_terminal(), "pre-condition: state is InProgress");
 
         let returned = apply_tag(&conn, state, 1, "9").unwrap();
 
         // (a) state must NOT be terminal — tag=1 is transient, migration stays alive.
-        assert!(!returned.is_terminal(), "tag=1 must not mark state terminal");
+        assert!(
+            !returned.is_terminal(),
+            "tag=1 must not mark state terminal"
+        );
         assert_eq!(returned.status(), MigrationStatus::InProgress);
 
         // (b) no invalidation row must exist.
         let inv = read_invalidation(&conn, ACCOUNT).unwrap();
-        assert!(inv.is_none(), "tag=1 must leave invalidation side table empty");
+        assert!(
+            inv.is_none(),
+            "tag=1 must leave invalidation side table empty"
+        );
     }
 
     // clear_invalidation removes the row.
@@ -4952,12 +5293,18 @@ mod record_transfer_result_tests {
         record_invalidation(&conn, ACCOUNT, "invalid_transfer", Some("1")).unwrap();
 
         let inv_b = read_invalidation(&conn, account_b).unwrap();
-        assert!(inv_b.is_none(), "account B must not see account A's invalidation");
+        assert!(
+            inv_b.is_none(),
+            "account B must not see account A's invalidation"
+        );
 
         record_invalidation(&conn, account_b, "transfer_expired", None).unwrap();
         let inv_a = read_invalidation(&conn, ACCOUNT).unwrap();
         let (reason_a, _) = inv_a.unwrap();
-        assert_eq!(reason_a, "invalid_transfer", "account A's reason must be unchanged");
+        assert_eq!(
+            reason_a, "invalid_transfer",
+            "account A's reason must be unchanged"
+        );
     }
 }
 
@@ -5111,9 +5458,21 @@ mod reconcile_tests {
         let unspent: HashSet<[u8; 32]> = [nf(0x01)].into_iter().collect(); // only id=1 unspent
         let own_on_chain: HashSet<[u8; 32]> = HashSet::new();
         let candidates = vec![
-            (MigrationTransferId::new(1), Some(nf(0x01)), Some(txid(0x01))), // unspent → skip
-            (MigrationTransferId::new(2), Some(nf(0x02)), Some(txid(0x02))), // spent, not own → invalidate
-            (MigrationTransferId::new(3), Some(nf(0x03)), Some(txid(0x03))), // also spent, but id=2 wins
+            (
+                MigrationTransferId::new(1),
+                Some(nf(0x01)),
+                Some(txid(0x01)),
+            ), // unspent → skip
+            (
+                MigrationTransferId::new(2),
+                Some(nf(0x02)),
+                Some(txid(0x02)),
+            ), // spent, not own → invalidate
+            (
+                MigrationTransferId::new(3),
+                Some(nf(0x03)),
+                Some(txid(0x03)),
+            ), // also spent, but id=2 wins
         ];
 
         assert_eq!(
@@ -5126,7 +5485,7 @@ mod reconcile_tests {
     // Empty candidate set → no decision.
     #[test]
     fn reconcile_no_candidates_no_invalidation() {
-        let candidates: Vec<(MigrationTransferId, Option<[u8; 32]>, Option<[u8; 32]>)> = vec![];
+        let candidates: Vec<ForeignSpendCandidate> = vec![];
         assert_eq!(
             decide_foreign_spend(&candidates, &HashSet::new(), &HashSet::new()),
             None,
@@ -5185,12 +5544,18 @@ mod reconcile_tests {
             plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
         let target = tip + 1;
         let mut state = {
-            let mut backend = Backend::new(&wallet, account, None, &mut store_conn)
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
                 .expect("account exists for migration store");
             let mut rng = OsRng;
-            let (state, _unsigned) =
-                engine::build_preparation_unsigned(&network, target, &mut backend, &plan, &mut rng)
-                    .expect("commit migration");
+            let (state, _unsigned) = engine::build_preparation_unsigned(
+                &network,
+                target,
+                &mut backend,
+                &plan,
+                &mut rng,
+                ReplanThreshold::DEFAULT,
+            )
+            .expect("commit migration");
             state
         };
         let some_tx_id = state.transactions()[0].id();
@@ -5201,7 +5566,7 @@ mod reconcile_tests {
             .expect("fixture txid is mined");
 
         // Simulate pass 2's promotion of an own crashed broadcast.
-        state.mark_broadcast(some_tx_id, mined_txid);
+        state.mark_broadcast(some_tx_id);
         state.mark_mined(some_tx_id, mined_height);
 
         // The now-Mined transfer must be excluded from the pass-3 spent-check candidate set.
@@ -5210,7 +5575,10 @@ mod reconcile_tests {
             .iter()
             .filter(|t| {
                 matches!(t.kind(), MigrationTxKind::Transfer { .. })
-                    && matches!(t.state(), MigrationTxState::Signed | MigrationTxState::Proved)
+                    && matches!(
+                        t.state(),
+                        MigrationTxState::Signed | MigrationTxState::Proved
+                    )
             })
             .map(|t| t.id())
             .collect();
@@ -5225,7 +5593,9 @@ mod reconcile_tests {
 #[cfg(test)]
 mod preparation_schedule_entries_tests {
     use super::*;
-    use zcash_pool_migration::preparation::{PrepInput, PrepOutput, PrepTransaction, PreparationPlan};
+    use zcash_pool_migration::preparation::{
+        PrepInput, PrepOutput, PrepTransaction, PreparationPlan,
+    };
     use zcash_protocol::consensus::BlockHeight;
     use zcash_protocol::value::Zatoshis;
 
@@ -5243,26 +5613,47 @@ mod preparation_schedule_entries_tests {
 
         // Layer 0 tx 0: one wallet input → one funding output
         let l0_tx0 = PrepTransaction::from_parts(
-            vec![PrepInput::Wallet { index: 0, value: dummy_value }],
+            vec![PrepInput::Wallet {
+                index: 0,
+                value: dummy_value,
+            }],
             vec![PrepOutput::Funding(dummy_value)],
         );
         // Layer 0 tx 1: one wallet input → one funding output
         let l0_tx1 = PrepTransaction::from_parts(
-            vec![PrepInput::Wallet { index: 1, value: dummy_value }],
+            vec![PrepInput::Wallet {
+                index: 1,
+                value: dummy_value,
+            }],
             vec![PrepOutput::Funding(dummy_value)],
         );
         // Layer 1 tx 0: spends outputs of L0/0 AND L0/1 → one funding output
         // (two Prior inputs referencing layer=0, transaction=0 and layer=0, transaction=1)
         let l1_tx0 = PrepTransaction::from_parts(
             vec![
-                PrepInput::Prior { layer: 0, transaction: 0, output: 0, value: dummy_value },
-                PrepInput::Prior { layer: 0, transaction: 1, output: 0, value: dummy_value },
+                PrepInput::Prior {
+                    layer: 0,
+                    transaction: 0,
+                    output: 0,
+                    value: dummy_value,
+                },
+                PrepInput::Prior {
+                    layer: 0,
+                    transaction: 1,
+                    output: 0,
+                    value: dummy_value,
+                },
             ],
             vec![PrepOutput::Funding(dummy_value)],
         );
         // Layer 2 tx 0: spends output of L1/0 → one funding output
         let l2_tx0 = PrepTransaction::from_parts(
-            vec![PrepInput::Prior { layer: 1, transaction: 0, output: 0, value: dummy_value }],
+            vec![PrepInput::Prior {
+                layer: 1,
+                transaction: 0,
+                output: 0,
+                value: dummy_value,
+            }],
             vec![PrepOutput::Funding(dummy_value)],
         );
 
@@ -5275,8 +5666,8 @@ mod preparation_schedule_entries_tests {
         // Heights chosen so each layer is clearly distinguishable in assertions.
         let prep_schedule = vec![
             vec![BlockHeight::from_u32(1000), BlockHeight::from_u32(1100)], // L0: 2 txs
-            vec![BlockHeight::from_u32(1200)],                               // L1: 1 tx
-            vec![BlockHeight::from_u32(1300)],                               // L2: 1 tx
+            vec![BlockHeight::from_u32(1200)],                              // L1: 1 tx
+            vec![BlockHeight::from_u32(1300)],                              // L2: 1 tx
         ];
 
         (preparation, prep_schedule)
@@ -5345,15 +5736,15 @@ mod preparation_schedule_entries_tests {
     }
 }
 
-/// Deterministic reproduction of the LATE-DEPENDENCY anchor break that crashed
+/// Deterministic exercise of the LATE-DEPENDENCY anchor scenario that once crashed
 /// `finalizeReadyTransfers` in a live migration, driven entirely through the
 /// `zcash_pool_migration` engine's public state surface (`MigrationState::from_parts`,
 /// `MigrationTransaction::from_parts`, `mark_broadcast`, `mark_mined`) — no wallet DB, no real
-/// crypto, so it runs in a plain `cargo test`. The bug is in the prove-SELECTION logic
+/// crypto, so it runs in a plain `cargo test`. The relevant logic is the prove-SELECTION filter
 /// (`is_prove_ready` / the `finalizeReadyTransfers` filter) and the error CLASSIFICATION
-/// (`try_prove`), not the prover, so a state-level flow simulation exercises it exactly.
+/// (`try_prove`), so a state-level flow simulation exercises it exactly.
 ///
-/// The live crash:
+/// The historical live crash:
 /// ```text
 /// Error proving transfer MigrationTransferId(8): ... proving the transfer failed:
 /// commitment-tree query failed: Query(NotContained(Address { level: Level(0), index: 242174 }))
@@ -5361,11 +5752,14 @@ mod preparation_schedule_entries_tests {
 /// Root cause verified against the wallet DB: transfer tx8 committed `anchor_boundary = 4220724`
 /// and depends on preparation `id1`; `id1` was mined LATE at height 4220802 (deferred at commit +
 /// a foreground stall), i.e. AFTER tx8's anchor. So `id1`'s output note — the note that funds tx8 —
-/// is NOT in the commitment tree at tx8's anchor 4220724, and proving tx8 against that anchor can
-/// never succeed (`Query(NotContained)`). Yet `is_prove_ready` returned TRUE (it only checked that
-/// deps were mined AT ALL, not that they mined at-or-before the anchor), so `finalizeReadyTransfers`
-/// attempted the impossible prove, the `Tree` error PROPAGATED (not caught as transient), the whole
-/// prove batch rolled back, nothing persisted, and the wallet re-proved forever.
+/// is NOT in the commitment tree at tx8's anchor 4220724.
+///
+/// CURRENT CONTRACT (rc.6): the cure lives upstream. `engine::prove_transfer` re-draws a late
+/// transfer's boundary at prove time to cover its funding note's real mined height, so a late
+/// transfer is now correctly OFFERED as prove-ready (it must enter the prove batch to be healed).
+/// These tests therefore assert that `is_prove_ready` INCLUDES a late-dependency transfer once its
+/// boundary has settled, and that `try_prove` still classifies the tree-query miss as transient (a
+/// defence-in-depth backstop, so a residual miss defers instead of crashing the batch).
 #[cfg(test)]
 mod late_dependency_anchor_tests {
     use super::*;
@@ -5406,8 +5800,12 @@ mod late_dependency_anchor_tests {
             vec![],
             BlockHeight::from_u32(ANCHOR - 100),
             BlockHeight::from_u32(0), // never expires
-            None,                     // preparation carries no drawn boundary
+            None,
+            zcash_protocol::TxId::from_bytes([id as u8; 32]), // preparation carries no drawn boundary
             state,
+            None,
+            None,
+            vec![[id as u8; 32]],
             None,
         )
     }
@@ -5423,11 +5821,18 @@ mod late_dependency_anchor_tests {
             MigrationTransferId::new(id),
             MigrationTxKind::Transfer { crossing: 0 },
             vec![0u8; 32],
-            depends_on.into_iter().map(MigrationTransferId::new).collect(),
+            depends_on
+                .into_iter()
+                .map(MigrationTransferId::new)
+                .collect(),
             BlockHeight::from_u32(anchor + 50), // broadcast after the anchor settles
             BlockHeight::from_u32(0),           // never expires (isolate the anchor logic)
             Some(BlockHeight::from_u32(anchor)),
+            zcash_protocol::TxId::from_bytes([id as u8; 32]),
             state,
+            None,
+            None,
+            vec![[id as u8; 32]],
             None,
         )
     }
@@ -5439,6 +5844,7 @@ mod late_dependency_anchor_tests {
             PreparationPlan::from_parts(vec![], vec![]),
             transactions,
             AnchorBucketInterval::ZIP_318,
+            ReplanThreshold::DEFAULT,
         )
     }
 
@@ -5446,7 +5852,7 @@ mod late_dependency_anchor_tests {
         BlockHeight::from_u32(TARGET)
     }
 
-    pub(super) fn find<'a>(state: &'a MigrationState, id: u32) -> &'a MigrationTransaction {
+    pub(super) fn find(state: &MigrationState, id: u32) -> &MigrationTransaction {
         state
             .transactions()
             .iter()
@@ -5467,8 +5873,11 @@ mod late_dependency_anchor_tests {
             transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
         ]);
         // Advance the flow: broadcast then mine the prep ON TIME (<= anchor).
-        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xaa));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(ON_TIME_MINED));
+        state.mark_broadcast(MigrationTransferId::new(1));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(ON_TIME_MINED),
+        );
 
         let t8 = find(&state, 8);
         assert!(
@@ -5477,40 +5886,49 @@ mod late_dependency_anchor_tests {
         );
     }
 
-    /// LATE dependency (THE BUG): the prep mines AFTER the transfer's anchor, so its funding note is
-    /// absent from the tree at the anchor and the transfer can never prove against it. `is_prove_ready`
-    /// MUST be FALSE. Before the fix this asserts RED (the old code returned TRUE because it only
-    /// checked deps were mined at all, never that they mined at-or-before the anchor).
+    /// LATE dependency: the prep mines AFTER the transfer's anchor. Its funding note is absent from
+    /// the tree at the DRAWN anchor — but as of rc.6 that is healed at prove time by
+    /// `engine::prove_transfer`, which re-draws the boundary to cover the note's real mined height.
+    /// So `is_prove_ready` MUST be TRUE (boundary settled, deps mined): the transfer has to enter the
+    /// prove batch to reach the heal. (Before the guard was removed this asserted FALSE — the local
+    /// stopgap withheld it, which re-stranded it forever once `advance_migration` stopped offering a
+    /// separate reschedule step.)
     #[test]
-    fn late_dependency_is_not_prove_ready() {
+    fn late_dependency_is_now_prove_ready() {
         let mut state = state_with(vec![
             preparation(1, MigrationTxState::Signed),
             transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
         ]);
         // Advance the flow: the prep is broadcast/mined LATE (mined_height > anchor).
-        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xbb));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_broadcast(MigrationTransferId::new(1));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         let t8 = find(&state, 8);
         assert!(
-            !is_prove_ready(&state, t8, tip1()),
-            "a transfer whose funding dependency mined AFTER its anchor can never prove against \
-             that anchor (the note is not yet in the tree at the anchor => Query(NotContained)); \
-             it must NOT be offered as prove-ready"
+            is_prove_ready(&state, t8, tip1()),
+            "a late-dependency transfer with a settled boundary must be offered as prove-ready so \
+             it enters the prove batch, where engine::prove_transfer re-draws its boundary and \
+             heals it (rc.6); withholding it here would strand it forever"
         );
     }
 
-    /// finalize-level: the late-dep transfer must be EXCLUDED from the prove-ready set that
-    /// `finalizeReadyTransfers` (line ~2231) collects, so the batch never even attempts the
-    /// impossible prove. This mirrors that exact filter.
+    /// finalize-level: the late-dep transfer must be INCLUDED in the prove-ready set that
+    /// `finalizeReadyTransfers` collects, so the batch attempts the prove and `engine::prove_transfer`
+    /// gets the chance to re-draw the boundary and heal it. This mirrors that exact filter.
     #[test]
-    fn late_dependency_excluded_from_finalize_ready_set() {
+    fn late_dependency_included_in_finalize_ready_set() {
         let mut state = state_with(vec![
             preparation(1, MigrationTxState::Signed),
             transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
         ]);
-        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xcc));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_broadcast(MigrationTransferId::new(1));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         let target = tip1();
         let ready: Vec<MigrationTransferId> = state
@@ -5523,16 +5941,15 @@ mod late_dependency_anchor_tests {
             .collect();
 
         assert!(
-            !ready.contains(&MigrationTransferId::new(8)),
-            "the late-dependency transfer must never enter the prove batch"
+            ready.contains(&MigrationTransferId::new(8)),
+            "the late-dependency transfer must enter the prove batch so prove_transfer can heal it"
         );
     }
 
-    /// The transfer defers only until the anchor problem is resolved from the outside: it is NOT
-    /// marked failed or dropped — `is_prove_ready` simply returns false (a separate, larger concern,
-    /// `rescheduleUnprovenTransfer`, re-anchors it; out of scope here). Sanity: with the SAME late
-    /// dep, an EARLIER anchor (>= the dep's mined height) would be provable, proving it's the
-    /// anchor-vs-mined ordering that matters, not the dep being late in the abstract.
+    /// Sanity: with the SAME late dep, an anchor already AT-OR-AFTER the dep's mined height is
+    /// provable with no redraw needed — confirming it is the anchor-vs-mined ordering that governs
+    /// tree membership, and that a covering boundary (exactly what `prove_transfer`'s redraw produces)
+    /// is prove-ready.
     #[test]
     fn later_anchor_covering_the_late_dep_is_prove_ready() {
         let covering_anchor = LATE_MINED + 10; // anchor now AFTER the dep's mined height
@@ -5540,8 +5957,11 @@ mod late_dependency_anchor_tests {
             preparation(1, MigrationTxState::Signed),
             transfer(8, MigrationTxState::Signed, covering_anchor, vec![1]),
         ]);
-        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0xdd));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_broadcast(MigrationTransferId::new(1));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         let t8 = find(&state, 8);
         assert!(
@@ -5552,11 +5972,6 @@ mod late_dependency_anchor_tests {
     }
 
     // --- unit: try_prove's error classification treats the commitment-tree error as transient ---
-
-    /// A helper to build a `TxId`-shaped 32-byte array for `mark_broadcast`.
-    pub(super) fn txid_bytes(seed: u8) -> zcash_protocol::TxId {
-        zcash_protocol::TxId::from_bytes([seed; 32])
-    }
 
     /// The commitment-tree `Query(NotContained(..))` error — the one the live crash carried — must be
     /// classified as TRANSIENT so `try_prove` returns `Ok(false)` (defer) instead of `Err` (which
@@ -5605,92 +6020,51 @@ mod late_dependency_anchor_tests {
     }
 }
 
-/// RE-ANCHOR HEALING contract for a late-dependency-stuck transfer, and a documented UPSTREAM GAP.
+/// RE-ANCHOR HEALING for a late-dependency-stuck transfer — now resolved UPSTREAM (rc.6).
 ///
-/// `late_dependency_anchor_tests` proves the DEFER half: a transfer whose funding dependency mined
-/// AFTER its committed `anchor_boundary` is (correctly) withheld from the prove-ready set, so it no
-/// longer crashes `finalizeReadyTransfers` with `Query(NotContained)`. But deferral alone does not
-/// HEAL it: nothing advances such a transfer, so it waits forever. Healing requires RE-ANCHORING —
-/// redrawing its `anchor_boundary` to a later bucket, at or after the dependency's ACTUAL mined
-/// height, so the funding note is in the commitment tree at the new anchor and the transfer becomes
-/// provable again.
+/// A transfer whose funding dependency mined AFTER its committed `anchor_boundary` cannot be proven
+/// against that boundary (the note is not in the commitment tree there). Healing requires
+/// RE-ANCHORING: redrawing its `anchor_boundary` to a later bucket at-or-after the dependency's
+/// ACTUAL mined height, so the funding note IS in the tree at the new anchor and the transfer proves
+/// again.
 ///
-/// These tests pin the CONTRACT a re-anchor must satisfy and DOCUMENT that the engine
-/// (`zcash_pool_migration` 0.1.0-rc.4) exposes no non-expired redraw entry point to satisfy it:
-///
-/// - The only anchor-redraw API is [`zcash_pool_migration::engine::rebuild_expired_transfer`] /
-///   `..._unsigned`, which internally reschedules from the tip and calls
-///   `scheduling::draw_anchor_boundary(.., funding_creation, ..)` with `funding_creation` taken from
-///   the MAX mined height of the transfer's dependencies — EXACTLY the boundary a late-dep heal
-///   needs. BUT it is gated on `is_expired` (`expiry != 0 && expiry < target_height`) and returns
-///   `RebuildError::NotExpired` otherwise. A transfer stuck by a late dependency is typically NOT yet
-///   expired, so this API cannot be driven to heal it.
-/// - `MigrationState::next_step` surfaces `AdvanceStep::Rebuild` only via `next_rebuildable`, which
-///   is likewise expiry-based; a non-expired but un-provable late-dep transfer falls through to
-///   `AdvanceStep::Waiting` forever. There is no `rescheduleUnprovenTransfer` / re-anchor step.
-/// - The engine's own `MigrationState::prove_ready` still has the late-dependency BUG (it checks
-///   only `boundary + 1 < target_height`, never that deps mined at-or-before the boundary), which is
-///   why our `is_prove_ready` re-implements it with the extra guard. So even if a redraw happened,
-///   the covering-anchor logic we depend on to confirm healing lives in OUR guard, not the engine's.
-///
-/// GAP TO ESCALATE (Kris's crate): a public re-anchor entry point that redraws a NON-EXPIRED
-/// transfer's `anchor_boundary` to `>= max(dep mined heights)` — either a new
-/// `reanchor_late_transfer` engine fn, or relaxing `rebuild_expired_transfer`'s `NotExpired` gate to
-/// also admit a transfer whose committed anchor was overtaken by a late dependency. Until then, Lane
-/// A can DEFER (done) but cannot HEAL; the stuck transfer is stranded pending upstream.
-///
-/// The tests below drive the heal through the ONLY public surface available for constructing a
-/// re-anchored transfer — `MigrationTransaction::from_parts` with a redrawn boundary (what such an
-/// API would ultimately persist) — so the desired end-state is pinned and will keep passing once a
-/// real redraw path is wired to produce it.
+/// When these tests were first written (`zcash_pool_migration` 0.1.0-rc.4) the engine exposed NO
+/// non-expired redraw entry point, so backend-lib could only DEFER such a transfer via its local
+/// late-dependency guard and the heal was pinned only as a hypothetical end-state constructed by
+/// hand. That gap — escalated in `spec/2026-07-30-engine-change-request-unprovable-boundary.md` — is
+/// now CLOSED: `engine::prove_transfer` re-validates the persisted boundary against the funding
+/// note's real mined height and re-draws it to a covering grid bucket at prove time (its preferred
+/// "lighter, no re-sign" option), keeping the pre-signed PCZT valid. The local guard has been
+/// removed accordingly; the two tests that pinned the guard's DEFER/exclusion behavior
+/// (`stuck_transfer_stays_unprovable_without_reanchor`, `reanchor_below_the_dep_mine_does_not_heal`)
+/// tested a backend-lib-local mechanism that no longer exists and were deleted — the new
+/// `late_dependency_anchor_tests` positively assert the transfer is now offered prove-ready, and the
+/// covering-boundary end state remains pinned below.
 #[cfg(test)]
 mod reanchor_healing_tests {
     use super::late_dependency_anchor_tests::*;
     use super::*;
 
-    /// A transfer stuck by a late dependency is NOT healed by the late-dependency GUARD alone: with
-    /// its ORIGINAL (overtaken) anchor it stays un-prove-ready even after the dep is mined and the
-    /// chain moves well past everything. Deferral is not repair.
-    #[test]
-    fn stuck_transfer_stays_unprovable_without_reanchor() {
-        let mut state = state_with(vec![
-            preparation(1, MigrationTxState::Signed),
-            transfer(8, MigrationTxState::Signed, ANCHOR, vec![1]),
-        ]);
-        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x11));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
-
-        // Chain advanced far past both the anchor and the late mine — still un-provable, because the
-        // committed anchor 4220724 predates the note's mine at 4220802: the note is not in the tree
-        // at that anchor and no passage of time changes that. Only a re-anchor can.
-        let far_tip = BlockHeight::from_u32(LATE_MINED + 10_000);
-        let t8 = find(&state, 8);
-        assert!(
-            !is_prove_ready(&state, t8, far_tip),
-            "the committed anchor was overtaken by the late dependency; the transfer can never \
-             prove against it no matter how far the chain advances — it must be re-anchored"
-        );
-    }
-
-    /// THE HEAL: re-anchoring the stuck transfer to a boundary at-or-after the dependency's ACTUAL
-    /// mined height makes it prove-ready again. This is the desired behavior a redraw API must
-    /// produce; we construct the re-anchored transfer through the only public surface
-    /// (`from_parts` with the redrawn boundary) that can express it.
+    /// THE HEALED END STATE: a transfer anchored to a boundary at-or-after the dependency's ACTUAL
+    /// mined height is prove-ready — the funding note is in the tree at that anchor. This is exactly
+    /// the boundary `engine::prove_transfer` now re-draws at prove time
+    /// (`funding_creation = max(dep mined heights)` fed to `draw_anchor_boundary`); here we construct
+    /// that end state directly (via `from_parts`) to pin the property the redraw must produce.
     #[test]
     fn reanchor_to_covering_boundary_heals_stuck_transfer() {
-        // The dep mined LATE; the redraw picks a boundary at-or-after that mine (as
-        // `rebuild_expired_transfer_inner` does via `funding_creation = max(dep mined heights)` fed
-        // to `draw_anchor_boundary`). A bucket boundary >= the mine height is what a redraw yields.
         let redrawn_anchor = LATE_MINED + 24; // >= the dependency's actual mined height
 
         let mut state = state_with(vec![
             preparation(1, MigrationTxState::Signed),
-            // The re-anchored transfer: same id/kind/deps, NEW covering anchor_boundary. This is the
-            // state a `reanchor`/`rebuild` step would persist for the stuck transfer.
+            // The re-anchored transfer: same id/kind/deps, NEW covering anchor_boundary — the state
+            // prove_transfer's redraw persists for a stuck transfer.
             transfer(8, MigrationTxState::Signed, redrawn_anchor, vec![1]),
         ]);
-        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x22));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+        state.mark_broadcast(MigrationTransferId::new(1));
+        state.mark_mined(
+            MigrationTransferId::new(1),
+            BlockHeight::from_u32(LATE_MINED),
+        );
 
         // Chain past the redrawn boundary so it has settled.
         let target = BlockHeight::from_u32(redrawn_anchor + 100);
@@ -5698,31 +6072,82 @@ mod reanchor_healing_tests {
         assert!(
             is_prove_ready(&state, t8, target),
             "after re-anchoring to a boundary >= the dependency's mined height, the funding note IS \
-             in the tree at the new anchor and the transfer is prove-ready again — this is the \
-             healing a redraw/reschedule step must deliver"
+             in the tree at the new anchor and the transfer is prove-ready again — the end state the \
+             upstream prove-time redraw delivers"
         );
     }
+}
 
-    /// The redrawn boundary must COVER the dependency's mined height: a re-anchor to a boundary that
-    /// is STILL below the late mine does not heal (it just relocates the same bug). Pins that the
-    /// redraw target is `>= max(dep mined heights)`, not merely "some later anchor".
-    #[test]
-    fn reanchor_below_the_dep_mine_does_not_heal() {
-        let insufficient_anchor = LATE_MINED - 5; // still BELOW the dependency's mined height
-        let mut state = state_with(vec![
-            preparation(1, MigrationTxState::Signed),
-            transfer(8, MigrationTxState::Signed, insufficient_anchor, vec![1]),
-        ]);
-        state.mark_broadcast(MigrationTransferId::new(1), txid_bytes(0x33));
-        state.mark_mined(MigrationTransferId::new(1), BlockHeight::from_u32(LATE_MINED));
+/// A `PoolMigrationRead`/`PoolMigrationWrite` store that answers every chain-fact query with the
+/// healthy "nothing new to report" default (`Satisfiable`, never mined, no persisted migration) and
+/// records writes nowhere. `next_step` (the pure decision the trace/synthetic tests used to call
+/// directly) is `pub(crate)` in `zcash_pool_migration` — visible only WITHIN that crate, not to this
+/// one's test code, in-crate `#[cfg(test)]` module or not, because the crate boundary that governs
+/// `pub(crate)` is `zcash_pool_migration`'s, not this crate's. `advance_migration` is the only
+/// remaining path to the same decision, and it always asks a store — this is the minimal one that
+/// asks nothing the test's own `MigrationTxState` transitions don't already encode, so driving
+/// `advance_migration` through it reproduces exactly what the old direct `next_step` calls exercised.
+/// Modelled on `zcash_pool_migration::satisfiability::advance_tests::TestStore`'s default arm (a
+/// private, in-crate-only fixture there), minus the configurable answer table this file's tests
+/// don't need.
+#[cfg(test)]
+#[derive(Default)]
+struct NoOpPoolMigrationStore;
 
-        let target = BlockHeight::from_u32(insufficient_anchor + 10_000);
-        let t8 = find(&state, 8);
-        assert!(
-            !is_prove_ready(&state, t8, target),
-            "a redraw target below the dependency's actual mined height still leaves the note out \
-             of the tree at the anchor; the covering boundary must be >= that mined height"
-        );
+#[cfg(test)]
+impl PoolMigrationRead for NoOpPoolMigrationStore {
+    type Error = EngineError;
+
+    fn get_migration(&self) -> Result<Option<MigrationState>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Always `Satisfiable`: the healthy default, and the one that makes `advance_migration` take
+    /// its offered candidate immediately (see its main loop) rather than deferring or marking it —
+    /// exactly the pure `next_step`'s behaviour, which never consulted a store at all.
+    fn check_step_satisfiability(
+        &self,
+        _tx: &MigrationTransaction,
+        _settle: ReorgSettleDepth,
+    ) -> Result<zcash_pool_migration::satisfiability::StepSatisfiability, Self::Error> {
+        Ok(
+            zcash_pool_migration::satisfiability::StepSatisfiability::Satisfiable {
+                as_of_height: BlockHeight::from_u32(0),
+            },
+        )
+    }
+
+    /// Never mined: these tests drive mining themselves (`Driver::mine` / directly setting
+    /// `MigrationTxState::Mined`), so the in-flight sweep this answers must find nothing new.
+    fn mined_height(
+        &self,
+        _txid: zcash_protocol::TxId,
+    ) -> Result<Option<BlockHeight>, Self::Error> {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+impl PoolMigrationWrite for NoOpPoolMigrationStore {
+    fn replace_migration(&mut self, _state: &MigrationState) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn update_transaction(
+        &mut self,
+        _id: MigrationTransferId,
+        _state: MigrationTxState,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn store_proved_transaction(
+        &mut self,
+        state: &mut MigrationState,
+        proven: zcash_pool_migration::engine::ProvedTransaction,
+    ) -> Result<(), Self::Error> {
+        proven.apply(state);
+        Ok(())
     }
 }
 
@@ -5748,10 +6173,15 @@ mod state_machine_trace_tests {
             MigrationTxKind, MigrationTxState,
         },
         preparation::PreparationPlan,
+        satisfiability::{
+            AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
+        },
         scheduling::{AnchorBucketInterval, WakeupParams},
         state::{AdvanceStep, Blocker},
     };
     use zcash_protocol::consensus::BlockHeight;
+
+    use super::NoOpPoolMigrationStore;
 
     const EXPIRY: u32 = 4_285_440;
     const BUCKET: u32 = 12;
@@ -5838,6 +6268,7 @@ mod state_machine_trace_tests {
             self.set(
                 id,
                 MigrationTxState::Mined {
+                    txid: zcash_protocol::TxId::from_bytes([id as u8; 32]),
                     height: BlockHeight::from_u32(height),
                 },
             );
@@ -5853,12 +6284,19 @@ mod state_machine_trace_tests {
                         MigrationTransferId::new(s.id),
                         s.kind,
                         vec![0u8; 32],
-                        s.deps.iter().map(|d| MigrationTransferId::new(*d)).collect(),
+                        s.deps
+                            .iter()
+                            .map(|d| MigrationTransferId::new(*d))
+                            .collect(),
                         BlockHeight::from_u32(s.scheduled),
                         BlockHeight::from_u32(EXPIRY),
                         s.boundary.map(BlockHeight::from_u32),
-                        st.clone(),
-                        None,
+                        zcash_protocol::TxId::from_bytes([s.id as u8; 32]),
+                        *st,
+                        None,   // lock_owner
+                        None,   // unsatisfiable
+                        vec![], // spend_nullifiers
+                        None,   // broadcast_failure_at
                     )
                 })
                 .collect();
@@ -5877,7 +6315,27 @@ mod state_machine_trace_tests {
                 PreparationPlan::from_parts(vec![], vec![]),
                 txs,
                 AnchorBucketInterval::custom(NonZeroU32::new(BUCKET).expect("nonzero")),
+                ReplanThreshold::DEFAULT,
             )
+        }
+
+        /// Drives one `advance_migration` call over a fresh `NoOpPoolMigrationStore` (see its doc:
+        /// `next_step` is `pub(crate)` to `zcash_pool_migration`, not reachable from this crate's
+        /// test code, so `advance_migration` — the only remaining public path to the same decision
+        /// — is what every trace below actually drives). The store answers every chain-fact query
+        /// with the healthy default, so it contributes nothing this test's own `MigrationTxState`
+        /// transitions (`set`/`mine`, applied by the caller between calls) don't already encode —
+        /// reproducing exactly what the old direct `next_step` calls exercised.
+        fn advance(&self, target: BlockHeight) -> AdvanceStep {
+            let mut store = NoOpPoolMigrationStore;
+            let mut state = self.build();
+            advance_migration(
+                &mut store,
+                &mut state,
+                DuenessTargets::at(target),
+                &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+            )
+            .expect("advance_migration over the no-op store")
         }
 
         /// Applies every step the engine emits at `tip` until it settles on Waiting/Complete/
@@ -5888,9 +6346,9 @@ mod state_machine_trace_tests {
             let target = BlockHeight::from_u32(tip + 1);
             let mut applied = Vec::new();
             loop {
-                let step = self.build().next_step(target);
+                let step = self.advance(target);
                 match step {
-                    AdvanceStep::Prove { id } => {
+                    AdvanceStep::Prove { id, kind: _ } => {
                         self.set(id_of(id), MigrationTxState::Proved);
                         applied.push(step);
                     }
@@ -5923,12 +6381,12 @@ mod state_machine_trace_tests {
             let target = BlockHeight::from_u32(tip + 1);
             let mut applied = Vec::new();
             loop {
-                let step = self.build().next_step(target);
+                let step = self.advance(target);
                 match step {
-                    AdvanceStep::Prove { id } if failing.contains(&id_of(id)) => {
+                    AdvanceStep::Prove { id, kind: _ } if failing.contains(&id_of(id)) => {
                         return (applied, step);
                     }
-                    AdvanceStep::Prove { id } => {
+                    AdvanceStep::Prove { id, kind: _ } => {
                         self.set(id_of(id), MigrationTxState::Proved);
                         applied.push(step);
                     }
@@ -5951,9 +6409,34 @@ mod state_machine_trace_tests {
         u32::from(id)
     }
 
+    /// `live_plan()`'s own kind for each transaction id, as evaluated by `next_step`
+    /// (Preparation for ids 0-3 by layer/index, Transfer for ids 4-14 by crossing) — kept here
+    /// rather than threaded through every `prove(N)` call site.
+    fn live_plan_kind(id: u32) -> MigrationTxKind {
+        match id {
+            0 => MigrationTxKind::Preparation { layer: 0, index: 0 },
+            1 => MigrationTxKind::Preparation { layer: 0, index: 1 },
+            2 => MigrationTxKind::Preparation { layer: 1, index: 0 },
+            3 => MigrationTxKind::Preparation { layer: 2, index: 0 },
+            4 => MigrationTxKind::Transfer { crossing: 0 },
+            5 => MigrationTxKind::Transfer { crossing: 1 },
+            6 => MigrationTxKind::Transfer { crossing: 2 },
+            7 => MigrationTxKind::Transfer { crossing: 3 },
+            8 => MigrationTxKind::Transfer { crossing: 4 },
+            9 => MigrationTxKind::Transfer { crossing: 5 },
+            10 => MigrationTxKind::Transfer { crossing: 6 },
+            11 => MigrationTxKind::Transfer { crossing: 7 },
+            12 => MigrationTxKind::Transfer { crossing: 8 },
+            13 => MigrationTxKind::Transfer { crossing: 9 },
+            14 => MigrationTxKind::Transfer { crossing: 10 },
+            other => panic!("live_plan_kind: no fixture entry for id {other}"),
+        }
+    }
+
     fn prove(id: u32) -> AdvanceStep {
         AdvanceStep::Prove {
             id: MigrationTransferId::new(id),
+            kind: live_plan_kind(id),
         }
     }
 
@@ -5965,7 +6448,7 @@ mod state_machine_trace_tests {
 
     fn blocker_of(state: &MigrationState, tip: u32, id: u32) -> Option<Blocker> {
         state
-            .transaction_statuses(BlockHeight::from_u32(tip + 1))
+            .transaction_statuses(DuenessTargets::at(BlockHeight::from_u32(tip + 1)))
             .into_iter()
             .find(|s| id_of(s.id()) == id)
             .expect("status for id")
@@ -5977,13 +6460,19 @@ mod state_machine_trace_tests {
     /// executes to Complete. This is the end-to-end contract for the single-lane worker: the
     /// engine emits prove-first batches, then broadcasts in schedule order, and settles Waiting
     /// between events.
+    ///
+    /// Under the librustzcash#2874 (zip318_kind) pin, a PREPARATION is only ever surfaced for
+    /// proving once its own broadcast schedule is due (see `AdvanceStep::Prove`'s `kind` field
+    /// doc), so it is proved and broadcast within the SAME wake-up rather than batched — hence
+    /// the interleaved prove/broadcast order per prep below (list order across preps is
+    /// unchanged).
     #[test]
     fn live_plan_happy_trace_completes_with_late_but_in_margin_prep() {
         let mut d = Driver::new(live_plan());
 
-        // Layer 0 due: both preps prove (natural anchor) then broadcast, in list order.
+        // Layer 0 due: each prep proves (natural anchor) then broadcasts immediately, in list order.
         let (steps, settle) = d.drain(4_224_542);
-        assert_eq!(steps, vec![prove(0), prove(1), broadcast(0), broadcast(1)]);
+        assert_eq!(steps, vec![prove(0), broadcast(0), prove(1), broadcast(1)]);
         assert_eq!(settle, AdvanceStep::Waiting);
         d.mine(0, 4_224_544);
         d.mine(1, 4_224_546);
@@ -6005,36 +6494,48 @@ mod state_machine_trace_tests {
         assert_eq!(steps, vec![prove(5), prove(8), prove(9)]);
         assert_eq!(settle, AdvanceStep::Waiting);
 
-        // tx8's schedule arrives; boundary 4224588 also settled → prove-first, then broadcast.
+        // tx8's schedule arrives; boundary 4224588 also settled. Under the librustzcash#2874
+        // pin, an already-due broadcast is prioritised over an opportunistic early prove (proving
+        // tx4 now is a pruning-safety optimisation, not urgent — see `AdvanceStep::Prove`'s
+        // `kind` doc), so broadcast(8) comes first.
         let (steps, _) = d.drain(4_224_593);
-        assert_eq!(steps, vec![prove(4), broadcast(8)]);
+        assert_eq!(steps, vec![broadcast(8), prove(4)]);
         d.mine(8, 4_224_601);
 
-        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out.
+        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out. Under
+        // the librustzcash#2874 pin, already-due broadcasts are prioritised over the opportunistic
+        // early proves of tx11/tx13 (see the tx4/tx8 case above).
         let (steps, _) = d.drain(4_224_612);
         assert_eq!(
             steps,
-            vec![prove(11), prove(13), broadcast(4), broadcast(5), broadcast(9)]
+            vec![
+                broadcast(4),
+                broadcast(5),
+                broadcast(9),
+                prove(11),
+                prove(13)
+            ]
         );
         d.mine(4, 4_224_616);
         d.mine(5, 4_224_616);
         d.mine(9, 4_224_616);
 
-        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast.
+        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast. Under the
+        // librustzcash#2874 pin: tx11 was already proved (prior batch) and its broadcast is due,
+        // so it goes out before any new proving this call. tx7 becomes both provable AND
+        // immediately broadcast-due in this same call, so its prove/broadcast pair stays
+        // adjacent; tx6/10/12/14 are provable but not yet broadcast-due, so they only prove.
         let (steps, _) = d.drain(4_224_638);
         assert_eq!(
             steps,
             vec![
+                broadcast(11),
                 prove(6),
                 prove(7),
+                broadcast(7),
                 prove(10),
                 prove(12),
                 prove(14),
-                // FINDING (documented): among simultaneously-due transactions,
-                // `next_broadcastable` serves VEC (id) order, not scheduled order — tx7
-                // (sched 4224627) goes before tx11 (sched 4224617).
-                broadcast(7),
-                broadcast(11)
             ]
         );
         d.mine(11, 4_224_642);
@@ -6074,22 +6575,26 @@ mod state_machine_trace_tests {
     }
 
     /// (c) THE tx9 CASE, exactly as captured live: tx3 mines at 4224587 — 11 blocks PAST tx9's
-    /// boundary. Documents the PURE state machine's CURRENT behaviour, which is one step WORSE
-    /// than what we observed live (backend-lib's `is_prove_ready` duplicate carries a
-    /// late-dependency guard the pure `state.rs::prove_ready` does NOT have):
+    /// boundary (4224576). This is the ACCEPTANCE ORACLE for the change request
+    /// (`spec/2026-07-30-engine-change-request-unprovable-boundary.md`). It used to document a
+    /// three-part GAP (a wedged `Prove {9}`, a dishonest READY status, a perpetual wake-up); the
+    /// request's preferred fix shipped in `zcash_pool_migration` 0.1.0-rc.6, so those assertions
+    /// have FLIPPED to their healed form:
     ///
-    ///  GAP 0: `next_step` insists on `Prove { 9 }` — an instruction that can never succeed
-    ///         (`prove_transfer` fails with `Query(NotContained)`: the funding note is not in the
-    ///         tree at the anchor). A raw consumer is WEDGED: asking again returns the same step.
-    ///  GAP 1: `transaction_statuses` reports tx9 as READY to prove (no honest blocker at all).
-    ///  GAP 2: `sync_wakeup_schedule` emits a PERPETUAL immediate wake-up covering tx9.
+    ///  HEAL 0: `next_step` still offers `Prove { 9 }`, but that instruction now COMPLETES — the
+    ///          consumer's `engine::prove_transfer` re-draws tx9's boundary to a bucket covering
+    ///          tx3's real mined height and proves against it. So a normal `drain` (which applies the
+    ///          prove) advances tx9 all the way to Broadcast — no wedge.
+    ///  HEAL 1: `transaction_statuses` reporting tx9 READY-to-Prove with no blocker is now HONEST:
+    ///          the prove genuinely succeeds.
+    ///  HEAL 2: the immediate wake-up covering tx9 is now correct work, not a dead poll.
     ///
-    /// The change request (`2026-07-30-engine-change-request-unprovable-boundary.md`) asks to
-    /// close all three: upstream the late-dependency guard into `prove_ready`, surface a distinct
-    /// blocker (or early `Rebuild`), and stop scheduling wake-ups for it. When it ships, the GAP
-    /// assertions below are expected to FLIP — update them alongside.
+    /// Note this trace drives the PURE state machine with a `NoOpPoolMigrationStore` and simulates
+    /// proving by flipping state (it never calls `prove_transfer`); the heal it models is that the
+    /// prover NO LONGER fails on tx9, so `drain` — which applies every offered prove — is the
+    /// faithful model, where before only `drain_with_failing_prover` was.
     #[test]
-    fn unprovable_boundary_documented_gap() {
+    fn unprovable_boundary_heals_via_prove_time_redraw() {
         let mut d = Driver::new(live_plan());
         // Preps execute as live; tx3 mines LATE, past tx9's boundary.
         d.drain(4_224_542);
@@ -6100,32 +6605,26 @@ mod state_machine_trace_tests {
         d.drain(4_224_563);
         d.mine(3, 4_224_587);
 
-        // GAP 0: the machine wedges on the impossible Prove { 9 } while healthy work remains
-        // possible (the failing-prover drain returns the moment the impossible instruction
-        // appears; a real consumer erroring on it and re-asking would loop forever).
-        let (applied, wedge) = d.drain_with_failing_prover(4_224_700, &[9]);
-        assert_eq!(
-            wedge,
-            AdvanceStep::Prove {
-                id: MigrationTransferId::new(9)
-            },
-            "pure prove_ready lacks the late-dependency guard — it offers the impossible prove"
-        );
-        // Everything provable before the wedge point got applied.
-        assert!(applied.iter().all(
-            |s| !matches!(s, AdvanceStep::Broadcast { id } if id_of(*id) == 9)
-        ));
-
-        // GAP 1: the status view claims tx9 is READY (action = Prove), with no blocker.
-        let statuses = d.build().transaction_statuses(BlockHeight::from_u32(4_224_701));
+        // HEAL 1: with tx3 mined (late), tx9's boundary settled and deps mined, the status view
+        // honestly reports tx9 as READY to Prove with no blocker — the prove will now succeed.
+        let statuses = d
+            .build()
+            .transaction_statuses(DuenessTargets::at(BlockHeight::from_u32(4_224_701)));
         let tx9 = statuses
             .iter()
             .find(|st| id_of(st.id()) == 9)
             .expect("tx9 status");
-        assert!(tx9.ready(), "reported ready even though proving cannot succeed");
-        assert_eq!(tx9.blocked_on(), None);
+        assert!(
+            tx9.ready(),
+            "tx9 is ready to prove — the redraw heals it at prove time"
+        );
+        assert_eq!(
+            tx9.blocked_on(),
+            None,
+            "no blocker: the offered Prove now completes"
+        );
 
-        // GAP 2: a perpetual immediate wake-up keeps covering tx9.
+        // HEAL 2: an immediate wake-up covers tx9 — now legitimate work, not a dead poll.
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
         let wakeups = d
             .build()
@@ -6139,13 +6638,43 @@ mod state_machine_trace_tests {
             wakeups
                 .iter()
                 .any(|w| w.covers().iter().any(|t| id_of(*t) == 9)),
-            "wake-ups keep being scheduled for a transfer that can never prove"
+            "the wake-up covering tx9 now drives a prove that succeeds"
+        );
+
+        // HEAL 0: a NORMAL drain (the prover no longer fails on tx9) proves AND broadcasts tx9 —
+        // no wedge. Everything is due at this tip, so the whole transfer set proves and broadcasts.
+        let (applied, settle) = d.drain(4_224_700);
+        assert!(
+            applied.contains(&prove(9)),
+            "tx9 is proved — prove_transfer's boundary redraw makes the offered Prove succeed"
+        );
+        assert!(
+            applied.contains(&broadcast(9)),
+            "tx9 advances to Broadcast; it is not wedged on an impossible prove"
+        );
+        assert_eq!(
+            settle,
+            AdvanceStep::Waiting,
+            "settles Waiting for mines, not wedged"
+        );
+
+        // And the migration runs to Complete once everything mines — tx9 included.
+        for id in 4..=14 {
+            d.mine(id, 4_224_706);
+        }
+        let (_steps, settle) = d.drain(4_224_720);
+        assert_eq!(
+            settle,
+            AdvanceStep::Complete,
+            "the plan completes with tx9 healed"
         );
     }
 
-    /// (d) EXPIRY heals the stuck transfer via the existing rebuild path: once the chain passes
-    /// tx9's expiry height, `next_step` finally emits `Rebuild { 9 }` and the status flips to the
-    /// honest `Blocker::Expired`. This is the machinery our change request asks to trigger EARLY.
+    /// (d) EXPIRY still surfaces the rebuild path (independent of the late-dependency heal): if a
+    /// transfer stays un-proved until its expiry height (here modelled with a failing prover on tx9),
+    /// `next_step` emits `Rebuild { 9 }` and the status flips to the honest `Blocker::Expired`. The
+    /// rc.6 prove-time redraw handles the late-dependency case earlier, but this expiry-driven
+    /// rebuild remains the backstop for any transfer that never proves for other reasons.
     #[test]
     fn expiry_surfaces_rebuild_for_the_stuck_transfer() {
         let mut d = Driver::new(live_plan());
@@ -6170,7 +6699,10 @@ mod state_machine_trace_tests {
                 id: MigrationTransferId::new(9)
             }
         );
-        assert_eq!(blocker_of(&d.build(), past_expiry, 9), Some(Blocker::Expired));
+        assert_eq!(
+            blocker_of(&d.build(), past_expiry, 9),
+            Some(Blocker::Expired)
+        );
     }
 
     /// (e) EXTERNAL SIGNING round-trip: an `AwaitingSignature` transfer is reported via
@@ -6196,7 +6728,7 @@ mod state_machine_trace_tests {
         assert!(
             steps
                 .iter()
-                .all(|s| !matches!(s, AdvanceStep::Prove { id } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
+                .all(|s| !matches!(s, AdvanceStep::Prove { id, kind: _ } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
             "an AwaitingSignature tx is driven by apply_signature, not the automatic loop"
         );
         assert_eq!(settle, AdvanceStep::Waiting);
@@ -6220,21 +6752,38 @@ mod state_machine_trace_tests {
 // obeys these three reads (`nextStep`, extended `transactionStates`, `syncWakeupSchedule`) plus
 // `applySignature`; it never selects, orders or schedules transactions itself.
 //
-// TEMPORARY GUARD VETO — TODO(remove: upstream late-dependency guard, engine change request
-// `2026-07-30-engine-change-request-unprovable-boundary.md`): the pure `state.rs::prove_ready`
-// lacks the late-dependency guard this file's `is_prove_ready` carries, so a raw
-// `MigrationState::next_step` wedges forever on `Prove` for a transfer whose dependency mined
-// past its anchor boundary (pinned by `state_machine_trace_tests::unprovable_boundary_documented_gap`).
-// Until the guard is upstreamed, the driver surface below applies it locally: such a transfer is
-// never offered for Prove, is reported with the synthetic UNPROVABLE_ANCHOR blocker, and
-// contributes no sync wake-ups.
+// LATE-DEPENDENCY GUARD VETO — REMOVED (resolved upstream, rc.6). This surface once applied a local
+// veto on top of the engine's reads: a transfer whose dependency mined past its anchor boundary was
+// withheld from Prove, reported with a synthetic UNPROVABLE_ANCHOR blocker, and dropped from sync
+// wake-ups, because the pure `state.rs::prove_ready` offered a Prove that could never succeed
+// (change request `spec/2026-07-30-engine-change-request-unprovable-boundary.md`). That request's
+// preferred fix shipped in `zcash_pool_migration` 0.1.0-rc.6: `engine::prove_transfer` re-draws the
+// boundary at prove time so the Prove the engine offers now genuinely completes. The engine's reads
+// are therefore HONEST as-is, and the local veto is gone — the driver surface below delegates
+// entirely to `advance_migration` / `transaction_statuses` / `sync_wakeup_schedule`.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// How far the chain must advance past a divergence before a displacement counts as PERMANENT —
+/// caller policy that `zcash_pool_migration` deliberately does not default, since the right value
+/// tracks block spacing. Ten blocks is ~12 minutes at the 75-second target. A depth judged too
+/// aggressively self-corrects: the marks it produces are cleared by reorg truncation if the chain
+/// swings back.
+const SETTLE_DEPTH: ReorgSettleDepth = ReorgSettleDepth::new(10);
 
 const STEP_WAITING: i64 = 0;
 const STEP_PROVE: i64 = 1;
 const STEP_BROADCAST: i64 = 2;
 const STEP_REBUILD: i64 = 3;
 const STEP_COMPLETE: i64 = 4;
+/// Enough planned value can never mine (or dead value is stranded with no live work left): the
+/// consumer supersedes this migration and re-plans the remaining balance. New with the engine's
+/// drive loop; no hand-rolled equivalent existed.
+const STEP_REPLAN: i64 = 5;
+/// A node REJECTED a broadcast and the wallet cannot yet say why, its answers resting on chain
+/// state below the tip that node reported. The consumer SYNCS to at least that tip and asks again.
+/// Outranks every other step but Complete: a rejection means some other observer saw chain state
+/// this wallet has not, so proceeding would act on a view already known to be stale.
+const STEP_REEVALUATE: i64 = 6;
 
 const ACTION_NONE: i32 = 0;
 const ACTION_PROVE: i32 = 1;
@@ -6246,81 +6795,49 @@ const BLOCKER_SCHEDULE: i32 = 2;
 const BLOCKER_ANCHOR_BOUNDARY: i32 = 3;
 const BLOCKER_SIGNATURE: i32 = 4;
 const BLOCKER_EXPIRED: i32 = 5;
-/// Synthetic, app-facing only — the engine has no such variant yet (see the guard-veto note).
-const BLOCKER_UNPROVABLE_ANCHOR: i32 = 6;
+// Code 6 (BLOCKER_UNPROVABLE_ANCHOR) was a synthetic, app-facing blocker emitted by the now-removed
+// late-dependency guard veto (resolved upstream in rc.6; see the driver-surface banner above). The
+// backend no longer produces it. The value stays RESERVED — the Kotlin `MigrationBlocker` mapping
+// keeps a legacy `6 -> UNPROVABLE_ANCHOR` arm for wire compatibility, and no new blocker should
+// reuse the number.
+/// `Blocker::ExpiryImminent` (rc.6): the caller's ESTIMATED tip has passed expiry but the wallet's
+/// own scan has not caught up yet, so the kernel withholds without recording anything.
+const BLOCKER_EXPIRY_IMMINENT: i32 = 7;
+/// A node REJECTED a broadcast of this transaction and the wallet has not scanned far enough to
+/// explain why. New in `zcash_pool_migration 0.1.0-rc.6`.
+const BLOCKER_AWAITING_REEVALUATION: i32 = 8;
+/// The transaction can never mine — marked unsatisfiable, or stranded behind one that is. The
+/// remedy is a migration-level replan, never more syncing. New in `zcash_pool_migration 0.1.0-rc.6`.
+const BLOCKER_UNSATISFIABLE: i32 = 9;
 
-/// Whether `t` is wedged behind the late-dependency guard: pre-signed, dependencies mined, boundary
-/// settled — yet un-provable because a dependency mined PAST the drawn anchor boundary.
-fn is_unprovable_anchor(
-    state: &zcash_pool_migration::engine::MigrationState,
-    t: &zcash_pool_migration::engine::MigrationTransaction,
-    target_height: BlockHeight,
-) -> bool {
-    use zcash_pool_migration::engine::MigrationTxState;
-    if !matches!(
-        t.state(),
-        MigrationTxState::Signed | MigrationTxState::AwaitingSignature
-    ) {
-        return false;
-    }
-    let Some(boundary) = t.anchor_boundary() else {
-        return false;
-    };
-    // Boundary settled and deps mined, yet the guarded readiness check refuses: the only remaining
-    // cause is a dependency mined past the boundary (the guard's own condition).
-    let expired = {
-        let expiry = u32::from(t.expiry_height());
-        expiry != 0 && expiry < u32::from(target_height)
-    };
-    !expired
-        && state.deps_mined(t.depends_on())
-        && u32::from(boundary) + 1 < u32::from(target_height)
-        && !is_prove_ready(state, t, target_height)
-}
-
-/// Two-tip decision (spec §3): broadcast timing runs on the ESTIMATED tip (a proved tx is ready
-/// to send from prove time; it only needs `scheduled_height` reached), while proving stays on the
-/// SCANNED tip (a witness needs a real settled checkpoint). Broadcast-first is a retention-
-/// justified override of the engine's prove-first order (spec §3.1) — with always-on anchor
-/// retention a deferred prove costs nothing, and broadcasting proved transfers is direct progress.
-fn guarded_next_step(
-    state: &zcash_pool_migration::engine::MigrationState,
+/// Two-tip decision (spec §3): the underlying `advance_migration` call is driven by
+/// `DuenessTargets::new(scanned, estimated)`, which folds the ESTIMATED tip into its `effective`
+/// target (broadcast timing, an optimistic estimate that only ever accelerates) while keeping the
+/// SCANNED tip as its `scanned` target (proving/rebuild/expiry, which need real chain facts, not
+/// an estimate) — see `DuenessTargets::new`'s doc. This delegates step selection entirely to the
+/// crate's own `advance_migration`, rather than re-implementing next-broadcastable/prove-ready/
+/// rebuild-on-expiry locally. (Historically the reporting surfaces applied a local late-dependency
+/// guard veto on top; that veto has been removed now that rc.6's `engine::prove_transfer` heals the
+/// condition at prove time — see the driver-surface banner above.)
+fn advance_step(
+    backend: &mut impl PoolMigrationWrite<Error = EngineError>,
+    state: &mut MigrationState,
     scanned_target: BlockHeight,
     estimated_target: BlockHeight,
-) -> (i64, i64) {
-    use zcash_pool_migration::engine::{MigrationTxKind, MigrationTxState};
-    if state.is_terminal() {
-        return (STEP_COMPLETE, -1);
-    }
-    if let Some(id) = state.next_broadcastable(estimated_target) {
-        return (STEP_BROADCAST, i64::from(u32::from(id)));
-    }
-    if let Some(t) = state.transactions().iter().find(|t| {
-        matches!(t.state(), MigrationTxState::Signed) && is_prove_ready(state, t, scanned_target)
-    }) {
-        return (STEP_PROVE, i64::from(u32::from(t.id())));
-    }
-    // Rebuild + completion stay on the SCANNED target (real mined/expiry facts).
-    if let Some(t) = state.transactions().iter().find(|t| {
-        matches!(t.kind(), MigrationTxKind::Transfer { .. })
-            && !matches!(t.state(), MigrationTxState::Mined { .. })
-            && {
-                let expiry = u32::from(t.expiry_height());
-                expiry != 0 && expiry < u32::from(scanned_target)
-            }
-    }) {
-        return (STEP_REBUILD, i64::from(u32::from(t.id())));
-    }
-    let all_mined = !state.transactions().is_empty()
-        && state
-            .transactions()
-            .iter()
-            .all(|t| matches!(t.state(), MigrationTxState::Mined { .. }));
-    if all_mined {
-        (STEP_COMPLETE, -1)
-    } else {
-        (STEP_WAITING, -1)
-    }
+) -> anyhow::Result<(i64, i64)> {
+    let targets = DuenessTargets::new(scanned_target, estimated_target);
+    let config = AdvanceConfig::new(SETTLE_DEPTH);
+    let step = advance_migration(backend, state, targets, &config)
+        .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
+    Ok(match step {
+        AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
+        AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
+        AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
+        AdvanceStep::Replan => (STEP_REPLAN, -1),
+        AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
+        AdvanceStep::Waiting => (STEP_WAITING, -1),
+        AdvanceStep::Complete => (STEP_COMPLETE, -1),
+    })
 }
 
 /// The single "what now?" read the app worker loops on. Returns `[stepCode, transferId]`
@@ -6351,14 +6868,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         } else {
             std::cmp::max(scanned, BlockHeight::from_u32(estimated_tip as u32) + 1)
         };
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
-        let Some(state) = backend
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
+        let Some(mut state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
         else {
             return Ok(ptr::null_mut());
         };
-        let (code, id) = guarded_next_step(&state, scanned, estimated);
+        let (code, id) = advance_step(&mut backend, &mut state, scanned, estimated)?;
         let arr = env.new_long_array(2)?;
         env.set_long_array_region(&arr, 0, &[code, id])?;
         Ok(arr.into_raw())
@@ -6367,9 +6884,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 }
 
 /// The minimal sync/prove wake-up schedule for the app's worker, from the engine's
-/// `sync_wakeup_schedule` (windows, minimality, jitter, immediate-overdue) — with guard-vetoed
-/// (unprovable-anchor) transfers dropped from coverage so a wedged transfer cannot demand
-/// perpetual immediate wake-ups (see the guard-veto note; pinned by the golden traces).
+/// `sync_wakeup_schedule` (windows, minimality, jitter, immediate-overdue), taken as-is. The former
+/// guard-veto that dropped unprovable-anchor transfers from coverage is gone (resolved upstream in
+/// rc.6 — see the driver-surface banner): a late-dependency transfer is no longer a permanent wedge
+/// (`engine::prove_transfer` heals it at prove time), so waking to prove it is correct.
 /// Encoding: an array of long-arrays, each `[wakeHeight, coveredId...]`; empty wake-ups are
 /// dropped.
 #[unsafe(no_mangle)]
@@ -6387,19 +6905,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         let tip = target - 1;
-        let backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let Some(state) = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
         else {
             return Ok(ptr::null_mut());
         };
-        let vetoed: Vec<u32> = state
-            .transactions()
-            .iter()
-            .filter(|t| is_unprovable_anchor(&state, t, target))
-            .map(|t| u32::from(t.id()))
-            .collect();
         let mut rng = OsRng;
         let wakeups = state
             .sync_wakeup_schedule(
@@ -6414,9 +6926,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 let ids: Vec<i64> = w
                     .covers()
                     .iter()
-                    .map(|t| u32::from(*t))
-                    .filter(|id| !vetoed.contains(id))
-                    .map(i64::from)
+                    .map(|t| i64::from(u32::from(*t)))
                     .collect();
                 if ids.is_empty() {
                     None
@@ -6428,11 +6938,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             })
             .collect();
         let long_array_class = env.find_class("[J")?;
-        let outer = env.new_object_array(
-            entries.len() as i32,
-            long_array_class,
-            JObject::null(),
-        )?;
+        let outer =
+            env.new_object_array(entries.len() as i32, long_array_class, JObject::null())?;
         for (i, row) in entries.iter().enumerate() {
             let inner = env.new_long_array(row.len() as i32)?;
             env.set_long_array_region(&inner, 0, row)?;
@@ -6463,7 +6970,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let id = decode_transfer_id(transfer_id)?;
         let pczt_bytes = env.convert_byte_array(signed_pczt)?;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn)?;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let mut state = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
@@ -6494,7 +7001,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jintArray {
     let res = catch_unwind(&mut env, |env| {
         use zcash_pool_migration::signing_rounds::{
-            SigningRoundBudget, PREPARATION_ACTIONS, TRANSFER_ACTIONS,
+            PREPARATION_ACTIONS, SigningRoundBudget, TRANSFER_ACTIONS,
         };
         let values = [
             SigningRoundBudget::KEYSTONE.max_actions() as jint,

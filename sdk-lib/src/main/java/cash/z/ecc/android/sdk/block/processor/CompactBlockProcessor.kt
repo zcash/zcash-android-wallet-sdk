@@ -25,7 +25,6 @@ import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.EnhanceTr
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.EnhanceTransactionError.EnhanceTxSetStatusError
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.MismatchedConsensusBranch
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.MismatchedNetwork
-import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.LightWalletException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
@@ -81,6 +80,7 @@ import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.GetAddressUtxosReplyUnsafe
@@ -1193,13 +1193,19 @@ class CompactBlockProcessor internal constructor(
          */
         private const val SYNC_BATCH_SIZE = 1000
 
+        /** Mainnet ZIP 318 anchor-bucket interval; see [anchorGridIntervalFor]. */
+        private const val ANCHOR_GRID_INTERVAL_MAINNET = 144L
+
+        /** Testnet ZIP 318 anchor-bucket interval, on the compressed grid; see [anchorGridIntervalFor]. */
+        private const val ANCHOR_GRID_INTERVAL_TESTNET = 12L
+
         /**
          * See [clampBatchEndToAnchorGrid]. The ZIP 318 anchor-bucket interval per network —
          * mirrors the engine's `AnchorBucketInterval` config (144 mainnet, 12 on the compressed
          * testnet grid, SDK PR #2042).
          */
         internal fun anchorGridIntervalFor(network: ZcashNetwork): Long =
-            if (network == ZcashNetwork.Testnet) 12L else 144L
+            if (network == ZcashNetwork.Testnet) ANCHOR_GRID_INTERVAL_TESTNET else ANCHOR_GRID_INTERVAL_MAINNET
 
         /** See [clampBatchEndToAnchorGrid] — only grid points this close to the sync range end get their own batch cut. */
         private const val ANCHOR_GRID_RECENT_WINDOW = 300L
@@ -1892,12 +1898,13 @@ class CompactBlockProcessor internal constructor(
                             )
                     }
 
-                    end = clampBatchEndToAnchorGrid(
-                        start = start,
-                        end = end,
-                        syncRangeEnd = syncRange.endInclusive.value,
-                        gridInterval = anchorGridIntervalFor(network)
-                    )
+                    end =
+                        clampBatchEndToAnchorGrid(
+                            start = start,
+                            end = end,
+                            syncRangeEnd = syncRange.endInclusive.value,
+                            gridInterval = anchorGridIntervalFor(network)
+                        )
 
                     val range = BlockHeight.new(start)..BlockHeight.new(end)
                     add(

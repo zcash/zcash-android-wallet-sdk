@@ -138,7 +138,11 @@ class JniMigrationSchedule(
  * once the engine holds a proof (`Proved`/`Broadcast`/`Mined`). [anchorBoundaryHeight] is the
  * committed ZIP 318 bucket boundary the transaction proves against, or `-1` when the engine
  * committed none (preparations prove at their natural anchor).
+ *
+ * The parameter list is the JNI constructor descriptor the Rust side builds this with, so its
+ * width is a wire contract rather than a design choice — as for the other `Jni*` models.
  */
+@Suppress("LongParameterList")
 @Keep
 class JniMigrationTransferState(
     val id: Long,
@@ -153,8 +157,11 @@ class JniMigrationTransferState(
     val action: Int,
     /**
      * Why it is waiting: 0 none, 1 dependencies, 2 schedule, 3 anchor boundary, 4 signature,
-     * 5 expired, 6 unprovable anchor (synthetic — the backend guard veto; see the driver-surface
-     * note in migration.rs, TODO(remove) once the engine surfaces it natively).
+     * 5 expired, 6 unprovable anchor (LEGACY — no longer emitted by the backend: the late-dependency
+     * guard veto that produced it was resolved upstream in zcash_pool_migration rc.6, whose
+     * `prove_transfer` re-draws the boundary at prove time. The value is kept RESERVED and the
+     * `MigrationBlocker.UNPROVABLE_ANCHOR` mapping retained for wire compatibility),
+     * 7 expiry imminent, 8 awaiting reevaluation, 9 unsatisfiable.
      */
     val blocker: Int,
     /** The engine-persisted crossing value (`transfer_crossing_value`); -1 for preparations. */
@@ -190,11 +197,6 @@ class JniMigrationTransferStates(
 )
 
 /**
- * Serves as cross layer (Kotlin, Rust) communication class. One transfer's unsigned, proven (self-
- * funding transfers are the exception: not yet proven, per the sign-now/prove-later scheme) PCZT,
- * staged in the engine and awaiting an external signer (e.g. Keystone).
- */
-/**
  * Serves as cross layer (Kotlin, Rust) communication class. One PREPARATION transaction's
  * unsigned, ZIP32-annotated PCZT — the whole note-split tree is built (and therefore
  * pre-signable) at commit; [layer]/[index] locate the transaction within that tree.
@@ -213,6 +215,11 @@ class JniUnsignedPreparationPczt(
     }
 }
 
+/**
+ * Serves as cross layer (Kotlin, Rust) communication class. One transfer's unsigned, proven (self-
+ * funding transfers are the exception: not yet proven, per the sign-now/prove-later scheme) PCZT,
+ * staged in the engine and awaiting an external signer (e.g. Keystone).
+ */
 @Keep
 class JniUnsignedTransferPczt(
     val id: Long,

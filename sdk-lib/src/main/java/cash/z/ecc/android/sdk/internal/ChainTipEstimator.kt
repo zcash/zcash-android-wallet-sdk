@@ -27,11 +27,18 @@ internal object NoOpChainTipEstimator : ChainTipEstimator {
 
     override suspend fun estimatedSecondsPerBlock(): Long = FALLBACK_SECONDS_PER_BLOCK
 }
+
 internal const val MIN_SECONDS_PER_BLOCK = 5L
 internal const val MAX_SECONDS_PER_BLOCK = 150L
 
 /** Blocks of history used for the rate measurement. */
 internal const val RATE_WINDOW_BLOCKS = 100L
+
+/**
+ * Entries in a `blockRateSamples` array that carry a full `(height, time)` pair for both the newer
+ * and the older sample: `[latestHeight, latestTime, olderHeight, olderTime]`.
+ */
+internal const val SAMPLE_PAIR_SIZE = 4
 
 /** Pure rate computation: clamped average spacing between two scanned blocks. */
 internal fun measuredSecondsPerBlock(
@@ -65,7 +72,7 @@ internal fun estimateTip(
  * two samples, or the protocol fallback when the older sample is absent (array shorter than 4).
  */
 internal fun secondsPerBlockFromSamples(samples: LongArray): Long =
-    if (samples.size >= 4) {
+    if (samples.size >= SAMPLE_PAIR_SIZE) {
         measuredSecondsPerBlock(
             olderHeight = samples[2],
             olderTimeEpochSeconds = samples[3],
@@ -102,6 +109,10 @@ internal class LazyDataDbChainTipEstimator(
         return rustBackendProvider().blockRateSamples(dbFile.absolutePath, RATE_WINDOW_BLOCKS)
     }
 
+    // Deliberately broad: the estimate is advisory, and every failure mode of the JNI read (a
+    // missing or half-migrated database, a JNI error, an I/O fault) must degrade to the sentinel
+    // rather than propagate into a caller that only wanted a hint about the tip.
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun estimatedTip(): Long =
         try {
             val s = samples()
@@ -120,6 +131,9 @@ internal class LazyDataDbChainTipEstimator(
             -1L
         }
 
+    // Deliberately broad, for the same reason as [estimatedTip]: an unmeasurable rate falls back to
+    // the protocol constant instead of failing the caller.
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun estimatedSecondsPerBlock(): Long =
         try {
             secondsPerBlockFromSamples(samples())
