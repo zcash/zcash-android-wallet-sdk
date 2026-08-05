@@ -4800,10 +4800,28 @@ mod next_due_transfer_tests {
         let scanned = BlockHeight::from_u32(1000);
         let scheduled = 1005u32; // scanned + 5: not yet due on the BROADCAST schedule
 
-        // A Signed transfer at this schedule already has a SETTLED anchor boundary
-        // (scheduled - 10 = 995, settled below scanned's target 1001) — prove-ready immediately,
-        // without any estimate, regardless of its (later) broadcast schedule.
-        let signed_tx = transfer(1, MigrationTxState::Signed, scheduled, 3000);
+        // A Signed transfer whose anchor was drawn well before its (later) broadcast schedule —
+        // boundary=980, so `boundary + PROVABLE_ANCHOR_DEPTH (990) < scanned_target (1001)`: the
+        // checkpoint is settled — prove-ready immediately, without any estimate, regardless of
+        // the broadcast schedule. `transfer()`'s own `scheduled - 10` boundary can never
+        // demonstrate this: that boundary settles at exactly `scanned == scheduled`, the same
+        // height broadcast due-ness needs, so it can't isolate the two. Built here with
+        // `from_parts` directly instead.
+        let signed_tx = MigrationTransaction::from_parts(
+            MigrationTransferId::new(1),
+            MigrationTxKind::Transfer { crossing: 0 },
+            vec![0u8; 32], // dummy pczt
+            vec![],        // no deps
+            BlockHeight::from_u32(scheduled),
+            BlockHeight::from_u32(3000),
+            Some(BlockHeight::from_u32(980)), // anchor_boundary: settled well ahead of `scheduled`
+            zcash_protocol::TxId::from_bytes([1u8; 32]),
+            MigrationTxState::Signed,
+            None,
+            None,
+            vec![[1u8; 32]],
+            None,
+        );
         let mut signed_state = make_state(MigrationStatus::InProgress, vec![signed_tx]);
         assert!(
             matches!(
@@ -5029,9 +5047,12 @@ mod next_due_transfer_tests {
         )
         .expect("in-memory store never errors");
         match advance.step() {
-            AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
-            AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
-            AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
+            AdvanceStep::Prove { transactions } => {
+                let first = transactions.first().expect("Prove's transaction set is never empty");
+                (STEP_PROVE, i64::from(u32::from(first.id())))
+            }
+            AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(*id))),
+            AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(*id))),
             AdvanceStep::Replan => (STEP_REPLAN, -1),
             AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
             AdvanceStep::Waiting => (STEP_WAITING, -1),
@@ -6624,7 +6645,9 @@ mod state_machine_trace_tests {
         /// — is what every trace below actually drives). The store answers every chain-fact query
         /// with the healthy default, so it contributes nothing this test's own `MigrationTxState`
         /// transitions (`set`/`mine`, applied by the caller between calls) don't already encode —
-        /// reproducing exactly what the old direct `next_step` calls exercised.
+        /// reproducing exactly what the old direct `next_step` calls exercised. Cloned out of the
+        /// `Advance` (PR #2939: `.step()` now returns `&AdvanceStep`, and `Prove` — carrying the
+        /// whole provable set — is no longer `Copy`).
         fn advance(&self, target: BlockHeight) -> AdvanceStep {
             let mut store = NoOpPoolMigrationStore;
             let mut state = self.build();
@@ -6637,32 +6660,39 @@ mod state_machine_trace_tests {
             )
             .expect("advance_migration over the no-op store")
             .step()
+            .clone()
         }
 
         /// Applies every step the engine emits at `tip` until it settles on Waiting/Complete/
-        /// Rebuild: Prove{id} flips the tx to Proved, Broadcast{id} to Broadcast. Returns the
-        /// applied step sequence plus the settling step. Mirrors exactly what the app worker will
-        /// do (modulo privacy timing, which never changes WHAT, only WHEN).
-        fn drain(&mut self, tip: u32) -> (Vec<AdvanceStep>, AdvanceStep) {
+        /// Rebuild: a batched Prove flips EVERY named transaction to Proved (PR #2939 serves the
+        /// whole provable set in one step, not one at a time), Broadcast{id} to Broadcast. Returns
+        /// the applied step sequence plus the settling step, both as [StepSummary] — see its doc
+        /// for why (`ProveTarget`'s fields are private to `zcash_pool_migration`, so this crate's
+        /// tests cannot construct an `AdvanceStep::Prove` value directly to compare against).
+        /// Mirrors exactly what the app worker will do (modulo privacy timing, which never changes
+        /// WHAT, only WHEN).
+        fn drain(&mut self, tip: u32) -> (Vec<StepSummary>, StepSummary) {
             let target = BlockHeight::from_u32(tip + 1);
             let mut applied = Vec::new();
             loop {
                 let step = self.advance(target);
-                match step {
-                    AdvanceStep::Prove { id, kind: _ } => {
-                        self.set(id_of(id), MigrationTxState::Proved);
-                        applied.push(step);
+                match &step {
+                    AdvanceStep::Prove { transactions } => {
+                        for t in transactions {
+                            self.set(id_of(t.id()), MigrationTxState::Proved);
+                        }
+                        applied.push(summarize(&step));
                     }
                     AdvanceStep::Broadcast { id } => {
                         self.set(
-                            id_of(id),
+                            id_of(*id),
                             MigrationTxState::Broadcast {
-                                txid: zcash_protocol::TxId::from_bytes([id_of(id) as u8; 32]),
+                                txid: zcash_protocol::TxId::from_bytes([id_of(*id) as u8; 32]),
                             },
                         );
-                        applied.push(step);
+                        applied.push(summarize(&step));
                     }
-                    settle => return (applied, settle),
+                    _ => return (applied, summarize(&step)),
                 }
             }
         }
@@ -6672,35 +6702,40 @@ mod state_machine_trace_tests {
         /// Like `drain`, but simulates a PROVER FAILURE for the given ids: the engine's Prove
         /// instruction is recorded but NOT applied (in reality `prove_transfer` errors with
         /// `Query(NotContained)` when the funding note is absent from the tree at the anchor).
-        /// Returns on the first vetoed Prove — the point where a real consumer is wedged, because
-        /// asking again yields the same impossible instruction.
+        /// Returns on the first batch CONTAINING a vetoed id — the point where a real consumer is
+        /// wedged, because asking again yields the same impossible instruction (the whole batch,
+        /// not just the failing entry, since a real consumer proves the set as one unit).
         fn drain_with_failing_prover(
             &mut self,
             tip: u32,
             failing: &[u32],
-        ) -> (Vec<AdvanceStep>, AdvanceStep) {
+        ) -> (Vec<StepSummary>, StepSummary) {
             let target = BlockHeight::from_u32(tip + 1);
             let mut applied = Vec::new();
             loop {
                 let step = self.advance(target);
-                match step {
-                    AdvanceStep::Prove { id, kind: _ } if failing.contains(&id_of(id)) => {
-                        return (applied, step);
+                match &step {
+                    AdvanceStep::Prove { transactions }
+                        if transactions.iter().any(|t| failing.contains(&id_of(t.id()))) =>
+                    {
+                        return (applied, summarize(&step));
                     }
-                    AdvanceStep::Prove { id, kind: _ } => {
-                        self.set(id_of(id), MigrationTxState::Proved);
-                        applied.push(step);
+                    AdvanceStep::Prove { transactions } => {
+                        for t in transactions {
+                            self.set(id_of(t.id()), MigrationTxState::Proved);
+                        }
+                        applied.push(summarize(&step));
                     }
                     AdvanceStep::Broadcast { id } => {
                         self.set(
-                            id_of(id),
+                            id_of(*id),
                             MigrationTxState::Broadcast {
-                                txid: zcash_protocol::TxId::from_bytes([id_of(id) as u8; 32]),
+                                txid: zcash_protocol::TxId::from_bytes([id_of(*id) as u8; 32]),
                             },
                         );
-                        applied.push(step);
+                        applied.push(summarize(&step));
                     }
-                    settle => return (applied, settle),
+                    _ => return (applied, summarize(&step)),
                 }
             }
         }
@@ -6710,41 +6745,49 @@ mod state_machine_trace_tests {
         u32::from(id)
     }
 
-    /// `live_plan()`'s own kind for each transaction id, as evaluated by `next_step`
-    /// (Preparation for ids 0-3 by layer/index, Transfer for ids 4-14 by crossing) — kept here
-    /// rather than threaded through every `prove(N)` call site.
-    fn live_plan_kind(id: u32) -> MigrationTxKind {
-        match id {
-            0 => MigrationTxKind::Preparation { layer: 0, index: 0 },
-            1 => MigrationTxKind::Preparation { layer: 0, index: 1 },
-            2 => MigrationTxKind::Preparation { layer: 1, index: 0 },
-            3 => MigrationTxKind::Preparation { layer: 2, index: 0 },
-            4 => MigrationTxKind::Transfer { crossing: 0 },
-            5 => MigrationTxKind::Transfer { crossing: 1 },
-            6 => MigrationTxKind::Transfer { crossing: 2 },
-            7 => MigrationTxKind::Transfer { crossing: 3 },
-            8 => MigrationTxKind::Transfer { crossing: 4 },
-            9 => MigrationTxKind::Transfer { crossing: 5 },
-            10 => MigrationTxKind::Transfer { crossing: 6 },
-            11 => MigrationTxKind::Transfer { crossing: 7 },
-            12 => MigrationTxKind::Transfer { crossing: 8 },
-            13 => MigrationTxKind::Transfer { crossing: 9 },
-            14 => MigrationTxKind::Transfer { crossing: 10 },
-            other => panic!("live_plan_kind: no fixture entry for id {other}"),
+    /// A comparable summary of one `AdvanceStep` — ids only. This crate's tests cannot construct
+    /// an `AdvanceStep::Prove` directly to compare against with `assert_eq!` (PR #2939: `Prove`
+    /// now carries `Vec<ProveTarget>`, and `ProveTarget`'s fields are private to
+    /// `zcash_pool_migration` — no public constructor), so every trace below compares this
+    /// hand-buildable summary instead. `Prove`'s ids are in the engine's own order
+    /// (earliest-ready first, ties by id — see `AdvanceStep::Prove`'s doc), not re-sorted here.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum StepSummary {
+        Prove(Vec<u32>),
+        Broadcast(u32),
+        Rebuild(u32),
+        Replan,
+        Reevaluate,
+        Waiting,
+        Complete,
+    }
+
+    fn summarize(step: &AdvanceStep) -> StepSummary {
+        match step {
+            AdvanceStep::Prove { transactions } => {
+                StepSummary::Prove(transactions.iter().map(|t| id_of(t.id())).collect())
+            }
+            AdvanceStep::Broadcast { id } => StepSummary::Broadcast(id_of(*id)),
+            AdvanceStep::Rebuild { id } => StepSummary::Rebuild(id_of(*id)),
+            AdvanceStep::Replan => StepSummary::Replan,
+            AdvanceStep::Reevaluate => StepSummary::Reevaluate,
+            AdvanceStep::Waiting => StepSummary::Waiting,
+            AdvanceStep::Complete => StepSummary::Complete,
         }
     }
 
-    fn prove(id: u32) -> AdvanceStep {
-        AdvanceStep::Prove {
-            id: MigrationTransferId::new(id),
-            kind: live_plan_kind(id),
-        }
+    fn prove(id: u32) -> StepSummary {
+        StepSummary::Prove(vec![id])
     }
 
-    fn broadcast(id: u32) -> AdvanceStep {
-        AdvanceStep::Broadcast {
-            id: MigrationTransferId::new(id),
-        }
+    /// A single Prove step naming several transactions at once (PR #2939's batching) — ids in the
+    /// order the assertion expects the engine to report them.
+    fn prove_set(ids: &[u32]) -> StepSummary {
+        StepSummary::Prove(ids.to_vec())
+    }
+
+    fn broadcast(id: u32) -> StepSummary {
+        StepSummary::Broadcast(id)
     }
 
     fn blocker_of(state: &MigrationState, tip: u32, id: u32) -> Option<Blocker> {
@@ -6762,26 +6805,30 @@ mod state_machine_trace_tests {
     /// engine emits prove-first batches, then broadcasts in schedule order, and settles Waiting
     /// between events.
     ///
-    /// Under the librustzcash#2874 (zip318_kind) pin, a PREPARATION is only ever surfaced for
-    /// proving once its own broadcast schedule is due (see `AdvanceStep::Prove`'s `kind` field
-    /// doc), so it is proved and broadcast within the SAME wake-up rather than batched — hence
-    /// the interleaved prove/broadcast order per prep below (list order across preps is
-    /// unchanged).
+    /// Under librustzcash PR #2939 (`kn/batch_prove`), a Prove step now names the WHOLE set of
+    /// transactions provable at once (`prove_set` below) rather than one id at a time — proving,
+    /// unlike broadcasting, has no privacy implications to space out. The same pin also fixed a
+    /// previously-missing anchor-stability gate: a transfer's boundary must sit at least
+    /// `PROVABLE_ANCHOR_DEPTH` (10) blocks below the scanned tip before its Prove is offered, so
+    /// some ticks now correctly yield nothing where the pre-#2939 behaviour this test used to
+    /// document offered a proof against a boundary that had not yet settled.
     #[test]
     fn live_plan_happy_trace_completes_with_late_but_in_margin_prep() {
         let mut d = Driver::new(live_plan());
 
-        // Layer 0 due: each prep proves (natural anchor) then broadcasts immediately, in list order.
+        // Layer 0 due: both preps' anchors are already settled at this tip, so PR #2939 serves
+        // them as ONE Prove step naming the whole provable set (batching has no privacy
+        // implications, unlike broadcasting), then each broadcasts immediately in list order.
         let (steps, settle) = d.drain(4_224_542);
-        assert_eq!(steps, vec![prove(0), broadcast(0), prove(1), broadcast(1)]);
-        assert_eq!(settle, AdvanceStep::Waiting);
+        assert_eq!(steps, vec![prove_set(&[0, 1]), broadcast(0), broadcast(1)]);
+        assert_eq!(settle, StepSummary::Waiting);
         d.mine(0, 4_224_544);
         d.mine(1, 4_224_546);
 
         // Layer 1 due once its deps mined.
         let (steps, settle) = d.drain(4_224_552);
         assert_eq!(steps, vec![prove(2), broadcast(2)]);
-        assert_eq!(settle, AdvanceStep::Waiting);
+        assert_eq!(settle, StepSummary::Waiting);
         d.mine(2, 4_224_556);
 
         // Layer 2 — mines LATE (+4 past schedule) but within tx9's boundary margin.
@@ -6789,75 +6836,74 @@ mod state_machine_trace_tests {
         assert_eq!(steps, vec![prove(3), broadcast(3)]);
         d.mine(3, 4_224_566);
 
-        // Boundary 4224576 settles: the whole batch (5, 8, 9) proves together — tx9 INCLUDED,
-        // because its dependency mined at 4224566 <= 4224576. Nothing is broadcastable yet.
+        // Boundary 4224576 is not yet PROVABLE_ANCHOR_DEPTH (10 blocks) settled at this tip (PR
+        // #2939 fixed a previously-missing anchor-stability gate on Prove — see the constant's
+        // doc): nothing is offered yet, unlike the pre-#2939 behaviour this test used to
+        // document.
         let (steps, settle) = d.drain(4_224_578);
-        assert_eq!(steps, vec![prove(5), prove(8), prove(9)]);
-        assert_eq!(settle, AdvanceStep::Waiting);
+        assert!(steps.is_empty());
+        assert_eq!(settle, StepSummary::Waiting);
 
-        // tx8's schedule arrives; boundary 4224588 also settled. Under the librustzcash#2874
-        // pin, an already-due broadcast is prioritised over an opportunistic early prove (proving
-        // tx4 now is a pruning-safety optimisation, not urgent — see `AdvanceStep::Prove`'s
-        // `kind` doc), so broadcast(8) comes first.
+        // Now settled: the whole batch (5, 8, 9) proves together in one step — tx9 INCLUDED,
+        // because its dependency mined at 4224566 <= 4224576. tx8's own broadcast schedule is
+        // also due at this tip, so it goes out in the same call.
         let (steps, _) = d.drain(4_224_593);
-        assert_eq!(steps, vec![broadcast(8), prove(4)]);
+        assert_eq!(steps, vec![prove_set(&[5, 8, 9]), broadcast(8)]);
         d.mine(8, 4_224_601);
 
-        // Boundary 4224600 batch proves; schedules 4604/4610/4611 broadcast — tx9 goes out. Under
-        // the librustzcash#2874 pin, already-due broadcasts are prioritised over the opportunistic
-        // early proves of tx11/tx13 (see the tx4/tx8 case above).
+        // Schedules 4604/4610/4611 broadcast — tx9 goes out. tx4 and tx11 batch-prove together
+        // (both settled by this tip); tx4's own broadcast schedule is due in the same call, so it
+        // follows immediately, while tx13 proves alone (its own boundary just settled) without a
+        // due broadcast yet.
         let (steps, _) = d.drain(4_224_612);
         assert_eq!(
             steps,
             vec![
-                broadcast(4),
                 broadcast(5),
                 broadcast(9),
-                prove(11),
-                prove(13)
+                prove_set(&[4, 11]),
+                broadcast(4),
+                prove(13),
             ]
         );
         d.mine(4, 4_224_616);
         d.mine(5, 4_224_616);
         d.mine(9, 4_224_616);
 
-        // Boundaries 4224612 + 4224636 prove; schedules 4617/4627 broadcast. Under the
-        // librustzcash#2874 pin: tx11 was already proved (prior batch) and its broadcast is due,
-        // so it goes out before any new proving this call. tx7 becomes both provable AND
-        // immediately broadcast-due in this same call, so its prove/broadcast pair stays
-        // adjacent; tx6/10/12/14 are provable but not yet broadcast-due, so they only prove.
+        // tx11 was already proved (prior batch) and its broadcast is due, so it goes out first.
+        // tx6/tx7 batch-prove together; tx7 is also immediately broadcast-due so its pair stays
+        // adjacent, while tx10 proves alone without a due broadcast yet.
         let (steps, _) = d.drain(4_224_638);
         assert_eq!(
             steps,
             vec![
                 broadcast(11),
-                prove(6),
-                prove(7),
+                prove_set(&[6, 7]),
                 broadcast(7),
                 prove(10),
-                prove(12),
-                prove(14),
             ]
         );
         d.mine(11, 4_224_642);
         d.mine(7, 4_224_642);
 
         // The tail broadcasts; after the last mine the machine is Complete. Order is neither id
-        // nor schedule order: `advance_migration`'s new `shift_schedule` (this pin) re-shifts the
-        // remaining pending schedule by `served - scheduled` every time a step is served, redrawing
-        // in-distribution anchor boundaries along with it — a genuine ZIP 318 privacy feature, not
-        // present under rc.7. This exact sequence is deterministic ONLY because `rng()` above seeds
-        // a fixed RNG (`StdRng::seed_from_u64(0xA5)`, mirroring `zcash_pool_migration`'s own test
-        // convention) — a different seed reorders these five, though never omits or duplicates one.
+        // nor schedule order: `advance_migration`'s `shift_schedule` re-shifts the remaining
+        // pending schedule by `served - scheduled` every time a step is served, redrawing
+        // in-distribution anchor boundaries along with it — a genuine ZIP 318 privacy feature.
+        // This exact sequence is deterministic ONLY because `rng()` above seeds a fixed RNG
+        // (`StdRng::seed_from_u64(0xA5)`, mirroring `zcash_pool_migration`'s own test convention)
+        // — a different seed reorders these, though never omits or duplicates one. tx12/tx14
+        // batch-prove together once their boundaries settle, in the middle of the tail broadcasts.
         let (steps, _) = d.drain(4_224_660);
         assert_eq!(
             steps,
             vec![
                 broadcast(13),
                 broadcast(10),
-                broadcast(12),
                 broadcast(6),
-                broadcast(14)
+                prove_set(&[12, 14]),
+                broadcast(12),
+                broadcast(14),
             ]
         );
         for id in [13, 10, 12, 6, 14] {
@@ -6865,7 +6911,7 @@ mod state_machine_trace_tests {
         }
         let (steps, settle) = d.drain(4_224_680);
         assert!(steps.is_empty());
-        assert_eq!(settle, AdvanceStep::Complete);
+        assert_eq!(settle, StepSummary::Complete);
 
         // Nothing left to wake for.
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(7);
@@ -6950,8 +6996,13 @@ mod state_machine_trace_tests {
         // HEAL 0: a NORMAL drain (the prover no longer fails on tx9) proves AND broadcasts tx9 —
         // no wedge. Everything is due at this tip, so the whole transfer set proves and broadcasts.
         let (applied, settle) = d.drain(4_224_700);
+        // Batched (PR #2939): tx9 proves in the same Prove step as whatever else is due at this
+        // tip (observed: `Prove([4, 8, 9])`), not alone — check membership, not an exact
+        // single-id Prove.
         assert!(
-            applied.contains(&prove(9)),
+            applied
+                .iter()
+                .any(|s| matches!(s, StepSummary::Prove(ids) if ids.contains(&9))),
             "tx9 is proved — prove_transfer's boundary redraw makes the offered Prove succeed"
         );
         assert!(
@@ -6960,7 +7011,7 @@ mod state_machine_trace_tests {
         );
         assert_eq!(
             settle,
-            AdvanceStep::Waiting,
+            StepSummary::Waiting,
             "settles Waiting for mines, not wedged"
         );
 
@@ -6971,7 +7022,7 @@ mod state_machine_trace_tests {
         let (_steps, settle) = d.drain(4_224_720);
         assert_eq!(
             settle,
-            AdvanceStep::Complete,
+            StepSummary::Complete,
             "the plan completes with tx9 healed"
         );
     }
@@ -6999,12 +7050,7 @@ mod state_machine_trace_tests {
         let past_expiry = EXPIRY + 1;
         let (steps, settle) = d.drain(past_expiry);
         assert!(steps.is_empty());
-        assert_eq!(
-            settle,
-            AdvanceStep::Rebuild {
-                id: MigrationTransferId::new(9)
-            }
-        );
+        assert_eq!(settle, StepSummary::Rebuild(9));
         assert_eq!(
             blocker_of(&d.build(), past_expiry, 9),
             Some(Blocker::Expired)
@@ -7032,12 +7078,14 @@ mod state_machine_trace_tests {
         // Boundary settled, schedule due — yet the driver must not touch it.
         let (steps, settle) = d.drain(4_224_620);
         assert!(
-            steps
-                .iter()
-                .all(|s| !matches!(s, AdvanceStep::Prove { id, kind: _ } | AdvanceStep::Broadcast { id } if id_of(*id) == 9)),
+            steps.iter().all(|s| match s {
+                StepSummary::Prove(ids) => !ids.contains(&9),
+                StepSummary::Broadcast(id) => *id != 9,
+                _ => true,
+            }),
             "an AwaitingSignature tx is driven by apply_signature, not the automatic loop"
         );
-        assert_eq!(settle, AdvanceStep::Waiting);
+        assert_eq!(settle, StepSummary::Waiting);
         assert_eq!(
             blocker_of(&d.build(), 4_224_620, 9),
             Some(Blocker::Signature)
@@ -7120,7 +7168,8 @@ mod state_machine_trace_tests {
             &mut rng(),
         )
         .expect("advance_migration over the no-op store")
-        .step();
+        .step()
+        .clone();
         assert_eq!(
             step,
             AdvanceStep::Replan,
@@ -7244,9 +7293,17 @@ fn advance_step(
     let advance = advance_migration(backend, state, targets, &config, &mut rng)
         .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
     let (code, id) = match advance.step() {
-        AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
-        AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
-        AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
+        // The step now carries the WHOLE provable set (PR #2939) rather than one candidate — see
+        // the type's doc. Our own JNI contract still reports one representative id (never empty,
+        // per the doc, so `.first()` is total): the app's own `finalizeReadyTransfers` sweep
+        // already proves every ready transaction in one pass regardless of which single id this
+        // reports (core sync call §2.3 — Android was already structurally correct for this).
+        AdvanceStep::Prove { transactions } => {
+            let first = transactions.first().expect("Prove's transaction set is never empty");
+            (STEP_PROVE, i64::from(u32::from(first.id())))
+        }
+        AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(*id))),
+        AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(*id))),
         AdvanceStep::Replan => (STEP_REPLAN, -1),
         AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
         AdvanceStep::Waiting => (STEP_WAITING, -1),
