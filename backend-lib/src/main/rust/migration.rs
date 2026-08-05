@@ -257,6 +257,68 @@ fn clear_invalidation(conn: &Connection, account: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The lowest `anchor_boundary` height still needed by any account's migration transactions that
+/// have not yet reached `Broadcast`/`Mined` — i.e. still need proving or broadcasting — across
+/// every account in the wallet at `db_path`.
+///
+/// This function iterates every account via `open_at`/`Backend`/typed `MigrationState` to compute
+/// the minimum `anchor_boundary` across all non-terminal, non-broadcast/mined transactions. It is
+/// called directly by `slipstream/mod.rs`'s `start_session` (via `min_pending_migration_anchor_boundary`,
+/// which now delegates here instead of using raw SQL) to determine the anchor-retention floor for
+/// checkpoint pruning — see `slipstream/mod.rs`'s doc comment for the full anchor-protection rationale
+/// and ZIP 374 reference.
+///
+/// Preparation transactions are excluded (`anchor_boundary() == None`): they anchor to a freshly
+/// current tip at prove time (see `natural_anchor_height`'s doc comment), not a boundary drawn in
+/// advance, so they never need retroactive protection.
+///
+/// Returns `Ok(None)` if there's no in-progress migration in any account, or every transaction
+/// needing a boundary has already broadcast/mined.
+///
+/// Deliberately kept as a plain `anyhow::Result` (matching every other function in this file, e.g.
+/// `plan_for`), rather than swallowing errors internally: the caller (`slipstream/mod.rs`) is
+/// responsible for treating an `Err` as "no retention floor" — logging and falling back to `None` —
+/// since a wallet DB read glitch here must never block sync from starting.
+pub(crate) fn min_pending_anchor_boundary(
+    db_path: &std::path::Path,
+    network: Network,
+) -> anyhow::Result<Option<u32>> {
+    let (wallet, mut store_conn) = open_at(db_path, network)?;
+    let account_ids = wallet
+        .get_account_ids()
+        .map_err(|e| anyhow!("Error listing account ids: {}", e))?;
+
+    let mut min_height: Option<BlockHeight> = None;
+    for account in account_ids {
+        let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
+        let Some(state) = backend.get_migration().map_err(|e| {
+            anyhow!(
+                "Error reading migration state for account {:?}: {:?}",
+                account,
+                e
+            )
+        })?
+        else {
+            continue;
+        };
+        if state.is_terminal() {
+            continue;
+        }
+        for tx in state.transactions() {
+            if matches!(
+                tx.state(),
+                MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
+            ) {
+                continue;
+            }
+            if let Some(boundary) = tx.anchor_boundary() {
+                min_height = Some(min_height.map_or(boundary, |existing| existing.min(boundary)));
+            }
+        }
+    }
+    Ok(min_height.map(u32::from))
+}
+
 fn open(
     env: &mut JNIEnv,
     db_data: JString,
