@@ -2,15 +2,28 @@ package com.zodl.slipstream
 
 import android.content.Context
 import cash.z.ecc.android.sdk.Synchronizer
+import cash.z.ecc.android.sdk.WalletInitMode
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
+import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
+import cash.z.ecc.android.sdk.internal.model.JniRewindResult
+import cash.z.ecc.android.sdk.internal.model.RecoveryProgress
+import cash.z.ecc.android.sdk.internal.model.ScanProgress
+import cash.z.ecc.android.sdk.internal.model.TreeState
+import cash.z.ecc.android.sdk.internal.model.WalletSummary
+import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
+import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionId
+import cash.z.ecc.android.sdk.model.WalletBalance
+import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
@@ -19,6 +32,8 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.RawTransactionUnsafe
 import co.electriccoin.lightwallet.client.model.Response
 import com.zodl.slipstream.internal.InstanceGuard
+import com.zodl.slipstream.internal.PrepareInputs
+import com.zodl.slipstream.internal.SlipstreamAnchorSource
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.SlipstreamKey
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
@@ -26,13 +41,25 @@ import com.zodl.slipstream.internal.db.TransactionsController
 import com.zodl.slipstream.internal.spend.ResubmissionTicker
 import com.zodl.slipstream.internal.spend.SlipstreamBroadcaster
 import com.zodl.slipstream.internal.spend.SlipstreamSpendService
+import com.zodl.slipstream.model.SlipstreamRestoreAnchor
 import com.zodl.slipstream.model.SlipstreamSnapshot
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
 import org.mockito.Mockito.after
 import org.mockito.Mockito.clearInvocations
@@ -44,6 +71,8 @@ import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -66,7 +95,12 @@ import kotlin.time.Duration.Companion.seconds
  * Deliberately NOT covered: `importAccountByUfvk`. Its `restoreAnchor` anchor resolution is a
  * direct call to the `SlipstreamNative` object (a `object`-scoped native binding, not an injectable
  * collaborator), which would require `mockStatic` - out of scope for this plain-Mockito suite.
+ *
+ * The suite's size tracks the lifecycle surface it pins - construction, the readiness gates, the
+ * close/prepare races, and the DbReady read phase belong to one state machine, so the class is
+ * suppressed rather than split along an artificial seam.
  */
+@Suppress("LargeClass")
 class SlipstreamSynchronizerLifecycleTest {
     @Test
     fun close_runs_engine_shutdown_steps_in_order_and_disposes_wallet_client() {
@@ -324,7 +358,10 @@ class SlipstreamSynchronizerLifecycleTest {
         runBlocking { `when`(backend.getAccounts()).thenThrow(RuntimeException("boom")) }
 
         assertFailsWith<InitializeException.GetAccountsException> {
-            runBlocking { synchronizer.accountsFlow.first() }
+            /*
+             * drop(1): the flow now leads with a null "not loaded yet" emission (readiness gate).
+             */
+            runBlocking { synchronizer.accountsFlow.drop(1).first() }
         }
     }
 
@@ -335,7 +372,7 @@ class SlipstreamSynchronizerLifecycleTest {
         runBlocking { `when`(backend.getAccounts()).thenThrow(CancellationException("cancelled")) }
 
         assertFailsWith<CancellationException> {
-            runBlocking { synchronizer.accountsFlow.first() }
+            runBlocking { synchronizer.accountsFlow.drop(1).first() }
         }
     }
 
@@ -611,7 +648,861 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    /*
+     * ── deferred preparation: the iOS-style constructor/prepare split ──────────
+     */
+
+    @Test
+    fun construction_is_cheap_and_reports_initializing_while_preparing() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                engineStatusOverride = engineStatus,
+                prepareInputs = prepareInputs(anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            runBlocking {
+                assertEquals(Synchronizer.Status.INITIALIZING, synchronizer.status.first())
+                verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
+                verify(engine, never()).start(UFVK, ANCHOR_HEIGHT)
+                verify(engine, never()).startPolling()
+            }
+        } finally {
+            anchorGate.complete(Unit)
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The probe for "awaits the gate" is a WRITE ([SlipstreamSynchronizer.rewindToHeight]) rather
+     * than a read: reads are served from `DbReady`, which the tail now publishes before it ever
+     * touches the anchor - that early completion is asserted here too, and is the whole point of
+     * the phase.
+     */
+    @Test
+    fun gated_call_awaits_preparation_then_succeeds_after_the_tail_ran_in_order() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES)))
+        stubPrepareBackend(backend, setup.seed.byteArray)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(setup = setup, anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            val accounts =
+                runBlocking {
+                    val early = withTimeout(TIMEOUT_MS) { synchronizer.getAccounts() }
+                    val pending =
+                        async(Dispatchers.Default) {
+                            synchronizer.rewindToHeight(BlockHeight.new(BELOW_BIRTHDAY_VALUE))
+                        }
+                    verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
+                    assertTrue(pending.isActive)
+                    anchorGate.complete(Unit)
+                    withTimeout(TIMEOUT_MS) { pending.await() }
+                    early
+                }
+
+            assertEquals(emptyList(), accounts)
+            val order = inOrder(backend, engine)
+            runBlocking {
+                order.verify(backend, timeout(TIMEOUT_MS)).initDataDb(setup.seed.byteArray)
+                order.verify(backend, timeout(TIMEOUT_MS)).createAccount(
+                    ACCOUNT_NAME,
+                    KEY_SOURCE,
+                    setup.seed.byteArray,
+                    TREE_STATE,
+                    ANCHOR_HEIGHT
+                )
+                order.verify(engine, timeout(TIMEOUT_MS)).open(TOTAL_MEMORY_BYTES)
+                order.verify(engine, timeout(TIMEOUT_MS)).start(UFVK, ANCHOR_HEIGHT)
+                order.verify(engine, timeout(TIMEOUT_MS)).startPolling()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun failed_preparation_disconnects_latches_the_setup_error_and_keeps_the_guard() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val failure = RuntimeException("anchor unreachable")
+        val earlyHandlerCalls = AtomicInteger(0)
+        val recorded = AtomicReference<Throwable?>()
+        /*
+         * Acquired as Companion.new would, so the "a failed preparation keeps the key" claim is real.
+         */
+        runBlocking { InstanceGuard.acquire(key) }
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                engineStatusOverride = engineStatus,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource =
+                            SlipstreamAnchorSource { _, _, _ ->
+                                anchorGate.await()
+                                throw failure
+                            }
+                    )
+            )
+        val earlyHandlerFired = CountDownLatch(1)
+        try {
+            synchronizer.onSetupErrorHandler = { t ->
+                recorded.set(t)
+                earlyHandlerCalls.incrementAndGet()
+                earlyHandlerFired.countDown()
+                false
+            }
+            anchorGate.complete(Unit)
+
+            assertTrue(earlyHandlerFired.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            runBlocking {
+                withTimeout(TIMEOUT_MS) { synchronizer.status.first { it == Synchronizer.Status.DISCONNECTED } }
+            }
+            assertSameFailure(failure, recorded.get())
+            assertEquals(1, earlyHandlerCalls.get())
+
+            val thrown = assertFailsWith<SlipstreamNotReadyException> { runBlocking { synchronizer.getAccounts() } }
+            assertSameFailure(failure, thrown.cause)
+
+            val lateHandlerCalls = AtomicInteger(0)
+            synchronizer.onSetupErrorHandler = {
+                lateHandlerCalls.incrementAndGet()
+                false
+            }
+            assertEquals(1, lateHandlerCalls.get())
+
+            synchronizer.onSetupErrorHandler = null
+            assertEquals(1, lateHandlerCalls.get())
+            assertTrue(InstanceGuard.isActive(key))
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun close_during_preparation_cancels_it_without_opening_the_engine_or_erroring() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val key = newKey()
+        val handlerCalls = AtomicInteger(0)
+        runBlocking { InstanceGuard.acquire(key) }
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                engineStatusOverride = engineStatus,
+                prepareInputs = prepareInputs(anchorSource = SlipstreamAnchorSource { _, _, _ -> awaitCancellation() })
+            )
+        try {
+            synchronizer.onSetupErrorHandler = {
+                handlerCalls.incrementAndGet()
+                false
+            }
+
+            synchronizer.close()
+
+            val thrown = assertFailsWith<SlipstreamNotReadyException> { runBlocking { synchronizer.getAccounts() } }
+            assertEquals(null, thrown.cause)
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).shutdown()
+                verify(engine, never()).open(TOTAL_MEMORY_BYTES)
+            }
+            assertEquals(0, handlerCalls.get())
+            assertEquals(Synchronizer.Status.INITIALIZING, engineStatus.value)
+            /*
+             * The guard was released by the completed shutdown job, so a fresh acquire succeeds.
+             */
+            runBlocking { InstanceGuard.acquire(key) }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun sync_burst_while_preparing_returns_unavailable_without_suspending() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            val result = runBlocking { synchronizer.syncBurst(timeout = ONE_SECOND) { false } }
+
+            assertEquals(Synchronizer.SyncBurstResult.UNAVAILABLE, result)
+            runBlocking {
+                verify(engine, after(SETTLE_MS).never()).start(null, ANCHOR_HEIGHT)
+                verify(engine, never()).startPolling()
+            }
+        } finally {
+            anchorGate.complete(Unit)
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun on_foreground_during_preparation_is_queued_behind_the_gate() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+
+            synchronizer.onForeground()
+            runBlocking { verify(engine, after(SETTLE_MS).never()).start(UFVK, ANCHOR_HEIGHT) }
+
+            anchorGate.complete(Unit)
+
+            runBlocking {
+                val order = inOrder(engine)
+                order.verify(engine, timeout(TIMEOUT_MS)).start(UFVK, ANCHOR_HEIGHT)
+                verify(engine, timeout(TIMEOUT_MS).times(2)).startPolling()
+                /*
+                 * The queued block found a running engine, so it never restarted it keylessly.
+                 */
+                verify(engine, never()).start(null, ANCHOR_HEIGHT)
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun cold_flows_emit_from_db_ready_before_the_anchor_resolves() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            runBlocking {
+                assertEquals(null, synchronizer.accountsFlow.first())
+                /*
+                 * Both cold flows are served from the migrated DB while the anchor is still held.
+                 */
+                assertEquals(emptyList(), withTimeout(TIMEOUT_MS) { synchronizer.accountsFlow.drop(1).first() })
+                assertEquals(emptyList(), withTimeout(TIMEOUT_MS) { synchronizer.allTransactions.first() })
+                verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
+
+                anchorGate.complete(Unit)
+
+                verify(engine, timeout(TIMEOUT_MS)).start(UFVK, ANCHOR_HEIGHT)
+                assertEquals(emptyList(), withTimeout(TIMEOUT_MS) { synchronizer.accountsFlow.drop(1).first() })
+                assertEquals(emptyList(), withTimeout(TIMEOUT_MS) { synchronizer.allTransactions.first() })
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The regression harness for a preparation that fails AFTER `DbReady` was published: both cold
+     * flows are already subscribed and serving DB rows when the anchor throws, so they must
+     * COMPLETE rather than kill the host's eager collectors or strand them forever - while the
+     * relaxed suspend reads start throwing, `Failed` being terminal for them too.
+     */
+    @Test
+    fun cold_flows_complete_instead_of_failing_when_preparation_fails() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val emitted = CountDownLatch(2)
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                engineStatusOverride = engineStatus,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource =
+                            SlipstreamAnchorSource { _, _, _ ->
+                                anchorGate.await()
+                                error("anchor unreachable")
+                            }
+                    )
+            )
+        try {
+            runBlocking {
+                val accounts =
+                    async(Dispatchers.Default) {
+                        synchronizer.accountsFlow.onEach { if (it != null) emitted.countDown() }.toList()
+                    }
+                val transactions =
+                    async(Dispatchers.Default) {
+                        synchronizer.allTransactions.onEach { emitted.countDown() }.toList()
+                    }
+                assertTrue(emitted.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+
+                anchorGate.complete(Unit)
+
+                val accountEmissions = withTimeout(TIMEOUT_MS) { accounts.await() }
+                assertEquals(2, accountEmissions.size)
+                assertEquals(null, accountEmissions[0])
+                assertEquals(emptyList(), accountEmissions[1])
+
+                val transactionEmissions = withTimeout(TIMEOUT_MS) { transactions.await() }
+                assertEquals(1, transactionEmissions.size)
+                assertEquals(emptyList(), transactionEmissions[0])
+
+                assertFailsWith<SlipstreamNotReadyException> { synchronizer.getAccounts() }
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun status_is_not_masked_to_synced_when_a_pause_lands_on_a_failed_preparation() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val key = newKey()
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                engineStatusOverride = engineStatus,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource = SlipstreamAnchorSource { _, _, _ -> error("anchor unreachable") }
+                    )
+            )
+        try {
+            runBlocking {
+                withTimeout(TIMEOUT_MS) { synchronizer.status.first { it == Synchronizer.Status.DISCONNECTED } }
+                synchronizer.pause()
+                assertEquals(Synchronizer.Status.DISCONNECTED, synchronizer.status.first())
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun a_preparation_finishing_around_close_never_overwrites_the_closed_state() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorEntered = CountDownLatch(1)
+        val anchorGate = CompletableDeferred<Unit>()
+        val handlerCalls = AtomicInteger(0)
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource =
+                            SlipstreamAnchorSource { _, _, _ ->
+                                anchorEntered.countDown()
+                                anchorGate.await()
+                                SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
+                            }
+                    )
+            )
+        try {
+            synchronizer.onSetupErrorHandler = {
+                handlerCalls.incrementAndGet()
+                false
+            }
+            assertTrue(anchorEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+
+            synchronizer.close()
+            anchorGate.complete(Unit)
+
+            val thrown = assertFailsWith<SlipstreamNotReadyException> { runBlocking { synchronizer.getAccounts() } }
+            assertEquals(null, thrown.cause)
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).shutdown() }
+            assertEquals(0, handlerCalls.get())
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun rewind_below_the_resolved_birthday_is_coerced_up_to_it() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, key = key)
+        try {
+            runBlocking {
+                `when`(backend.rewindToHeight(STARTING_BIRTHDAY_VALUE))
+                    .thenReturn(JniRewindResult.Success(STARTING_BIRTHDAY_VALUE))
+            }
+
+            val rewound = runBlocking { synchronizer.rewindToNearestHeight(BlockHeight.new(BELOW_BIRTHDAY_VALUE)) }
+
+            assertEquals(BlockHeight.new(STARTING_BIRTHDAY_VALUE), rewound)
+            runBlocking {
+                verify(backend).rewindToHeight(STARTING_BIRTHDAY_VALUE)
+                verify(backend, never()).rewindToHeight(BELOW_BIRTHDAY_VALUE)
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun preparation_finishing_under_a_migration_pause_does_not_start_polling() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            synchronizer.pause()
+            anchorGate.complete(Unit)
+
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).start(UFVK, ANCHOR_HEIGHT)
+                /*
+                 * The queued pause() block runs once preparation publishes Ready.
+                 */
+                verify(engine, timeout(TIMEOUT_MS)).stopPolling()
+                verify(engine, after(SETTLE_MS).never()).startPolling()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /*
+     * ── DbReady: DB-backed reads served before the tail's network anchor ───────
+     */
+
+    @Test
+    fun read_only_surfaces_are_served_at_db_ready_while_the_anchor_is_still_pending() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val transactionsController = mock(TransactionsController::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        stubPrepareBackend(backend, null)
+        runBlocking {
+            `when`(backend.getCurrentAddress(accountUuid.value)).thenReturn(UNIFIED_ADDRESS)
+            `when`(transactionsController.forAccount(accountUuid)).thenReturn(flowOf(emptyList()))
+        }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                transactionsController = transactionsController,
+                key = key,
+                prepareInputs = prepareInputs(anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            runBlocking {
+                assertEquals(emptyList(), withTimeout(TIMEOUT_MS) { synchronizer.getAccounts() })
+                assertEquals(
+                    emptyList(),
+                    withTimeout(TIMEOUT_MS) { synchronizer.getTransactions(accountUuid).first() }
+                )
+                assertEquals(
+                    UNIFIED_ADDRESS,
+                    withTimeout(TIMEOUT_MS) { synchronizer.getUnifiedAddress(Account.new(accountUuid)) }
+                )
+
+                /*
+                 * A write stays gated on full readiness, so it is still suspended on the held anchor.
+                 */
+                val pending =
+                    async(Dispatchers.Default) {
+                        synchronizer.rewindToHeight(BlockHeight.new(BELOW_BIRTHDAY_VALUE))
+                    }
+                verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
+                assertTrue(pending.isActive)
+
+                anchorGate.complete(Unit)
+                withTimeout(TIMEOUT_MS) { pending.await() }
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The restore shape: the account row is written only once the anchor resolves, so the whole
+     * `DbReady` window reads an empty table. That read is suppressed rather than served - the host
+     * reads an empty list as "loaded, no accounts" - leaving the collector on the leading `null`
+     * until the tail's `createAccount` makes the rows real.
+     */
+    @Test
+    fun accounts_flow_refreshes_once_the_tail_creates_the_account_row() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val created = AtomicBoolean(false)
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES)))
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val jniAccount = jniAccount(accountUuid)
+        runBlocking {
+            `when`(backend.initDataDb(setup.seed.byteArray)).thenReturn(0)
+            `when`(backend.getAccounts()).thenAnswer { if (created.get()) listOf(jniAccount) else emptyList() }
+            `when`(
+                backend.createAccount(
+                    ACCOUNT_NAME,
+                    KEY_SOURCE,
+                    setup.seed.byteArray,
+                    TREE_STATE,
+                    ANCHOR_HEIGHT
+                )
+            ).thenAnswer {
+                created.set(true)
+                JniAccountUsk(accountUuid.value, ByteArray(USK_BYTES))
+            }
+        }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(setup = setup, anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            runBlocking {
+                val emissions = Channel<List<Account>?>(Channel.UNLIMITED)
+                val collector =
+                    launch(Dispatchers.Default) {
+                        synchronizer.accountsFlow.collect { emissions.send(it) }
+                    }
+                try {
+                    assertEquals(null, withTimeout(TIMEOUT_MS) { emissions.receive() })
+                    /*
+                     * The leading null is already consumed, so any element here would be the empty read.
+                     */
+                    assertEquals(null, withTimeoutOrNull(SETTLE_MS) { emissions.receive() })
+
+                    anchorGate.complete(Unit)
+
+                    val rows = withTimeout(TIMEOUT_MS) { emissions.receive() }
+                    assertEquals(accountUuid, rows?.single()?.accountUuid)
+                } finally {
+                    collector.cancel()
+                }
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The host distinguishes "still loading" (`null`) from "loaded, and there are no accounts" (an
+     * empty list), so the restore window must never serve the latter: until the tail's
+     * `createAccount` runs, the collector stays on the leading `null` and the account UI keeps
+     * rendering as loading rather than as absent.
+     */
+    @Test
+    fun accounts_flow_stays_loading_instead_of_emitting_empty_while_creation_is_pending() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val created = AtomicBoolean(false)
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES)))
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val jniAccount = jniAccount(accountUuid)
+        runBlocking {
+            `when`(backend.initDataDb(setup.seed.byteArray)).thenReturn(0)
+            `when`(backend.getAccounts()).thenAnswer { if (created.get()) listOf(jniAccount) else emptyList() }
+            `when`(
+                backend.createAccount(
+                    ACCOUNT_NAME,
+                    KEY_SOURCE,
+                    setup.seed.byteArray,
+                    TREE_STATE,
+                    ANCHOR_HEIGHT
+                )
+            ).thenAnswer {
+                created.set(true)
+                JniAccountUsk(accountUuid.value, ByteArray(USK_BYTES))
+            }
+        }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(setup = setup, anchorSource = gatedAnchor(anchorGate))
+            )
+        try {
+            runBlocking {
+                val emissions = async(Dispatchers.Default) { synchronizer.accountsFlow.take(2).toList() }
+                /*
+                 * Settles past DbReady with the anchor still held: a second emission would be the empty read.
+                 */
+                verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
+                assertTrue(emissions.isActive)
+
+                anchorGate.complete(Unit)
+
+                val rows = withTimeout(TIMEOUT_MS) { emissions.await() }
+                assertEquals(2, rows.size)
+                assertEquals(null, rows[0])
+                assertEquals(accountUuid, rows[1]?.single()?.accountUuid)
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The `DbReady` balance seed: what the wallet database already knows surfaces in the same phase
+     * the account row does, so an existing wallet never renders a hard zero while the tail is still
+     * blocked on its anchor.
+     */
+    @Test
+    fun balances_are_seeded_from_the_db_at_db_ready_before_the_anchor_resolves() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val balances = MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null)
+        val summary = dbSummary(AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES)))
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                walletBalancesOverride = balances,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource = gatedAnchor(anchorGate),
+                        dbWalletSummary = { summary }
+                    )
+            )
+        try {
+            runBlocking {
+                assertEquals(
+                    summary.accountBalances,
+                    withTimeout(TIMEOUT_MS) { synchronizer.walletBalances.first { it != null } }
+                )
+                /*
+                 * Still short of the anchor, so the seed is genuinely a DbReady-phase publish.
+                 */
+                verify(engine, after(SETTLE_MS).never()).open(TOTAL_MEMORY_BYTES)
+            }
+        } finally {
+            anchorGate.complete(Unit)
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The seed is an optimization, never a gate: a never-scanned database throws out of the summary
+     * read ("Target height not available"), and the tail must carry on to `Ready` with the balances
+     * left null - the shimmer, which is the correct render for a wallet with nothing scanned yet.
+     */
+    @Test
+    fun a_failing_db_balance_seed_is_swallowed_and_leaves_preparation_intact() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val balances = MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null)
+        val handlerCalls = AtomicInteger(0)
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                walletBalancesOverride = balances,
+                prepareInputs = prepareInputs(dbWalletSummary = { error(SEED_FAILURE_MESSAGE) })
+            )
+        try {
+            synchronizer.onSetupErrorHandler = {
+                handlerCalls.incrementAndGet()
+                false
+            }
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                assertEquals(null, balances.value)
+            }
+            assertEquals(0, handlerCalls.get())
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The anchor is a blocking, engine-bounded network call, so a preparation that has already lost
+     * its `DbReady` compare-and-set to [SlipstreamSynchronizer.close] must never start one - the
+     * shutdown's own `cancelAndJoin` would have to wait it out for a result nothing will read.
+     */
+    @Test
+    fun close_during_the_data_db_step_bails_out_before_the_anchor_call() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val initEntered = CountDownLatch(1)
+        val initProceed = CountDownLatch(1)
+        val anchorCalls = AtomicInteger(0)
+        runBlocking {
+            `when`(backend.getAccounts()).thenReturn(emptyList())
+            `when`(backend.initDataDb(null)).thenAnswer {
+                initEntered.countDown()
+                initProceed.await()
+                0
+            }
+        }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource =
+                            SlipstreamAnchorSource { _, _, _ ->
+                                anchorCalls.incrementAndGet()
+                                SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
+                            }
+                    )
+            )
+        try {
+            assertTrue(initEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+
+            synchronizer.close()
+            initProceed.countDown()
+
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).shutdown()
+                verify(engine, never()).open(TOTAL_MEMORY_BYTES)
+            }
+            assertEquals(0, anchorCalls.get())
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * kotlinx's stack-trace recovery hands the preparation job a COPY of any exception that crossed
+     * the tail's `withContext(Dispatchers.IO)` boundary, so identity comparison is not available -
+     * assert on the type and message instead.
+     */
+    private fun assertSameFailure(
+        expected: Throwable,
+        actual: Throwable?
+    ) {
+        assertEquals(expected::class, actual?.let { it::class })
+        assertEquals(expected.message, actual?.message)
+    }
+
+    private fun gatedAnchor(gate: CompletableDeferred<Unit>) =
+        SlipstreamAnchorSource { _, _, _ ->
+            gate.await()
+            SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
+        }
+
+    /**
+     * Mockito answers `null` for unstubbed suspend calls (their erased return type is `Object`),
+     * which the preparation tail would unbox into a crash - stub the two reads it performs.
+     */
+    private fun stubPrepareBackend(
+        backend: Backend,
+        seed: ByteArray?
+    ) {
+        runBlocking {
+            `when`(backend.initDataDb(seed)).thenReturn(0)
+            `when`(backend.getAccounts()).thenReturn(emptyList())
+        }
+    }
+
+    /**
+     * The wallet database's own summary, shaped as `TypesafeBackendImpl.getWalletSummary` returns
+     * it. Only [WalletSummary.accountBalances] feeds the `DbReady` seed; the heights and progress
+     * fields are plausible filler, deliberately not seeded anywhere.
+     */
+    private fun dbSummary(accountUuid: AccountUuid) =
+        WalletSummary(
+            accountBalances = mapOf(accountUuid to SEEDED_ACCOUNT_BALANCE),
+            chainTipHeight = BlockHeight.new(ANCHOR_HEIGHT),
+            fullyScannedHeight = BlockHeight.new(ANCHOR_HEIGHT),
+            scanProgress = ScanProgress(1, 1),
+            recoveryProgress = RecoveryProgress(1, 1),
+            nextSaplingSubtreeIndex = 0u,
+            nextOrchardSubtreeIndex = 0u,
+            nextIronwoodSubtreeIndex = 0u
+        )
+
     private fun newKey() = SlipstreamKey(ZcashNetwork.Testnet, "alias_${System.nanoTime()}")
+
+    private fun jniAccount(accountUuid: AccountUuid): JniAccount =
+        JniAccount(
+            accountName = ACCOUNT_NAME,
+            accountUuid = accountUuid.value,
+            hdAccountIndex = NULL_HD_ACCOUNT_INDEX,
+            keySource = KEY_SOURCE,
+            seedFingerprint = null,
+            ufvk = UFVK,
+            uivk = null
+        )
 
     @Suppress("LongParameterList")
     private fun snapshot(
@@ -650,14 +1541,17 @@ class SlipstreamSynchronizerLifecycleTest {
         key: SlipstreamKey = newKey(),
         startBirthday: BlockHeight = BlockHeight.new(STARTING_BIRTHDAY_VALUE),
         engineStatusOverride: MutableStateFlow<Synchronizer.Status>? = null,
-        lastSnapshotOverride: MutableStateFlow<SlipstreamSnapshot?>? = null
+        lastSnapshotOverride: MutableStateFlow<SlipstreamSnapshot?>? = null,
+        walletBalancesOverride: MutableStateFlow<Map<AccountUuid, AccountBalance>?>? = null,
+        prepareInputs: PrepareInputs? = null
     ): SlipstreamSynchronizer {
         `when`(engine.status).thenReturn(engineStatusOverride ?: MutableStateFlow(Synchronizer.Status.SYNCED))
         `when`(engine.progress).thenReturn(MutableStateFlow(PercentDecimal.ZERO_PERCENT))
         `when`(engine.areFundsSpendable).thenReturn(MutableStateFlow(false))
         `when`(engine.networkHeight).thenReturn(MutableStateFlow<BlockHeight?>(null))
         `when`(engine.fullyScannedHeight).thenReturn(MutableStateFlow<BlockHeight?>(null))
-        `when`(engine.walletBalances).thenReturn(MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null))
+        `when`(engine.walletBalances)
+            .thenReturn(walletBalancesOverride ?: MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null))
         `when`(engine.lastSnapshot).thenReturn(lastSnapshotOverride ?: MutableStateFlow<SlipstreamSnapshot?>(null))
         `when`(transactionsController.allTransactions).thenReturn(flowOf(emptyList()))
 
@@ -681,9 +1575,42 @@ class SlipstreamSynchronizerLifecycleTest {
             spendService = mock(SlipstreamSpendService::class.java),
             broadcasterImpl = mock(SlipstreamBroadcaster::class.java),
             resubmissionTicker = mock(ResubmissionTicker::class.java),
-            startBirthday = startBirthday
+            startBirthday = startBirthday,
+            prepareInputs = prepareInputs
         )
     }
+
+    /**
+     * A [PrepareInputs] whose every JNI/assets seam is a stub, so the deferred-preparation tail can
+     * be driven from a test without `SlipstreamNative` or `CheckpointTool`. Defaults describe a
+     * [WalletInitMode.RestoreWallet] provisioning (intent 1 - the only intent that resolves an
+     * anchor from a birthday), with no [AccountCreateSetup] so no account row is written.
+     */
+    @Suppress("LongParameterList")
+    private fun prepareInputs(
+        walletInitMode: WalletInitMode = WalletInitMode.RestoreWallet,
+        requestedBirthday: BlockHeight? = BlockHeight.new(REQUESTED_BIRTHDAY_VALUE),
+        setup: AccountCreateSetup? = null,
+        ufvk: String? = UFVK,
+        anchorSource: SlipstreamAnchorSource =
+            SlipstreamAnchorSource { _, _, _ -> SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null) },
+        fallbackCheckpointHeight: suspend () -> Long = { FALLBACK_CHECKPOINT },
+        treeState: suspend (BlockHeight?) -> TreeState = { TreeState(TREE_STATE) },
+        lastCheckpointTreeState: suspend () -> TreeState = { TreeState(TREE_STATE) },
+        dbWalletSummary: suspend () -> WalletSummary? = { null },
+        totalMemoryBytes: Long = TOTAL_MEMORY_BYTES
+    ) = PrepareInputs(
+        walletInitMode = walletInitMode,
+        requestedBirthday = requestedBirthday,
+        setup = setup,
+        ufvk = ufvk,
+        anchorSource = anchorSource,
+        fallbackCheckpointHeight = fallbackCheckpointHeight,
+        treeState = treeState,
+        lastCheckpointTreeState = lastCheckpointTreeState,
+        dbWalletSummary = dbWalletSummary,
+        totalMemoryBytes = totalMemoryBytes
+    )
 
     companion object {
         private const val TIMEOUT_MS = 2_000L
@@ -691,6 +1618,41 @@ class SlipstreamSynchronizerLifecycleTest {
         private const val LATCH_TIMEOUT_SECONDS = 2L
         private const val STARTING_BIRTHDAY_VALUE = 2_000_000L
         private const val ACCOUNT_UUID_BYTES = 16
+
+        /** Deferred-preparation fixtures: the anchor resolves ABOVE the requested birthday. */
+        private const val REQUESTED_BIRTHDAY_VALUE = 2_100_000L
+        private const val ANCHOR_HEIGHT = 2_200_000L
+        private const val FALLBACK_CHECKPOINT = 1_900_000L
+        private const val TOTAL_MEMORY_BYTES = 4_000_000_000L
+        private const val UFVK = "uview1testkey"
+        private const val ACCOUNT_NAME = "test account"
+        private const val KEY_SOURCE = "test key source"
+        private const val SEED_BYTES = 32
+        private const val BELOW_BIRTHDAY_VALUE = 1_000_000L
+        private const val UNIFIED_ADDRESS = "utest1address"
+
+        /** [JniAccount] represents a NULL ZIP 32 account index across JNI as `-1`. */
+        private const val NULL_HD_ACCOUNT_INDEX = -1L
+        private const val USK_BYTES = 8
+        private val TREE_STATE = byteArrayOf(1, 2, 3, 4)
+
+        /** What a never-scanned database answers the summary read with, per the Rust backend. */
+        private const val SEED_FAILURE_MESSAGE = "Target height not available"
+
+        /** Non-zero throughout, so a hard-zero balance can never be mistaken for the seed. */
+        private val SEEDED_POOL_BALANCE =
+            WalletBalance(
+                available = Zatoshi(100_000L),
+                changePending = Zatoshi(2_000L),
+                valuePending = Zatoshi(300L)
+            )
+        private val SEEDED_ACCOUNT_BALANCE =
+            AccountBalance(
+                sapling = SEEDED_POOL_BALANCE,
+                orchard = SEEDED_POOL_BALANCE,
+                ironwood = SEEDED_POOL_BALANCE,
+                unshielded = Zatoshi(40L)
+            )
 
         private val TICK = 20.milliseconds
         private val HALF_SECOND = 500.milliseconds
