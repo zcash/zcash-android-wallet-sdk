@@ -345,6 +345,37 @@ sealed class MigrationAdvanceStep {
     }
 }
 
+/** The kind of step [MigrationPeek] predicts — [MigrationAdvanceStep]'s variants without a transaction id. */
+enum class MigrationStepKind {
+    PROVE,
+    BROADCAST,
+    REBUILD,
+    REPLAN,
+    REEVALUATE,
+    WAITING,
+    COMPLETE,
+}
+
+/**
+ * The engine's own peek-ahead at the step SUBSEQUENT to the one just returned by [OrchardMigrationSdk.nextStep]
+ * — assuming that step is executed and recorded. ADVISORY: [height] is a floor, not an appointment
+ * (dependencies still have to mine, and the wake-up's own next `nextStep()` call verifies — and may
+ * displace — the step), and it holds only as of the call that returned it, so a later call's peek
+ * supersedes it. `MigrationDriveOnce.reArm` folds [height] in as an ADDITIONAL wake-height
+ * candidate alongside [OrchardMigrationSdk.syncWakeupSchedule] and the next unsent due height
+ * (`min` of all three) — it does not yet replace that merge outright.
+ */
+data class MigrationPeek(
+    val height: Long,
+    val kind: MigrationStepKind,
+)
+
+/** [step] paired with the engine's own [next] peek-ahead — see [MigrationPeek]'s doc for its semantics. */
+data class MigrationAdvanceResult(
+    val step: MigrationAdvanceStep,
+    val next: MigrationPeek?,
+)
+
 /** One sync/prove wake-up of the engine's schedule: wake at [height], prove [covers]. */
 data class MigrationSyncWakeup(
     val height: Long,
@@ -924,13 +955,16 @@ interface OrchardMigrationSdk {
 
     /**
      * The engine state machine's single "what now?" answer (guarded `next_step`): the app worker
-     * performs exactly this and asks again. `null` when no migration is in progress. Broadcast
-     * timing uses the estimated (real) chain tip — a proved, due transfer returns
-     * [MigrationAdvanceStep.Broadcast] directly, broadcast-first over a ready prove (retention-
-     * justified); proving stays on the scanned tip (a witness needs a real settled checkpoint).
-     * Broadcast execution itself stays [executeNextPendingTransfer].
+     * performs exactly [MigrationAdvanceResult.step] and asks again. `null` when no migration is
+     * in progress. Broadcast timing uses the estimated (real) chain tip — a proved, due transfer
+     * returns [MigrationAdvanceStep.Broadcast] directly, broadcast-first over a ready prove
+     * (retention-justified); proving stays on the scanned tip (a witness needs a real settled
+     * checkpoint). Broadcast execution itself stays [executeNextPendingTransfer].
+     *
+     * [MigrationAdvanceResult.next] is the engine's own peek-ahead at the SUBSEQUENT step — see
+     * [MigrationPeek]'s doc — from the same call, no extra round trip.
      */
-    suspend fun nextStep(): MigrationAdvanceStep?
+    suspend fun nextStep(): MigrationAdvanceResult?
 
     /**
      * The engine's minimal sync/prove wake-up schedule (windows, minimality, jitter,

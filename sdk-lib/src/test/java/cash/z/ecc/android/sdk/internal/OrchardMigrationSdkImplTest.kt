@@ -2,6 +2,8 @@ package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
+import cash.z.ecc.android.sdk.MigrationPeek
+import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
@@ -45,6 +47,7 @@ import org.mockito.Mockito.`when`
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.milliseconds
@@ -677,8 +680,90 @@ class OrchardMigrationSdkImplTest {
 
             val result = sdk.nextStep()
 
-            assertEquals(MigrationAdvanceStep.Replan, result)
+            assertEquals(MigrationAdvanceStep.Replan, result?.step)
             assertTrue(fakeBackend.markMigrationSupersededCalled)
+        }
+
+    // ── nextStep peek-ahead: arr[2]/arr[3] parsing (MigrationPeek) ────────────
+
+    /**
+     * `nextStep()` must parse `arr[2]`/`arr[3]` (the engine's own peek-ahead, new on the
+     * librustzcash main pin adopted 2026-08-05) into `MigrationAdvanceResult.next` — a regression
+     * guard against a sign-flip or index-swap in that parsing, since every other test above only
+     * ever supplies a 2-long array and would not catch one.
+     */
+    @Test
+    fun nextStep_parses_the_peek_height_and_kind_from_arr_2_and_arr_3() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    // STEP_PROVE (id=5), peek: height=4200000, kind=STEP_BROADCAST (2).
+                    nextStepResult = longArrayOf(1L, 5L, 4_200_000L, 2L),
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertEquals(MigrationAdvanceStep.Prove(5L), result?.step)
+            assertEquals(MigrationPeek(height = 4_200_000L, kind = MigrationStepKind.BROADCAST), result?.next)
+        }
+
+    /** A `-1`/`-1` pair (nothing height-schedulable) must parse to `next = null`, not a bogus peek. */
+    @Test
+    fun nextStep_parses_the_sentinel_pair_as_a_null_peek() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    nextStepResult = longArrayOf(0L, -1L, -1L, -1L), // STEP_WAITING, no peek
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertEquals(MigrationAdvanceStep.Waiting, result?.step)
+            assertNull(result?.next)
+        }
+
+    /** A bare 2-long array (a fake/backend that hasn't been updated yet) must still parse cleanly. */
+    @Test
+    fun nextStep_treats_a_missing_peek_pair_as_a_null_peek() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(0L, -1L))
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertNull(result?.next)
         }
 
     private fun preparedTransfer(): JniPreparedTransfer =

@@ -68,7 +68,7 @@ use zcash_pool_migration::{
     satisfiability::{
         AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
     },
-    state::{AdvanceStep, NextAction},
+    state::{AdvanceStep, NextAction, StepKind},
 };
 
 use crate::migration_engine::{Backend, EngineError};
@@ -1208,7 +1208,7 @@ fn try_prove(
 ///
 /// A non-transient prover error (e.g. `IronwoodTreeUnavailable`) is NOT swallowed here — it still
 /// surfaces so a real failure is not silently dropped.
-fn is_transient_prove_error<TE, NE, RE>(err: &WalletProveError<TE, NE, RE>) -> bool {
+fn is_transient_prove_error<TE, NE, RE, LE>(err: &WalletProveError<TE, NE, RE, LE>) -> bool {
     matches!(
         err,
         WalletProveError::UnknownSpentNote(_)
@@ -1860,7 +1860,7 @@ fn any_overdue(
     }
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
-    let (code, _id) = advance_step(backend, state, scanned_target, estimated_target)?;
+    let (code, _id, _next_height, _next_kind) = advance_step(backend, state, scanned_target, estimated_target)?;
     Ok(code == STEP_BROADCAST)
 }
 
@@ -2414,7 +2414,7 @@ fn next_due_transfer_result<'a>(
     // function already pass scanned_tip/effective_tip as raw tips (not +1), so convert here.
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
-    let (code, id) = advance_step(backend, state, scanned_target, estimated_target)?;
+    let (code, id, _next_height, _next_kind) = advance_step(backend, state, scanned_target, estimated_target)?;
     Ok(match code {
         STEP_BROADCAST => {
             let tx_id = MigrationTransferId::new(id as u32);
@@ -5020,14 +5020,15 @@ mod next_due_transfer_tests {
             as_of: scanned,
         };
         let mut st = state.clone();
-        let step = advance_migration(
+        let advance = advance_migration(
             &mut store,
             &mut st,
             DuenessTargets::new(scanned, BlockHeight::from_u32(estimated)),
             &AdvanceConfig::new(SETTLE_DEPTH),
+            &mut OsRng,
         )
         .expect("in-memory store never errors");
-        match step {
+        match advance.step() {
             AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
             AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
             AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
@@ -5280,6 +5281,95 @@ mod next_due_transfer_delegation_tests {
             matches!(new_result, DueTransferResult::NothingDue),
             "the fix: advance_step's dead_set withholds an unsatisfiable transfer entirely"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Peek-ahead encoding tests: `advance_step`'s `(code, id, next_height, next_kind)` 4-tuple
+// against a ground-truth `advance_migration` call on an equivalent state. Every OTHER call site
+// in this file discards `next_height`/`next_kind` (bound to `_next_height, _next_kind`), so
+// nothing previously caught a sign-flip or index-swap in the hand-written `StepKind -> STEP_*`
+// match arms `advance_step` adds on top of `Advance::next()` (new on this pin, PR #2936).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod advance_step_peek_tests {
+    use super::next_due_transfer_tests::{InMemoryStore, make_state, transfer};
+    use super::*;
+    use zcash_pool_migration::engine::MigrationStatus;
+
+    /// Two due `Signed` transfers so the engine's own outlook, after acting on the first,
+    /// genuinely names a second, non-`None` execution point — exercising every field of the
+    /// 4-tuple, not just the sentinel (-1, -1) case.
+    #[test]
+    fn advance_step_encodes_next_height_and_kind_matching_advance_migration() {
+        let tip = BlockHeight::from_u32(1000);
+        let tx1 = transfer(1, MigrationTxState::Signed, 900, 5000);
+        let tx2 = transfer(2, MigrationTxState::Signed, 1200, 5000);
+        let state = make_state(MigrationStatus::InProgress, vec![tx1, tx2]);
+        let targets = DuenessTargets::new(tip + 1, tip + 1);
+
+        // Ground truth: call advance_migration directly on its own clone of the fixture.
+        let mut store_a = InMemoryStore { state: state.clone(), as_of: tip };
+        let mut state_a = state.clone();
+        let advance = advance_migration(
+            &mut store_a,
+            &mut state_a,
+            targets,
+            &AdvanceConfig::new(SETTLE_DEPTH),
+            &mut OsRng,
+        )
+        .expect("in-memory store never errors");
+        let expected_next = advance.next();
+        // Sanity: this fixture is only useful if the engine actually reports SOMETHING —
+        // otherwise the test would trivially pass on a bug that always returns None/-1/-1.
+        assert!(
+            expected_next.is_some(),
+            "fixture must produce a non-None peek to exercise the encoding"
+        );
+
+        // advance_step's own encoding, on an independent clone (advance_migration persists
+        // determinations into its store — keep the two calls fully isolated).
+        let mut store_b = InMemoryStore { state: state.clone(), as_of: tip };
+        let mut state_b = state.clone();
+        let (_code, _id, next_height, next_kind) =
+            advance_step(&mut store_b, &mut state_b, tip + 1, tip + 1)
+                .expect("advance_step over the in-memory store");
+
+        let (expected_height, expected_kind) = expected_next.expect("checked above");
+        assert_eq!(
+            next_height,
+            i64::from(u32::from(expected_height)),
+            "advance_step's next_height must match Advance::next()'s height"
+        );
+        let expected_code = match expected_kind {
+            StepKind::Prove => STEP_PROVE,
+            StepKind::Broadcast => STEP_BROADCAST,
+            StepKind::Rebuild => STEP_REBUILD,
+            StepKind::Replan => STEP_REPLAN,
+            StepKind::Reevaluate => STEP_REEVALUATE,
+            StepKind::Waiting => STEP_WAITING,
+            StepKind::Complete => STEP_COMPLETE,
+        };
+        assert_eq!(
+            next_kind, expected_code,
+            "advance_step's next_kind must match Advance::next()'s StepKind"
+        );
+    }
+
+    /// A migration with nothing pending reports no peek at all — the (-1, -1) sentinel pair, not
+    /// a stray height/kind from a previous call or an uninitialized default.
+    #[test]
+    fn advance_step_reports_sentinel_pair_when_advance_migration_has_no_outlook() {
+        let tip = BlockHeight::from_u32(1000);
+        let mined = transfer(1, MigrationTxState::Mined { txid: zcash_protocol::TxId::from_bytes([1u8; 32]), height: BlockHeight::from_u32(500) }, 500, 5000);
+        let state = make_state(MigrationStatus::Complete, vec![mined]);
+        let mut store = InMemoryStore { state: state.clone(), as_of: tip };
+        let mut st = state.clone();
+        let (code, _id, next_height, next_kind) =
+            advance_step(&mut store, &mut st, tip + 1, tip + 1).expect("advance_step over the in-memory store");
+        assert_eq!(code, STEP_COMPLETE);
+        assert_eq!(next_height, -1);
+        assert_eq!(next_kind, -1);
     }
 }
 
@@ -6178,7 +6268,7 @@ mod late_dependency_anchor_tests {
     #[test]
     fn commitment_tree_not_contained_is_transient() {
         // Reconstruct the EXACT live error value: Query(NotContained(Address{level:0, index:242174})).
-        let tree_err: WalletProveError<(), (), ()> = WalletProveError::Tree(ShardTreeError::Query(
+        let tree_err: WalletProveError<(), (), (), ()> = WalletProveError::Tree(ShardTreeError::Query(
             QueryError::NotContained(Address::from_parts(Level::from(0u8), 242_174)),
         ));
         assert!(
@@ -6192,14 +6282,14 @@ mod late_dependency_anchor_tests {
     /// The three witness/anchor-resolution errors that were ALREADY transient must stay transient.
     #[test]
     fn witness_and_anchor_errors_stay_transient() {
-        let unknown: WalletProveError<(), (), ()> = WalletProveError::UnknownSpentNote(
+        let unknown: WalletProveError<(), (), (), ()> = WalletProveError::UnknownSpentNote(
             orchard::note::Nullifier::from_bytes(&[0u8; 32])
                 .into_option()
                 .expect("valid nullifier bytes"),
         );
-        let anchor: WalletProveError<(), (), ()> =
+        let anchor: WalletProveError<(), (), (), ()> =
             WalletProveError::AnchorNotFound(BlockHeight::from_u32(ANCHOR));
-        let witness: WalletProveError<(), (), ()> =
+        let witness: WalletProveError<(), (), (), ()> =
             WalletProveError::WitnessNotFound(BlockHeight::from_u32(ANCHOR));
         assert!(is_transient_prove_error(&unknown));
         assert!(is_transient_prove_error(&anchor));
@@ -6210,7 +6300,7 @@ mod late_dependency_anchor_tests {
     /// transient — it should still surface, so we don't silently swallow real failures.
     #[test]
     fn ironwood_tree_unavailable_is_not_transient() {
-        let err: WalletProveError<(), (), ()> = WalletProveError::IronwoodTreeUnavailable;
+        let err: WalletProveError<(), (), (), ()> = WalletProveError::IronwoodTreeUnavailable;
         assert!(
             !is_transient_prove_error(&err),
             "a genuinely unrecoverable prover error must not be swallowed as transient"
@@ -6364,6 +6454,8 @@ mod state_machine_trace_tests {
     //! JNI layer will.
     use std::num::NonZeroU32;
 
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use zcash_pool_migration::{
         denomination::DenominationPlan,
         engine::{
@@ -6383,6 +6475,15 @@ mod state_machine_trace_tests {
 
     const EXPIRY: u32 = 4_285_440;
     const BUCKET: u32 = 12;
+
+    /// A freshly-seeded deterministic RNG per drive call — `advance_migration`'s schedule-shift
+    /// (new on this pin; see `zcash_pool_migration::satisfiability::advance_migration`'s own `rng`
+    /// parameter) draws from it, and this module's traces assert an EXACT step sequence, so the
+    /// draw must be reproducible. Mirrors the upstream crate's own `rng()` test helper
+    /// (`zcash_pool_migration/src/satisfiability.rs` test module) exactly, including the seed.
+    fn rng() -> StdRng {
+        StdRng::seed_from_u64(0xA5)
+    }
 
     /// One transaction of the plan, as the test owns it: everything `from_parts` needs except the
     /// live `MigrationTxState`, which the driver tracks separately.
@@ -6532,8 +6633,10 @@ mod state_machine_trace_tests {
                 &mut state,
                 DuenessTargets::at(target),
                 &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+                &mut rng(),
             )
             .expect("advance_migration over the no-op store")
+            .step()
         }
 
         /// Applies every step the engine emits at `tip` until it settles on Waiting/Complete/
@@ -6739,16 +6842,21 @@ mod state_machine_trace_tests {
         d.mine(11, 4_224_642);
         d.mine(7, 4_224_642);
 
-        // The tail broadcasts in schedule order; after the last mine the machine is Complete.
+        // The tail broadcasts; after the last mine the machine is Complete. Order is neither id
+        // nor schedule order: `advance_migration`'s new `shift_schedule` (this pin) re-shifts the
+        // remaining pending schedule by `served - scheduled` every time a step is served, redrawing
+        // in-distribution anchor boundaries along with it — a genuine ZIP 318 privacy feature, not
+        // present under rc.7. This exact sequence is deterministic ONLY because `rng()` above seeds
+        // a fixed RNG (`StdRng::seed_from_u64(0xA5)`, mirroring `zcash_pool_migration`'s own test
+        // convention) — a different seed reorders these five, though never omits or duplicates one.
         let (steps, _) = d.drain(4_224_660);
         assert_eq!(
             steps,
-            // Again id order among the simultaneously due, not schedule order.
             vec![
-                broadcast(6),
+                broadcast(13),
                 broadcast(10),
                 broadcast(12),
-                broadcast(13),
+                broadcast(6),
                 broadcast(14)
             ]
         );
@@ -7009,8 +7117,10 @@ mod state_machine_trace_tests {
             &mut state,
             DuenessTargets::at(BlockHeight::from_u32(1_001)),
             &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+            &mut rng(),
         )
-        .expect("advance_migration over the no-op store");
+        .expect("advance_migration over the no-op store")
+        .step();
         assert_eq!(
             step,
             AdvanceStep::Replan,
@@ -7116,17 +7226,24 @@ const BLOCKER_UNSATISFIABLE: i32 = 9;
 /// rebuild-on-expiry locally. (Historically the reporting surfaces applied a local late-dependency
 /// guard veto on top; that veto has been removed now that rc.6's `engine::prove_transfer` heals the
 /// condition at prove time — see the driver-surface banner above.)
+/// Returns `(stepCode, transferId, nextHeight, nextKind)`. `transferId` is `-1` when the step
+/// names no transaction. `nextHeight`/`nextKind` come from `Advance::next` — the engine's own
+/// peek-ahead at the subsequent step, assuming the returned step is executed and recorded (see
+/// that method's doc for the ADVISORY-outlook semantics); both are `-1` when `next` is `None`
+/// (nothing height-schedulable: chain- or user-driven, or terminal). `nextKind` uses the SAME
+/// `STEP_*` encoding as `stepCode` (`StepKind` and `AdvanceStep` are 1:1).
 fn advance_step(
     backend: &mut impl PoolMigrationWrite<Error = EngineError>,
     state: &mut MigrationState,
     scanned_target: BlockHeight,
     estimated_target: BlockHeight,
-) -> anyhow::Result<(i64, i64)> {
+) -> anyhow::Result<(i64, i64, i64, i64)> {
     let targets = DuenessTargets::new(scanned_target, estimated_target);
     let config = AdvanceConfig::new(SETTLE_DEPTH);
-    let step = advance_migration(backend, state, targets, &config)
+    let mut rng = OsRng;
+    let advance = advance_migration(backend, state, targets, &config, &mut rng)
         .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
-    Ok(match step {
+    let (code, id) = match advance.step() {
         AdvanceStep::Prove { id, .. } => (STEP_PROVE, i64::from(u32::from(id))),
         AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(id))),
         AdvanceStep::Rebuild { id } => (STEP_REBUILD, i64::from(u32::from(id))),
@@ -7134,16 +7251,35 @@ fn advance_step(
         AdvanceStep::Reevaluate => (STEP_REEVALUATE, -1),
         AdvanceStep::Waiting => (STEP_WAITING, -1),
         AdvanceStep::Complete => (STEP_COMPLETE, -1),
-    })
+    };
+    let (next_height, next_kind) = match advance.next() {
+        Some((height, kind)) => (
+            i64::from(u32::from(height)),
+            match kind {
+                StepKind::Prove => STEP_PROVE,
+                StepKind::Broadcast => STEP_BROADCAST,
+                StepKind::Rebuild => STEP_REBUILD,
+                StepKind::Replan => STEP_REPLAN,
+                StepKind::Reevaluate => STEP_REEVALUATE,
+                StepKind::Waiting => STEP_WAITING,
+                StepKind::Complete => STEP_COMPLETE,
+            },
+        ),
+        None => (-1, -1),
+    };
+    Ok((code, id, next_height, next_kind))
 }
 
-/// The single "what now?" read the app worker loops on. Returns `[stepCode, transferId]`
-/// (`transferId = -1` for Waiting/Complete). Two-tip (spec §3): broadcast timing is decided at the
-/// ESTIMATED target (`estimatedTip + 1`, clamped to never go below the scanned target — an
-/// optimistic estimate only ever ACCELERATES broadcast, never substitutes for a real checkpoint),
-/// while proving, rebuild, and completion stay on the SCANNED target (`tip + 1`) — those need real
-/// mined/expiry facts, not an estimate. Pass `estimatedTip < 0` when no estimate is available; the
-/// estimated target then equals the scanned target (no acceleration).
+/// The single "what now?" read the app worker loops on. Returns
+/// `[stepCode, transferId, nextHeight, nextKind]` (`transferId = -1` for Waiting/Complete;
+/// `nextHeight`/`nextKind = -1` when the engine's own peek-ahead — `Advance::next`, see
+/// `advance_step`'s doc — has nothing height-schedulable to report). Two-tip (spec §3): broadcast
+/// timing is decided at the ESTIMATED target (`estimatedTip + 1`, clamped to never go below the
+/// scanned target — an optimistic estimate only ever ACCELERATES broadcast, never substitutes for
+/// a real checkpoint), while proving, rebuild, and completion stay on the SCANNED target
+/// (`tip + 1`) — those need real mined/expiry facts, not an estimate. Pass `estimatedTip < 0` when
+/// no estimate is available; the estimated target then equals the scanned target (no
+/// acceleration).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_nextStepNative<
     'local,
@@ -7172,9 +7308,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         else {
             return Ok(ptr::null_mut());
         };
-        let (code, id) = advance_step(&mut backend, &mut state, scanned, estimated)?;
-        let arr = env.new_long_array(2)?;
-        env.set_long_array_region(&arr, 0, &[code, id])?;
+        let (code, id, next_height, next_kind) =
+            advance_step(&mut backend, &mut state, scanned, estimated)?;
+        let arr = env.new_long_array(4)?;
+        env.set_long_array_region(&arr, 0, &[code, id, next_height, next_kind])?;
         Ok(arr.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -7416,6 +7553,15 @@ mod wallet_rewind_tests {
     /// A single-transfer `MigrationState`, already `Mined` at `mined_height` and `Complete` — the
     /// exact shape `MigrationState::truncate_to_height`'s doc comment describes rolling back: a
     /// demotion here must also revert `Complete` back to `InProgress`.
+    /// `status` is `InProgress`, not `Complete`, even though this fixture's one transaction is
+    /// fully `Mined`: `PoolMigrationRead::get_migration` is now documented as PENDING-ONLY on this
+    /// pin (`zcash_pool_migration::engine::PoolMigrationRead::get_migration`'s doc: "A migration
+    /// whose status is terminal... is retained history and is NOT reported here") — a `Complete`
+    /// fixture would make every `get_migration()` read in this test (including the pre-truncation
+    /// sanity check, before truncation is even exercised) return `None`, which is a store-contract
+    /// change unrelated to the reorg-demotion behavior this test targets. `InProgress` keeps the
+    /// fixture visible to `get_migration()` while remaining in `store::truncate_to_height`'s walk
+    /// (`WHERE status NOT IN (policy_terminal)` — `InProgress` is non-terminal either way).
     fn mined_state(mined_height: BlockHeight, txid: zcash_protocol::TxId) -> MigrationState {
         let tx = MigrationTransaction::from_parts(
             MigrationTransferId::new(1),
@@ -7436,7 +7582,7 @@ mod wallet_rewind_tests {
             None,
         );
         MigrationState::from_parts(
-            MigrationStatus::Complete,
+            MigrationStatus::InProgress,
             note_split(),
             PreparationPlan::from_parts(vec![], vec![]),
             vec![tx],

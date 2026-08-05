@@ -14,7 +14,10 @@ import cash.z.ecc.android.sdk.AttentionReason
 import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
+import cash.z.ecc.android.sdk.MigrationAdvanceResult
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
+import cash.z.ecc.android.sdk.MigrationPeek
+import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.MigrationBlocker
 import cash.z.ecc.android.sdk.MigrationNextAction
 import cash.z.ecc.android.sdk.MigrationProgress
@@ -744,7 +747,7 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.migrationTransferStates(dbDataPath, network, account)?.toPublic()
         }
 
-    override suspend fun nextStep(): MigrationAdvanceStep? =
+    override suspend fun nextStep(): MigrationAdvanceResult? =
         logged("nextStep") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
@@ -753,40 +756,63 @@ internal class OrchardMigrationSdkImpl(
             val est = chainTipEstimator.estimatedTip()
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
-                when (arr.getOrElse(0) { STEP_WAITING }) {
-                    STEP_PROVE -> {
-                        MigrationAdvanceStep.Prove(id)
-                    }
+                val step =
+                    when (arr.getOrElse(0) { STEP_WAITING }) {
+                        STEP_PROVE -> {
+                            MigrationAdvanceStep.Prove(id)
+                        }
 
-                    STEP_BROADCAST -> {
-                        MigrationAdvanceStep.Broadcast(id)
-                    }
+                        STEP_BROADCAST -> {
+                            MigrationAdvanceStep.Broadcast(id)
+                        }
 
-                    STEP_REBUILD -> {
-                        MigrationAdvanceStep.Rebuild(id)
-                    }
+                        STEP_REBUILD -> {
+                            MigrationAdvanceStep.Rebuild(id)
+                        }
 
-                    STEP_COMPLETE -> {
-                        MigrationAdvanceStep.Complete
-                    }
+                        STEP_COMPLETE -> {
+                            MigrationAdvanceStep.Complete
+                        }
 
-                    STEP_REPLAN -> {
-                        // Every consumer of nextStep() gets a superseded migration automatically,
-                        // not just the app worker's specific Replan handler.
-                        migrationBackend.markMigrationSuperseded(dbDataPath, network, account)
-                        MigrationAdvanceStep.Replan
-                    }
+                        STEP_REPLAN -> {
+                            // Every consumer of nextStep() gets a superseded migration automatically,
+                            // not just the app worker's specific Replan handler.
+                            migrationBackend.markMigrationSuperseded(dbDataPath, network, account)
+                            MigrationAdvanceStep.Replan
+                        }
 
-                    STEP_REEVALUATE -> {
-                        MigrationAdvanceStep.Reevaluate
-                    }
+                        STEP_REEVALUATE -> {
+                            MigrationAdvanceStep.Reevaluate
+                        }
 
-                    else -> {
-                        MigrationAdvanceStep.Waiting
+                        else -> {
+                            MigrationAdvanceStep.Waiting
+                        }
                     }
-                }
+                MigrationAdvanceResult(step = step, next = parsePeek(arr))
             }
         }
+
+    /**
+     * `arr[2]`/`arr[3]` — the engine's own peek-ahead (`Advance::next`, see [MigrationPeek]'s
+     * doc), `-1`/`-1` when it has nothing height-schedulable to report. Same `STEP_*` encoding as
+     * `arr[0]`.
+     */
+    private fun parsePeek(arr: LongArray): MigrationPeek? {
+        val height = arr.getOrElse(2) { -1L }
+        if (height < 0) return null
+        val kind =
+            when (arr.getOrElse(3) { -1L }) {
+                STEP_PROVE -> MigrationStepKind.PROVE
+                STEP_BROADCAST -> MigrationStepKind.BROADCAST
+                STEP_REBUILD -> MigrationStepKind.REBUILD
+                STEP_REPLAN -> MigrationStepKind.REPLAN
+                STEP_REEVALUATE -> MigrationStepKind.REEVALUATE
+                STEP_COMPLETE -> MigrationStepKind.COMPLETE
+                else -> MigrationStepKind.WAITING
+            }
+        return MigrationPeek(height = height, kind = kind)
+    }
 
     override suspend fun syncWakeupSchedule(): List<MigrationSyncWakeup>? =
         logged("syncWakeupSchedule") {
