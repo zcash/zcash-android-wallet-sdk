@@ -2,10 +2,12 @@ package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
+import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferResult
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
+import cash.z.ecc.android.sdk.internal.model.JniUnifiedSpendingKey
 import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
@@ -26,14 +28,17 @@ import cash.z.ecc.android.sdk.internal.storage.preference.model.entry.Preference
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
+import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito.mock
@@ -43,10 +48,24 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Clock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 class OrchardMigrationSdkImplTest {
+    private companion object {
+        /**
+         * How long the read-liveness test waits for a pure read while a broadcast is parked. Long
+         * enough that a slow machine cannot fail it, short enough to fail fast if the read is once
+         * again queued behind the send's mutex.
+         */
+        val READ_LIVENESS_TIMEOUT = 5.seconds
+
+        /** How long each fake send holds the broadcast mutex in the serialization test. */
+        val BROADCAST_HOLD = 200.milliseconds
+    }
+
     @Test
     fun `privacy buffer is 10 minutes on mainnet and 3 on testnet`() {
         assertEquals(10.minutes, privacySyncBufferFor(ZcashNetwork.Mainnet))
@@ -476,6 +495,222 @@ class OrchardMigrationSdkImplTest {
             assertEquals(1, fakeBackend.broadcastCallCount, "the entry guard must fall through to a send here")
         }
 
+    // ── MOB-1623: lock scoping (pure reads out of the DB mutex, the send out of it entirely) ──
+
+    /**
+     * A pure read must not queue behind a broadcast. Before the split, `executeNextPendingTransfer`
+     * held MIGRATION_DB_ACCESS_MUTEX across the whole send (up to the 60 s broadcast timeout) and
+     * `getMigrationTransferStates` — the Progress screen's first paint — waited for the same mutex;
+     * this test would hang until the parked broadcast was released.
+     */
+    @Test
+    fun getMigrationTransferStates_completes_while_a_broadcast_is_parked() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val gate = CompletableDeferred<Unit>()
+            val broadcaster = GatedBroadcaster(gate = gate)
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    migrationTransferStatesResult =
+                        JniMigrationTransferStates(transfers = emptyArray(), tipHeight = 4_226_000L),
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val broadcasting =
+                launch {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
+            broadcaster.entered.await()
+
+            val states = withTimeout(READ_LIVENESS_TIMEOUT) { sdk.getMigrationTransferStates() }
+
+            assertEquals(4_226_000L, states?.tipHeight)
+            gate.complete(Unit)
+            broadcasting.join()
+            assertEquals(1, broadcaster.callCount)
+        }
+
+    /**
+     * A locked database thrown by the record step used to re-run the whole `logged` block —
+     * including a SECOND network send of the identical transaction, absorbed only by the
+     * duplicate-rejection classification. With the phases split, only the record retries.
+     */
+    @Test
+    fun executeNextPendingTransfer_retries_the_record_without_re_broadcasting() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val broadcaster = GatedBroadcaster()
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    recordTransferResultLockedFailures = 1,
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val outcome = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+
+            assertEquals(1, broadcaster.callCount, "a failed record must NOT re-send the transaction")
+            assertEquals(2, fakeBackend.recordTransferResultCallCount, "the record step itself must retry")
+            check(outcome is TransferAttemptOutcome.Executed) { "expected Executed, got $outcome" }
+            val result = outcome.result
+            check(result is TransferResult.Success) { "expected Success, got $result" }
+        }
+
+    /**
+     * Two concurrent entrants (the Progress screen's foreground pass, the Sending screen and
+     * MigrationWorker are all real ones) served the same next-due transfer: exactly one may send it.
+     * The DB mutex used to provide that by covering the whole method; now the in-flight mark and its
+     * phase-1 guard do, and the second caller must back off rather than re-send.
+     */
+    @Test
+    fun a_second_caller_does_not_re_broadcast_the_transfer_already_in_flight() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val gate = CompletableDeferred<Unit>()
+            val broadcaster = GatedBroadcaster(gate = gate)
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val first =
+                async {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
+            broadcaster.entered.await()
+            val second = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+
+            assertTrue(
+                second is TransferAttemptOutcome.NothingDue,
+                "the second caller must back off while the first send is in flight, got $second"
+            )
+            gate.complete(Unit)
+            val firstOutcome = first.await()
+            assertEquals(1, broadcaster.callCount, "the same transfer must be sent exactly once")
+            check(firstOutcome is TransferAttemptOutcome.Executed) { "expected Executed, got $firstOutcome" }
+            assertTrue(firstOutcome.result is TransferResult.Success)
+        }
+
+    /**
+     * Broadcasts of DIFFERENT operations still serialize — against BROADCAST_MUTEX now, not the DB
+     * mutex. Each fake send holds for [BROADCAST_HOLD]; if the two overlapped, `maxConcurrent` would
+     * be 2. Both outcomes must still commit.
+     */
+    @Test
+    fun a_transfer_send_and_a_note_split_send_never_overlap() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val broadcaster = GatedBroadcaster(holdFor = BROADCAST_HOLD)
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    signNoteSplitResult =
+                        JniPreparedTransfer(
+                            id = 2L,
+                            txid = ByteArray(32) { (it + 1).toByte() },
+                            pcztBytes = ByteArray(4) { it.toByte() },
+                        ),
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val transfer =
+                async {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
+            val noteSplit =
+                async {
+                    sdk.submitNoteSplit(
+                        NoteSplitProposal(outputNotes = listOf(1_000_000L), fee = 10_000L, proposalHandle = 7L),
+                        UnifiedSpendingKey(JniUnifiedSpendingKey(ByteArray(32) { 1 })),
+                    )
+                }
+
+            val transferOutcome = transfer.await()
+            val noteSplitResult = noteSplit.await()
+
+            assertEquals(2, broadcaster.callCount)
+            assertEquals(1, broadcaster.maxConcurrent, "broadcasts must not overlap")
+            check(transferOutcome is TransferAttemptOutcome.Executed) { "expected Executed, got $transferOutcome" }
+            assertTrue(transferOutcome.result is TransferResult.Success)
+            assertTrue(noteSplitResult is TransferResult.Success)
+            assertEquals(2, fakeBackend.recordTransferResultCallCount, "both outcomes must be recorded")
+        }
+
+    private fun sdkWith(
+        account: AccountUuid,
+        fakeBackend: FakeTypesafeMigrationBackend,
+        broadcaster: MigrationTransactionBroadcaster,
+    ): OrchardMigrationSdkImpl =
+        OrchardMigrationSdkImpl(
+            context = fakeAndroidContext(),
+            network = ZcashNetwork.Testnet,
+            alias = "OrchardMigrationSdkImplTest",
+            account = account,
+            migrationBackend = fakeBackend,
+            defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+            preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider(emptyMap())),
+            broadcaster = broadcaster,
+        )
+
+    /**
+     * Stands in for the whole network phase (see [OrchardMigrationSdkImpl]'s `broadcaster`
+     * parameter). Signals [entered] on the first call, optionally parks on [gate] and/or holds for
+     * [holdFor], and always reports success for the txid it was handed. [maxConcurrent] records how
+     * many sends were in flight at once, which is how the BROADCAST_MUTEX tests tell serialization
+     * from luck.
+     */
+    private class GatedBroadcaster(
+        private val gate: CompletableDeferred<Unit>? = null,
+        private val holdFor: Duration = Duration.ZERO,
+    ) : MigrationTransactionBroadcaster {
+        val entered = CompletableDeferred<Unit>()
+        var callCount = 0
+        var maxConcurrent = 0
+
+        private var inFlight = 0
+
+        override suspend fun submit(
+            rawTx: ByteArray,
+            txId: ByteArray,
+            useTor: Boolean,
+            endpoint: LightWalletEndpoint
+        ): TransactionSubmitResult {
+            callCount++
+            inFlight++
+            maxConcurrent = maxOf(maxConcurrent, inFlight)
+            entered.complete(Unit)
+            return try {
+                gate?.await()
+                if (holdFor > Duration.ZERO) delay(holdFor)
+                TransactionSubmitResult.Success(FirstClassByteArray(txId))
+            } finally {
+                inFlight--
+            }
+        }
+    }
+
     private fun preparedTransfer(): JniPreparedTransfer =
         JniPreparedTransfer(
             id = 1L,
@@ -567,6 +802,11 @@ class OrchardMigrationSdkImplTest {
         private val dueTransferResult: JniDueTransferResult =
             JniDueTransferResult(status = 0, awaitingProofTransferId = null, prepared = null),
         private val transactionMinedHeightResult: Long = -1L,
+        private val migrationTransferStatesResult: JniMigrationTransferStates? = null,
+        private val signNoteSplitResult: JniPreparedTransfer? = null,
+        // How many times recordTransferResult throws a "database is locked" failure before
+        // succeeding — the transient sync-race shape loggedRetryLoop is built to ride out.
+        private val recordTransferResultLockedFailures: Int = 0,
         // Task 1 cancellation-safety test hooks: when set, recordTransferResult signals
         // [onRecordTransferResultEntered] on entry, then suspends on [recordTransferResultGate]
         // until the test releases it, so a test can cancel the caller while this call is
@@ -582,6 +822,10 @@ class OrchardMigrationSdkImplTest {
         // Set only after recordTransferResult has run to completion (i.e. survived any
         // cancellation of the caller while suspended on recordTransferResultGate above).
         var recordTransferResultCompleted = false
+
+        // Every entry into recordTransferResult, including the ones that throw — so a test can tell
+        // "the record step retried" from "the whole broadcast block retried".
+        var recordTransferResultCallCount = 0
 
         // Counts calls that fetch the raw tx to broadcast — the call the Task 1 entry guard is
         // specifically there to skip on an already-mined in-flight resend.
@@ -662,7 +906,7 @@ class OrchardMigrationSdkImplTest {
             account: AccountUuid,
             proposalHandle: Long,
             usk: ByteArray
-        ): JniPreparedTransfer = error("Unused")
+        ): JniPreparedTransfer = signNoteSplitResult ?: error("Unused")
 
         override suspend fun extractBroadcastTx(
             dbDataPath: String,
@@ -683,6 +927,10 @@ class OrchardMigrationSdkImplTest {
             retryable: Boolean,
             txId: ByteArray
         ) {
+            recordTransferResultCallCount++
+            if (recordTransferResultCallCount <= recordTransferResultLockedFailures) {
+                error("database is locked")
+            }
             onRecordTransferResultEntered?.complete(Unit)
             recordTransferResultGate?.await()
             recordTransferResultCompleted = true
@@ -744,7 +992,7 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
-        ): JniMigrationTransferStates? = error("Unused")
+        ): JniMigrationTransferStates? = migrationTransferStatesResult
 
         override suspend fun migrationSummary(dbDataPath: String): LongArray {
             migrationSummaryDbDataPath = dbDataPath
