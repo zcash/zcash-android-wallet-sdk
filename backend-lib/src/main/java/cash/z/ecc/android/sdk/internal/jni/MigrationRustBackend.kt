@@ -466,13 +466,14 @@ class MigrationRustBackend private constructor() {
      * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
      * rather than a residual worth migrating in its own transfer — see
      * `MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`. A fixed protocol-level constant, not
-     * derived from any wallet/account state — still routed through `SdkDispatchers.DATABASE_IO`
-     * only for consistency with every other call in this class, not because it touches a
-     * database.
+     * derived from any wallet/account state — [SdkDispatchers.CPU_BOUND] (2026-08-07 blocking-
+     * without-reason audit), not [SdkDispatchers.DATABASE_IO]: this never touches a database, so
+     * routing it through the SDK's single shared DB-IO thread bought nothing but contention with
+     * genuine migration DB reads/writes.
      */
     @Throws(RuntimeException::class)
     suspend fun migrationDustThresholdZatoshi(): Long =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             migrationDustThresholdZatoshiNative()
         }
 
@@ -579,10 +580,11 @@ class MigrationRustBackend private constructor() {
     /**
      * The engine's Keystone signing-round budget constants:
      * `[maxActionsPerRound, preparationActions, transferActions]` (today `[96, 16, 3]`). Pure
-     * constants — no wallet database access.
+     * constants — no wallet database access, hence [SdkDispatchers.CPU_BOUND] not
+     * [SdkDispatchers.DATABASE_IO] (2026-08-07 blocking-without-reason audit).
      */
     suspend fun keystoneSigningRoundBudget(): IntArray =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             keystoneSigningRoundBudgetNative()
         }
 
@@ -601,7 +603,7 @@ class MigrationRustBackend private constructor() {
         transferUnsignedPczts: Array<ByteArray>,
         maxFragmentLen: Int
     ): Array<String> =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             buildKeystoneSignBatchQrPartsNative(
                 requestId,
                 splitUnsignedPczt,
@@ -616,7 +618,7 @@ class MigrationRustBackend private constructor() {
      */
     @Throws(RuntimeException::class)
     suspend fun resetKeystoneSignBatchDecoder() =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             resetKeystoneSignBatchDecoderNative()
         }
 
@@ -630,7 +632,7 @@ class MigrationRustBackend private constructor() {
         part: String,
         expectedRequestId: ByteArray
     ): JniKeystoneBatchDecodeResult =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             decodeKeystoneSignBatchPartNative(part, expectedRequestId)
                 ?: error("decodeKeystoneSignBatchPart returned null")
         }
@@ -647,7 +649,7 @@ class MigrationRustBackend private constructor() {
         transferUnsignedPczts: Array<ByteArray>,
         batchSignResponse: ByteArray
     ): JniKeystoneBatchSignedPczts =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             applyKeystoneBatchSignaturesNative(
                 splitUnsignedPczt,
                 transferUnsignedPczts,

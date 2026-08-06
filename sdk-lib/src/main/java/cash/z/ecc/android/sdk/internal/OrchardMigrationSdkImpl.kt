@@ -485,8 +485,16 @@ internal class OrchardMigrationSdkImpl(
                 ).toPublic()
         }
 
+    // loggedRead, not logged (2026-08-07 blocking-without-reason audit): proposeImmediateSendMax
+    // never reads or writes the persisted MigrationState (its own Rust doc confirms this — it
+    // discards the migration-store connection entirely and only touches the ordinary wallet, the
+    // same propose_send_max_transfer primitive an ordinary send-max uses), so it never reaches
+    // read_reconciled and needs no mutual exclusion. It was on `logged` for no reason other than
+    // every other propose*/sign* method nearby also being there — with no actual data dependency,
+    // it contended for MIGRATION_DB_ACCESS_MUTEX against every real migration operation (up to the
+    // ~6s worst case a loggedRetryLoop race retry holds it for) for zero benefit.
     override suspend fun proposeImmediateMigration(): Proposal =
-        logged("proposeImmediateMigration") {
+        loggedRead("proposeImmediateMigration") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             Proposal.fromByteArray(migrationBackend.proposeImmediateSendMax(dbDataPath, network, account))
