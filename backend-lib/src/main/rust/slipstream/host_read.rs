@@ -196,15 +196,19 @@ fn tx_output_row_object<'local>(
     )?)
 }
 
-/// Whether the open connection's `v_transactions` view exposes `zip318_kind` — the column the
-/// librustzcash zip318-classification patch adds (not yet in the crates.io release this crate
-/// otherwise depends on). Checked at runtime, once per `listTransactions` call, rather than
-/// assumed from a compile-time feature flag, so this code is safe to ship independent of whether
-/// that patch happens to be pinned in `Cargo.toml` right now — the same "column may be absent"
-/// posture `AllTransactionView.kt` already takes on the Kotlin side of the ordinary (non-Slipstream)
-/// reader.
-fn has_zip318_kind_column(conn: &rusqlite::Connection) -> bool {
-    conn.prepare("SELECT zip318_kind FROM v_transactions LIMIT 0")
+/// Whether the given table/view exposes `zip318_kind` — the column the librustzcash
+/// zip318-classification patch adds (not yet in the crates.io release this crate otherwise
+/// depends on). Checked at runtime, once per `listTransactions` call (scoped to the specific
+/// table that will be queried), rather than assumed from a compile-time feature flag, so this
+/// code is safe to ship independent of whether that patch happens to be pinned in `Cargo.toml`
+/// right now — the same "column may be absent" posture `AllTransactionView.kt` already takes
+/// on the Kotlin side of the ordinary (non-Slipstream) reader. Crucially, this checks the
+/// ACTUAL table being queried, not a hardcoded one — e.g. if a future schema state has
+/// `zip318_kind` on `v_transactions` but not on `v_transactions_with_pending_migrations`,
+/// this will return `false` for the latter and prevent a no-fallback prepare failure (see
+/// [`has_pending_migrations_view`] for the defense-in-depth pattern this implements).
+fn has_zip318_kind_column(conn: &rusqlite::Connection, table_name: &str) -> bool {
+    conn.prepare(&format!("SELECT zip318_kind FROM {table_name} LIMIT 0"))
         .is_ok()
 }
 
@@ -243,7 +247,7 @@ mod view_existence_tests {
     #[test]
     fn has_zip318_kind_column_is_false_on_a_bare_connection() {
         let conn = Connection::open_in_memory().unwrap();
-        assert!(!has_zip318_kind_column(&conn));
+        assert!(!has_zip318_kind_column(&conn, "v_transactions"));
     }
 
     #[test]
@@ -279,6 +283,29 @@ mod view_existence_tests {
         )
         .unwrap();
         assert!(!has_pending_migrations_view(&conn));
+    }
+
+    #[test]
+    fn has_zip318_kind_column_correctly_checks_the_target_view_not_hardcoded_table() {
+        // Regression guard: if v_transactions has zip318_kind but
+        // v_transactions_with_pending_migrations does not (or vice versa), the existence check
+        // must evaluate each view independently. This is the failure mode the scoped check exists
+        // to prevent: if has_zip318_kind_column blindly checked v_transactions, it could return
+        // true and list_transactions_sql could emit SQL with a column that doesn't exist on the
+        // actually-queried v_transactions_with_pending_migrations view, causing prepare() to
+        // fail and emptying the Activity list with no fallback.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIEW v_transactions AS SELECT 1 AS txid, 3 AS zip318_kind;
+             CREATE VIEW v_transactions_with_pending_migrations AS SELECT 1 AS txid;",
+        )
+        .unwrap();
+        // v_transactions has zip318_kind, but v_transactions_with_pending_migrations does not
+        assert!(has_zip318_kind_column(&conn, "v_transactions"));
+        assert!(!has_zip318_kind_column(
+            &conn,
+            "v_transactions_with_pending_migrations"
+        ));
     }
 }
 
@@ -463,8 +490,13 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listTransactions<'lo
         };
         let conn = read_query::open_read_only(&db_path)?;
 
-        let has_zip318_kind = has_zip318_kind_column(&conn);
         let has_pending_migrations = has_pending_migrations_view(&conn);
+        let table_name = if has_pending_migrations {
+            "v_transactions_with_pending_migrations"
+        } else {
+            "v_transactions"
+        };
+        let has_zip318_kind = has_zip318_kind_column(&conn, table_name);
         let sql = list_transactions_sql(
             is_recovering != 0,
             account_uuid_bytes.is_some(),
