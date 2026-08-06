@@ -100,9 +100,13 @@ if [ -n "$PREVIOUS" ]; then
 else
     # Only tags reachable from the revision are candidates: a tag on a newer
     # line is not something this release can be a successor to.
-    PREV_TAG="$(git tag --list --merged "$REV_SHA" "${TAG_PREFIX}[0-9]*" \
-                | sed "s/^${TAG_PREFIX}//" | version_sort | tail -1 \
-                | sed "s/^/${TAG_PREFIX}/")"
+    PREV_TAG="$(git \
+        -c versionsort.suffix=-alpha \
+        -c versionsort.suffix=-beta \
+        -c versionsort.suffix=-rc \
+        -c versionsort.suffix= \
+        tag --list --merged "$REV_SHA" --sort=version:refname \
+        "${TAG_PREFIX}[0-9]*" | tail -1)"
     [ -n "$PREV_TAG" ] || {
         echo "error: no release tags are reachable from ${REVISION}." >&2
         echo "       pass --previous <tag> to say which release this follows." >&2

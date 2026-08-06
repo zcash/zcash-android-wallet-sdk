@@ -24,14 +24,47 @@ run() {
 }
 
 valid_version() {
-    printf '%s\n' "$1" |
-        grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
+    printf '%s\n' "$1" | grep -Eq \
+        '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[0-9]+)?$'
 }
 
-version_sort() { sed 's/-/~/' | sort -V | sed 's/~/-/'; }
+parse_version() {
+    local version="$1" suffix
+    [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-(alpha|beta|rc)\.([0-9]+))?$ ]]
+    VERSION_MAJOR="${BASH_REMATCH[1]}"
+    VERSION_MINOR="${BASH_REMATCH[2]}"
+    VERSION_PATCH="${BASH_REMATCH[3]}"
+    suffix="${BASH_REMATCH[5]}"
+    case "$suffix" in
+        alpha) VERSION_RANK=1; VERSION_SEQUENCE="${BASH_REMATCH[6]}" ;;
+        beta)  VERSION_RANK=2; VERSION_SEQUENCE="${BASH_REMATCH[6]}" ;;
+        rc)    VERSION_RANK=3; VERSION_SEQUENCE="${BASH_REMATCH[6]}" ;;
+        *)     VERSION_RANK=4; VERSION_SEQUENCE=0 ;;
+    esac
+}
 
 version_le() {
-    [ "$(printf '%s\n%s\n' "$1" "$2" | version_sort | head -1)" = "$1" ]
+    local lhs_major lhs_minor lhs_patch lhs_rank lhs_sequence
+    local rhs_major rhs_minor rhs_patch rhs_rank rhs_sequence
+
+    parse_version "$1"
+    lhs_major="$VERSION_MAJOR"
+    lhs_minor="$VERSION_MINOR"
+    lhs_patch="$VERSION_PATCH"
+    lhs_rank="$VERSION_RANK"
+    lhs_sequence="$VERSION_SEQUENCE"
+    parse_version "$2"
+    rhs_major="$VERSION_MAJOR"
+    rhs_minor="$VERSION_MINOR"
+    rhs_patch="$VERSION_PATCH"
+    rhs_rank="$VERSION_RANK"
+    rhs_sequence="$VERSION_SEQUENCE"
+
+    if (( lhs_major != rhs_major )); then (( lhs_major < rhs_major )); return; fi
+    if (( lhs_minor != rhs_minor )); then (( lhs_minor < rhs_minor )); return; fi
+    if (( lhs_patch != rhs_patch )); then (( lhs_patch < rhs_patch )); return; fi
+    if (( lhs_rank != rhs_rank )); then (( lhs_rank < rhs_rank )); return; fi
+    (( 10#$lhs_sequence <= 10#$rhs_sequence ))
 }
 
 repo_slug_from_url() {
