@@ -141,4 +141,78 @@ class TransactionOverviewCursorTest {
         assertTrue(overview.isShielding)
         assertEquals(TransactionState.Pending, overview.transactionState)
     }
+
+    /**
+     * Shape of a row from `v_transactions_with_pending_migrations`'s migration branch: no
+     * `raw` (not broadcast yet), no `mined_height`, a real `expiry_height`, `fee_paid` present
+     * (unlike an ordinary unbroadcast send, which has none yet either), and a real
+     * `zip318Kind`. Locks in that the existing null-safe mapping needs no changes for
+     * z/wt/migration_fixes/spec/2026-08-06-activity-pending-migrations-plan.md.
+     */
+    @Test
+    fun migration_transfer_pending_row_maps_to_pending_state_with_transfer_kind() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row =
+                    SlipstreamTransactionRow(
+                        txId = ByteArray(32) { 5 },
+                        minedHeight = null,
+                        expiryHeight = 2_500_000,
+                        txIndex = null,
+                        raw = null,
+                        accountBalanceDelta = -1_000,
+                        totalSpent = 500_000,
+                        totalReceived = 499_000,
+                        feePaid = 1_000,
+                        hasChange = false,
+                        sentNoteCount = 1,
+                        receivedNoteCount = 1,
+                        memoCount = 0,
+                        blockTime = null,
+                        isShielding = false,
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 3 // Zip318Kind.TRANSFER
+                    ),
+                latestHeight = BlockHeight.new(2_000_000)
+            )
+
+        assertTrue(overview.isSentTransaction)
+        assertNull(overview.raw)
+        assertNull(overview.minedHeight)
+        assertEquals(TransactionState.Pending, overview.transactionState)
+        assertEquals(cash.z.ecc.android.sdk.model.Zip318Kind.TRANSFER, overview.zip318Kind)
+    }
+
+    /** Same shape, `PREPARATION` (note-split) kind — the other migration branch case. */
+    @Test
+    fun migration_preparation_pending_row_maps_to_pending_state_with_preparation_kind() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row =
+                    SlipstreamTransactionRow(
+                        txId = ByteArray(32) { 6 },
+                        minedHeight = null,
+                        expiryHeight = 2_500_100,
+                        txIndex = null,
+                        raw = null,
+                        accountBalanceDelta = -300,
+                        totalSpent = 300,
+                        totalReceived = 0,
+                        feePaid = 300,
+                        hasChange = false,
+                        sentNoteCount = 0,
+                        receivedNoteCount = 3,
+                        memoCount = 0,
+                        blockTime = null,
+                        isShielding = false,
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 2 // Zip318Kind.PREPARATION
+                    ),
+                latestHeight = BlockHeight.new(2_000_000)
+            )
+
+        assertTrue(overview.isSentTransaction)
+        assertEquals(TransactionState.Pending, overview.transactionState)
+        assertEquals(cash.z.ecc.android.sdk.model.Zip318Kind.PREPARATION, overview.zip318Kind)
+    }
 }
