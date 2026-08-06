@@ -2859,20 +2859,70 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
-/// Reads the ENGINE's persisted migration outcome — the single source of truth for the just-
-/// finished migration — for the Migration Complete screen's real summary, which the app-side plan
-/// (cleared on completion) can no longer supply. Returns
-/// `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds, lastMinedEpochSeconds]`, or an
-/// EMPTY array when there is no migration data / no mined transfer yet.
+/// Pure-Rust core of `migrationSummaryNative`'s query logic, split out so it's testable without a
+/// JNIEnv (see `migration_summary_tests` below) — the JNI wrapper just marshals this into a
+/// `jlongArray`. Returns `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds,
+/// lastMinedEpochSeconds]`, or an EMPTY vec when there is no migration data / no mined transfer
+/// yet.
 ///
 /// - `totalMigratedZatoshi` = SUM of every per-transfer crossing value (what actually crossed to
 ///   Ironwood). NOTE: this is LESS than the balance that left Orchard, by the migration fees.
 /// - `transferCount` = number of MINED `kind='transfer'` transactions.
-/// - `first`/`lastMinedEpochSeconds` = MIN/MAX `blocks.time` over those mined transfers'
-///   `mined_height`, for the elapsed-duration display.
+/// - `first`/`lastMinedEpochSeconds` = MIN/MAX `blocks.time`, keyed by `mined_height`, over ALL
+///   mined migration transactions — transfers AND preparations. Preparations (note-splits) always
+///   run first in a migration plan and can account for a large fraction of total elapsed time, so
+///   the elapsed-duration display must span the whole plan rather than just the crossing-transfer
+///   sub-window.
 ///
 /// Best-effort and never load-bearing: any read failure (missing tables on a fresh/other wallet,
-/// transient lock, etc.) `.ok()`-swallows to an empty array and the screen falls back to zeros.
+/// transient lock, etc.) `.ok()`-swallows to an empty vec and the screen falls back to zeros.
+fn migration_summary(conn: &Connection) -> Vec<i64> {
+    // Every fact is `.ok()`-swallowed: a fresh/other wallet lacks these tables entirely, and a
+    // migration with no mined transfer yet has no duration — either way this is best-effort and
+    // the screen falls back to zeros.
+    let total_migrated: Option<i64> = conn
+        .query_row(
+            "SELECT COALESCE(SUM(value), 0) FROM orchard_ironwood_migration_crossing_values",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    let transfer_count: Option<i64> = conn
+        .query_row(
+            "SELECT COUNT(*) FROM orchard_ironwood_migration_transactions \
+             WHERE kind = 'transfer' AND state = 'mined'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    // MIN/MAX block time over ALL mined migration transactions (transfers AND preparations), for
+    // the elapsed-duration display — preparations run first and can take a large share of total
+    // elapsed time, so they must count toward the duration bounds even though they're excluded
+    // from transfer_count above.
+    let bounds: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT MIN(b.time), MAX(b.time) \
+             FROM orchard_ironwood_migration_transactions t \
+             JOIN blocks b ON b.height = t.mined_height \
+             WHERE t.state = 'mined'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+
+    // No mined transfer → nothing meaningful to show; return empty and let the screen zero-fill.
+    match (transfer_count, bounds) {
+        (Some(count), Some((first, last))) if count > 0 => {
+            vec![total_migrated.unwrap_or(0), count, first, last]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Reads the ENGINE's persisted migration outcome — the single source of truth for the just-
+/// finished migration — for the Migration Complete screen's real summary, which the app-side plan
+/// (cleared on completion) can no longer supply. See `migration_summary` for the full field
+/// semantics and best-effort fallback behavior.
 ///
 /// Uses THIS crate's BUNDLED read-only SQLite (rusqlite), exactly like `blockRateSamplesNative` —
 /// see its Rust doc for the dual-SQLite-instance SIGBUS hazard that forbids opening the engine's
@@ -2900,48 +2950,112 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         conn.pragma_update(None, "mmap_size", 0)
             .map_err(|e| anyhow!("migration-summary mmap disable: {}", e))?;
 
-        // Every fact is `.ok()`-swallowed: a fresh/other wallet lacks these tables entirely, and a
-        // migration with no mined transfer yet has no duration — either way this is best-effort and
-        // the screen falls back to zeros.
-        let total_migrated: Option<i64> = conn
-            .query_row(
-                "SELECT COALESCE(SUM(value), 0) FROM orchard_ironwood_migration_crossing_values",
-                [],
-                |r| r.get(0),
-            )
-            .ok();
-        let transfer_count: Option<i64> = conn
-            .query_row(
-                "SELECT COUNT(*) FROM orchard_ironwood_migration_transactions \
-                 WHERE kind = 'transfer' AND state = 'mined'",
-                [],
-                |r| r.get(0),
-            )
-            .ok();
-        // MIN/MAX block time over the mined transfers, for the elapsed-duration display.
-        let bounds: Option<(i64, i64)> = conn
-            .query_row(
-                "SELECT MIN(b.time), MAX(b.time) \
-                 FROM orchard_ironwood_migration_transactions t \
-                 JOIN blocks b ON b.height = t.mined_height \
-                 WHERE t.kind = 'transfer' AND t.state = 'mined'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok();
-
-        // No mined transfer → nothing meaningful to show; return empty and let the screen zero-fill.
-        let out: Vec<i64> = match (transfer_count, bounds) {
-            (Some(count), Some((first, last))) if count > 0 => {
-                vec![total_migrated.unwrap_or(0), count, first, last]
-            }
-            _ => Vec::new(),
-        };
+        let out = migration_summary(&conn);
         let arr = env.new_long_array(out.len() as i32)?;
         env.set_long_array_region(&arr, 0, &out)?;
         Ok(arr.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[cfg(test)]
+mod migration_summary_tests {
+    use super::*;
+
+    /// Minimal in-memory fixture: just the columns `migration_summary` reads — no need for the
+    /// full wallet schema to exercise this query in isolation.
+    fn fixture() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE blocks (height INTEGER PRIMARY KEY, time INTEGER);
+             CREATE TABLE orchard_ironwood_migration_transactions (
+                 id INTEGER PRIMARY KEY,
+                 kind TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 mined_height INTEGER
+             );
+             CREATE TABLE orchard_ironwood_migration_crossing_values (value INTEGER);",
+        )
+        .expect("create fixture tables");
+        conn
+    }
+
+    fn insert_block(conn: &Connection, height: i64, time: i64) {
+        conn.execute(
+            "INSERT INTO blocks (height, time) VALUES (?1, ?2)",
+            rusqlite::params![height, time],
+        )
+        .unwrap();
+    }
+
+    fn insert_tx(conn: &Connection, kind: &str, state: &str, mined_height: Option<i64>) {
+        conn.execute(
+            "INSERT INTO orchard_ironwood_migration_transactions (kind, state, mined_height) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![kind, state, mined_height],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn no_data_at_all_yields_empty() {
+        let conn = fixture();
+        assert!(migration_summary(&conn).is_empty());
+    }
+
+    #[test]
+    fn no_mined_transfer_yields_empty_even_if_a_preparation_is_mined() {
+        // transferCount is deliberately transfer-only: a mined preparation alone (no mined
+        // transfer yet) must still report nothing, matching the pre-existing "no mined transfer
+        // → nothing meaningful yet" gate.
+        let conn = fixture();
+        insert_block(&conn, 100, 1_000);
+        insert_tx(&conn, "preparation", "mined", Some(100));
+
+        assert!(migration_summary(&conn).is_empty());
+    }
+
+    #[test]
+    fn duration_spans_from_an_earlier_mined_preparation_not_just_the_transfer() {
+        // The regression this test guards: a note-split preparation runs FIRST and is mined well
+        // before the crossing transfer. The duration bound must reflect the preparation's earlier
+        // time, not understate elapsed time by only looking at transfers.
+        let conn = fixture();
+        insert_block(&conn, 100, 1_000); // preparation mined here — the true start of the plan
+        insert_block(&conn, 150, 5_000); // transfer mined here — much later
+        insert_tx(&conn, "preparation", "mined", Some(100));
+        insert_tx(&conn, "transfer", "mined", Some(150));
+        conn.execute(
+            "INSERT INTO orchard_ironwood_migration_crossing_values (value) VALUES (42)",
+            [],
+        )
+        .unwrap();
+
+        let out = migration_summary(&conn);
+        assert_eq!(
+            out,
+            vec![42, 1, 1_000, 5_000],
+            "firstMinedEpochSeconds must be the preparation's earlier block time (1000), not the \
+             transfer's later one (5000); transferCount stays transfer-only (1)"
+        );
+    }
+
+    #[test]
+    fn unmined_transactions_are_excluded_from_bounds() {
+        let conn = fixture();
+        insert_block(&conn, 100, 1_000);
+        insert_tx(&conn, "transfer", "mined", Some(100));
+        // A pending preparation with no mined_height must not affect the bounds (JOIN excludes it
+        // by construction — the state filter is belt-and-suspenders).
+        insert_tx(&conn, "preparation", "pending", None);
+        conn.execute(
+            "INSERT INTO orchard_ironwood_migration_crossing_values (value) VALUES (7)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(migration_summary(&conn), vec![7, 1, 1_000, 1_000]);
+    }
 }
 
 #[unsafe(no_mangle)]
