@@ -155,9 +155,9 @@ bump_versions() {
     # if another table appears before [package].
     bump_cargo_version backend-lib/Cargo.toml "$VERSION"
 
-    # Let cargo rewrite the lock's package entry rather than editing it by
-    # hand, so the lock stays internally consistent.
-    cargo update --manifest-path backend-lib/Cargo.toml --workspace --offline >/dev/null
+    # Let cargo minimally update the lock while checking that the bumped
+    # manifest still resolves, without requesting dependency upgrades.
+    cargo check --manifest-path backend-lib/Cargo.toml --offline >/dev/null
 }
 
 if $DRY_RUN; then
