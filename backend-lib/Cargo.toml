@@ -218,21 +218,23 @@ slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "a
 # entry for a crate that is not in the graph. Uncomment together with it.
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
 
-# Pinned to librustzcash main (1804f60e02bb376d3df68e6cc4bb108972235d32, 2026-08-05 21:21 CEST) —
-# several merged PRs on main are needed for testing that the rc.7 crates.io releases don't have
-# yet. Picks up PR #2939 (batched Prove + anchor-stability fix, resolving the estimate-leading-
-# scan boundary caveat from the 2026-08-05 core sync call spec §2.2) over the earlier same-day pin.
+# Pinned to librustzcash main (7db76db2afa2dbd355faf09a599339c94b264e31, 2026-08-06) — catches up
+# to Kris's latest fixes: PR #2946 (quadratic-cost bug that stalled/crashed plan confirmation on
+# large wallets), #2943 (denomination/value-breakdown display fixes), #2915/#2916 (ZIP 318
+# classification now happens at store time in zcash_client_sqlite), and a new first-fit-decreasing
+# preparation strategy in zcash_pool_migration. Supersedes the earlier 1804f60e pin (PR #2939
+# batched-Prove adoption, still included transitively).
 # Every crate librustzcash's own workspace produces that appears anywhere in this graph (even
 # transitively, e.g. zcash_address/zcash_keys/zcash_proofs/zcash_transparent/zip321) must be
 # patched together, or Cargo resolves a mismatched mix of git and crates.io versions.
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "1804f60e02bb376d3df68e6cc4bb108972235d32" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
