@@ -18,7 +18,8 @@ package cash.z.ecc.android.sdk.model
  * `Balance.total()`, which includes it): those two fields keep their existing, established
  * meaning for every consumer already reading them; callers that need locked value folded into a
  * displayed total add [locked] themselves (see `GetBalancePoolsUseCase` in the app repo).
- * Defaults to zero for callers that don't have this data (e.g. Slipstream's own balance mapping).
+ * Defaults to zero — populated by both `encode_account_balance` (mainline JNI) and
+ * `slipstream/summary.rs`'s `wallet_summary_object` (Slipstream's own separate JNI surface).
  */
 data class WalletBalance(
     val available: Zatoshi,
