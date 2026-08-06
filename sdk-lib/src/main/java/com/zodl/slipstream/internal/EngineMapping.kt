@@ -32,7 +32,12 @@ internal fun mapEngineState(state: Int): Status =
 internal fun permilleToPercentDecimal(permille: Int): PercentDecimal = PercentDecimal.newLenient(permille / 1000f)
 
 private fun SlipstreamPoolBalance.toWalletBalance() =
-    WalletBalance(Zatoshi(spendableValue), Zatoshi(changePendingConfirmation), Zatoshi(valuePendingSpendability))
+    WalletBalance(
+        Zatoshi(spendableValue),
+        Zatoshi(changePendingConfirmation),
+        Zatoshi(valuePendingSpendability),
+        Zatoshi(lockedValue)
+    )
 
 /**
  * `FFI_JNI_CONTRACT.md` section 5.5 mask: while NOT recovering AND tip is stale, shield-pool
@@ -45,7 +50,7 @@ private fun SlipstreamPoolBalance.maskIfStale(mask: Boolean): SlipstreamPoolBala
     if (!mask) {
         this
     } else {
-        SlipstreamPoolBalance(0, changePendingConfirmation, valuePendingSpendability + spendableValue)
+        SlipstreamPoolBalance(0, changePendingConfirmation, valuePendingSpendability + spendableValue, lockedValue)
     }
 
 /**
