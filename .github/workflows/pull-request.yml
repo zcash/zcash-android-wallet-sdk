@@ -29,6 +29,9 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Release tooling tests
+        timeout-minutes: 1
+        run: ./scripts/tests/run-tests.sh
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
         uses: gradle/actions/wrapper-validation@v6
