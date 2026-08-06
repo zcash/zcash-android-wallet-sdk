@@ -220,10 +220,11 @@ slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "a
 
 # Pinned to librustzcash main (7db76db2afa2dbd355faf09a599339c94b264e31, 2026-08-06) — catches up
 # to Kris's latest fixes: PR #2946 (quadratic-cost bug that stalled/crashed plan confirmation on
-# large wallets), #2943 (denomination/value-breakdown display fixes), #2915/#2916 (ZIP 318
-# classification now happens at store time in zcash_client_sqlite), and a new first-fit-decreasing
-# preparation strategy in zcash_pool_migration. Supersedes the earlier 1804f60e pin (PR #2939
-# batched-Prove adoption, still included transitively).
+# large wallets), #2943 (new first-fit-decreasing preparation strategy in zcash_pool_migration),
+# #2945/#2947 (denomination/value-breakdown display fixes — quantize the split once and reconcile
+# by truncation, plus a denomination-interface review follow-up), and #2915/#2916 (ZIP 318
+# classification now happens at store time in zcash_client_sqlite). Supersedes the earlier
+# 1804f60e pin (PR #2939 batched-Prove adoption, still included transitively).
 # Every crate librustzcash's own workspace produces that appears anywhere in this graph (even
 # transitively, e.g. zcash_address/zcash_keys/zcash_proofs/zcash_transparent/zip321) must be
 # patched together, or Cargo resolves a mismatched mix of git and crates.io versions.
