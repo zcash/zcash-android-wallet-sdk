@@ -196,4 +196,8 @@ require_gh_auth() {
     fi
 }
 
+require_gh_auth_for_run() {
+    [ "$DRY_RUN" = "true" ] || require_gh_auth
+}
+
 repo_for_remote() { repo_slug_from_url "$(git remote get-url "$1")"; }

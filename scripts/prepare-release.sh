@@ -72,7 +72,7 @@ step "Checking preconditions"
 
 require_clean_tree
 require_remote "$REMOTE"
-require_gh_auth
+require_gh_auth_for_run
 readonly GH_REPO="$(repo_for_remote "$REMOTE")"
 echo "  repository: ${GH_REPO}"
 

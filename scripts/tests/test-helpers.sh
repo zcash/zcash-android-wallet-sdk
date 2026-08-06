@@ -78,3 +78,14 @@ test_bump_cargo_version_scopes_to_package() {
         "Cargo package version updated"
     assert_succeeds "dependency version preserved" grep -q 'version = "1.0"' "$file"
 }
+
+_require_gh_auth_fails() (
+    DRY_RUN="$1"
+    require_gh_auth() { return 1; }
+    require_gh_auth_for_run
+)
+
+test_dry_run_skips_gh_authentication() {
+    assert_succeeds "dry run skips GitHub authentication" _require_gh_auth_fails true
+    assert_fails "real run requires GitHub authentication" _require_gh_auth_fails false
+}
