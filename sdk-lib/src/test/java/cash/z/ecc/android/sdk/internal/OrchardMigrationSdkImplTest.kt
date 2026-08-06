@@ -60,6 +60,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
+@Suppress("LargeClass")
 class OrchardMigrationSdkImplTest {
     private companion object {
         /**

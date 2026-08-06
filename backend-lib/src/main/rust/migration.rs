@@ -1860,7 +1860,8 @@ fn any_overdue(
     }
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
-    let (code, _id, _next_height, _next_kind) = advance_step(backend, state, scanned_target, estimated_target)?;
+    let (code, _id, _next_height, _next_kind) =
+        advance_step(backend, state, scanned_target, estimated_target)?;
     Ok(code == STEP_BROADCAST)
 }
 
@@ -2414,7 +2415,8 @@ fn next_due_transfer_result<'a>(
     // function already pass scanned_tip/effective_tip as raw tips (not +1), so convert here.
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
-    let (code, id, _next_height, _next_kind) = advance_step(backend, state, scanned_target, estimated_target)?;
+    let (code, id, _next_height, _next_kind) =
+        advance_step(backend, state, scanned_target, estimated_target)?;
     Ok(match code {
         STEP_BROADCAST => {
             let tx_id = MigrationTransferId::new(id as u32);
@@ -5162,7 +5164,9 @@ mod next_due_transfer_tests {
         .expect("in-memory store never errors");
         match advance.step() {
             AdvanceStep::Prove { transactions } => {
-                let first = transactions.first().expect("Prove's transaction set is never empty");
+                let first = transactions
+                    .first()
+                    .expect("Prove's transaction set is never empty");
                 (STEP_PROVE, i64::from(u32::from(first.id())))
             }
             AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(*id))),
@@ -5444,7 +5448,10 @@ mod advance_step_peek_tests {
         let targets = DuenessTargets::new(tip + 1, tip + 1);
 
         // Ground truth: call advance_migration directly on its own clone of the fixture.
-        let mut store_a = InMemoryStore { state: state.clone(), as_of: tip };
+        let mut store_a = InMemoryStore {
+            state: state.clone(),
+            as_of: tip,
+        };
         let mut state_a = state.clone();
         let advance = advance_migration(
             &mut store_a,
@@ -5464,7 +5471,10 @@ mod advance_step_peek_tests {
 
         // advance_step's own encoding, on an independent clone (advance_migration persists
         // determinations into its store — keep the two calls fully isolated).
-        let mut store_b = InMemoryStore { state: state.clone(), as_of: tip };
+        let mut store_b = InMemoryStore {
+            state: state.clone(),
+            as_of: tip,
+        };
         let mut state_b = state.clone();
         let (_code, _id, next_height, next_kind) =
             advance_step(&mut store_b, &mut state_b, tip + 1, tip + 1)
@@ -5496,12 +5506,24 @@ mod advance_step_peek_tests {
     #[test]
     fn advance_step_reports_sentinel_pair_when_advance_migration_has_no_outlook() {
         let tip = BlockHeight::from_u32(1000);
-        let mined = transfer(1, MigrationTxState::Mined { txid: zcash_protocol::TxId::from_bytes([1u8; 32]), height: BlockHeight::from_u32(500) }, 500, 5000);
+        let mined = transfer(
+            1,
+            MigrationTxState::Mined {
+                txid: zcash_protocol::TxId::from_bytes([1u8; 32]),
+                height: BlockHeight::from_u32(500),
+            },
+            500,
+            5000,
+        );
         let state = make_state(MigrationStatus::Complete, vec![mined]);
-        let mut store = InMemoryStore { state: state.clone(), as_of: tip };
+        let mut store = InMemoryStore {
+            state: state.clone(),
+            as_of: tip,
+        };
         let mut st = state.clone();
         let (code, _id, next_height, next_kind) =
-            advance_step(&mut store, &mut st, tip + 1, tip + 1).expect("advance_step over the in-memory store");
+            advance_step(&mut store, &mut st, tip + 1, tip + 1)
+                .expect("advance_step over the in-memory store");
         assert_eq!(code, STEP_COMPLETE);
         assert_eq!(next_height, -1);
         assert_eq!(next_kind, -1);
@@ -6403,9 +6425,10 @@ mod late_dependency_anchor_tests {
     #[test]
     fn commitment_tree_not_contained_is_transient() {
         // Reconstruct the EXACT live error value: Query(NotContained(Address{level:0, index:242174})).
-        let tree_err: WalletProveError<(), (), (), ()> = WalletProveError::Tree(ShardTreeError::Query(
-            QueryError::NotContained(Address::from_parts(Level::from(0u8), 242_174)),
-        ));
+        let tree_err: WalletProveError<(), (), (), ()> =
+            WalletProveError::Tree(ShardTreeError::Query(QueryError::NotContained(
+                Address::from_parts(Level::from(0u8), 242_174),
+            )));
         assert!(
             is_transient_prove_error(&tree_err),
             "a commitment-tree query miss (NotContained) is transient: the funding note is not yet \
@@ -6830,7 +6853,9 @@ mod state_machine_trace_tests {
                 let step = self.advance(target);
                 match &step {
                     AdvanceStep::Prove { transactions }
-                        if transactions.iter().any(|t| failing.contains(&id_of(t.id()))) =>
+                        if transactions
+                            .iter()
+                            .any(|t| failing.contains(&id_of(t.id()))) =>
                     {
                         return (applied, summarize(&step));
                     }
@@ -6990,12 +7015,7 @@ mod state_machine_trace_tests {
         let (steps, _) = d.drain(4_224_638);
         assert_eq!(
             steps,
-            vec![
-                broadcast(11),
-                prove_set(&[6, 7]),
-                broadcast(7),
-                prove(10),
-            ]
+            vec![broadcast(11), prove_set(&[6, 7]), broadcast(7), prove(10),]
         );
         d.mine(11, 4_224_642);
         d.mine(7, 4_224_642);
@@ -7413,7 +7433,9 @@ fn advance_step(
         // already proves every ready transaction in one pass regardless of which single id this
         // reports (core sync call §2.3 — Android was already structurally correct for this).
         AdvanceStep::Prove { transactions } => {
-            let first = transactions.first().expect("Prove's transaction set is never empty");
+            let first = transactions
+                .first()
+                .expect("Prove's transaction set is never empty");
             (STEP_PROVE, i64::from(u32::from(first.id())))
         }
         AdvanceStep::Broadcast { id } => (STEP_BROADCAST, i64::from(u32::from(*id))),

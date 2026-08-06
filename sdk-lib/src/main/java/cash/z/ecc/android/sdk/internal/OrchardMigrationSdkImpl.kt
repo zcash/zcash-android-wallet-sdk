@@ -16,13 +16,13 @@ import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
 import cash.z.ecc.android.sdk.MigrationAdvanceResult
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
-import cash.z.ecc.android.sdk.MigrationPeek
-import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.MigrationBlocker
 import cash.z.ecc.android.sdk.MigrationNextAction
+import cash.z.ecc.android.sdk.MigrationPeek
 import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
+import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
@@ -758,6 +758,7 @@ internal class OrchardMigrationSdkImpl(
      * that touches the network. Runs under [MIGRATION_DB_ACCESS_MUTEX] via [logged], which also
      * means a locked-database failure retries this phase (and only this phase).
      */
+    @Suppress("LongMethod", "ReturnCount")
     private suspend fun prepareNextPendingTransfer(
         options: NetworkPrivacyOptions,
         useEstimatedTip: Boolean,
@@ -1020,6 +1021,7 @@ internal class OrchardMigrationSdkImpl(
      * doc), `-1`/`-1` when it has nothing height-schedulable to report. Same `STEP_*` encoding as
      * `arr[0]`.
      */
+    @Suppress("MagicNumber")
     private fun parsePeek(arr: LongArray): MigrationPeek? {
         val height = arr.getOrElse(2) { -1L }
         if (height < 0) return null
