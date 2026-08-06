@@ -221,14 +221,19 @@ internal class OrchardMigrationSdkImpl(
      * mutual exclusion. Reserved for operations that are a single, verified-pure database read (or
      * touch no database at all).
      *
-     * Read consistency for those does not need the Kotlin mutex: every call into [migrationBackend]
-     * is already serialized onto the single `zc-io` thread, and the Rust side opens its own
-     * connection per call with a `busy_timeout`, which is exactly how migration reads and the sync
-     * engine's writes coexist today. What dropping the mutex buys is liveness — the migration
-     * screens' own reads (notably [getMigrationTransferStates], the Progress screen's first paint)
-     * no longer queue behind a mutation's retry sleeps or another instance's background poll, which
-     * is what made that screen take up to ~15 s to render (MOB-1623). The retry sleeps that remain
-     * on this path now block nobody.
+     * Read consistency for the DB-touching calls on this lane does not need the Kotlin mutex: those
+     * are still serialized onto the single `zc-io` thread ([SdkDispatchers.DATABASE_IO]), and the
+     * Rust side opens its own connection per call with a `busy_timeout`, which is exactly how
+     * migration reads and the sync engine's writes coexist today. What dropping the mutex buys is
+     * liveness — the migration screens' own reads (notably [getMigrationTransferStates], the
+     * Progress screen's first paint) no longer queue behind a mutation's retry sleeps or another
+     * instance's background poll, which is what made that screen take up to ~15 s to render
+     * (MOB-1623). The retry sleeps that remain on this path now block nobody.
+     *
+     * (2026-08-07 blocking-without-reason audit) Some calls on this lane touch no database at all —
+     * e.g. the Keystone batch-signing UR bridge — and run on [SdkDispatchers.CPU_BOUND] instead,
+     * not the `zc-io` thread; their own correctness (the UR decode session) is protected by an
+     * independent Rust-side lock, not by this Kotlin lane or thread confinement.
      *
      * NEVER use for anything that mutates, spans multiple backend calls, or reaches Rust's
      * `read_reconciled` — see [logged].
