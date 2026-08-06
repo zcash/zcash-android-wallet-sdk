@@ -222,7 +222,9 @@ fn has_zip318_kind_column(conn: &rusqlite::Connection, table_name: &str) -> bool
 /// Activity as soon as it's built (`AwaitingSignature`/`Signed`/`Proved` — i.e. its inputs are
 /// already effectively spent), not only once actually broadcast. See
 /// `z/wt/migration_fixes/spec/2026-08-06-overnight-review-report.md` finding #2 and the
-/// 2026-08-05 core-sync-call spec §6 for the product context.
+/// 2026-08-05 core-sync-call spec §6 for the product context. Note: the view's own definition
+/// projects `zip318_kind`, so it can exist only if that column exists on `v_transactions`
+/// — thus the two independent checks can never disagree in a working schema.
 fn has_pending_migrations_view(conn: &rusqlite::Connection) -> bool {
     // Checks the FULL column shape `list_transactions_sql` actually projects, not just that a
     // view with this name exists — a future upstream schema change that renames/drops one of
@@ -423,7 +425,7 @@ mod list_transactions_execution_tests {
 /// `v_transactions` when that view exists (see [`has_pending_migrations_view`], added
 /// 2026-08-06) — this is the ONLY difference between the two source views' column shapes that
 /// matters here: the migration-pending branch supplies `NULL` for `raw`/`mined_height`/
-/// `tx_index`/`block_time`/`trust_status` and real (never-null) values for everything else,
+/// `tx_index`/`block_time`, and real (never-null) values for everything else,
 /// including `zip318_kind`. Every column this SELECT projects is already read through a
 /// nullable accessor on both the Rust (`TxRow::from_row`, `Option<...>` fields) and Kotlin
 /// (`TransactionOverviewCursor.fromRow`) sides, so no downstream code changes were needed.
