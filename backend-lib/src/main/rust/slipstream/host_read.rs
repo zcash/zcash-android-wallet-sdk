@@ -208,26 +208,219 @@ fn has_zip318_kind_column(conn: &rusqlite::Connection) -> bool {
         .is_ok()
 }
 
+/// Whether the open connection's schema has the pool-migration extension's
+/// `v_transactions_with_pending_migrations` view (added by `zcash_pool_migration`'s schema
+/// migration; absent on a DB that hasn't run it yet, or on a librustzcash pin from before the
+/// view existed). Same runtime-checked, not compile-time-assumed, posture as
+/// [`has_zip318_kind_column`] just above — safe to ship independent of exactly which
+/// pin/migration-state a given wallet DB is in. When present, `listTransactions` reads through
+/// it instead of the plain `v_transactions` so a migration transaction becomes visible in
+/// Activity as soon as it's built (`AwaitingSignature`/`Signed`/`Proved` — i.e. its inputs are
+/// already effectively spent), not only once actually broadcast. See
+/// `z/wt/migration_fixes/spec/2026-08-06-overnight-review-report.md` finding #2 and the
+/// 2026-08-05 core-sync-call spec §6 for the product context.
+fn has_pending_migrations_view(conn: &rusqlite::Connection) -> bool {
+    // Checks the FULL column shape `list_transactions_sql` actually projects, not just that a
+    // view with this name exists — a future upstream schema change that renames/drops one of
+    // these columns must make this return false (falling back to the plain `v_transactions`
+    // path) rather than let the real query fail to `prepare()` at call time, which would empty
+    // out the whole Activity list with no fallback. Mirrors `has_zip318_kind_column`'s posture
+    // one level more defensively, since that one only ever gates a single trailing column.
+    conn.prepare(
+        "SELECT txid, mined_height, expiry_height, tx_index, raw, account_balance_delta, \
+         total_spent, total_received, fee_paid, has_change, sent_note_count, \
+         received_note_count, memo_count, block_time, is_shielding, expired_unmined, \
+         account_uuid FROM v_transactions_with_pending_migrations LIMIT 0",
+    )
+    .is_ok()
+}
+
+#[cfg(test)]
+mod view_existence_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn has_zip318_kind_column_is_false_on_a_bare_connection() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(!has_zip318_kind_column(&conn));
+    }
+
+    #[test]
+    fn has_pending_migrations_view_is_false_on_a_bare_connection() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(!has_pending_migrations_view(&conn));
+    }
+
+    #[test]
+    fn has_pending_migrations_view_is_true_once_the_full_column_shape_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIEW v_transactions_with_pending_migrations AS
+             SELECT NULL AS txid, NULL AS mined_height, NULL AS expiry_height,
+                    NULL AS tx_index, NULL AS raw, 0 AS account_balance_delta,
+                    0 AS total_spent, 0 AS total_received, NULL AS fee_paid,
+                    0 AS has_change, 0 AS sent_note_count, 0 AS received_note_count,
+                    0 AS memo_count, NULL AS block_time, 0 AS is_shielding,
+                    NULL AS expired_unmined, NULL AS account_uuid",
+        )
+        .unwrap();
+        assert!(has_pending_migrations_view(&conn));
+    }
+
+    #[test]
+    fn has_pending_migrations_view_is_false_when_a_projected_column_is_missing() {
+        // Regression guard for the failure mode the full-projection check exists to catch: a
+        // same-named view with a DIFFERENT shape (e.g. missing `account_uuid`, as if a future
+        // upstream change dropped/renamed it) must degrade to false, not silently pass.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIEW v_transactions_with_pending_migrations AS SELECT 1 AS txid",
+        )
+        .unwrap();
+        assert!(!has_pending_migrations_view(&conn));
+    }
+}
+
+#[cfg(test)]
+mod list_transactions_sql_tests {
+    use super::*;
+
+    #[test]
+    fn uses_pending_migrations_view_when_present() {
+        let sql = list_transactions_sql(false, false, true, true);
+        assert!(sql.contains("FROM v_transactions_with_pending_migrations AS tx"));
+    }
+
+    #[test]
+    fn falls_back_to_plain_view_when_pending_migrations_view_absent() {
+        let sql = list_transactions_sql(false, false, true, false);
+        assert!(sql.contains("FROM v_transactions AS tx"));
+        assert!(!sql.contains("v_transactions_with_pending_migrations"));
+    }
+
+    #[test]
+    fn zip318_kind_and_pending_migrations_flags_are_independent() {
+        let sql = list_transactions_sql(false, false, false, true);
+        assert!(sql.contains(", 0 FROM v_transactions_with_pending_migrations AS tx"));
+    }
+
+    #[test]
+    fn recovering_and_account_filter_still_compose_with_pending_migrations_view() {
+        let sql = list_transactions_sql(true, true, true, true);
+        assert!(sql.starts_with(
+            "SELECT tx.txid, tx.mined_height, tx.expiry_height, tx.tx_index, tx.raw, \
+             tx.account_balance_delta, tx.total_spent, tx.total_received, tx.fee_paid, \
+             tx.has_change, tx.sent_note_count, tx.received_note_count, tx.memo_count, \
+             tx.block_time, tx.is_shielding, tx.expired_unmined, tx.zip318_kind \
+             FROM v_transactions_with_pending_migrations AS tx"
+        ));
+        assert!(sql.contains("LEFT JOIN"));
+        assert!(sql.contains("COALESCE(r.reconciled, 1) = 1"));
+        assert!(sql.contains("tx.account_uuid = ?"));
+    }
+}
+
+#[cfg(test)]
+mod list_transactions_execution_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Minimal DDL mirroring the real pinned schema's relevant columns only — enough to run
+    /// `list_transactions_sql`'s query end to end, not a full replica of the upstream schema.
+    fn seeded_connection() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIEW v_transactions AS
+             SELECT X'aa' AS txid, 100 AS mined_height, 0 AS expiry_height, 0 AS tx_index,
+                    X'bb' AS raw, -100 AS account_balance_delta, 100 AS total_spent,
+                    0 AS total_received, 100 AS fee_paid, 0 AS has_change,
+                    1 AS sent_note_count, 0 AS received_note_count, 0 AS memo_count,
+                    1_700_000_000 AS block_time, 0 AS is_shielding, 0 AS expired_unmined,
+                    3 AS zip318_kind, X'cc' AS account_uuid;
+             CREATE VIEW v_transactions_with_pending_migrations AS
+             SELECT * FROM v_transactions
+             UNION ALL
+             SELECT X'dd' AS txid, NULL AS mined_height, 500 AS expiry_height,
+                    NULL AS tx_index, NULL AS raw, -50 AS account_balance_delta,
+                    5000 AS total_spent, 4950 AS total_received, 50 AS fee_paid,
+                    0 AS has_change, 0 AS sent_note_count, 1 AS received_note_count,
+                    0 AS memo_count, NULL AS block_time, 0 AS is_shielding,
+                    0 AS expired_unmined, 3 AS zip318_kind, X'cc' AS account_uuid;",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn plain_view_query_prepares_and_returns_the_one_ordinary_row() {
+        let conn = seeded_connection();
+        let sql = list_transactions_sql(false, false, true, false);
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows: Vec<TxRow> = stmt
+            .query_map([], |row| Ok(TxRow::from_row(row).unwrap()))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mined_height, Some(100));
+    }
+
+    #[test]
+    fn merged_view_query_prepares_and_returns_both_rows_with_nulls_intact() {
+        let conn = seeded_connection();
+        let sql = list_transactions_sql(false, false, true, true);
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows: Vec<TxRow> = stmt
+            .query_map([], |row| Ok(TxRow::from_row(row).unwrap()))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(rows.len(), 2);
+        let pending = rows.iter().find(|r| r.mined_height.is_none()).unwrap();
+        assert_eq!(pending.raw, None);
+        assert_eq!(pending.tx_index, None);
+        assert_eq!(pending.zip318_kind, 3);
+        let mined = rows.iter().find(|r| r.mined_height.is_some()).unwrap();
+        assert_eq!(mined.mined_height, Some(100));
+        assert_eq!(mined.raw, Some(vec![0xbb]));
+    }
+}
+
 /// Builds `listTransactions`' SQL: base projection, an optional reconciliation LEFT JOIN +
 /// filter when `is_recovering`, an optional account filter, ORDER BY. Verbatim from the
 /// Kotlin `VisibleTransactionsQuery` this replaces — see FFI_JNI_CONTRACT.md §9.3 — except the
 /// trailing `zip318_kind` projection (see [`has_zip318_kind_column`]), added 2026-08-03: a
 /// literal `0` (== `Zip318Kind.NOT_CLASSIFIED`) stands in when the column doesn't exist yet.
+/// Also selects FROM `v_transactions_with_pending_migrations` instead of the plain
+/// `v_transactions` when that view exists (see [`has_pending_migrations_view`], added
+/// 2026-08-06) — this is the ONLY difference between the two source views' column shapes that
+/// matters here: the migration-pending branch supplies `NULL` for `raw`/`mined_height`/
+/// `tx_index`/`block_time`/`trust_status` and real (never-null) values for everything else,
+/// including `zip318_kind`. Every column this SELECT projects is already read through a
+/// nullable accessor on both the Rust (`TxRow::from_row`, `Option<...>` fields) and Kotlin
+/// (`TransactionOverviewCursor.fromRow`) sides, so no downstream code changes were needed.
 fn list_transactions_sql(
     is_recovering: bool,
     has_account_filter: bool,
     has_zip318_kind: bool,
+    has_pending_migrations_view: bool,
 ) -> String {
     let zip318_kind_projection = if has_zip318_kind {
         "tx.zip318_kind"
     } else {
         "0"
     };
+    let table_name = if has_pending_migrations_view {
+        "v_transactions_with_pending_migrations"
+    } else {
+        "v_transactions"
+    };
     let mut sql = format!(
         "SELECT tx.txid, tx.mined_height, tx.expiry_height, tx.tx_index, tx.raw, \
          tx.account_balance_delta, tx.total_spent, tx.total_received, tx.fee_paid, \
          tx.has_change, tx.sent_note_count, tx.received_note_count, tx.memo_count, \
-         tx.block_time, tx.is_shielding, tx.expired_unmined, {zip318_kind_projection} FROM v_transactions AS tx",
+         tx.block_time, tx.is_shielding, tx.expired_unmined, {zip318_kind_projection} FROM {table_name} AS tx",
     );
     if is_recovering {
         sql.push_str(&format!(
@@ -271,10 +464,12 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_listTransactions<'lo
         let conn = read_query::open_read_only(&db_path)?;
 
         let has_zip318_kind = has_zip318_kind_column(&conn);
+        let has_pending_migrations = has_pending_migrations_view(&conn);
         let sql = list_transactions_sql(
             is_recovering != 0,
             account_uuid_bytes.is_some(),
             has_zip318_kind,
+            has_pending_migrations,
         );
         let mut stmt = conn
             .prepare(&sql)
