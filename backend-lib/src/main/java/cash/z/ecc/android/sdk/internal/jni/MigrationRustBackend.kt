@@ -375,10 +375,12 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
-     * The single "what now?" driver read — `[stepCode, transferId]` from the guarded
-     * `next_step` (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent).
-     * `null` when no migration is in progress. Broadcast timing uses [estimatedTip] (the real
-     * chain tip); proving uses the scanned tip internally. Pass `-1` when no estimate is
+     * The single "what now?" driver read — `[stepCode, transferId, nextHeight, nextKind]` from
+     * the guarded `next_step` (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete, 5 replan,
+     * 6 reevaluate; transferId = -1 for waiting/complete; nextHeight/nextKind = -1 when the
+     * engine's own peek-ahead has nothing height-schedulable to report). `null` when no migration
+     * is in progress. Broadcast timing uses [estimatedTip] (the real chain tip); proving,
+     * rebuild, and completion use the scanned tip internally. Pass `-1` when no estimate is
      * available (falls back to the scanned tip for both).
      */
     @Throws(RuntimeException::class)

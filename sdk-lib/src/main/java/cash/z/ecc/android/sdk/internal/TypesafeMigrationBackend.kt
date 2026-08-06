@@ -206,9 +206,12 @@ internal interface TypesafeMigrationBackend {
     ): JniMigrationTransferStates?
 
     /**
-     * The guarded `next_step` driver read: `[stepCode, transferId]` (0 waiting, 1 prove,
-     * 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent), or `null` with no migration.
-     * Broadcast timing uses [estimatedTip]; proving uses the scanned tip internally.
+     * The guarded `next_step` driver read: `[stepCode, transferId, nextHeight, nextKind]`
+     * (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete, 5 replan, 6 reevaluate;
+     * transferId = -1 for waiting/complete; nextHeight/nextKind = -1 when the engine's own
+     * peek-ahead has nothing height-schedulable to report), or `null` with no migration.
+     * Broadcast timing uses [estimatedTip]; proving, rebuild, and completion use the scanned
+     * tip internally.
      */
     suspend fun nextStep(
         dbDataPath: String,
