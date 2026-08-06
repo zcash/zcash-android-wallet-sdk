@@ -30,6 +30,7 @@ use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::proposal::Proposal;
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::ShieldedPool;
+use zcash_protocol::TxId;
 use zcash_protocol::consensus::{BlockHeight, Network, Parameters};
 use zcash_protocol::value::Zatoshis;
 
@@ -42,7 +43,6 @@ use zcash_pool_migration::engine::{
 };
 use zcash_pool_migration::satisfiability::{ReorgSettleDepth, StepSatisfiability};
 use zcash_pool_migration::scheduling::SchedulingParams;
-use zcash_protocol::TxId;
 
 use crate::migration::Wallet;
 
@@ -245,10 +245,10 @@ where
             .map_err(|e| anyhow::anyhow!("reading persisted migration failed: {e:?}"))
     }
 
-    /// Delegated wholesale. The satisfiability oracle answers per cached spend nullifier from the
-    /// wallet's own Orchard note and note-spend tables, bounded by the fully-scanned height; the
-    /// inner store is the thing that owns those tables, and answering here from anything else would
-    /// break the one-view consistency `mined_height` is required to share with it.
+    /// Delegated wholesale to the `zcash_client_sqlite` store, which answers the oracle's
+    /// mechanical questions (per-nullifier spend observations, expiry, anchor survival) from the
+    /// wallet's own scan data. Nothing about the answer is this adapter's to decide: the engine
+    /// adjudicates, and a wallet-side verdict is exactly what the satisfiability design removes.
     fn check_step_satisfiability(
         &self,
         tx: &MigrationTransaction,
@@ -259,6 +259,10 @@ where
             .map_err(|e| anyhow::anyhow!("checking migration step satisfiability failed: {e:?}"))
     }
 
+    /// Likewise delegated: the store answers from scan data, withholding a height it has not
+    /// scanned to. This is the roll-forward half of chain-derived state, and answering it is what
+    /// lets `advance_migration` promote a broadcast transaction to `Mined` by itself — which is
+    /// why this file's JNI layer no longer observes minedness by hand.
     fn mined_height(&self, txid: TxId) -> Result<Option<BlockHeight>, Self::Error> {
         self.store.mined_height(txid).map_err(|e| {
             anyhow::anyhow!("reading migration transaction mined height failed: {e:?}")

@@ -164,6 +164,16 @@ class JniMigrationTransferState(
      * 7 expiry imminent, 8 awaiting reevaluation, 9 unsatisfiable.
      */
     val blocker: Int,
+    /**
+     * Why this transaction can never execute, when the engine has marked it: 0 not marked,
+     * 1 inputs spent, 2 inputs invalidated, 3 anchor invalidated, 4 inherited (dead only through
+     * a dependency), 5 a cause this boundary does not name yet.
+     *
+     * Independent of [blocker] in both directions — the mark carries the cause, the blocker
+     * carries no payload — so a marked transaction may report a higher-precedence blocker while
+     * still answering here.
+     */
+    val unsatisfiableKind: Int,
     /** The engine-persisted crossing value (`transfer_crossing_value`); -1 for preparations. */
     val amountZatoshi: Long,
     /** Preparation layer/index within the note-split tree; -1/-1 for transfers. */

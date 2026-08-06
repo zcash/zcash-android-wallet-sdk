@@ -66,7 +66,8 @@ use zcash_pool_migration::{
     },
     preparation::{PrepInput, PreparationPlan},
     satisfiability::{
-        AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
+        AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, UnsatisfiableKind,
+        advance_migration,
     },
     state::{AdvanceStep, NextAction, StepKind},
 };
@@ -339,6 +340,31 @@ fn target_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
         .map_err(|e| anyhow!("chain height lookup failed: {}", e))?
         .ok_or_else(|| anyhow!("wallet has no chain tip yet"))?;
     Ok(tip + 1)
+}
+
+/// The advance policy every drive of `advance_migration` in this file runs under — one
+/// constructor, so the reorg-settlement depth ([`SETTLE_DEPTH`]) cannot diverge between the
+/// step-query and read-reconciliation paths.
+fn advance_config() -> AdvanceConfig {
+    AdvanceConfig::new(SETTLE_DEPTH)
+}
+
+/// The two heights `satisfiability::advance_migration` judges against, in the crate's `height + 1`
+/// TARGET convention: what this wallet's chain data SUPPORTS (its fully-scanned frontier), and
+/// where the tip has probably reached (its chain view).
+///
+/// Every determination that persists a verdict or destroys work is made at `scanned`; the estimate
+/// only re-orders or protectively withholds. `DuenessTargets::new` clamps `effective >= scanned`,
+/// so an estimate lagging the wallet's own observations can never withhold work the chain data
+/// already justifies — which is why this can be derived here rather than trusted from the caller.
+fn dueness_targets(wallet: &Wallet) -> anyhow::Result<DuenessTargets> {
+    let scanned = wallet
+        .block_fully_scanned()
+        .map_err(|e| anyhow!("fully-scanned height lookup failed: {}", e))?
+        .map(|meta| meta.block_height() + 1)
+        .unwrap_or(BlockHeight::from_u32(0));
+    let estimated = target_height(wallet)?;
+    Ok(DuenessTargets::new(scanned, estimated))
 }
 
 /// The wallet's real, currently-witnessable anchor height (the same one ordinary, non-migration
@@ -1522,12 +1548,21 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ())
 }
 
-/// Reconciles mined-ness against the wallet's own transaction history before returning migration
-/// state, so `InProgress`/`Complete` derivation reflects broadcast truth instead of staying stuck at
-/// whatever `mark_broadcast` last recorded. The engine's own contract intentionally leaves mining
-/// detection to the caller (`state.rs` module doc: "the state machine's only job is to ORDER the
-/// broadcasts") — this is that caller-side reconciliation, run at read time rather than a background
-/// job, matching the iOS SDK's own `derive_state` reconciliation approach.
+/// Reads migration state after letting the engine reconcile it against the chain.
+///
+/// This used to walk every `Broadcast` transaction, ask the wallet `get_tx_height`, and call
+/// `MigrationState::mark_mined` by hand, because the engine's contract then left mining detection
+/// to the caller. It no longer does: `PoolMigrationRead::mined_height` asks the same question
+/// through the store, and `advance_migration` asks it about every in-flight transaction it
+/// sweeps, so minedness is now chain-derived on the engine's side — as its doc puts it, "a driver
+/// that never calls [`MigrationState::mark_mined`] is the intended shape": the consumer records
+/// what only it can know (that it submitted), and the engine derives inclusion from the wallet's
+/// own scan.
+///
+/// Driving here rather than only at the step-query site keeps every read path (progress, proposals,
+/// attention state) seeing the same adjudicated state, and the drive is idempotent — it persists
+/// only what it determined. The returned step is deliberately discarded; callers that act on a step
+/// call `advance_migration` themselves.
 fn read_reconciled(
     wallet: &Wallet,
     backend: &mut Backend<Wallet>,
@@ -1539,24 +1574,9 @@ fn read_reconciled(
         Some(s) => s,
         None => return Ok(None),
     };
-    let mut newly_mined = Vec::new();
-    for tx in state.transactions() {
-        if let MigrationTxState::Broadcast { txid } = tx.state()
-            && let Some(height) = wallet
-                .get_tx_height(txid)
-                .map_err(|e| anyhow!("Error reading tx height for {:?}: {:?}", txid, e))?
-        {
-            newly_mined.push((tx.id(), height));
-        }
-    }
-    if !newly_mined.is_empty() {
-        for (id, height) in newly_mined {
-            state.mark_mined(id, height);
-        }
-        backend
-            .replace_migration(&state)
-            .map_err(|e| anyhow!("Error persisting reconciled migration state: {:?}", e))?;
-    }
+    let targets = dueness_targets(wallet)?;
+    advance_migration(backend, &mut state, targets, &advance_config(), &mut OsRng)
+        .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
     Ok(Some(state))
 }
 
@@ -1580,11 +1600,14 @@ fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
 /// `"invalid_transfer"`, reason-first ordering — the same mechanism `recordTransferResultNative`
 /// tag 2 uses). Returns `true` iff the plan is (or already was) invalidated.
 ///
-///   1. `read_reconciled` — existing pass: any `Broadcast` transfer the wallet now knows a height
-///      for is promoted to `Mined`.
+///   1. `read_reconciled` — drives `advance_migration`, whose in-flight sweep promotes any
+///      broadcast transaction the wallet's scan now covers to `Mined`.
 ///   2. Submit-crash probe: for each `Proved` transfer, extract its txid from its proven PCZT and
 ///      ask the wallet `get_tx_height`; if the wallet already knows a height, our broadcast landed
-///      (we just never recorded it, e.g. crashed after broadcast) — `mark_broadcast` + `mark_mined`.
+///      (we just never recorded it, e.g. crashed after broadcast) — `mark_broadcast`. Only the
+///      broadcast: the engine's sweep considers only rows it knows were broadcast, so this
+///      observation is the consumer's to make, but the `mark_mined` that used to follow it is not —
+///      the engine derives that from `mined_height` on the next drive.
 ///
 /// A third, foreign-spend-detecting pass used to run here (comparing each candidate transfer's
 /// funding nullifier against the wallet's unspent set). It was removed — see
@@ -1615,8 +1638,9 @@ fn reconcile_invalidated(
         return Ok(matches!(state.status(), engine::MigrationStatus::Failed));
     }
 
-    // --- Pass 2: submit-crash probe. Promote any Proved transfer whose txid is already on chain. ---
-    let mut promotions: Vec<(MigrationTransferId, BlockHeight)> = Vec::new();
+    // --- Pass 2: submit-crash probe. Record the BROADCAST of any Proved transfer whose txid is
+    // already on chain (we submitted it and crashed before recording that). ---
+    let mut promotions: Vec<MigrationTransferId> = Vec::new();
     for tx in state.transactions() {
         if !matches!(tx.state(), MigrationTxState::Proved) {
             continue;
@@ -1625,17 +1649,17 @@ fn reconcile_invalidated(
             continue;
         };
         let txid = zcash_protocol::TxId::from_bytes(txid_bytes);
-        if let Some(height) = wallet
+        if wallet
             .get_tx_height(txid)
             .map_err(|e| anyhow!("Error reading tx height for {:?}: {:?}", txid, e))?
+            .is_some()
         {
-            promotions.push((tx.id(), height));
+            promotions.push(tx.id());
         }
     }
     if !promotions.is_empty() {
-        for (id, height) in &promotions {
+        for id in &promotions {
             state.mark_broadcast(*id);
-            state.mark_mined(*id, *height);
         }
         let mut backend = Backend::new(&*wallet, account, None, store_conn, *wallet.params())?;
         backend
@@ -1646,9 +1670,10 @@ fn reconcile_invalidated(
     Ok(false)
 }
 
-/// Reconciles a committed migration against on-chain truth via two passes: own-broadcast/mined
-/// promotion (submit-crash recovery), matching what `advance_migration`'s own in-flight sweep also
-/// does on every `nextStep` call. Returns `JNI_TRUE` iff the plan is (or already was) `Failed`.
+/// Reconciles a committed migration against on-chain truth via two passes: an engine drive
+/// (`read_reconciled`, whose in-flight sweep promotes mined transactions) and the submit-crash
+/// probe (recording an own broadcast that landed unrecorded, so the next sweep can promote it).
+/// Returns `JNI_TRUE` iff the plan is (or already was) `Failed`.
 ///
 /// Foreign-spend detection (formerly a third pass here) was removed — see
 /// spec/2026-08-05-migration-engine-full-delegation-design.md §4: its terminal `Failed` action
@@ -2631,6 +2656,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             bool,
             i32,
             i32,
+            i32,
             i64,
             i32,
             i32,
@@ -2653,6 +2679,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         | MigrationTxState::Broadcast { .. }
                         | MigrationTxState::Mined { .. }
                 );
+                // Read from the transaction's own persisted mark, not from the blocker: the
+                // blocker carries no payload, and the two are independent — a row can be marked
+                // while a higher-precedence blocker is what it reports.
+                let unsatisfiable_kind = match t.unsatisfiable_kind() {
+                    None => UNSATISFIABLE_KIND_NONE,
+                    Some(UnsatisfiableKind::InputsSpent) => UNSATISFIABLE_KIND_INPUTS_SPENT,
+                    Some(UnsatisfiableKind::InputsInvalidated) => {
+                        UNSATISFIABLE_KIND_INPUTS_INVALIDATED
+                    }
+                    Some(UnsatisfiableKind::AnchorInvalidated) => {
+                        UNSATISFIABLE_KIND_ANCHOR_INVALIDATED
+                    }
+                    Some(UnsatisfiableKind::Inherited) => UNSATISFIABLE_KIND_INHERITED,
+                    // `#[non_exhaustive]`: a cause added upstream reads as "marked, kind not yet
+                    // surfaced here" rather than as "not marked", which would be a lie.
+                    Some(_) => UNSATISFIABLE_KIND_OTHER,
+                };
                 let (ready, action, blocker) = {
                     let action = match status.action() {
                         Some(zcash_pool_migration::state::NextAction::Prove) => ACTION_PROVE,
@@ -2712,6 +2755,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     ready,
                     action,
                     blocker,
+                    unsatisfiable_kind,
                     amount_zatoshi,
                     prep_layer,
                     prep_index,
@@ -2737,6 +2781,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 ready,
                 action,
                 blocker,
+                unsatisfiable_kind,
                 amount_zatoshi,
                 prep_layer,
                 prep_index,
@@ -2748,7 +2793,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 env.set_long_array_region(&jdeps, 0, &depends_on)?;
                 env.new_object(
                     JNI_MIGRATION_TRANSFER_STATE,
-                    "(JZZZJJZIIJII[JJJ)V",
+                    "(JZZZJJZIIIJII[JJJ)V",
                     &[
                         JValue::Long(encode_transfer_id(id)),
                         JValue::Bool(is_transfer as jboolean),
@@ -2759,6 +2804,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                         JValue::Bool(ready as jboolean),
                         JValue::Int(action),
                         JValue::Int(blocker),
+                        JValue::Int(unsatisfiable_kind),
                         JValue::Long(amount_zatoshi),
                         JValue::Int(prep_layer),
                         JValue::Int(prep_index),
@@ -5178,6 +5224,55 @@ mod next_due_transfer_tests {
         }
     }
 
+    /// A reported rejection the wallet cannot yet explain WITHHOLDS everything: the node saw chain
+    /// state below a tip this wallet has not scanned to, so the answer is "sync, then ask again"
+    /// rather than the broadcast that was otherwise due. Nothing is marked — the report is
+    /// testimony, and this step is what the engine offers while it stands.
+    #[test]
+    fn an_unadjudicable_broadcast_failure_report_withholds_every_step() {
+        let mut st = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
+        );
+        assert_eq!(
+            step_at(&st, 995, 1001),
+            (STEP_BROADCAST, 7),
+            "precondition: without a report this transfer is due for broadcast"
+        );
+
+        // The node reported a tip well above what this wallet has scanned, so its rejection
+        // cannot be checked against anything yet.
+        st.report_broadcast_failure(
+            MigrationTransferId::new(7),
+            BlockHeight::from_u32(995 + 200),
+        );
+
+        assert_eq!(
+            step_at(&st, 995, 1001),
+            (STEP_REEVALUATE, -1),
+            "a standing report outranks the due broadcast: sync to the reported tip first"
+        );
+    }
+
+    /// Once the wallet HAS scanned past the reported tip, the same report is adjudicated rather
+    /// than obeyed. Against a chain showing nothing wrong it is cleared and the broadcast
+    /// re-offered in the same call — which is what makes a wrong or stale node verdict
+    /// self-healing, and why a consumer re-reports freely instead of debouncing.
+    #[test]
+    fn an_adjudicable_report_clears_and_the_broadcast_is_reoffered() {
+        let mut st = make_state(
+            MigrationStatus::InProgress,
+            vec![transfer(7, MigrationTxState::Proved, 1000, 0)],
+        );
+        st.report_broadcast_failure(MigrationTransferId::new(7), BlockHeight::from_u32(995 - 5));
+
+        assert_eq!(
+            step_at(&st, 995, 1001),
+            (STEP_BROADCAST, 7),
+            "the wallet has scanned past the reported tip and sees no obstruction"
+        );
+    }
+
     #[test]
     fn broadcast_due_at_estimated_but_not_scanned_returns_broadcast() {
         // proved transfer scheduled at 1000; scanned tip behind (target 995), estimated at/after 1000.
@@ -5929,7 +6024,9 @@ mod reconcile_tests {
             .expect("get_tx_height")
             .expect("fixture txid is mined");
 
-        // Simulate pass 2's promotion of an own crashed broadcast.
+        // Simulate the recovery of an own crashed broadcast: pass 2 records the broadcast, and
+        // the engine's in-flight sweep would then derive the mined promotion (constructed
+        // directly here — this test exercises the outstanding-filter, not the sweep).
         state.mark_broadcast(some_tx_id);
         state.mark_mined(some_tx_id, mined_height);
 
@@ -7400,6 +7497,19 @@ const BLOCKER_AWAITING_REEVALUATION: i32 = 8;
 /// remedy is a migration-level replan, never more syncing. New in `zcash_pool_migration 0.1.0-rc.6`.
 const BLOCKER_UNSATISFIABLE: i32 = 9;
 
+// The cause recorded beside a transaction's unsatisfiability mark, surfaced as its own field
+// because `Blocker::Unsatisfiable` carries no payload. The mark is orthogonal to both the blocker
+// and the lifecycle state: a marked row keeps its `Proved`/`Broadcast` state, and can report a
+// different (higher-precedence) blocker while still carrying its cause.
+const UNSATISFIABLE_KIND_NONE: i32 = 0;
+const UNSATISFIABLE_KIND_INPUTS_SPENT: i32 = 1;
+const UNSATISFIABLE_KIND_INPUTS_INVALIDATED: i32 = 2;
+const UNSATISFIABLE_KIND_ANCHOR_INVALIDATED: i32 = 3;
+/// Dead only through the dependency closure — this transaction's own inputs are intact.
+const UNSATISFIABLE_KIND_INHERITED: i32 = 4;
+/// A cause added to the upstream `#[non_exhaustive]` enum that this boundary does not name yet.
+const UNSATISFIABLE_KIND_OTHER: i32 = 5;
+
 /// Two-tip decision (spec §3): the underlying `advance_migration` call is driven by
 /// `DuenessTargets::new(scanned, estimated)`, which folds the ESTIMATED tip into its `effective`
 /// target (broadcast timing, an optimistic estimate that only ever accelerates) while keeping the
@@ -7422,7 +7532,7 @@ fn advance_step(
     estimated_target: BlockHeight,
 ) -> anyhow::Result<(i64, i64, i64, i64)> {
     let targets = DuenessTargets::new(scanned_target, estimated_target);
-    let config = AdvanceConfig::new(SETTLE_DEPTH);
+    let config = advance_config();
     let mut rng = OsRng;
     let advance = advance_migration(backend, state, targets, &config, &mut rng)
         .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
