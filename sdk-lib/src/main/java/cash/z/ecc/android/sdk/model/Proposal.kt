@@ -58,5 +58,11 @@ class Proposal(
      */
     fun totalFeeRequired(): Zatoshi = Zatoshi(inner.totalFeeRequired())
 
+    /**
+     * Returns whether this proposal directly spends any Orchard note. See
+     * [ProposalUnsafe.usesOrchardInputs] for exactly what's (and isn't) detected.
+     */
+    fun usesOrchardInputs(): Boolean = inner.usesOrchardInputs()
+
     fun toPrettyString(): String = "Transaction count: ${transactionCount()}, Total fee required: ${totalFeeRequired()}"
 }

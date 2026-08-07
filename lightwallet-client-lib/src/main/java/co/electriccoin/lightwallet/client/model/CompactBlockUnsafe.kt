@@ -1,3 +1,5 @@
+@file:Suppress("LongParameterList")
+
 package co.electriccoin.lightwallet.client.model
 
 import cash.z.wallet.sdk.internal.rpc.CompactFormats
@@ -18,6 +20,9 @@ class CompactBlockUnsafe(
     val time: Int,
     val saplingOutputsCount: UInt,
     val orchardOutputsCount: UInt,
+    // Temporary diagnostic field (IRONWOOD_DIAG) — added to confirm whether the connected
+    // lightwalletd server actually populates CompactTx.ironwoodActions yet. Safe to remove once
+    // that's confirmed one way or the other.
     val ironwoodOutputsCount: UInt,
     val compactBlockBytes: ByteArray
 ) {
@@ -36,21 +41,17 @@ class CompactBlockUnsafe(
         }
 
         private fun getOutputsCounts(vtxList: List<CompactFormats.CompactTx>): CompactBlockOutputsCounts {
-            var saplingOutputsCount: UInt = 0u
-            var orchardActionsCount: UInt = 0u
+            var outputsCount: UInt = 0u
+            var actionsCount: UInt = 0u
             var ironwoodActionsCount: UInt = 0u
 
             vtxList.forEach { compactTx ->
-                saplingOutputsCount += compactTx.outputsCount.toUInt()
-                orchardActionsCount += compactTx.actionsCount.toUInt()
+                outputsCount += compactTx.outputsCount.toUInt()
+                actionsCount += compactTx.actionsCount.toUInt()
                 ironwoodActionsCount += compactTx.ironwoodActionsCount.toUInt()
             }
 
-            return CompactBlockOutputsCounts(
-                saplingOutputsCount = saplingOutputsCount,
-                orchardActionsCount = orchardActionsCount,
-                ironwoodActionsCount = ironwoodActionsCount
-            )
+            return CompactBlockOutputsCounts(outputsCount, actionsCount, ironwoodActionsCount)
         }
     }
 

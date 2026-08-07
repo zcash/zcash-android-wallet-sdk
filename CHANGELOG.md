@@ -6,9 +6,32 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TransactionOverview.spentNoteCount`, the number of the account's own notes the
+  transaction spent.
+- `TransactionOverview.poolCrossingValue`, the value that crossed shielded pools when
+  the transaction is a wallet-internal transfer between them, such as an Orchard to
+  Ironwood migration, and `null` when it is not one. For such a transaction
+  `TransactionOverview.netValue` is only the fee, so this is the amount to present to
+  a user rather than the balance delta.
+- `TransactionOverview.isTrusted`, whether the transaction's outputs become spendable
+  after the trusted confirmation count rather than the untrusted one.
+- `TransactionOverview.zip318Kind`, a new `Zip318Kind` reporting how a transaction
+  classifies against ZIP 318, the Orchard to Ironwood pool migration.
+  `Zip318Kind.NOT_CLASSIFIED` means the wallet has not looked at the transaction,
+  not that the transaction is not a migration, and warrants no label in a UI; a
+  transaction the wallet has examined and rejected is `NONCONFORMING` instead. Only
+  `PREPARATION` and `TRANSFER` are the wallet's own migration. Transactions already
+  in the wallet's history are not classified retroactively on upgrade: they read
+  `NOT_CLASSIFIED` until rescanned.
+- The four properties above are new `TransactionOverview` constructor parameters, so
+  positional construction will not compile until all of them are supplied; named
+  construction needs no edit.
+
 ### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
-  `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
+  `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
   (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
   boundaries rather than 16).
 - A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
@@ -16,16 +39,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when no such note exists. Canonical-denomination payments that previously lost
   the canonical shape to multi-note funding now take it whenever a single covering
   note exists.
-- Updated the `zcash_voting` dependency to `2.0.0-rc.2` (bringing
+- Updated the `zcash_voting` dependency to `2.0.0-rc.3` (bringing
   `vote-commitment-tree 0.4.0-rc.1` and `vote-commitment-tree-client 0.6.0-rc.1`),
-  aligning the voting crates with the `zcash_client_backend 0.24.0-rc.6` release
+  aligning the voting crates with the `zcash_client_backend 0.24.0-rc.7` release
   candidates. The bump is release and compatibility work only; the voting API is
   unchanged from 2.0.0-rc.1.
 - **Shielded voting works again, on a source-incompatible API.** 2.8.0-rc.1 shipped with the
   voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
   built into the native library again and that deprecation is removed, so `VotingRustBackend` and
   the `sdk-lib` typesafe wrapper around it are usable. The surface is not the one that existed
-  before 2.8.0-rc.1, because it is now built on `zcash_voting` 2.0.0-rc.2: the native entry points
+  before 2.8.0-rc.1, because it is now built on `zcash_voting` 2.0.0-rc.3: the native entry points
   went from 60 to 55, because three were added and eight were removed — seven of them public API,
   the eighth a test fixture — and nine of the survivors changed their parameter lists, one of them
   without changing its signature. A wallet that stayed on a pre-2.8 release to keep voting working
@@ -127,7 +150,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - The native library no longer links two copies of the Zcash crate graph (#2056). `zcash_voting`
-  moved from its crates.io `=0.11.0` pin to a git revision at version 2.0.0-rc.1. The old pin
+  moved from its crates.io `=0.11.0` pin to `2.0.0-rc.3`. The old pin
   required the pre-Ironwood librustzcash family, which cargo resolved *alongside* this crate's
   Ironwood family, so every build carried two copies each of `orchard`, `pczt`, `shardtree`,
   `zcash_address`, `zcash_keys`, `zcash_primitives`, `zcash_protocol` and `zcash_transparent`.
@@ -137,6 +160,33 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commitment, a nullifier — compiles cleanly while feeding one `orchard` generation's output into
   another's circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply
   rebuilt, and removing it is what allows it back on.
+- Migration transfer ids are `Long` (the engine's `u32`, widened as this JNI boundary widens every
+  unsigned 32-bit value) rather than decimal strings, across `JniTransferProposal`,
+  `JniPreparedTransfer`, `JniMigrationTransferState`, `JniUnsignedTransferPczt`,
+  `JniAttentionReason.InvalidTransfer`, their `MigrationSdk` counterparts
+  (`TransferProposal`, `MigrationTransferState`, `AttentionReason.InvalidTransfer`),
+  `recordTransferResult(transferId:)`, and the `ids` array of `storeSignedSchedulePczts`
+  (now a `LongArray`). The id identifies the TRANSFER, not one broadcast attempt: a rebuilt
+  expired transfer keeps its id while getting a new transaction id, so it stays the key to
+  correlate on.
+- The native backend no longer runs any DDL or direct DML against wallet-database
+  internals: the pre-release schema self-heal shim for
+  `orchard_ironwood_migration_transactions` is removed (wallets created against
+  pre-release schema shapes must be recreated), and the debug-only
+  `OrchardMigrationSdk.clearMigration` now cancels the run through the engine
+  store (persisting it as failed, so `getMigrationState` reports
+  `RequiresAttention` rather than `NotStarted` until a new run is committed)
+  instead of deleting the engine's rows with raw SQL. The Slipstream
+  `getTransactionRaw` host read now queries the public `v_transactions` view
+  instead of a wallet-internal base table.
+- On testnet, pool-migration transfers are now bucketed onto a 12-block anchor
+  grid instead of ZIP 318's 144-block one, and the transfer/preparation
+  broadcast delays scale down with it, so a migration can be exercised end to
+  end in minutes rather than days. Mainnet is unchanged and still uses the ZIP
+  318 parameters. A testnet wallet that committed a migration before this change
+  has its transfers anchored to the old grid; those runs must be restarted.
+
+### Fixed
 - The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
   helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy
   paths bypassed the plan store entirely, so a sync-loop `resubmitUnminedTransactions` tick that
@@ -159,6 +209,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's
   `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant — without depending on
   backend-specific error codes or message text.
+- An account created from a checkpoint now receives the Ironwood commitment tree
+  state that checkpoint carries. The SDK read only the Sapling and Orchard trees out
+  of a checkpoint's tree state and dropped the Ironwood one, so such an account was
+  created with no Ironwood tree state at its birthday height. The field is optional
+  and no mainnet checkpoint currently ships one, so this reached test networks first.
+
+The remainder were picked up from the librustzcash update:
+
+- `Synchronizer.createTransactionFromPczt` now records the transaction's Ironwood
+  outputs. Every Ironwood output was previously dropped when the transaction was
+  stored: for a post-NU6.3 PCZT that delivers its payment through the Ironwood pool,
+  the external recipient's address and decrypted memo were never persisted and are
+  not recoverable afterwards, and the wallet's own Ironwood outputs stayed invisible
+  until the transaction was mined and scanned.
 - A wallet whose database was upgraded by a build using
   `zcash_client_sqlite 0.22.0-rc.1` (the 2.6.6 internal build) no longer fails
   every scan. Such a wallet's `orchard_ironwood_migrations` table never acquired
@@ -542,7 +606,7 @@ Both of the following were picked up from the librustzcash update:
 
 ### Fixed
 - Checkpoints update
-- Migrated to `zcash_client_sqlite 0.19.4`, `shardtree 0.6.2`. This fixes 
+- Migrated to `zcash_client_sqlite 0.19.4`, `shardtree 0.6.2`. This fixes
   an error that could cause note commitment tree corruption (which required
   a rescan to remediate when encountered).
 
@@ -582,11 +646,11 @@ Both of the following were picked up from the librustzcash update:
 ## [2.4.0] - 2025-11-05
 
 ### Added
-- `Synchronizer.fetchUtxosByAddress` function added to query light wallet server to find any UTXOs associated with 
+- `Synchronizer.fetchUtxosByAddress` function added to query light wallet server to find any UTXOs associated with
   given transparent address
-- `Synchronizer.getSingleUseTransparentAddress` function added that returns an ephemeral transparent address for 
+- `Synchronizer.getSingleUseTransparentAddress` function added that returns an ephemeral transparent address for
   one-time use
-- `Synchronizer.checkSingleUseTransparentAddress` function added to check for most overdue ephemeral address within 
+- `Synchronizer.checkSingleUseTransparentAddress` function added to check for most overdue ephemeral address within
   24h window to retrieve and store it's UTXOs.
 
 ### Changed

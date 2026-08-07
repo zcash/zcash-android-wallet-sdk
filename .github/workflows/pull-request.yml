@@ -1,6 +1,11 @@
 # Expected secrets
 # FIREBASE_TEST_LAB_SERVICE_ACCOUNT - Email address of Firebase Test Lab service account
 # FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER - Workload identity provider to generate temporary service account key
+# SLIPSTREAM_APP_ID - App ID of the GitHub App granting read access to the private zodl-inc/slipstream repo
+# SLIPSTREAM_APP_PRIVATE_KEY - PEM private key for that App
+#   Without these two, every job that compiles Rust fails in `:backend-lib:cargoBuild*`: cargo cannot
+#   resolve the `slipstream-core` git dependency. They are unavailable to pull requests from forks,
+#   which therefore cannot pass those jobs.
 
 # Expected variables
 # FIREBASE_TEST_LAB_PROJECT - Firebase Test Lab project name
@@ -19,6 +24,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default to no token scopes at all; every job that needs one declares it below.
+permissions: {}
+
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -28,12 +36,18 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
-        uses: gradle/actions/wrapper-validation@v6
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
   check_firebase_secrets:
     runs-on: ubuntu-latest
+    # Reads no repository content — it only reports whether secrets are configured.
+    permissions: {}
     outputs:
       has-secrets: ${{ steps.check_firebase_secrets.outputs.defined }}
     steps:
@@ -54,6 +68,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 10
@@ -61,7 +79,7 @@ jobs:
       - name: Check properties
         timeout-minutes: 4
         run: |
-          ./gradlew checkProperties
+          make check-properties
 
   static_analysis_shellcheck:
     runs-on: ubuntu-latest
@@ -71,6 +89,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Shellcheck
         timeout-minutes: 1
         run: |
@@ -87,6 +109,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -94,7 +120,7 @@ jobs:
       - name: Detekt
         timeout-minutes: 4
         run: |
-          ./gradlew detektAll
+          make detekt
       - name: Collect Artifacts
         timeout-minutes: 1
         if: ${{ always() }}
@@ -122,6 +148,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -129,7 +159,7 @@ jobs:
       - name: Ktlint
         timeout-minutes: 4
         run: |
-          ./gradlew ktlint
+          make ktlint
       - name: Collect Artifacts
         timeout-minutes: 1
         if: ${{ always() }}
@@ -157,19 +187,25 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Android Lint
         timeout-minutes: 45
         env:
           # Disable minify, since it makes lint run faster
           ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: false
         run: |
-          ./gradlew :sdk-lib:lintRelease :demo-app:lintZcashmainnetRelease
+          make lint-android
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -198,17 +234,22 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Test
         timeout-minutes: 15
-        working-directory: backend-lib
         run: |
-          cargo test --all-features
+          make test-rust
 
   # --all-features matters: code behind a cargo feature (for example the
   # android-test-fixtures gate the Android build enables) is invisible to a
@@ -223,23 +264,32 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Clippy
         timeout-minutes: 15
-        working-directory: backend-lib
         run: |
-          cargo clippy --tests --all-features -- -W clippy::all -D warnings
+          make lint-rust
 
   # Checks that the Rust sources are rustfmt-clean. `--check` only reports; it never
   # rewrites the tree, so this job cannot mask an unformatted commit by fixing it.
   #
   # There is no rustfmt.toml, so this is stock rustfmt defaults for the edition in
   # backend-lib/Cargo.toml. Run `cargo fmt --all` in backend-lib/ to fix a failure.
+  #
+  # `cargo fmt --all` resolves the workspace before it formats anything, so on this
+  # branch it needs the slipstream credentials to reach the private `slipstream-core`
+  # git dependency, exactly as the compiling Rust jobs do.
   static_analysis_rustfmt:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
@@ -249,15 +299,43 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Rustfmt
         timeout-minutes: 5
-        working-directory: backend-lib
         run: |
-          cargo fmt --all --check
+          make check-format-rust
+
+  # backend-lib/src/main/proto/proposal.proto is vendored from librustzcash.
+  # Rust encodes proposals with the schema of the pinned zcash_client_backend,
+  # so a stale copy silently drops fields on the Kotlin side. Re-derive it from
+  # the pinned version and fail if the committed copy differs.
+  check_proposal_proto:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          # The check only reads Cargo.lock and curls a public URL, so it needs no
+          # credential; keep it out of .git/config.
+          persist-credentials: false
+      - name: Check proposal.proto matches the pinned zcash_client_backend
+        timeout-minutes: 5
+        run: |
+          ./scripts/update-proposal-proto.sh --check
 
   test_android_modules_unit:
     needs: [validate_gradle_wrapper]
@@ -268,16 +346,22 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Build and test
         timeout-minutes: 30
         run: |
-          ./gradlew test
+          make test-unit
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -328,12 +412,18 @@ jobs:
   #     - name: Checkout
   #       timeout-minutes: 1
   #       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+  #       with:
+  #         # No job here pushes or otherwise re-uses the checkout credential, so keep it
+  #         # out of .git/config where it would be picked up by artifact uploads.
+  #         persist-credentials: false
   #     - name: Setup
   #       id: setup
   #       timeout-minutes: 30
   #       uses: ./.github/actions/setup
   #       with:
   #         rust-cache: true
+  #         slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+  #         slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
   #     - name: Build
   #       timeout-minutes: 30
   #       run: |
@@ -346,7 +436,7 @@ jobs:
   #         project_id: ${{ vars.FIREBASE_TEST_LAB_PROJECT }}
   #         service_account: ${{ secrets.FIREBASE_TEST_LAB_SERVICE_ACCOUNT }}
   #         workload_identity_provider: ${{ secrets.FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER }}
-  #         access_token_lifetime: '1200s'
+  #         access_token_lifetime: "1200s"
   #     - name: Test
   #       timeout-minutes: 30
   #       env:
@@ -387,6 +477,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       # ubuntu-latest exposes /dev/kvm, but the default udev rules do not grant
       # the runner user access to it. This rule opens it so the managed-device
       # emulator can use KVM acceleration instead of falling back to software.
@@ -402,6 +496,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # The hosted runner's Android SDK does not include the emulator package,
       # which a Gradle Managed Device requires. AGP auto-installs the system
       # image but not the emulator, so without this the pixel2MinSetup task
@@ -427,13 +523,7 @@ jobs:
       - name: Build and test
         timeout-minutes: 45
         run: |
-          ./gradlew \
-            :sdk-lib:pixel2MinDebugAndroidTest \
-            :lightwallet-client-lib:pixel2MinDebugAndroidTest \
-            :sdk-incubator-lib:pixel2MinDebugAndroidTest \
-            :backend-lib:pixel2MinDebugAndroidTest \
-            -Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 \
-            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+          make test-instrumented
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -467,12 +557,18 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
         env:
@@ -488,7 +584,7 @@ jobs:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS: androiddebugkey
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS_PASSWORD: android
         run: |
-          ./gradlew assembleRelease
+          make build-release
       - name: Collect Artifacts
         timeout-minutes: 1
         env:
@@ -522,6 +618,10 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 30
@@ -549,4 +649,4 @@ jobs:
           ORG_GRADLE_PROJECT_ZCASH_FIREBASE_TEST_LAB_API_KEY_PATH: ${{ steps.auth_test_lab.outputs.credentials_file_path }}
         run: |
           unzip ${BINARIES_ZIP_PATH}
-          ./gradlew :demo-app:runFlankSanityConfig
+          make test-robo

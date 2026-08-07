@@ -181,9 +181,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 
             // Upstream interprets "unspent" at the requested height: spends mined
             // after the snapshot remain eligible for that snapshot.
+            //
+            // Voting weight is read from the Ironwood pool, not Orchard: votes are
+            // cast with Ironwood-pool notes, so an Orchard read would measure the
+            // wrong balance.
             let notes = wallet_db
-                .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
-                .map_err(|e| anyhow!("get_unspent_orchard_notes_at_historical_height: {}", e))?;
+                .get_unspent_ironwood_notes_at_historical_height(account_uuid, height)
+                .map_err(|e| anyhow!("get_unspent_ironwood_notes_at_historical_height: {}", e))?;
 
             notes
                 .iter()

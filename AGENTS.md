@@ -13,7 +13,7 @@ jobs that are runnable on a dev machine:
 
 ```bash
 ./scripts/ci-local.sh fast     # detekt + ktlint (~30s) -- run this first
-./scripts/ci-local.sh quick    # fast + unit tests (~5m)
+./scripts/ci-local.sh quick    # fast + rust + unit tests (~5m)
 ./scripts/ci-local.sh full     # everything, including androidTest (~15-30m)
 
 # Or a single stage when iterating:
@@ -26,6 +26,9 @@ jobs that are runnable on a dev machine:
 `quick` is what actually compiles the Kotlin: `fast` only runs static
 analysis, so it will pass on code that does not compile. Run at least `quick`
 after any change to a Kotlin source file.
+
+The `rust` stage runs `cargo test` against `backend-lib`. The first invocation
+builds around 640 crates and is slow; later runs are incremental.
 
 ### Environment requirements
 

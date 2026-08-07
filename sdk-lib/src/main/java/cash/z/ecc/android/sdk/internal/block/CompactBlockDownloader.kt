@@ -60,6 +60,10 @@ open class CompactBlockDownloader private constructor(
     ): List<JniBlockMeta> {
         val from = BlockHeightUnsafe.from(heightRange.start)
         val to = BlockHeightUnsafe.from(heightRange.endInclusive)
+        // Temporary diagnostic (IRONWOOD_DIAG) — confirms whether the connected lightwalletd
+        // server is actually populating CompactTx.ironwoodActions yet. Remove once confirmed.
+        var ironwoodDiagBlocksWithActions = 0
+        var ironwoodDiagActionsSeen = 0L
         val filteredFlow =
             lightWalletClient
                 .getBlockRange(
@@ -69,6 +73,15 @@ open class CompactBlockDownloader private constructor(
                     when (response) {
                         is Response.Success -> {
                             Twig.verbose { "Downloading block at height: ${response.result.height} succeeded." }
+                            val ironwoodCount = response.result.ironwoodOutputsCount
+                            if (ironwoodCount > 0u) {
+                                ironwoodDiagBlocksWithActions++
+                                ironwoodDiagActionsSeen += ironwoodCount.toLong()
+                                Twig.debug {
+                                    "IRONWOOD_DIAG block ${response.result.height} has $ironwoodCount " +
+                                        "ironwoodActions"
+                                }
+                            }
                         }
 
                         is Response.Failure -> {
@@ -90,6 +103,10 @@ open class CompactBlockDownloader private constructor(
                         Twig.warn { "Blocks in range $heightRange failed to download with: $it" }
                     } else {
                         Twig.verbose { "All blocks in range $heightRange downloaded successfully" }
+                        Twig.debug {
+                            "IRONWOOD_DIAG range $heightRange: $ironwoodDiagBlocksWithActions block(s) with " +
+                                "ironwoodActions, $ironwoodDiagActionsSeen total ironwoodActions seen"
+                        }
                     }
                 }
 

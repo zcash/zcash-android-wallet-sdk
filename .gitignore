@@ -100,6 +100,7 @@ backup-dbs/
 /.idea/inspectionProfiles/Project_Default.xml
 /.idea/kotlinc.xml
 /.idea/runConfigurations.xml
+/.worktrees
 
 # Design docs, implementation plans, and other working notes. These are
 # conversation artifacts rather than repository history.

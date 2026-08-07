@@ -7,3 +7,10 @@
     public static *** error(...);
     public static *** assertLoggingStripped();
 }
+
+# Slipstream JNI entry class - resolved by symbol name at runtime; never rename/strip.
+-keepclasseswithmembernames,includedescriptorclasses class com.zodl.slipstream.SlipstreamNative {
+    native <methods>;
+}
+# Slipstream @Keep models constructed BY the native side (env.new_object by exact name + descriptor).
+-keep,includedescriptorclasses class com.zodl.slipstream.model.Slipstream* { *; }

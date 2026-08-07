@@ -1,6 +1,7 @@
 import com.google.protobuf.gradle.id
 import com.google.protobuf.gradle.proto
 import org.gradle.api.GradleException
+import java.io.File
 
 plugins {
     id("org.mozilla.rust-android-gradle.rust-android")
@@ -125,18 +126,37 @@ cargo {
         "x86_64" to minSdkVersion,
     )
     profile = "release"
-    extraCargoBuildArguments =
+    extraCargoBuildArguments = run {
+        // The Slipstream sync-engine JNI surface is now a Cargo feature (previously it was an
+        // always-linked path dependency); the shipped native library must enable it so its
+        // `Java_com_zodl_slipstream_*` exports remain in libzcashwalletsdk.so.
+        val features = mutableListOf("slipstream")
         if (enableAndroidTestNativeFixtures) {
-            listOf("--features", "android-test-fixtures")
-        } else {
-            emptyList()
+            // Test-only fixture exports. The voting JNI surface is NOT enabled here: it is
+            // gated off behind `cfg(zcash_voting)` on this branch and its dependency is
+            // commented out of Cargo.toml, so VotingRustBackendTest stays @Ignore'd.
+            features.add("android-test-fixtures")
         }
+        listOf("--features", features.joinToString(","))
+    }
     prebuiltToolchains = true
     // To force the compiler to use the given page size
     // See the new Android 16 KB page size requirement for more details:
     // https://developer.android.com/about/versions/15/behavior-changes-all#16-kb
     exec = { spec, _ ->
         spec.environment["RUST_ANDROID_GRADLE_CC_LINK_ARG"] = "-Wl,-z,max-page-size=16384"
+    }
+    // GUI-launched IDEs (Android Studio from Finder/Dock) inherit a minimal PATH that omits
+    // ~/.cargo/bin, so the rustup `cargo`/`rustc` shims are not found and cargoBuild fails with
+    // "Cannot run program 'rustc'". When rustup is installed in its default location, point the
+    // plugin at the absolute shim paths so the native build no longer depends on the daemon's PATH.
+    File(System.getProperty("user.home"), ".cargo/bin").let { cargoBin ->
+        val rustc = File(cargoBin, "rustc")
+        val cargo = File(cargoBin, "cargo")
+        if (rustc.exists() && cargo.exists()) {
+            rustcCommand = rustc.absolutePath
+            cargoCommand = cargo.absolutePath
+        }
     }
 }
 
@@ -201,6 +221,7 @@ dependencies {
 
     // Tests
     testImplementation(libs.kotlin.test)
+    testImplementation(libs.kotlinx.coroutines.test)
 
     androidTestImplementation(libs.androidx.multidex)
     androidTestImplementation(libs.androidx.test.runner)

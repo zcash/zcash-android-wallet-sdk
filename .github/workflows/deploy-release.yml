@@ -2,6 +2,9 @@
 # MAVEN_CENTRAL_USERNAME - Username for Maven Central.
 # MAVEN_CENTRAL_PASSWORD - Password for Maven Central.
 # MAVEN_SIGNING_KEY_ASCII - GPG key without a password which has ASCII-armored and then BASE64-encoded.
+# SLIPSTREAM_APP_ID - App ID of the GitHub App granting read access to the private zodl-inc/slipstream repo.
+# SLIPSTREAM_APP_PRIVATE_KEY - PEM private key for that App. Required to resolve the `slipstream-core`
+#   cargo dependency; without it the Rust build cannot be produced.
 
 name: Deploy Release
 
@@ -19,9 +22,13 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
-        uses: gradle/actions/wrapper-validation@v6
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
   check_secrets:
     environment: deployment
@@ -50,12 +57,18 @@ jobs:
       - name: Checkout
         timeout-minutes: 1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
       - name: Setup
         id: setup
         timeout-minutes: 50
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.
       - name: Deploy to Maven Central
