@@ -1764,7 +1764,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
-        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
+        // Deliberately NOT `mut` — unlike every mutating sibling here, this function must never
+        // call a &mut-requiring PoolMigrationWrite method. The compiler enforces the purity claim:
+        // an accidental write reintroduced here fails to compile without first adding `mut` back,
+        // which is a visible, reviewable diff (2026-08-07 read/write-separation design, Fable
+        // review M1).
+        let backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
         let persisted = backend
             .get_migration()
             .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
@@ -4468,6 +4473,72 @@ mod live_wallet_edge_case_tests {
                 .state(),
             MigrationTxState::Mined { .. }
         ));
+    }
+
+    /// Inverse of [mark_mined_reconciles_on_read]: `migrationStateUnreconciledNative`'s underlying
+    /// read (plain [PoolMigrationRead::get_migration], no [read_reconciled] wrapper) must NEVER
+    /// promote `Broadcast`→`Mined` or persist anything, even though the wallet already knows a
+    /// mined height for the transaction and repeated reads would otherwise have every opportunity
+    /// to (2026-08-07 read/write-separation design, Fable review I1 — this function is trusted by
+    /// six UI/gate call sites to be mutex-free specifically because it never writes; this test is
+    /// the enforcement `unused_mut` alone doesn't provide against a future edit).
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn unreconciled_read_never_persists_mark_mined() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let account = first_account(&wallet);
+
+        let (plan, tip, _handle) =
+            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let target = tip + 1;
+        let mut state = {
+            let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
+                .expect("account exists for migration store");
+            let mut rng = OsRng;
+            let (state, _unsigned) = engine::build_preparation_unsigned(
+                &network,
+                target,
+                &mut backend,
+                &plan,
+                &mut rng,
+                ReplanThreshold::DEFAULT,
+            )
+            .expect("commit migration");
+            state
+        };
+        let some_tx_id = state.transactions()[0].id();
+        state.mark_broadcast(some_tx_id);
+
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, network)
+            .expect("account exists for migration store");
+        backend
+            .replace_migration(&state)
+            .expect("persist manually-advanced state");
+
+        // Same wallet/txid setup mark_mined_reconciles_on_read uses (a real, already-mined txid),
+        // so the wallet DOES know a mined height for this transaction — read_reconciled would
+        // promote it. The plain read must not.
+        for attempt in 0..3 {
+            let raw = backend
+                .get_migration()
+                .expect("read migration state")
+                .expect("migration state committed");
+            assert!(
+                matches!(
+                    raw.transactions()
+                        .iter()
+                        .find(|t| t.id() == some_tx_id)
+                        .unwrap()
+                        .state(),
+                    MigrationTxState::Broadcast { .. }
+                ),
+                "attempt {attempt}: plain get_migration() must never promote Broadcast->Mined \
+                 (that is read_reconciled's job) — a write here would silently make every UI/gate \
+                 call site currently trusting this read to be mutex-free unsafe"
+            );
+        }
     }
 
     /// `commit_or_reuse` (our own adapter, used by every commit-shaped JNI function) must REUSE
