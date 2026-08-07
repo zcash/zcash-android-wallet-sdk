@@ -160,7 +160,7 @@ xz2 = { version = "0.1", features = ["static"] }
 # is git-pinned (no machine-local path); backend-lib's `[patch.crates-io]` below is the single
 # source of truth governing the librustzcash rev for `core` and the whole graph. Keep this rev
 # in step with that patch block.
-slipstream-core = { version = "0.6", optional = true }
+slipstream-core = { package = "zodl-slipstream", version = "0.1", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
@@ -212,8 +212,6 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "0da0c44d42d8aeed0d841da6353d585805976993" }
-
 # Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
 # entry for a crate that is not in the graph. Uncomment together with it.
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }

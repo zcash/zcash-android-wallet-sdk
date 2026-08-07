@@ -4696,45 +4696,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "slipstream-core"
-version = "0.6.4"
-source = "git+https://github.com/zodl-inc/slipstream.git?rev=0da0c44d42d8aeed0d841da6353d585805976993#0da0c44d42d8aeed0d841da6353d585805976993"
-dependencies = [
- "ff",
- "futures-util",
- "group",
- "incrementalmerkletree",
- "orchard",
- "pasta_curves",
- "prost 0.14.4",
- "rand 0.8.7",
- "rayon",
- "rusqlite",
- "sapling-crypto",
- "schemerz",
- "schemerz-rusqlite",
- "secrecy",
- "shardtree",
- "sinsemilla",
- "thiserror 2.0.19",
- "tokio",
- "tonic",
- "tonic-prost",
- "tracing",
- "uuid",
- "zcash_address",
- "zcash_client_backend",
- "zcash_client_sqlite",
- "zcash_keys",
- "zcash_note_encryption",
- "zcash_primitives",
- "zcash_protocol",
- "zcash_script",
- "zcash_transparent",
- "zip32",
-]
-
-[[package]]
 name = "slotmap"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7332,7 +7293,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shardtree",
- "slipstream-core",
  "tokio",
  "tonic",
  "tor-rtcompat",
@@ -7354,6 +7314,7 @@ dependencies = [
  "zcash_script",
  "zcash_transparent",
  "zip32",
+ "zodl-slipstream",
 ]
 
 [[package]]
@@ -7784,6 +7745,46 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zodl-slipstream"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "166eb670a194f5da7c20507f0c8d9d6dfa6afd75d50d1ba93b978dba92418325"
+dependencies = [
+ "ff",
+ "futures-util",
+ "group",
+ "incrementalmerkletree",
+ "orchard",
+ "pasta_curves",
+ "prost 0.14.4",
+ "rand 0.8.7",
+ "rayon",
+ "rusqlite",
+ "sapling-crypto",
+ "schemerz",
+ "schemerz-rusqlite",
+ "secrecy",
+ "shardtree",
+ "sinsemilla",
+ "thiserror 2.0.19",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tracing",
+ "uuid",
+ "zcash_address",
+ "zcash_client_backend",
+ "zcash_client_sqlite",
+ "zcash_keys",
+ "zcash_note_encryption",
+ "zcash_primitives",
+ "zcash_protocol",
+ "zcash_script",
+ "zcash_transparent",
+ "zip32",
+]
 
 [[package]]
 name = "zstd"
