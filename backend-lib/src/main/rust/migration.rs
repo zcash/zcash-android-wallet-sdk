@@ -3210,23 +3210,37 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// DEBUG ONLY: abandons this account's in-progress migration (every not-yet-broadcast
-/// preparation and transfer transaction, signed or not, proved or not), so the next
-/// propose/commit call starts completely fresh — for manual testing, not exposed to production
-/// users. Persists the run as `Failed` through the engine store (`replace_migration`) — the
-/// engine's cancellation shape, and the same one `zcash-swift-wallet-sdk`'s restart path
-/// persists — rather than deleting the store's rows out from under it with raw SQL (this crate
-/// never manipulates engine-owned tables directly). A subsequent propose/commit starts a fresh
-/// run over the terminal predecessor, which the engine supports. Distinct from
-/// `restartCurrentMigrationStepNative`, which recovers a RequiresAttention migration by
-/// re-planning the remaining balance.
+/// Cancels this account's in-progress migration for the user-facing "Restart Migration" flow, via
+/// the real store-level primitive (`PoolMigrations::cancel_migration`, `zcash_client_sqlite` PR
+/// #2926 — landed upstream 2026-08-05, ahead of our 2026-08-07 `librustzcash` repin). Releases
+/// every never-broadcast transaction's note reservation (so the notes return to DEFAULT note
+/// selection immediately, not at lock expiry), then moves the record to the terminal `Cancelled`
+/// status — in that order, in one database transaction, so a crash between the two leaves a
+/// still-pending migration that a retried call finishes.
 ///
-/// Behavioral note versus the earlier row-delete implementation: the cancelled run remains
-/// stored, so `getMigrationStateNative` reports `RequiresAttention` (as after any failure)
-/// rather than `NotStarted`, and an already-terminal run is left as-is.
+/// Supersedes this function's earlier manual "status-only swap to `Failed`" implementation — the
+/// accepted residual from when the engine had no real cancel primitive. That older version left
+/// `getMigrationStateNative` reporting `RequiresAttention` (as after any failure) rather than
+/// `NotStarted`, since the record stayed stored under a non-`Cancelled` status. This version's
+/// `Cancelled` status is NOT one `derive_migration_state`'s `is_terminal()` match arms names
+/// explicitly — falling through its `unreachable!()` would be a real bug — but `get_migration()`
+/// itself reports `None` once cancelled (verified in PR #2926's own end-to-end test:
+/// `get_migration` reports `None` while `latest_migration` still reads back `Cancelled` for
+/// history), so `derive_migration_state`'s `let Some(state) = persisted else { return NotStarted }`
+/// short-circuits before ever reaching that match — the same clean `NotStarted` a subsequent
+/// propose/commit call plans fresh over the full released balance from, matching what this app's
+/// own `RestartMigrationUseCase` doc has always promised ("the home banner returns to a clean
+/// 'Migrate now'") but which the old implementation didn't actually deliver.
 ///
-/// Returns 1 if an in-progress run was cancelled, 0 if there was nothing to cancel (no stored
-/// run, or a run that already reached `Complete`/`Failed`).
+/// Calling with no pending migration performs only the REPAIR half: releasing a stranded lock on
+/// the latest retained record (e.g. one an older client left `Failed`) without rewriting its
+/// status — see `PoolMigrations::cancel_migration`'s own doc. Also works WITHOUT deserializing the
+/// migration state, and is honest about what it cannot undo: an already-broadcast transaction may
+/// still mine (the returned `CancelOutcome` reports `in_flight`/`mined` rather than refusing — not
+/// yet surfaced to Kotlin by this entry point, which only reports whether anything was released).
+///
+/// Returns 1 if any note reservation was released (an in-progress run was cancelled, or a stranded
+/// terminal-record lock was repaired), 0 if there was nothing to release.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_clearMigrationNative<
     'local,
@@ -3240,36 +3254,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let account_bytes = account.expose_uuid().as_bytes().to_vec();
         let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
-        let Some(state) = backend
-            .get_migration()
-            .map_err(|e| anyhow!("Error reading migration: {}", e))?
-        else {
-            return Ok(0);
-        };
-        if state.is_terminal() {
-            return Ok(0);
-        }
-        // Status-only swap: only the status changes; every sub-state — including the anchor
-        // bucket grid the run was committed under — is carried through unchanged, since rewriting
-        // it would misreport which boundaries the already-drawn transfer anchors lie on. (The
-        // rc.1 engine has no cancel/fail primitive; this is the accepted residual.)
-        let cancelled = MigrationState::from_parts(
-            engine::MigrationStatus::Failed,
-            state.denominations().clone(),
-            state.preparation().clone(),
-            state.transactions().clone(),
-            state.anchor_bucket_interval(),
-            state.replan_threshold(),
-        );
-        backend
-            .replace_migration(&cancelled)
+        let outcome = backend
+            .cancel_migration()
             .map_err(|e| anyhow!("Error cancelling migration: {}", e))?;
-        // Also clear any persisted invalidation reason so a fresh run starts clean.
-        clear_invalidation(&store_conn, &account_bytes)
-            .map_err(|e| anyhow!("Error clearing invalidation on cancel: {}", e))?;
-        Ok(1)
+        Ok(
+            if outcome.released().is_empty()
+                && outcome.in_flight().is_empty()
+                && outcome.mined().is_empty()
+            {
+                0
+            } else {
+                1
+            },
+        )
     });
     unwrap_exc_or(&mut env, res, 0)
 }

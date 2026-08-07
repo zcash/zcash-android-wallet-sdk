@@ -93,6 +93,23 @@ where
         })
     }
 
+    /// Cancels this account's migration via the real store-level primitive
+    /// (`PoolMigrations::cancel_migration`, `zcash_client_sqlite` PR #2926): releases every
+    /// never-broadcast transaction's note reservation, then moves the record to the terminal
+    /// `Cancelled` status, in one database transaction. After this returns, `get_migration()`
+    /// reports `None` (not a stale `Failed`/`RequiresAttention` record) — a subsequent propose
+    /// plans over the full released balance. Calling with no pending migration performs only the
+    /// repair half: releasing a stranded lock on the latest retained record (e.g. one an older
+    /// client left `Failed`) without rewriting its status. See `PoolMigrations::cancel_migration`'s
+    /// own doc for the full contract, including why it never deserializes the migration state.
+    pub fn cancel_migration(
+        &mut self,
+    ) -> Result<zcash_client_sqlite::pool_migration::CancelOutcome, EngineError> {
+        self.store
+            .cancel_migration()
+            .map_err(|e| anyhow::anyhow!("cancelling migration failed: {e:?}"))
+    }
+
     fn selection_target(&self) -> Result<TargetHeight, EngineError> {
         let tip = self
             .wallet
