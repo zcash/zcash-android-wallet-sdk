@@ -45,7 +45,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_voting)'] }
 # shipped library. Re-enabling voting means asking for it again — see the shielded-voting
 # block below.
 orchard = "0.15"
-zcash_pool_migration = { version = "0.1.0-rc.3", features = ["wallet"] }
+zcash_pool_migration = { version = "0.1.0-rc.7", features = ["wallet"] }
 # `signer` is this branch's addition, for the Keystone batch-signing recipe below
 # (`pczt::roles::signer::batch`).
 pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling", "signer"] }
@@ -60,7 +60,7 @@ zcash_client_backend = { version = "0.24.0-rc.7", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.7", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.8", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
@@ -212,35 +212,28 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "ab89ada45f2ef893a05fcefa0ead99f87d848a4e" }
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "0da0c44d42d8aeed0d841da6353d585805976993" }
 
 # Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
 # entry for a crate that is not in the graph. Uncomment together with it.
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
 
-# Pinned to librustzcash main (1730b544dcca8373f14378feb387136ad878080e, 2026-08-07) — catches up
-# to Kris's latest fix: PR #2949 (zcash_pool_migration: gate the exact-funding split on the
-# wallet's spendable note count). A balance of exactly one canonical denomination plus its
-# transfer buffer, held as anything other than a single note, previously reconciled to an empty
-# split and got stuck at UnfundableSplit permanently (the notes summing to exactly the funding
-# note left no room for any preparation fee) — a real fund-migration correctness bug, not
-# cosmetic. `plan_denominations`/`DenominationStrategy::plan`/`balance_has_canonical_split` gained
-# a `spendable_note_count` parameter; all are internal to zcash_pool_migration and reached only
-# through `engine::plan_migration`/`advance_migration`, whose own signatures are unchanged, so no
-# call-site changes were needed on our side. Supersedes the earlier 7db76db2 pin (2026-08-06; PR
-# #2946 quadratic-cost fix, #2943 first-fit-decreasing strategy, #2945/#2947 denomination display
-# fixes, #2915/#2916 ZIP 318 store-time classification — all still included transitively).
-# Every crate librustzcash's own workspace produces that appears anywhere in this graph (even
-# transitively, e.g. zcash_address/zcash_keys/zcash_proofs/zcash_transparent/zip321) must be
-# patched together, or Cargo resolves a mismatched mix of git and crates.io versions.
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+# DO NOT ALTER THIS COMMENT
+#
+# This section is left in place to ensure that development against in-progress
+# librustzcash changes my proceed. DO NOT merge a PR that chooses unstable
+# revisions; such a revision need not be merged to `librustzcash `main` but the
+# author and reviewer should have certainty that the revision *will end up
+# merged to `main`* so that commits in our history can always be successfully
+# built. 
+#pczt = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
