@@ -218,24 +218,29 @@ slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "a
 # entry for a crate that is not in the graph. Uncomment together with it.
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
 
-# Pinned to librustzcash main (7db76db2afa2dbd355faf09a599339c94b264e31, 2026-08-06) — catches up
-# to Kris's latest fixes: PR #2946 (quadratic-cost bug that stalled/crashed plan confirmation on
-# large wallets), #2943 (new first-fit-decreasing preparation strategy in zcash_pool_migration),
-# #2945/#2947 (denomination/value-breakdown display fixes — quantize the split once and reconcile
-# by truncation, plus a denomination-interface review follow-up), and #2915/#2916 (ZIP 318
-# classification now happens at store time in zcash_client_sqlite). Supersedes the earlier
-# 1804f60e pin (PR #2939 batched-Prove adoption, still included transitively).
+# Pinned to librustzcash main (1730b544dcca8373f14378feb387136ad878080e, 2026-08-07) — catches up
+# to Kris's latest fix: PR #2949 (zcash_pool_migration: gate the exact-funding split on the
+# wallet's spendable note count). A balance of exactly one canonical denomination plus its
+# transfer buffer, held as anything other than a single note, previously reconciled to an empty
+# split and got stuck at UnfundableSplit permanently (the notes summing to exactly the funding
+# note left no room for any preparation fee) — a real fund-migration correctness bug, not
+# cosmetic. `plan_denominations`/`DenominationStrategy::plan`/`balance_has_canonical_split` gained
+# a `spendable_note_count` parameter; all are internal to zcash_pool_migration and reached only
+# through `engine::plan_migration`/`advance_migration`, whose own signatures are unchanged, so no
+# call-site changes were needed on our side. Supersedes the earlier 7db76db2 pin (2026-08-06; PR
+# #2946 quadratic-cost fix, #2943 first-fit-decreasing strategy, #2945/#2947 denomination display
+# fixes, #2915/#2916 ZIP 318 store-time classification — all still included transitively).
 # Every crate librustzcash's own workspace produces that appears anywhere in this graph (even
 # transitively, e.g. zcash_address/zcash_keys/zcash_proofs/zcash_transparent/zip321) must be
 # patched together, or Cargo resolves a mismatched mix of git and crates.io versions.
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "7db76db2afa2dbd355faf09a599339c94b264e31" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "1730b544dcca8373f14378feb387136ad878080e" }
