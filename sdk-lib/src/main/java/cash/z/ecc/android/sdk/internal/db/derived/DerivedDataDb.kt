@@ -120,7 +120,7 @@ internal class DerivedDataDb private constructor(
     companion object {
         // Database migrations are managed by librustzcash.  This is a hard-coded value to ensure that Android's
         // SqliteOpenHelper is happy
-        private const val DATABASE_VERSION = 8
+        internal const val DATABASE_VERSION = 8
 
         @Suppress("LongParameterList")
         suspend fun new(

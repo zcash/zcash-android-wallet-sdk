@@ -50,6 +50,31 @@ internal class BlockTable(
                     blockTimeEpochSeconds = time
                 )
             }.firstOrNull()
+
+    suspend fun findLatestBlock(): DbBlock? =
+        sqliteDatabase
+            .queryAndMap(
+                table = BlockTableDefinition.TABLE_NAME,
+                columns = PROJECTION_BLOCK_SIMPLE,
+                selection = null,
+                selectionArgs = null,
+                orderBy = "${BlockTableDefinition.COLUMN_INTEGER_HEIGHT} DESC",
+                limit = "1"
+            ) { cursor ->
+                val heightIndex = cursor.getColumnIndexOrThrow(BlockTableDefinition.COLUMN_INTEGER_HEIGHT)
+                val hashIndex = cursor.getColumnIndexOrThrow(BlockTableDefinition.COLUMN_BLOB_HASH)
+                val timeIndex = cursor.getColumnIndexOrThrow(BlockTableDefinition.COLUMN_INTEGER_TIME)
+
+                val height = cursor.getLong(heightIndex)
+                val hash = cursor.getBlob(hashIndex)
+                val time = cursor.getLong(timeIndex)
+
+                DbBlock(
+                    height = BlockHeight(height),
+                    hash = FirstClassByteArray(hash),
+                    blockTimeEpochSeconds = time
+                )
+            }.firstOrNull()
 }
 
 internal object BlockTableDefinition {
@@ -69,5 +94,9 @@ internal object BlockTableDefinition {
 
     const val COLUMN_INTEGER_SAPLING_OUTPUT_COUNT = "sapling_output_count" // $NON-NLS
 
-    const val COLUMN_INTEGER_ORCHARD_OUTPUT_COUNT = "orchard_output_count" // $NON-NLS
+    const val COLUMN_INTEGER_ORCHARD_ACTION_COUNT = "orchard_action_count" // $NON-NLS
+
+    const val COLUMN_INTEGER_IRONWOOD_COMMITMENT_TREE_SIZE = "ironwood_commitment_tree_size" // $NON-NLS
+
+    const val COLUMN_INTEGER_IRONWOOD_ACTION_COUNT = "ironwood_action_count" // $NON-NLS
 }

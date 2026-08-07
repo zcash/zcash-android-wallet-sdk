@@ -91,9 +91,15 @@ impl TorRuntime {
     pub(crate) fn connect_to_lightwalletd(&self, endpoint: Uri) -> anyhow::Result<LwdConn> {
         let Self { runtime, client } = self.isolated_client();
 
-        // lightwalletd endpoints are ordinary clearnet hosts, not Tor onion
-        // services, so onion connections are not permitted for them.
-        let allow_onion_services = false;
+        // `allow_onion_services` used to be inferred internally by `zcash_client_backend` from
+        // the endpoint host; it's now an explicit caller decision (upstream commit 6721534b76),
+        // so re-derive the same `.onion` check here to keep supporting custom onion lightwalletd
+        // servers without changing this method's signature.
+        let allow_onion_services = endpoint
+            .host()
+            .map(|h| h.ends_with(".onion"))
+            .unwrap_or(false);
+
         let conn = runtime.block_on(async {
             client
                 .connect_to_lightwalletd(endpoint, allow_onion_services)
@@ -204,6 +210,8 @@ impl LwdConn {
                         Script(script::Code(result.script)),
                     ),
                     Some(BlockHeight::from(u32::try_from(result.height)?)),
+                    // Account attribution isn't known at this raw address-level lightwalletd
+                    // lookup — the caller resolves/attaches it when persisting the output.
                     None,
                     None,
                     None,

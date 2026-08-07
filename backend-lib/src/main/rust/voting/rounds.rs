@@ -32,7 +32,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ini
             )?,
         };
         let session = java_nullable_string_to_rust(env, &session_json)?;
-        db.init_round(&params, session.as_deref())
+        db.init_round(db.network, &params, session.as_deref())
             .map_err(|e| anyhow!("init_round: {}", e))?;
         Ok(())
     });
@@ -118,10 +118,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let votes = db
-            .get_votes(&java_string_to_rust(env, &round_id)?)
-            .map_err(|e| anyhow!("get_votes: {}", e))?;
-        make_jni_vote_records(env, votes)
+        // VoteRecord no longer carries a `submitted` flag in zcash_voting 1.0;
+        // the round recovery snapshot's tx_hash presence stands in for it.
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let snapshot = voting::recovery::round_snapshot(&db, &round_id)
+            .map_err(|e| anyhow!("round_snapshot: {}", e))?;
+        make_jni_vote_records(env, snapshot.votes)
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }

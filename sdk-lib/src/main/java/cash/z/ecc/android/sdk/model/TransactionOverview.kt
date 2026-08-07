@@ -30,7 +30,31 @@ data class TransactionOverview(
     val memoCount: Int,
     val blockTimeEpochSeconds: Long?,
     val transactionState: TransactionState,
-    val isShielding: Boolean
+    val isShielding: Boolean,
+    /** Number of the account's own notes this transaction spent. */
+    val spentNoteCount: Int,
+    /**
+     * The value that crossed shielded pools when this transaction is a
+     * wallet-internal transfer between them, such as an Orchard to Ironwood
+     * migration; `null` when it is not such a transfer.
+     *
+     * For such a transaction [netValue] is just the fee, so this is the amount
+     * to present to a user rather than the balance delta.
+     */
+    val poolCrossingValue: Zatoshi?,
+    /**
+     * Whether this transaction is considered trusted, meaning its outputs are
+     * spendable after the trusted confirmation count rather than the untrusted
+     * one.
+     */
+    val isTrusted: Boolean,
+    /**
+     * How this transaction classifies against ZIP 318, the Orchard to Ironwood pool migration.
+     *
+     * [Zip318Kind.NOT_CLASSIFIED] means the wallet has not looked, not that the transaction is
+     * not a migration, so it warrants no label at all.
+     */
+    val zip318Kind: Zip318Kind
 ) {
     override fun toString() = "TransactionOverview"
 
@@ -62,7 +86,11 @@ data class TransactionOverview(
                     ),
                 isShielding = dbTransactionOverview.isShielding,
                 totalSpent = dbTransactionOverview.totalSpent,
-                totalReceived = dbTransactionOverview.totalReceived
+                totalReceived = dbTransactionOverview.totalReceived,
+                spentNoteCount = dbTransactionOverview.spentNoteCount,
+                poolCrossingValue = dbTransactionOverview.poolCrossingValue,
+                isTrusted = dbTransactionOverview.isTrusted,
+                zip318Kind = dbTransactionOverview.zip318Kind
             )
     }
 

@@ -14,15 +14,55 @@ internal suspend fun CombinedWalletClient.submitTransaction(
     rawTransaction: FirstClassByteArray,
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags
-): TransactionSubmitResult =
-    submitTransaction(
-        tx = rawTransaction.byteArray,
-        serviceMode =
-            sdkFlags ifTor
-                ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
-    ).toSubmitResult(txId)
+): TransactionSubmitResult {
+    val initialResult =
+        submitTransaction(
+            tx = rawTransaction.byteArray,
+            serviceMode =
+                sdkFlags ifTor
+                    ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+        ).toSubmitResult(txId)
 
-private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =
+    // Trust the network over the submit-side error: if the server confirms it has this tx,
+    // the broadcast already landed (Zebra's MempoolError::InMempool / AlreadyQueued, zcashd's
+    // already-in-chain, or any future variant). Skip the misleading failure UI.
+    if (initialResult is TransactionSubmitResult.Failure && !initialResult.grpcError) {
+        if (isTransactionKnownToServer(txId, sdkFlags)) {
+            Twig.info {
+                "SUCCESS (verified known to server): submit transaction for: ${txId.byteArray.toHexReversed()}"
+            }
+            return TransactionSubmitResult.Success(txId)
+        }
+    }
+
+    return initialResult
+}
+
+@Suppress("TooGenericExceptionCaught")
+private suspend fun CombinedWalletClient.isTransactionKnownToServer(
+    txId: FirstClassByteArray,
+    sdkFlags: SdkFlags
+): Boolean =
+    try {
+        val response =
+            fetchTransaction(
+                txId = txId.byteArray,
+                serviceMode =
+                    sdkFlags ifTor
+                        ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+            )
+        when (response) {
+            is Response.Success -> true
+            else -> false
+        }
+    } catch (t: Throwable) {
+        Twig.warn(t) {
+            "Failed to verify whether server knows tx ${txId.byteArray.toHexReversed()}; treating as unknown"
+        }
+        false
+    }
+
+internal fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =
     when (this) {
         is Response.Success -> {
             if (result.code == 0) {
@@ -52,7 +92,8 @@ private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArra
                 txId = txId,
                 grpcError = true,
                 code = code,
-                description = description
+                description = description,
+                isTorFailure = this is Response.Failure.OverTor,
             )
         }
     }

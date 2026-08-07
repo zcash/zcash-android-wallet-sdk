@@ -1,3 +1,5 @@
+@file:Suppress("LongParameterList")
+
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.exception.InitializeException

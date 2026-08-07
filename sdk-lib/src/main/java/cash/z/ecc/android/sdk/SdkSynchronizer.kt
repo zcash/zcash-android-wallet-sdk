@@ -19,6 +19,7 @@ import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
+import cash.z.ecc.android.sdk.internal.ImportAccountErrors
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.SaplingParamTool
 import cash.z.ecc.android.sdk.internal.Twig
@@ -32,7 +33,7 @@ import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
-import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
@@ -157,7 +158,7 @@ class SdkSynchronizer private constructor(
     private val fetchFastestServers: FastestServerFetcher,
     private val fetchExchangeChangeUsd: UsdExchangeRateFetcher?,
     private val preferenceProvider: PreferenceProvider,
-    private val torClient: TorClient?,
+    private val lazyTorClient: LazyTorClient?,
     private val walletClient: CombinedWalletClient,
     private val walletClientFactory: WalletClientFactory,
     private val defaultSubmitEndpoint: LightWalletEndpoint,
@@ -199,7 +200,7 @@ class SdkSynchronizer private constructor(
             fastestServerFetcher: FastestServerFetcher,
             fetchExchangeChangeUsd: UsdExchangeRateFetcher?,
             preferenceProvider: PreferenceProvider,
-            torClient: TorClient?,
+            lazyTorClient: LazyTorClient?,
             walletClient: CombinedWalletClient,
             walletClientFactory: WalletClientFactory,
             defaultSubmitEndpoint: LightWalletEndpoint,
@@ -220,7 +221,7 @@ class SdkSynchronizer private constructor(
                     fetchFastestServers = fastestServerFetcher,
                     fetchExchangeChangeUsd = fetchExchangeChangeUsd,
                     preferenceProvider = preferenceProvider,
-                    torClient = torClient,
+                    lazyTorClient = lazyTorClient,
                     walletClient = walletClient,
                     walletClientFactory = walletClientFactory,
                     defaultSubmitEndpoint = defaultSubmitEndpoint,
@@ -472,12 +473,11 @@ class SdkSynchronizer private constructor(
     override fun close() {
         // Note that stopping will continue asynchronously.  Race conditions with starting a new synchronizer are
         // avoided with a delay during startup.
-
         val shutdownJob =
             coroutineScope.launch {
                 Twig.info { "Stopping synchronizer $synchronizerKey…" }
                 processor.stop()
-                torClient?.dispose()
+                lazyTorClient?.dispose()
                 walletClient.dispose()
                 fetchExchangeChangeUsd?.dispose()
             }
@@ -503,7 +503,7 @@ class SdkSynchronizer private constructor(
                 coroutineScope.launch {
                     Twig.info { "Stopping synchronizer $synchronizerKey…" }
                     processor.stop()
-                    torClient?.dispose()
+                    lazyTorClient?.dispose()
                     walletClient.dispose()
                     fetchExchangeChangeUsd?.dispose()
                 }
@@ -563,16 +563,17 @@ class SdkSynchronizer private constructor(
         return storage.getRecipients(transactionOverview.txId)
     }
 
+    override suspend fun getRecipients(): Map<TransactionId, List<TransactionRecipient>> =
+        storage.getAllRecipients()
+
     override suspend fun getTransactionOutputs(transactionOverview: TransactionOverview): List<TransactionOutput> =
         storage.getOutputProperties(transactionOverview.txId).toList().map {
-            TransactionOutput(
-                when (it.protocol) {
-                    ZcashProtocol.TRANSPARENT -> TransactionPool.TRANSPARENT
-                    ZcashProtocol.SAPLING -> TransactionPool.SAPLING
-                    ZcashProtocol.ORCHARD -> TransactionPool.ORCHARD
-                    ZcashProtocol.IRONWOOD -> TransactionPool.IRONWOOD
-                }
-            )
+            TransactionOutput(it.protocol.toTransactionPool())
+        }
+
+    override suspend fun getTransactionOutputs(): Map<TransactionId, List<TransactionOutput>> =
+        storage.getAllOutputProperties().mapValues { (_, outputProperties) ->
+            outputProperties.map { TransactionOutput(it.protocol.toTransactionPool()) }
         }
 
     override suspend fun getTransactions(accountUuid: AccountUuid): Flow<List<TransactionOverview>> =
@@ -631,13 +632,42 @@ class SdkSynchronizer private constructor(
         }
     }
 
+    /**
+     * Only puts an already-created Tor client to sleep; there's no reason to force lazy Tor runtime
+     * creation just to immediately mark it dormant.
+     */
+    @Suppress("TooGenericExceptionCaught")
     override fun onBackground() {
-        coroutineScope.launch { torClient?.setDormant(TorDormantMode.SOFT) }
+        coroutineScope.launch {
+            try {
+                lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Twig.warn(e) { "Tor dormant-mode switch skipped during shutdown" }
+            }
+        }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     override fun onForeground() {
-        coroutineScope.launch { torClient?.setDormant(TorDormantMode.NORMAL) }
+        coroutineScope.launch {
+            try {
+                lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Twig.warn(e) { "Tor dormant-mode switch skipped during shutdown" }
+            }
+        }
     }
+
+    // Migration sync-pause is only wired for the Slipstream engine; the legacy processor path
+    // is never active in this app (isSlipstreamEnabled = true). Kept as a no-op so the
+    // CloseableSynchronizer contract stays total.
+    override fun pause() = Unit
+
+    override fun resume() = Unit
 
     //
     // Storage APIs
@@ -669,7 +699,7 @@ class SdkSynchronizer private constructor(
         config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit
     ): HttpClient =
         if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
-            if (torClient == null) {
+            if (lazyTorClient == null) {
                 throw TorInitializationErrorException(
                     NullPointerException("Tor has not been initialized during synchronizer setup")
                 )
@@ -677,7 +707,9 @@ class SdkSynchronizer private constructor(
 
             val isolatedTor =
                 try {
-                    torClient.isolatedTorClient()
+                    lazyTorClient.getOrCreate().isolatedTorClient()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     throw TorInitializationErrorException(e)
                 }
@@ -972,8 +1004,13 @@ class SdkSynchronizer private constructor(
                 }
         }.onFailure {
             Twig.error(it) { "Import account failed." }
-        }.getOrElse {
-            throw InitializeException.ImportAccountException(it)
+        }.getOrElse { cause ->
+            if (cause is CancellationException) throw cause
+            throw if (ImportAccountErrors.isCheckpointsNotReady(cause)) {
+                InitializeException.ImportAccountCheckpointsNotReadyException(cause)
+            } else {
+                InitializeException.ImportAccountException(cause)
+            }
         }
     }
 
@@ -1002,8 +1039,14 @@ class SdkSynchronizer private constructor(
             null
         )
 
+    /**
+     * [lazyTorClient] is only ever `null` when [SdkFlags.isTorEnabled] is also `false` (see how [lazyTorClient]
+     * is constructed in [Synchronizer.Companion.new]), so this condition is never actually met: Tor client
+     * creation is lazy, and its failure is no longer observable at construction time. See
+     * [Synchronizer.InitializationError.TOR_NOT_AVAILABLE].
+     */
     override val initializationError =
-        if (torClient == null && sdkFlags.isTorEnabled) {
+        if (lazyTorClient == null && sdkFlags.isTorEnabled) {
             Synchronizer.InitializationError.TOR_NOT_AVAILABLE
         } else {
             null
@@ -1336,6 +1379,14 @@ class SdkSynchronizer private constructor(
                 absolutePath
             }
 }
+
+private fun ZcashProtocol.toTransactionPool(): TransactionPool =
+    when (this) {
+        ZcashProtocol.TRANSPARENT -> TransactionPool.TRANSPARENT
+        ZcashProtocol.SAPLING -> TransactionPool.SAPLING
+        ZcashProtocol.ORCHARD -> TransactionPool.ORCHARD
+        ZcashProtocol.IRONWOOD -> TransactionPool.IRONWOOD
+    }
 
 /**
  * Provides a way of constructing a synchronizer where dependencies are injected in.

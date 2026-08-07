@@ -1,4 +1,6 @@
 [toolchain]
+# Must be in sync with .github/actions/setup/action.yml rust-version
+# default.
 channel = "1.92.0"
 targets = [
     "armv7-linux-androideabi",

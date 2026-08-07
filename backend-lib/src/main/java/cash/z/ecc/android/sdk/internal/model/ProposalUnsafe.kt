@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal.model
 
 import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.FeeRule
 import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.Proposal
+import cash.z.wallet.sdk.internal.ffi.ProposalOuterClass.ValuePool
 
 /**
  * A transaction proposal created by the Rust backend in response to a Kotlin request.
@@ -49,4 +50,21 @@ class ProposalUnsafe(
      * Returns the total fee required by this proposal for its transactions.
      */
     fun totalFeeRequired(): Long = inner.stepsList.fold(0) { acc, step -> acc + step.balance.feeRequired }
+
+    /**
+     * Returns whether any step of this proposal directly spends an Orchard note — i.e. an input
+     * whose [ProposedInput] carries a [ReceivedOutput] with [ValuePool.Orchard], not a
+     * back-reference to a prior step's own output ([PriorStepOutput]/[PriorStepChange]). Used to
+     * warn the user before an ordinary (non-migration) send that would spend Orchard funds, since
+     * Orchard's current shielded-pool composition can leak the transaction amount on-chain in a
+     * way Sapling-only spends don't (see the app's Orchard Privacy Warning). A multi-step proposal
+     * whose only Orchard involvement is via a prior-step back-reference is not detected here — that
+     * shape doesn't arise from this wallet's own ordinary send construction.
+     */
+    fun usesOrchardInputs(): Boolean =
+        inner.stepsList.any { step ->
+            step.inputsList.any { input ->
+                input.hasReceivedOutput() && input.receivedOutput.valuePool == ValuePool.Orchard
+            }
+        }
 }

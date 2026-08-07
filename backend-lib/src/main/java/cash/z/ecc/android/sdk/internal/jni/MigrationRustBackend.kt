@@ -1,0 +1,1025 @@
+@file:Suppress("LongParameterList")
+
+package cash.z.ecc.android.sdk.internal.jni
+
+import androidx.annotation.Keep
+import cash.z.ecc.android.sdk.internal.SdkDispatchers
+import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
+import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationProgress
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationSchedule
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationState
+import cash.z.ecc.android.sdk.internal.model.migration.JniMigrationTransferStates
+import cash.z.ecc.android.sdk.internal.model.migration.JniNoteSplitProposal
+import cash.z.ecc.android.sdk.internal.model.migration.JniPreparedTransfer
+import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
+import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedPreparationPczt
+import cash.z.ecc.android.sdk.internal.model.migration.JniUnsignedTransferPczt
+import kotlinx.coroutines.withContext
+
+/**
+ * JNI bridge to the `zcash_pool_migration` crate.
+ *
+ * Unlike [VotingRustBackend], this holds no handle/registry state: `MigrationContext::new` is
+ * cheap and every Rust-side call opens its own connection internally, so every method here is a
+ * self-contained call keyed by [dbDataPath]/[networkId]/[accountUuidBytes].
+ */
+@Keep
+@Suppress("TooManyFunctions")
+class MigrationRustBackend private constructor() {
+    @Throws(RuntimeException::class)
+    suspend fun migrationState(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniMigrationState =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationStateNative(dbDataPath, networkId, accountUuidBytes)
+                ?: error("migrationState returned null")
+        }
+
+    /**
+     * Same derivation as [migrationState], but WITHOUT the mark-mined promotion/write-back that
+     * happens inside `read_reconciled` on the Rust side — a verified-pure single read (2026-08-07
+     * read/write-separation design). See [migrationStateUnreconciledNative]'s Rust-side doc.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationStateUnreconciled(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniMigrationState =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationStateUnreconciledNative(dbDataPath, networkId, accountUuidBytes)
+                ?: error("migrationStateUnreconciled returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun migrationProgress(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniMigrationProgress? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationProgressNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun isNoteSplitNeeded(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            isNoteSplitNeededNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun estimateMigrationRunCount(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            estimateMigrationRunCountNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * Locks whatever Orchard balance remains spendable for this account (dust below the
+     * migratable threshold, or a residual the user opted out of migrating) so ordinary note
+     * selection excludes it going forward. Returns the number of notes locked.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun lockRemainingOrchardBalance(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            lockRemainingOrchardBalanceNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * DEBUG ONLY: abandons this account's in-progress migration (persisting it as failed through
+     * the engine store), so the next propose/commit call starts completely fresh. The cancelled
+     * run remains stored, so the migration state reads as RequiresAttention (not NotStarted)
+     * until a new run is committed. Not exposed to production users. Returns 1 if an in-progress
+     * run was cancelled, 0 if there was nothing to cancel.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun clearMigration(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            clearMigrationNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun hasOverdueTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            hasOverdueTransfersNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
+        }
+
+    /**
+     * The mined block height of the transaction with the given [txId], or `-1` if the wallet does
+     * not (yet) know a height for it. [txId] is the 32-byte transaction id in internal byte order
+     * (as carried by `JniPreparedTransfer.txid`), NOT the display-hex reversal.
+     *
+     * Used by the F2 broadcast path to disambiguate a non-gRPC submit failure that is actually a
+     * duplicate rejection of an already-on-chain transaction (submit-then-crash) from a genuine
+     * invalidation.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun transactionMinedHeight(
+        dbDataPath: String,
+        networkId: Int,
+        txId: ByteArray
+    ): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            transactionMinedHeightNative(dbDataPath, networkId, txId)
+        }
+
+    /**
+     * Latest scanned block and the block [windowBlocks] below it, read via the BUNDLED SQLite the
+     * engine uses (never framework SQLite — see blockRateSamplesNative's Rust doc for the SIGBUS
+     * dual-instance hazard that forbids it). Returns `[latestHeight, latestTime, olderHeight,
+     * olderTime]`, `[latestHeight, latestTime]` when no older sample exists, or an EMPTY array when
+     * nothing has been scanned yet. Powers the measured-block-rate ChainTipEstimator.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun blockRateSamples(
+        dbDataPath: String,
+        windowBlocks: Long
+    ): LongArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            blockRateSamplesNative(dbDataPath, windowBlocks)
+        }
+
+    /**
+     * The ENGINE's persisted migration outcome for the Migration Complete screen's real summary,
+     * read via the BUNDLED SQLite the engine uses (never framework SQLite — see
+     * blockRateSamplesNative's Rust doc for the SIGBUS dual-instance hazard that forbids it).
+     * Returns `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds, lastMinedEpochSeconds]`,
+     * or an EMPTY array when there is no migration data / no mined transfer yet. Best-effort: any
+     * read failure swallows to an empty array on the Rust side.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationSummary(dbDataPath: String): LongArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationSummaryNative(dbDataPath)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun hasInvalidTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            hasInvalidTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun reconcileInvalidatedTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            reconcileInvalidatedTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun prepareNoteSplit(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniNoteSplitProposal =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            prepareNoteSplitNative(dbDataPath, networkId, accountUuidBytes)
+                ?: error("prepareNoteSplit returned null")
+        }
+
+    /**
+     * [proposalHandle] identifies the Rust-side cached plan to commit and sign — the one whose
+     * proposal ([JniNoteSplitProposal.proposalHandle]) the user reviewed. Throws if that plan is
+     * missing or has been superseded by a later propose/prepare call; the Rust side never signs
+     * anything the handle doesn't identify.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun signNoteSplit(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long,
+        usk: ByteArray
+    ): JniPreparedTransfer =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            signNoteSplitNative(
+                dbDataPath,
+                networkId,
+                accountUuidBytes,
+                proposalHandle,
+                usk
+            ) ?: error("signNoteSplit returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun extractBroadcastTx(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        pcztBytes: ByteArray
+    ): ByteArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            extractBroadcastTxNative(dbDataPath, networkId, accountUuidBytes, pcztBytes)
+                ?: error("extractBroadcastTx returned null")
+        }
+
+    /**
+     * [resultTag]: 0 = Success (requires [txId]), 1 = NetworkError (requires [retryable]),
+     * 2 = InvalidNote, 3 = Expired, 4 = AwaitingReevaluation (a genuinely-unknown broadcast
+     * rejection reported via `report_broadcast_failure` rather than terminally failed — see
+     * `OrchardMigrationSdkImpl.commitBroadcastOutcome`). [txId] is ignored except for tag 0 —
+     * pass an empty array otherwise. [observedTip] is only meaningful for tag 4: the chain tip
+     * obtained by actually talking to the network right after the rejection (`fetchObservedTipAfterRejection`
+     * in `OrchardMigrationSdkImpl`); `-1` (the default) means no tip is available and the Rust
+     * side falls back to the wallet's own scanned tip.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun recordTransferResult(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        transferId: Long,
+        resultTag: Int,
+        retryable: Boolean,
+        txId: ByteArray,
+        observedTip: Long = -1L
+    ) = withContext(SdkDispatchers.DATABASE_IO) {
+        recordTransferResultNative(
+            dbDataPath,
+            networkId,
+            accountUuidBytes,
+            transferId,
+            resultTag,
+            retryable,
+            txId,
+            observedTip
+        )
+    }
+
+    @Throws(RuntimeException::class)
+    suspend fun proposeMigrationTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        includeResidual: Boolean
+    ): JniMigrationSchedule =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            proposeMigrationTransfersNative(dbDataPath, networkId, accountUuidBytes, includeResidual)
+                ?: error("proposeMigrationTransfers returned null")
+        }
+
+    /**
+     * Renders the transfer schedule of the exact cached plan [proposalHandle] identifies (the one
+     * whose note split the user was just shown by [prepareNoteSplit]) — use this instead of
+     * [proposeMigrationTransfers] whenever a split is about to run or just ran, so the schedule
+     * shown is guaranteed to belong to the same plan as the split. Unlike
+     * [proposeMigrationTransfers] this never re-plans; it throws if the identified plan is
+     * missing or superseded. The returned schedule carries the SAME handle.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun proposeMigrationTransfersFromSplit(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long
+    ): JniMigrationSchedule =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            proposeMigrationTransfersFromSplitNative(
+                dbDataPath,
+                networkId,
+                accountUuidBytes,
+                proposalHandle
+            ) ?: error("proposeMigrationTransfersFromSplit returned null")
+        }
+
+    /**
+     * Proposes an ordinary send-max transaction sweeping all spendable Orchard funds into this
+     * account's own Ironwood receiver — bypasses the migration engine entirely (no `MigrationState`
+     * is read or written). Returns the proposal proto-encoded exactly like an ordinary send's
+     * `RustBackend.proposeTransfer`, for decoding via the same
+     * `Proposal.fromByteArray`/`ProposalUnsafe.parse` path.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun proposeImmediateSendMax(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): ByteArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            proposeImmediateSendMaxNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * Commits and signs the migration plan [proposalHandle] identifies. No schedule fields cross
+     * the boundary — the plan's details live only on the Rust side, and this throws if the
+     * identified plan is missing or has been superseded by a later propose/prepare call, so it
+     * can only ever sign the exact schedule the user was shown.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun signAndStoreMigrationSchedule(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long,
+        usk: ByteArray
+    ) = withContext(SdkDispatchers.DATABASE_IO) {
+        signAndStoreMigrationScheduleNative(
+            dbDataPath,
+            networkId,
+            accountUuidBytes,
+            proposalHandle,
+            usk
+        )
+    }
+
+    @Throws(RuntimeException::class)
+    suspend fun finalizeReadyTransfers(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            finalizeReadyTransfersNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun nextDueTransfer(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
+    ): JniDueTransferResult =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            nextDueTransferNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
+        }
+
+    /**
+     * The live, persisted status (sent/proved flags plus current `scheduled_height` and committed
+     * `anchor_boundary`) of EVERY committed migration transaction — transfers AND preparations,
+     * distinguished by `isTransfer` — read straight from the engine's migration store (the single
+     * source of truth for the plan). Returns `null` if there's no in-progress migration.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationTransferStates(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniMigrationTransferStates? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationTransferStatesNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * The single "what now?" driver read — `[stepCode, transferId, nextHeight, nextKind]` from
+     * the guarded `next_step` (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete, 5 replan,
+     * 6 reevaluate; transferId = -1 for waiting/complete; nextHeight/nextKind = -1 when the
+     * engine's own peek-ahead has nothing height-schedulable to report). `null` when no migration
+     * is in progress. Broadcast timing uses [estimatedTip] (the real chain tip); proving,
+     * rebuild, and completion use the scanned tip internally. Pass `-1` when no estimate is
+     * available (falls back to the scanned tip for both).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun nextStep(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        estimatedTip: Long
+    ): LongArray? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            nextStepNative(dbDataPath, networkId, accountUuidBytes, estimatedTip)
+        }
+
+    /**
+     * The engine's minimal sync/prove wake-up schedule: each row is `[wakeHeight, coveredId...]`
+     * (guard-vetoed transfers excluded). `null` when no migration is in progress.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun syncWakeupSchedule(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<LongArray>? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            syncWakeupScheduleNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /** Applies an externally signed PCZT (`AwaitingSignature → Signed`); true when it applied. */
+    @Throws(RuntimeException::class)
+    suspend fun applySignature(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        transferId: Long,
+        signedPczt: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            applySignatureNative(dbDataPath, networkId, accountUuidBytes, transferId, signedPczt)
+        }
+
+    /**
+     * Marks a Replan-requesting migration Superseded — see `OrchardMigrationSdkImpl.nextStep`'s
+     * Replan handling (sdk-lib). Returns whether it actually transitioned something (false if
+     * already terminal or no migration exists).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun markMigrationSuperseded(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            markMigrationSupersededNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun restartCurrentMigrationStep(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        includeResidual: Boolean
+    ): JniMigrationSchedule =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            restartCurrentMigrationStepNative(dbDataPath, networkId, accountUuidBytes, includeResidual)
+                ?: error("restartCurrentMigrationStep returned null")
+        }
+
+    /**
+     * The pending (due-or-not-yet-due) scheduled transfer's full proposal fields, or `null` if
+     * nothing is scheduled yet (or only the note-split prep transaction is pending).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun pendingTransferProposal(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniTransferProposal? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            pendingTransferProposalNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
+     * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
+     * rather than a residual worth migrating in its own transfer — see
+     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`. A fixed protocol-level constant, not
+     * derived from any wallet/account state — [SdkDispatchers.CPU_BOUND] (2026-08-07 blocking-
+     * without-reason audit), not [SdkDispatchers.DATABASE_IO]: this never touches a database, so
+     * routing it through the SDK's single shared DB-IO thread bought nothing but contention with
+     * genuine migration DB reads/writes.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationDustThresholdZatoshi(): Long =
+        withContext(SdkDispatchers.CPU_BOUND) {
+            migrationDustThresholdZatoshiNative()
+        }
+
+    /**
+     * Lists every account's UUID in the wallet database, independent of any live `Synchronizer`.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun getAccountUuids(
+        dbDataPath: String,
+        networkId: Int
+    ): List<ByteArray> =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            getAccountUuidsNative(dbDataPath, networkId).asList()
+        }
+
+    // ----- External signer (Keystone hardware wallet) -----
+
+    /**
+     * Commits the migration plan [proposalHandle] identifies (unsigned — external-signer path)
+     * and returns the note split's unsigned PCZT. Same handle contract as [signNoteSplit]: throws
+     * if the identified plan is missing or superseded.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun createUnsignedNoteSplitPczt(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long
+    ): ByteArray =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            createUnsignedNoteSplitPcztNative(dbDataPath, networkId, accountUuidBytes, proposalHandle)
+                ?: error("createUnsignedNoteSplitPczt returned null")
+        }
+
+    @Throws(RuntimeException::class)
+    suspend fun storeSignedNoteSplitPczt(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        signedPczt: ByteArray
+    ): JniPreparedTransfer =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            storeSignedNoteSplitPcztNative(dbDataPath, networkId, accountUuidBytes, signedPczt)
+                ?: error("storeSignedNoteSplitPczt returned null")
+        }
+
+    /**
+     * Builds the unsigned transfer PCZTs of the migration plan [proposalHandle] identifies
+     * (committing it first if [createUnsignedNoteSplitPczt] hasn't already). Same handle contract
+     * as [signAndStoreMigrationSchedule].
+     */
+    @Throws(RuntimeException::class)
+    suspend fun createUnsignedTransferPczts(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long
+    ): Array<JniUnsignedTransferPczt> =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            createUnsignedTransferPcztsNative(
+                dbDataPath,
+                networkId,
+                accountUuidBytes,
+                proposalHandle
+            ) ?: error("createUnsignedTransferPczts returned null")
+        }
+
+    /**
+     * [ids]/[pcztBytesList] are parallel arrays — signed PCZTs matched back to their staged
+     * unsigned originals by id, not by array position (`store_signed_schedule_pczts` is
+     * all-or-nothing across whatever set of ids is provided here).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun storeSignedSchedulePczts(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        ids: LongArray,
+        pcztBytesList: Array<ByteArray>
+    ) = withContext(SdkDispatchers.DATABASE_IO) {
+        storeSignedSchedulePcztsNative(dbDataPath, networkId, accountUuidBytes, ids, pcztBytesList)
+    }
+
+    /**
+     * Every PREPARATION transaction's unsigned PCZT — the whole note-split tree (see the Rust
+     * native's doc; `createUnsignedNoteSplitPczt` returns only the first layer-0 split). Same
+     * opaque-handle contract as [createUnsignedTransferPczts].
+     */
+    suspend fun createUnsignedPreparationPczts(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        proposalHandle: Long,
+    ): List<JniUnsignedPreparationPczt> =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            createUnsignedPreparationPcztsNative(
+                dbDataPath,
+                networkId,
+                accountUuidBytes,
+                proposalHandle,
+            )?.toList() ?: error("createUnsignedPreparationPczts returned null")
+        }
+
+    /**
+     * The engine's Keystone signing-round budget constants:
+     * `[maxActionsPerRound, preparationActions, transferActions]` (today `[96, 16, 3]`). Pure
+     * constants — no wallet database access, hence [SdkDispatchers.CPU_BOUND] not
+     * [SdkDispatchers.DATABASE_IO] (2026-08-07 blocking-without-reason audit).
+     */
+    suspend fun keystoneSigningRoundBudget(): IntArray =
+        withContext(SdkDispatchers.CPU_BOUND) {
+            keystoneSigningRoundBudgetNative()
+        }
+
+    // ----- Keystone batch-signing UR bridge (no wallet database access) -----
+
+    /**
+     * Builds the animated multi-part QR frames for a Keystone batch-signing request covering the
+     * optional note-split PCZT (pass `null` when no split is needed) and every schedule
+     * transfer's unsigned PCZT, in that order. [requestId] is an opaque correlation token (e.g. a
+     * UUID's bytes) the device round-trips, checked by [decodeKeystoneSignBatchPart].
+     */
+    @Throws(RuntimeException::class)
+    suspend fun buildKeystoneSignBatchQrParts(
+        requestId: ByteArray,
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        maxFragmentLen: Int
+    ): Array<String> =
+        withContext(SdkDispatchers.CPU_BOUND) {
+            buildKeystoneSignBatchQrPartsNative(
+                requestId,
+                splitUnsignedPczt,
+                transferUnsignedPczts,
+                maxFragmentLen
+            ) ?: error("buildKeystoneSignBatchQrParts returned null")
+        }
+
+    /**
+     * Discards any in-flight multi-part scan session. Call on scan-screen entry so a new attempt
+     * always starts from a clean slate.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun resetKeystoneSignBatchDecoder() =
+        withContext(SdkDispatchers.CPU_BOUND) {
+            resetKeystoneSignBatchDecoderNative()
+        }
+
+    /**
+     * Feeds one scanned QR frame into the active (or a freshly started) decode session. Errors
+     * (including a decoded [JniKeystoneBatchDecodeResult.data] whose request id doesn't match
+     * [expectedRequestId]) reset the session; call [resetKeystoneSignBatchDecoder] before retrying.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun decodeKeystoneSignBatchPart(
+        part: String,
+        expectedRequestId: ByteArray
+    ): JniKeystoneBatchDecodeResult =
+        withContext(SdkDispatchers.CPU_BOUND) {
+            decodeKeystoneSignBatchPartNative(part, expectedRequestId)
+                ?: error("decodeKeystoneSignBatchPart returned null")
+        }
+
+    /**
+     * Applies a completed batch-signing response back to the retained unsigned PCZTs — in the
+     * exact split-then-transfers order they were passed to [buildKeystoneSignBatchQrParts] —
+     * producing signed-but-unproven PCZT bytes for each, ready for
+     * [storeSignedNoteSplitPczt]/[storeSignedSchedulePczts].
+     */
+    @Throws(RuntimeException::class)
+    suspend fun applyKeystoneBatchSignatures(
+        splitUnsignedPczt: ByteArray?,
+        transferUnsignedPczts: Array<ByteArray>,
+        batchSignResponse: ByteArray
+    ): JniKeystoneBatchSignedPczts =
+        withContext(SdkDispatchers.CPU_BOUND) {
+            applyKeystoneBatchSignaturesNative(
+                splitUnsignedPczt,
+                transferUnsignedPczts,
+                batchSignResponse
+            ) ?: error("applyKeystoneBatchSignatures returned null")
+        }
+
+    companion object {
+        suspend fun new(): MigrationRustBackend {
+            RustBackend.loadLibrary()
+
+            return MigrationRustBackend()
+        }
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationStateNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniMigrationState?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationStateUnreconciledNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniMigrationState?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationProgressNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniMigrationProgress?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun isNoteSplitNeededNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun estimateMigrationRunCountNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun lockRemainingOrchardBalanceNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun clearMigrationNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun hasOverdueTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun transactionMinedHeightNative(
+            dbDataPath: String,
+            networkId: Int,
+            txId: ByteArray
+        ): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun blockRateSamplesNative(
+            dbDataPath: String,
+            windowBlocks: Long
+        ): LongArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationSummaryNative(dbDataPath: String): LongArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun hasInvalidTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun reconcileInvalidatedTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun prepareNoteSplitNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniNoteSplitProposal?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun signNoteSplitNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long,
+            usk: ByteArray
+        ): JniPreparedTransfer?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractBroadcastTxNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            pcztBytes: ByteArray
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun recordTransferResultNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            transferId: Long,
+            resultTag: Int,
+            retryable: Boolean,
+            txId: ByteArray,
+            observedTip: Long
+        )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun proposeMigrationTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            includeResidual: Boolean
+        ): JniMigrationSchedule?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun proposeMigrationTransfersFromSplitNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long
+        ): JniMigrationSchedule?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun proposeImmediateSendMaxNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): ByteArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun signAndStoreMigrationScheduleNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long,
+            usk: ByteArray
+        )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun finalizeReadyTransfersNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun nextDueTransferNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
+        ): JniDueTransferResult
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun nextStepNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            estimatedTip: Long
+        ): LongArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun syncWakeupScheduleNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Array<LongArray>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun applySignatureNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            transferId: Long,
+            signedPczt: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun markMigrationSupersededNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun keystoneSigningRoundBudgetNative(): IntArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationTransferStatesNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniMigrationTransferStates?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun restartCurrentMigrationStepNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            includeResidual: Boolean
+        ): JniMigrationSchedule?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationDustThresholdZatoshiNative(): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getAccountUuidsNative(
+            dbDataPath: String,
+            networkId: Int
+        ): Array<ByteArray>
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun pendingTransferProposalNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniTransferProposal?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun createUnsignedNoteSplitPcztNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long
+        ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeSignedNoteSplitPcztNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            signedPczt: ByteArray
+        ): JniPreparedTransfer?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun createUnsignedTransferPcztsNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long
+        ): Array<JniUnsignedTransferPczt>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun createUnsignedPreparationPcztsNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            proposalHandle: Long,
+        ): Array<JniUnsignedPreparationPczt>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeSignedSchedulePcztsNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            ids: LongArray,
+            pcztBytesList: Array<ByteArray>
+        )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun buildKeystoneSignBatchQrPartsNative(
+            requestId: ByteArray,
+            splitUnsignedPczt: ByteArray?,
+            transferUnsignedPczts: Array<ByteArray>,
+            maxFragmentLen: Int
+        ): Array<String>?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun resetKeystoneSignBatchDecoderNative()
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun decodeKeystoneSignBatchPartNative(
+            part: String,
+            expectedRequestId: ByteArray
+        ): JniKeystoneBatchDecodeResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun applyKeystoneBatchSignaturesNative(
+            splitUnsignedPczt: ByteArray?,
+            transferUnsignedPczts: Array<ByteArray>,
+            batchSignResponse: ByteArray
+        ): JniKeystoneBatchSignedPczts?
+    }
+}

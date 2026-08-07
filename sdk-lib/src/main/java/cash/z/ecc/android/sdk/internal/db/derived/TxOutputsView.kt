@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal.db.derived
 
+import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import cash.z.ecc.android.sdk.internal.db.queryAndMap
 import cash.z.ecc.android.sdk.internal.model.OutputProperties
@@ -27,6 +28,13 @@ internal class TxOutputsView(
                 TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL,
             )
 
+        private val PROJECTION_ALL_OUTPUT_PROPERTIES =
+            arrayOf(
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
+                TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX,
+                TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL,
+            )
+
         private val PROJECTION_MEMOS =
             arrayOf(
                 TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID
@@ -38,13 +46,19 @@ internal class TxOutputsView(
                 TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT
             )
 
-        private val SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE =
+        private val PROJECTION_ALL_RECIPIENT =
+            arrayOf(
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
+                TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS,
+                TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT
+            )
+
+        private val SELECT_BY_TRANSACTION_ID =
             String.format(
                 Locale.ROOT,
                 // $NON-NLS
-                "%s = ? AND %s == 0",
-                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
-                TxOutputsViewDefinition.COLUMN_INTEGER_IS_CHANGE
+                "%s = ?",
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID
             )
 
         private val SELECT_BY_MEMO_QUERY =
@@ -54,24 +68,44 @@ internal class TxOutputsView(
                 "LOWER(%s) LIKE LOWER(?)",
                 TxOutputsViewDefinition.COLUMN_BLOB_MEMO,
             )
+
+        private val ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX =
+            String.format(
+                Locale.ROOT,
+                // $NON-NLS
+                "%s ASC, %s ASC",
+                TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID,
+                TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX
+            )
     }
 
     fun getOutputProperties(transactionId: FirstClassByteArray) =
         sqliteDatabase.queryAndMap(
             table = TxOutputsViewDefinition.VIEW_NAME,
             columns = PROJECTION_OUTPUT_PROPERTIES,
-            selection = SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE,
+            selection = SELECT_BY_TRANSACTION_ID,
             selectionArgs = arrayOf(transactionId.byteArray),
             orderBy = ORDER_BY,
-            cursorParser = {
-                val idColumnOutputIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX)
-                val idColumnOutputPoolIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL)
+            cursorParser = { it.parseOutputProperties() }
+        )
 
-                OutputProperties.new(
-                    index = it.getInt(idColumnOutputIndex),
-                    // Converting blob to Int
-                    poolType = it.getInt(idColumnOutputPoolIndex)
-                )
+    /**
+     * Returns every transaction's output properties in a single query, grouped by transaction ID via the emitted
+     * [Pair] - ALL `v_tx_outputs` rows, change included, matching iOS's unfiltered
+     * `TransactionDao.getTransactionOutputs(for:)`. This is a batched alternative to [getOutputProperties] intended
+     * for callers that would otherwise need to query per-transaction in a loop. A transaction with no outputs does
+     * not emit any [Pair].
+     */
+    fun getAllOutputProperties(): Flow<Pair<FirstClassByteArray, OutputProperties>> =
+        sqliteDatabase.queryAndMap(
+            table = TxOutputsViewDefinition.VIEW_NAME,
+            columns = PROJECTION_ALL_OUTPUT_PROPERTIES,
+            selection = null,
+            selectionArgs = null,
+            orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
+            cursorParser = {
+                val transactionId = it.parseTransactionId()
+                transactionId to it.parseOutputProperties()
             }
         )
 
@@ -84,30 +118,63 @@ internal class TxOutputsView(
             selection = SELECT_BY_MEMO_QUERY,
             selectionArgs = arrayOf("%$query%"),
             orderBy = ORDER_BY,
-            cursorParser = {
-                val idColumnTrxIdIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
-
-                FirstClassByteArray(it.getBlob(idColumnTrxIdIndex))
-            }
+            cursorParser = { it.parseTransactionId() }
         )
 
     fun getRecipients(transactionId: FirstClassByteArray) =
         sqliteDatabase.queryAndMap(
             table = TxOutputsViewDefinition.VIEW_NAME,
             columns = PROJECTION_RECIPIENT,
-            selection = SELECT_BY_TRANSACTION_ID_AND_NOT_CHANGE,
+            selection = SELECT_BY_TRANSACTION_ID,
             selectionArgs = arrayOf(transactionId.byteArray),
             orderBy = ORDER_BY,
-            cursorParser = {
-                val toAccountIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT)
-                val toAddressIndex = it.getColumnIndex(TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS)
+            cursorParser = { it.parseRecipient() }
+        )
 
-                TransactionRecipient(
-                    addressValue = if (!it.isNull(toAddressIndex)) it.getString(toAddressIndex) else null,
-                    accountUuid = if (!it.isNull(toAccountIndex)) AccountUuid(it.getBlob(toAccountIndex)) else null
-                )
+    /**
+     * Returns every transaction's recipients in a single query, grouped by transaction ID via the emitted [Pair] -
+     * derived from the same unfiltered rows as [getAllOutputProperties] (iOS parity: recipients ARE the outputs,
+     * row for row; wallet-internal rows carry `accountUuid`). This is a batched alternative to [getRecipients]
+     * intended for callers that would otherwise need to query per-transaction in a loop. A transaction with no
+     * outputs does not emit any [Pair].
+     */
+    fun getAllRecipients(): Flow<Pair<FirstClassByteArray, TransactionRecipient>> =
+        sqliteDatabase.queryAndMap(
+            table = TxOutputsViewDefinition.VIEW_NAME,
+            columns = PROJECTION_ALL_RECIPIENT,
+            selection = null,
+            selectionArgs = null,
+            orderBy = ORDER_BY_TRANSACTION_ID_AND_OUTPUT_INDEX,
+            cursorParser = {
+                val transactionId = it.parseTransactionId()
+                transactionId to it.parseRecipient()
             }
         )
+
+    private fun Cursor.parseTransactionId(): FirstClassByteArray {
+        val idColumnTrxIdIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TRANSACTION_ID)
+        return FirstClassByteArray(getBlob(idColumnTrxIdIndex))
+    }
+
+    private fun Cursor.parseOutputProperties(): OutputProperties {
+        val idColumnOutputIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_INDEX)
+        val idColumnOutputPoolIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_INTEGER_OUTPUT_POOL)
+
+        return OutputProperties.new(
+            index = getInt(idColumnOutputIndex),
+            poolType = getInt(idColumnOutputPoolIndex)
+        )
+    }
+
+    private fun Cursor.parseRecipient(): TransactionRecipient {
+        val toAccountIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_BLOB_TO_ACCOUNT)
+        val toAddressIndex = getColumnIndex(TxOutputsViewDefinition.COLUMN_STRING_TO_ADDRESS)
+
+        return TransactionRecipient(
+            addressValue = if (!isNull(toAddressIndex)) getString(toAddressIndex) else null,
+            accountUuid = if (!isNull(toAccountIndex)) AccountUuid(getBlob(toAccountIndex)) else null
+        )
+    }
 }
 
 internal object TxOutputsViewDefinition {
@@ -127,5 +194,13 @@ internal object TxOutputsViewDefinition {
 
     const val COLUMN_INTEGER_IS_CHANGE = "is_change" // $NON-NLS
 
-    const val COLUMN_BLOB_MEMO = "memo" // $NON-NLS
+    const val COLUMN_BLOB_MEMO = "memo"
+
+    const val COLUMN_INTEGER_TX_MINED_HEIGHT = "tx_mined_height" // $NON-NLS
+
+    const val COLUMN_BOOLEAN_TX_TRUST_STATUS = "tx_trust_status" // $NON-NLS
+
+    const val COLUMN_BLOB_FROM_ACCOUNT_UUID = "from_account_uuid" // $NON-NLS
+
+    const val COLUMN_INTEGER_RECIPIENT_KEY_SCOPE = "recipient_key_scope" // $NON-NLS // $NON-NLS
 }
