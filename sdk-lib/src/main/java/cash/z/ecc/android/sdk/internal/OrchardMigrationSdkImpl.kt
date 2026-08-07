@@ -323,6 +323,13 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.migrationState(dbDataPath, network, account).toPublic()
         }
 
+    override suspend fun getMigrationStateUnreconciled(): MigrationState =
+        loggedRead("getMigrationStateUnreconciled") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@loggedRead MigrationState.NotStarted
+            migrationBackend.migrationStateUnreconciled(dbDataPath, network, account).toPublic()
+        }
+
     override suspend fun getMigrationProgress(): MigrationProgress? =
         logged("getMigrationProgress") {
             val dbDataPath = dbDataPath()

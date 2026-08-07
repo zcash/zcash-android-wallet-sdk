@@ -39,6 +39,22 @@ class MigrationRustBackend private constructor() {
                 ?: error("migrationState returned null")
         }
 
+    /**
+     * Same derivation as [migrationState], but WITHOUT the mark-mined promotion/write-back that
+     * happens inside `read_reconciled` on the Rust side — a verified-pure single read (2026-08-07
+     * read/write-separation design). See [migrationStateUnreconciledNative]'s Rust-side doc.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationStateUnreconciled(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniMigrationState =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationStateUnreconciledNative(dbDataPath, networkId, accountUuidBytes)
+                ?: error("migrationStateUnreconciled returned null")
+        }
+
     @Throws(RuntimeException::class)
     suspend fun migrationProgress(
         dbDataPath: String,
@@ -667,6 +683,14 @@ class MigrationRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun migrationStateNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniMigrationState?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationStateUnreconciledNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray

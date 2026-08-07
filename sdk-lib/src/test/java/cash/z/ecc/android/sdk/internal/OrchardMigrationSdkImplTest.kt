@@ -1144,6 +1144,12 @@ class OrchardMigrationSdkImplTest {
             account: AccountUuid
         ): JniMigrationState = error("Unused")
 
+        override suspend fun migrationStateUnreconciled(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid
+        ): JniMigrationState = error("Unused")
+
         override suspend fun migrationProgress(
             dbDataPath: String,
             network: ZcashNetwork,

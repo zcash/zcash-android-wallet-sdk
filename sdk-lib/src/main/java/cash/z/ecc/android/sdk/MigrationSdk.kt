@@ -559,6 +559,21 @@ interface OrchardMigrationSdk {
      */
     suspend fun getMigrationState(): MigrationState
 
+    /**
+     * Same derivation as [getMigrationState], but WITHOUT the mark-mined promotion/write-back
+     * that the engine normally performs as a side effect of reading state (`read_reconciled` on
+     * the Rust side) — a verified-pure read with no mutual-exclusion requirement (2026-08-07
+     * read/write-separation design, `spec/2026-08-07-migration-read-write-separation-design.md`).
+     *
+     * For UI/gate code that only wants to *display or gate on* the current state: whatever
+     * `Broadcast`→`Mined` promotion hasn't been persisted yet by the drive loop's own reconcile
+     * pass simply isn't reflected here, and self-corrects on the drive loop's next cycle (the
+     * same staleness bound already accepted for the Progress screen's live readout). Never use
+     * this where the caller genuinely needs the freshest post-reconcile view for correctness —
+     * that's what [getMigrationState] is for, and it correctly requires the drive loop's mutex.
+     */
+    suspend fun getMigrationStateUnreconciled(): MigrationState
+
     /** Convenience accessor for progress details when state is InProgress. */
     suspend fun getMigrationProgress(): MigrationProgress?
 

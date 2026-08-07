@@ -25,6 +25,12 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): JniMigrationState
 
+    suspend fun migrationStateUnreconciled(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): JniMigrationState
+
     suspend fun migrationProgress(
         dbDataPath: String,
         network: ZcashNetwork,

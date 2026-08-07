@@ -31,6 +31,12 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): JniMigrationState = rustBackend().migrationState(dbDataPath, network.id, account.value)
 
+    override suspend fun migrationStateUnreconciled(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): JniMigrationState = rustBackend().migrationStateUnreconciled(dbDataPath, network.id, account.value)
+
     override suspend fun migrationProgress(
         dbDataPath: String,
         network: ZcashNetwork,

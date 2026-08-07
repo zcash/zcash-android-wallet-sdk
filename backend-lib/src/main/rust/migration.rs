@@ -1743,6 +1743,37 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Same derivation as [migrationStateNative], but WITHOUT [read_reconciled]'s mark-mined
+/// promotion/write-back — a verified-pure single read (2026-08-07 read/write-separation design:
+/// `spec/2026-08-07-migration-read-write-separation-design.md`). Whatever `Broadcast`→`Mined`
+/// promotions haven't been persisted yet by the drive loop's own [read_reconciled] pass simply
+/// aren't reflected here; callers accept staleness up to the next drive-loop publish. Exists so
+/// UI-triggered "just show me the current state" reads never need
+/// `MIGRATION_DB_ACCESS_MUTEX` — only the drive loop and explicit user mutations do.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationStateUnreconciledNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let tip = target_height(&wallet)? - 1;
+        let mut backend = Backend::new(&wallet, account, None, &mut store_conn, *wallet.params())?;
+        let persisted = backend
+            .get_migration()
+            .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?;
+        let account_bytes = account.expose_uuid().as_bytes().to_vec();
+        Ok(derive_migration_state(env, persisted, tip, &store_conn, &account_bytes)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationProgressNative<
     'local,
