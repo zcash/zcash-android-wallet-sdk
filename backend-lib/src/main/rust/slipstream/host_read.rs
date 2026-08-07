@@ -504,7 +504,11 @@ mod list_transactions_execution_tests {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(rows.len(), 1, "only the real mined row, no signed/awaiting-signature rows");
+        assert_eq!(
+            rows.len(),
+            1,
+            "only the real mined row, no signed/awaiting-signature rows"
+        );
     }
 }
 
