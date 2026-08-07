@@ -10,6 +10,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
+import android.os.SystemClock
 import cash.z.ecc.android.sdk.AttentionReason
 import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
@@ -213,8 +214,38 @@ internal class OrchardMigrationSdkImpl(
      * broadcast moved out to [BROADCAST_MUTEX] and pure reads moved to [loggedRead], no UI-visible
      * read waits behind those sleeps.
      */
-    private suspend fun <T> logged(operation: String, block: suspend () -> T): T =
-        MIGRATION_DB_ACCESS_MUTEX.withLock { loggedRetryLoop(operation, block) }
+    private suspend fun <T> logged(operation: String, block: suspend () -> T): T {
+        // Diagnostic-only timing (2026-08-07 Review-screen slow-load investigation): the mutex
+        // itself is opaque to logcat — an operation queued behind another one produced zero log
+        // signal before this, so a slow Review propose couldn't be told apart from "contended
+        // behind another logged() call" vs "the Rust computation itself is slow". currentHolder is
+        // a best-effort label only (a plain, non-atomic var — a race between reading it here and
+        // another coroutine clearing it in its own finally can misattribute the holder on rare
+        // overlap), never used for correctness, only for this log line.
+        val queuedAtMs = SystemClock.elapsedRealtime()
+        val heldBy = currentHolder
+        if (heldBy != null) {
+            Twig.info {
+                "MIGRATION_DIAG OrchardMigrationSdk: $operation queued for " +
+                    "MIGRATION_DB_ACCESS_MUTEX (currently held by $heldBy)"
+            }
+        }
+        return MIGRATION_DB_ACCESS_MUTEX.withLock {
+            val waitMs = SystemClock.elapsedRealtime() - queuedAtMs
+            Twig.info {
+                "MIGRATION_DIAG OrchardMigrationSdk: $operation acquired MIGRATION_DB_ACCESS_MUTEX" +
+                    if (waitMs > 0) " after ${waitMs}ms wait" else ""
+            }
+            currentHolder = operation
+            try {
+                loggedRetryLoop(operation, block)
+            } finally {
+                currentHolder = null
+                val heldMs = SystemClock.elapsedRealtime() - queuedAtMs - waitMs
+                Twig.info { "MIGRATION_DIAG OrchardMigrationSdk: $operation released MIGRATION_DB_ACCESS_MUTEX (held ${heldMs}ms)" }
+            }
+        }
+    }
 
     /**
      * [loggedRetryLoop] WITHOUT [MIGRATION_DB_ACCESS_MUTEX]: the same logging and bounded retry, no
@@ -1253,6 +1284,11 @@ internal class OrchardMigrationSdkImpl(
         // migration operation never touch the wallet database at the same moment. See logged()'s
         // doc comment for the full rationale.
         val MIGRATION_DB_ACCESS_MUTEX = Mutex()
+
+        // Diagnostic-only label of whichever operation currently holds [MIGRATION_DB_ACCESS_MUTEX]
+        // — see [logged]'s timing/attribution log lines. Never read for control flow.
+        @Volatile
+        var currentHolder: String? = null
 
         /**
          * Serializes the NETWORK phase of the three broadcasting methods against each other —
