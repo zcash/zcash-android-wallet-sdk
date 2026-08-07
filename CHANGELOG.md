@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-08
+
 ### Added
 - `CompactBlockProcessor.enhanceTransactionDetails` and the per-transaction `enhanceTransaction`
   step now emit structured diagnostic logs at each step of an enhance cycle — cycle start with
