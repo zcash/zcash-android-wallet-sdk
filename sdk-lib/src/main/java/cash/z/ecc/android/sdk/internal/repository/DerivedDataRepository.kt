@@ -86,9 +86,34 @@ internal interface DerivedDataRepository {
 
     fun getOutputProperties(transactionId: TransactionId): Flow<OutputProperties>
 
+    /**
+     * Batched alternative to [getOutputProperties] that returns the non-change output properties for ALL
+     * transactions in a single query, grouped by [TransactionId].
+     *
+     * The map only contains entries for transactions that have at least one non-change output; a transaction
+     * with only change outputs (or no outputs) is absent from the map rather than being present with an empty
+     * list.
+     */
+    suspend fun getAllOutputProperties(): Map<TransactionId, List<OutputProperties>>
+
     fun getTransactionsByMemoSubstring(query: String): Flow<List<TransactionId>>
 
+    /**
+     * Recipients for [transactionId], oldest output first. May include wallet-internal entries (the recipient's
+     * [TransactionRecipient.accountUuid] is non-null) whose [TransactionRecipient.addressValue] is the stored
+     * receiving address where the wallet recorded one (else null), so a self-transfer (e.g. a pool migration)
+     * surfaces a recipient instead of being filtered out as change.
+     */
     fun getRecipients(transactionId: TransactionId): Flow<TransactionRecipient>
+
+    /**
+     * Batched alternative to [getRecipients] that returns the recipients for ALL transactions in a single query,
+     * grouped by [TransactionId].
+     *
+     * The map only contains entries for transactions that have at least one recipient; a transaction with only
+     * change outputs (or no outputs) is absent from the map rather than being present with an empty list.
+     */
+    suspend fun getAllRecipients(): Map<TransactionId, List<TransactionRecipient>>
 
     suspend fun debugQuery(query: String): String
 

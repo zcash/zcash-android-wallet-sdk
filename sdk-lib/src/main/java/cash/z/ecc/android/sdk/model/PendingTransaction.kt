@@ -27,6 +27,12 @@ data class PendingTransaction internal constructor(
     override fun toString() = "PendingTransaction"
 }
 
+/**
+ * One recipient of a transaction, ordered by output_index. May be a wallet-internal entry
+ * ([accountUuid] non-null), in which case [addressValue] is still the wallet's own receiving
+ * address rather than absent — this surfaces self-transfers (e.g. a pool migration) as a
+ * recipient instead of filtering them out as change.
+ */
 data class TransactionRecipient(
     val addressValue: String?,
     val accountUuid: AccountUuid?

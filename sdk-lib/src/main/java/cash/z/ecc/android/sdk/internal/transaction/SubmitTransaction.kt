@@ -62,7 +62,7 @@ private suspend fun CombinedWalletClient.isTransactionKnownToServer(
         false
     }
 
-private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =
+internal fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =
     when (this) {
         is Response.Success -> {
             if (result.code == 0) {
@@ -92,7 +92,8 @@ private fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArra
                 txId = txId,
                 grpcError = true,
                 code = code,
-                description = description
+                description = description,
+                isTorFailure = this is Response.Failure.OverTor,
             )
         }
     }

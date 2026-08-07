@@ -46,12 +46,13 @@ use zcash_client_backend::{
         InputSource, OutputStatusFilter, SeedRelevance, TransactionDataRequest, TransactionStatus,
         TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
         WalletSummary, WalletWrite, Zip32Derivation,
+        anchor_retention::AnchorRetentionInterval,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         scanning::{ScanPriority, ScanRange},
         wallet::{
             self, SignerView, create_pczt_from_proposal, create_proposed_transactions,
             decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
-            input_selection::{GreedyInputSelector, LockFilter, LockedInputPolicy, SpendPolicy},
+            input_selection::{GreedyInputSelector, LockFilter, SpendPolicy},
             propose_shielding, propose_transfer, redact_pczt_for_signer,
         },
     },
@@ -80,7 +81,8 @@ use zcash_primitives::{
     block::BlockHash,
     merkle_tree::HashSer,
     transaction::{
-        Transaction, TxId, builder::cached_orchard_proving_key,
+        Transaction, TxId,
+        builder::{BundlePadding, cached_orchard_proving_key},
         components::orchard::bundle_version_for_branch,
     },
 };
@@ -106,9 +108,21 @@ use crate::utils::{
 
 mod eip681;
 mod migration;
+mod migration_engine;
+mod migration_keystone;
+mod migration_plan_cache;
+mod migration_send_max;
 mod tor;
 mod utils;
 mod voting;
+
+/// The Slipstream sync engine's JNI binding, folded in as a module so its
+/// `Java_com_zodl_slipstream_*` `#[unsafe(no_mangle)]` exports link directly into this cdylib
+/// (no dependency-GC concern, unlike the former re-exported crate). Gated behind the
+/// off-by-default `slipstream` feature, which also pulls in the `slipstream-core` engine
+/// dependency and its `tokio` runtime (see backend-lib/Cargo.toml).
+#[cfg(feature = "slipstream")]
+mod slipstream;
 
 #[cfg(debug_assertions)]
 fn print_debug_state() {
@@ -120,12 +134,40 @@ fn print_debug_state() {
     debug!("Release enabled (congrats, this is NOT a debug build).");
 }
 
+/// The spacing, in blocks, of the durable anchor checkpoints a wallet on a test network retains.
+///
+/// Short enough that a pool migration can be driven end to end in a test session: a migration
+/// transfer may only anchor to a boundary of this grid, so ZIP 318's 144-block spacing would make
+/// each transfer wait hours for a usable anchor. The anonymity-set argument that fixes the grid on
+/// mainnet — a wallet anchoring off-grid is distinguishable from its peers — does not apply to a
+/// test network.
+const TESTNET_ANCHOR_RETENTION_INTERVAL: NonZeroU32 =
+    NonZeroU32::new(12).expect("12 is nonzero, so it is a valid interval modulus");
+
+/// The grid of block heights on which a wallet on `network` retains note commitment tree
+/// checkpoints as durable anchors.
+///
+/// Every `WalletDb` this crate opens over the same wallet must be configured with this interval:
+/// a pool migration draws its transfers' anchors from the grid the wallet reports (see
+/// `migration_engine::Backend`'s `scheduling_params`), and a transfer anchored to a boundary whose
+/// checkpoint was never retained can no longer be proved once ordinary pruning has passed it.
+fn anchor_retention_interval(network: NetworkType) -> AnchorRetentionInterval {
+    match network {
+        NetworkType::Main => AnchorRetentionInterval::ZIP_318,
+        NetworkType::Test | NetworkType::Regtest => {
+            AnchorRetentionInterval::custom(TESTNET_ANCHOR_RETENTION_INTERVAL)
+        }
+    }
+}
+
 fn wallet_db<P: Parameters>(
     env: &mut JNIEnv,
     params: P,
     db_data: JString,
 ) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, OsRng>> {
+    let retention_interval = anchor_retention_interval(params.network_type());
     WalletDb::for_path(path_from_jni(env, db_data)?, params, SystemClock, OsRng)
+        .map(|db| db.with_anchor_retention_interval(retention_interval))
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
 }
 
@@ -499,6 +541,37 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createAcc
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Marker prefix for an `import_account_ufvk` failure caused by
+/// [`SqliteClientError::CorruptedData`] cross-pool checkpoint-parity errors raised by
+/// `rewind_to_chain_state` (`zcash_client_sqlite::wallet::rewind_to_chain_state`), which are
+/// transient rather than genuine database corruption: parity across pools is restored the next
+/// time blocks are scanned. Mirrors `ImportAccountErrors` on the Kotlin side, which matches on
+/// this exact string via `isCheckpointsNotReady`.
+const IMPORT_CHECKPOINTS_NOT_READY_MARKER: &str = "ImportAccountCheckpointsNotReady";
+
+/// Maps an `import_account_ufvk` failure to the JNI-level error.
+///
+/// The cross-pool checkpoint-parity `CorruptedData` errors raised by `rewind_to_chain_state`
+/// are tagged with [`IMPORT_CHECKPOINTS_NOT_READY_MARKER`] so the Kotlin side can distinguish
+/// this transient, retryable condition from other, genuinely fatal, import failures. All other
+/// errors keep the legacy `"Error while initializing accounts: {}"` wrapping.
+fn map_import_account_error(e: SqliteClientError) -> anyhow::Error {
+    match &e {
+        SqliteClientError::CorruptedData(msg)
+            if msg.ends_with("should have the same checkpoints") =>
+        {
+            anyhow!(
+                "{}: the wallet's checkpoints are not yet in sync across shielded pools; this \
+                 can happen transiently on newly-imported or recently-upgraded wallets and \
+                 typically resolves once more blocks are scanned. Underlying error: {}",
+                IMPORT_CHECKPOINTS_NOT_READY_MARKER,
+                e
+            )
+        }
+        _ => anyhow!("Error while initializing accounts: {}", e),
+    }
+}
+
 /// Tells the wallet to track an account using a unified full viewing key.
 ///
 /// Returns details about the imported account, including the unique account identifier for
@@ -604,7 +677,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_importAcc
                 purpose,
                 key_source.as_ref().map(|s| s.as_ref()),
             )
-            .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
+            .map_err(map_import_account_error)?;
 
         Ok(encode_account(env, &network, account)?.into_raw())
     });
@@ -1127,17 +1200,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
             .map_err(|e| anyhow!("Error while fetching target height: {}", e))?
             .context("Target height not available; scan required.")?;
 
-        // This backend does not use input locking, so exclude locked outputs.
-        // `Exclude` is the policy's default, and selects no locked outputs.
-        let lock_filter = LockFilter::Policy(&LockedInputPolicy::Exclude);
-
         let amount = db_data
             .get_spendable_transparent_outputs(
                 &taddr,
                 target,
                 wallet::ConfirmationsPolicy::MIN,
                 CoinbaseFilter::AllTransparentOutputs,
-                lock_filter,
+                // Balance display, not a spend selection — show the true total regardless of any
+                // lock another in-flight proposal might hold, matching pre-locking behavior.
+                LockFilter::Unfiltered,
             )
             .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))?
             .iter()
@@ -1490,6 +1561,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putSubtre
             orchard::tree::MerkleHashOrchard::read(n)
         })?;
 
+        // Ironwood is Orchard note-version V3 and shares Orchard's commitment-tree machinery, so
+        // its subtree roots are Orchard-shaped too — reuse the same hash type/parser.
         let ironwood_start_index = if ironwood_start_index >= 0 {
             ironwood_start_index as u64
         } else {
@@ -2008,6 +2081,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putUtxo<'
                 script_pubkey,
             },
             Some(BlockHeight::from(height as u32)),
+            // This JNI entry point has no account context to attribute the UTXO to.
             None,
             None,
             None,
@@ -2132,11 +2206,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         let request = TransactionRequest::from_uri(&payment_uri)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        // This backend does not lock the selected inputs, and always builds at
-        // the transaction version implied by the target height.
-        let lock_inputs = None;
-        let proposed_version = None;
-
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2146,8 +2215,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             request,
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
-            lock_inputs,
-            proposed_version,
+            None,
+            None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
 
@@ -2201,11 +2270,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         ])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        // This backend does not lock the selected inputs, and always builds at
-        // the transaction version implied by the target height.
-        let lock_inputs = None;
-        let proposed_version = None;
-
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2215,40 +2279,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             request,
             wallet::ConfirmationsPolicy::default(),
             &SpendPolicy::default(),
-            lock_inputs,
-            proposed_version,
+            None,
+            None,
         )
         .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
-
-        Ok(utils::rust_bytes_to_java(
-            env,
-            Proposal::from_standard_proposal(&proposal)
-                .encode_to_vec()
-                .as_ref(),
-        )?
-        .into_raw())
-    });
-    unwrap_exc_or(&mut env, res, ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOrchardToIronwoodMigration<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_data: JString<'local>,
-    account_uuid: JByteArray<'local>,
-    network_id: jint,
-) -> jbyteArray {
-    let res = catch_unwind(&mut env, |env| {
-        let _span = tracing::info_span!("RustBackend.proposeOrchardToIronwoodMigration").entered();
-        let network = parse_network(network_id as u32)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
-        let account_uuid = account_id_from_jni(env, account_uuid)?;
-
-        let proposal =
-            crate::migration::propose_orchard_to_ironwood(&mut db_data, &network, account_uuid)?;
 
         Ok(utils::rust_bytes_to_java(
             env,
@@ -2372,9 +2406,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
         // Always use ZIP 317 fees
         let (change_strategy, input_selector) = zip317_helper(memo);
 
-        // This backend does not lock the selected inputs.
-        let lock_inputs = None;
-
         let proposal = propose_shielding::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2385,7 +2416,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             account_uuid,
             confirmations_policy,
             CoinbaseFilter::AllTransparentOutputs,
-            lock_inputs,
+            None,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
@@ -2427,9 +2458,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
             .try_into_standard_proposal(&network, &db_data)?;
 
-        // Let the proposal's own target height imply the expiry height.
-        let expiry_height = None;
-
         let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
             &mut db_data,
             &network,
@@ -2438,7 +2466,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             &wallet::SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &proposal,
-            expiry_height,
+            None,
         )
         .map_err(|e| anyhow!("Error while creating transactions: {}", e))?;
 
@@ -2480,20 +2508,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
             .try_into_standard_proposal(&network, &db_data)?;
 
         if proposal.steps().len() == 1 {
-            // Let the proposal's own target height imply the expiry height,
-            // and use the default Orchard-pool output padding.
-            let expiry_height = None;
-            let orchard_pool_padding =
-                zcash_primitives::transaction::builder::BundlePadding::DEFAULT;
-
             let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
                 &mut db_data,
                 &network,
                 account_id,
                 OvkPolicy::Sender,
                 &proposal,
-                expiry_height,
-                orchard_pool_padding,
+                None,
+                BundlePadding::DEFAULT,
             )
             .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
 
@@ -2501,7 +2523,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
                 env,
                 &pczt
                     .serialize()
-                    .map_err(|e| anyhow!("Failed to serialize PCZT: {:?}", e))?,
+                    .map_err(|e| anyhow!("PCZT encoding error: {:?}", e))?,
             )?
             .into_raw())
         } else {
@@ -2542,7 +2564,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_redactPcz
             env,
             &pczt_with_proofs
                 .serialize()
-                .map_err(|e| anyhow!("Failed to serialize PCZT: {:?}", e))?,
+                .map_err(|e| anyhow!("PCZT encoding error: {:?}", e))?,
         )?
         .into_raw())
     });
@@ -2614,6 +2636,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
             let circuit_version = circuit_version_for(orchard::ValuePool::Orchard).ok_or_else(|| {
                 anyhow!("PCZT requires an Orchard proof but its consensus branch does not support Orchard")
             })?;
+            // `cached_orchard_proving_key` is a process-wide cache keyed on the circuit
+            // version: building a proving key is expensive, and this entry point runs on
+            // every ordinary shielded send, not only on migrations.
             prover = prover
                 .create_orchard_proof(cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
@@ -2647,7 +2672,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
             env,
             &pczt_with_proofs
                 .serialize()
-                .map_err(|e| anyhow!("Failed to serialize PCZT: {:?}", e))?,
+                .map_err(|e| anyhow!("PCZT encoding error: {:?}", e))?,
         )?
         .into_raw())
     });
@@ -2695,9 +2720,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_extractAn
             &mut db_data,
             pczt,
             Some((&spend_vk, &output_vk)),
-            // Passing `None` lets the extractor build the verifying key for the
-            // circuit version fixed by the bundle's own `BundleVersion`.
-            None,
+            Some(&orchard::circuit::VerifyingKey::build(
+                orchard::circuit::OrchardCircuitVersion::PostNu6_3,
+            )),
         )
         .map_err(|e| anyhow!("Failed to extract transaction from PCZT: {:?}", e))?;
 
@@ -3811,11 +3836,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
 //
 
 fn parse_protocol(code: i32) -> anyhow::Result<ShieldedPool> {
-    // The codes below must follow zcash_client_sqlite's own pool-type encoding:
-    // https://github.com/zcash/librustzcash/blob/main/zcash_client_sqlite/src/wallet/encoding.rs#L42
     match code {
         2 => Ok(ShieldedPool::Sapling),
         3 => Ok(ShieldedPool::Orchard),
+        // Must match ZcashProtocol.kt's poolCode and zcash_client_sqlite's own pool-type
+        // encoding (wallet/encoding.rs) exactly.
         4 => Ok(ShieldedPool::Ironwood),
         _ => Err(anyhow!("Shielded protocol not recognized: {code}")),
     }
@@ -3955,4 +3980,86 @@ fn parse_http_headers(
             )
         })
         .collect()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOrchardToIronwoodMigration<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    account_uuid: JByteArray<'local>,
+    network_id: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposeOrchardToIronwoodMigration").entered();
+        let network = parse_network(network_id as u32)?;
+        let mut db_data = wallet_db(env, network, db_data)?;
+        let account_uuid = account_id_from_jni(env, account_uuid)?;
+
+        let proposal = crate::migration_send_max::propose_orchard_to_ironwood(
+            &mut db_data,
+            &network,
+            account_uuid,
+        )?;
+
+        Ok(utils::rust_bytes_to_java(
+            env,
+            Proposal::from_standard_proposal(&proposal)
+                .encode_to_vec()
+                .as_ref(),
+        )?
+        .into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_import_account_error_tags_checkpoint_parity_failures() {
+        for msg in [
+            "Sapling and Orchard should have the same checkpoints",
+            "Sapling and Ironwood should have the same checkpoints",
+        ] {
+            let mapped =
+                map_import_account_error(SqliteClientError::CorruptedData(msg.to_string()));
+            let mapped_msg = mapped.to_string();
+            assert!(
+                mapped_msg.starts_with(IMPORT_CHECKPOINTS_NOT_READY_MARKER),
+                "expected marker prefix for {msg:?}, got {mapped_msg:?}"
+            );
+            assert!(
+                mapped_msg.contains(msg),
+                "expected the original error message to be preserved for {msg:?}, got {mapped_msg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_import_account_error_passes_through_other_corrupted_data() {
+        let mapped = map_import_account_error(SqliteClientError::CorruptedData(
+            "some other database corruption".to_string(),
+        ));
+        let mapped_msg = mapped.to_string();
+        assert!(
+            !mapped_msg.starts_with(IMPORT_CHECKPOINTS_NOT_READY_MARKER),
+            "did not expect the marker prefix, got {mapped_msg:?}"
+        );
+        assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
+
+    #[test]
+    fn map_import_account_error_passes_through_non_corrupted_data_errors() {
+        let mapped = map_import_account_error(SqliteClientError::AccountUnknown);
+        let mapped_msg = mapped.to_string();
+        assert!(
+            !mapped_msg.starts_with(IMPORT_CHECKPOINTS_NOT_READY_MARKER),
+            "did not expect the marker prefix, got {mapped_msg:?}"
+        );
+        assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
 }

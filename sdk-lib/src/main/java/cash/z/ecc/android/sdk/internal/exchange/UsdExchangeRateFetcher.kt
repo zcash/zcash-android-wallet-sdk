@@ -1,15 +1,16 @@
 package cash.z.ecc.android.sdk.internal.exchange
 
 import cash.z.ecc.android.sdk.internal.Twig
-import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FiatCurrencyConversion
 import co.electriccoin.lightwallet.client.util.Disposable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlin.time.Clock
 
 internal class UsdExchangeRateFetcher(
-    private val isolatedTorClient: TorClient,
+    private val isolatedTorClient: LazyTorClient,
 ) : Disposable {
     @Suppress("TooGenericExceptionCaught", "ReturnCount")
     suspend operator fun invoke(): FetchFiatCurrencyResult {
@@ -17,7 +18,9 @@ internal class UsdExchangeRateFetcher(
             val rate =
                 try {
                     Twig.info { "[USD] Fetch start" }
-                    isolatedTorClient.getExchangeRateUsd()
+                    isolatedTorClient.getOrCreate().getExchangeRateUsd()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Twig.error(e) { "[USD] Fetch failed" }
                     return FetchFiatCurrencyResult.Error(e)

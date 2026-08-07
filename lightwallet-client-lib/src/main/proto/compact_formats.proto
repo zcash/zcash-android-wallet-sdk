@@ -79,6 +79,9 @@ message CompactTx {
     repeated CompactSaplingSpend spends = 4;
     repeated CompactSaplingOutput outputs = 5;
     repeated CompactOrchardAction actions = 6;
+    // Ironwood (NU6.3) actions. Ironwood is Orchard note-version V3, so these reuse the
+    // CompactOrchardAction shape but ride a separate stream. Field number 9 matches lightwalletd;
+    // fields 7-8 (transparent vin/vout) are intentionally unused here.
     repeated CompactOrchardAction ironwoodActions = 9;
 
     // `CompactTxIn` values corresponding to the `vin` entries of the full transaction.

@@ -43,7 +43,7 @@ class SynchronizerWalletInitializationTest {
 
             val result =
                 resolveWalletInitializationState(
-                    downloader = downloader(walletClient),
+                    downloaderProvider = { downloader(walletClient) },
                     fallbackTreeState = treeState(height = fallbackTreeStateHeight.value),
                     sdkFlags = sdkFlags,
                     walletInitMode = WalletInitMode.NewWallet
@@ -67,7 +67,7 @@ class SynchronizerWalletInitializationTest {
 
             val result =
                 resolveWalletInitializationState(
-                    downloader = downloader(walletClient),
+                    downloaderProvider = { downloader(walletClient) },
                     fallbackTreeState = fallbackTreeState,
                     sdkFlags = sdkFlags,
                     walletInitMode = WalletInitMode.NewWallet
@@ -93,7 +93,7 @@ class SynchronizerWalletInitializationTest {
 
             val result =
                 resolveWalletInitializationState(
-                    downloader = downloader(walletClient),
+                    downloaderProvider = { downloader(walletClient) },
                     fallbackTreeState = fallbackTreeState,
                     sdkFlags = sdkFlags,
                     walletInitMode = WalletInitMode.NewWallet,
@@ -120,7 +120,7 @@ class SynchronizerWalletInitializationTest {
 
             val result =
                 resolveWalletInitializationState(
-                    downloader = downloader(walletClient),
+                    downloaderProvider = { downloader(walletClient) },
                     fallbackTreeState = fallbackTreeState,
                     sdkFlags = sdkFlags,
                     walletInitMode = WalletInitMode.NewWallet
@@ -148,7 +148,7 @@ class SynchronizerWalletInitializationTest {
 
             val result =
                 resolveWalletInitializationState(
-                    downloader = downloader(walletClient),
+                    downloaderProvider = { downloader(walletClient) },
                     fallbackTreeState = fallbackTreeState,
                     sdkFlags = sdkFlags,
                     walletInitMode = WalletInitMode.NewWallet,
@@ -261,7 +261,8 @@ class SynchronizerWalletInitializationTest {
                 hash = "hash-$height",
                 time = height.toInt(),
                 saplingTree = "sapling-tree-$height",
-                orchardTree = "orchard-tree-$height"
+                orchardTree = "orchard-tree-$height",
+                ironwoodTree = "ironwood-tree-$height"
             )
 
         fun <T> failure(): Response.Failure<T> =
