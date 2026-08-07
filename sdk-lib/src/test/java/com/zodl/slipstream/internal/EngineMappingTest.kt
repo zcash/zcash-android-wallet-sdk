@@ -39,7 +39,7 @@ class EngineMappingTest {
     @Test
     fun tip_stale_and_not_recovering_masks_shielded_spendable_into_pending() {
         val uuid = ByteArray(16) { it.toByte() }
-        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5))
+        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5, 0))
 
         val balances = summary.toAccountBalances(isRecovering = false, tipFresh = false)
         val balance = balances.getValue(AccountUuid.new(uuid))
@@ -52,7 +52,7 @@ class EngineMappingTest {
     @Test
     fun tip_fresh_never_masks() {
         val uuid = ByteArray(16) { it.toByte() }
-        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5))
+        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5, 0))
 
         val balances = summary.toAccountBalances(isRecovering = false, tipFresh = true)
         val balance = balances.getValue(AccountUuid.new(uuid))
@@ -63,9 +63,32 @@ class EngineMappingTest {
     }
 
     @Test
+    fun locked_value_surfaces_on_walletbalance_and_is_excluded_from_total() {
+        val uuid = ByteArray(16) { it.toByte() }
+        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5, 25))
+
+        val balances = summary.toAccountBalances(isRecovering = false, tipFresh = true)
+        val balance = balances.getValue(AccountUuid.new(uuid))
+
+        assertEquals(25L, balance.sapling.locked.value)
+        assertEquals(115L, balance.sapling.total.value) // 100 + 10 + 5, locked deliberately excluded
+    }
+
+    @Test
+    fun locked_value_survives_stale_tip_masking_unmodified() {
+        val uuid = ByteArray(16) { it.toByte() }
+        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5, 25))
+
+        val balances = summary.toAccountBalances(isRecovering = false, tipFresh = false)
+        val balance = balances.getValue(AccountUuid.new(uuid))
+
+        assertEquals(25L, balance.sapling.locked.value) // masking reclassifies spendable, never touches locked
+    }
+
+    @Test
     fun recovery_never_masks_even_when_tip_is_stale() {
         val uuid = ByteArray(16) { it.toByte() }
-        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5))
+        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(100, 10, 5, 0))
 
         val balances = summary.toAccountBalances(isRecovering = true, tipFresh = false)
         val balance = balances.getValue(AccountUuid.new(uuid))
@@ -76,7 +99,7 @@ class EngineMappingTest {
     @Test
     fun unshielded_is_never_masked() {
         val uuid = ByteArray(16) { it.toByte() }
-        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(0, 0, 0), unshielded = 42)
+        val summary = summaryWith(uuid, sapling = SlipstreamPoolBalance(0, 0, 0, 0), unshielded = 42)
 
         val balances = summary.toAccountBalances(isRecovering = false, tipFresh = false)
         val balance = balances.getValue(AccountUuid.new(uuid))
@@ -92,8 +115,8 @@ class EngineMappingTest {
             SlipstreamWalletSummary(
                 accountBalances =
                     arrayOf(
-                        accountBalance(uuidA, SlipstreamPoolBalance(1, 0, 0), SlipstreamPoolBalance(0, 0, 0), 0),
-                        accountBalance(uuidB, SlipstreamPoolBalance(0, 0, 0), SlipstreamPoolBalance(2, 0, 0), 0)
+                        accountBalance(uuidA, SlipstreamPoolBalance(1, 0, 0, 0), SlipstreamPoolBalance(0, 0, 0, 0), 0),
+                        accountBalance(uuidB, SlipstreamPoolBalance(0, 0, 0, 0), SlipstreamPoolBalance(2, 0, 0, 0), 0)
                     ),
                 chainTipHeight = 0,
                 fullyScannedHeight = 0,
@@ -114,8 +137,8 @@ class EngineMappingTest {
         val summary =
             summaryWith(
                 uuid,
-                sapling = SlipstreamPoolBalance(0, 0, 0),
-                ironwood = SlipstreamPoolBalance(99, 0, 0)
+                sapling = SlipstreamPoolBalance(0, 0, 0, 0),
+                ironwood = SlipstreamPoolBalance(99, 0, 0, 0)
             )
 
         val balances = summary.toAccountBalances(isRecovering = false, tipFresh = true)
@@ -129,15 +152,15 @@ class EngineMappingTest {
         sapling: SlipstreamPoolBalance,
         orchard: SlipstreamPoolBalance,
         unshielded: Long,
-        ironwood: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0)
+        ironwood: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0, 0)
     ) = SlipstreamAccountBalance(uuid, sapling, orchard, ironwood = ironwood, unshielded = unshielded)
 
     private fun summaryWith(
         uuid: ByteArray,
         sapling: SlipstreamPoolBalance,
-        orchard: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0),
+        orchard: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0, 0),
         unshielded: Long = 0,
-        ironwood: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0)
+        ironwood: SlipstreamPoolBalance = SlipstreamPoolBalance(0, 0, 0, 0)
     ) = SlipstreamWalletSummary(
         accountBalances = arrayOf(accountBalance(uuid, sapling, orchard, unshielded, ironwood)),
         chainTipHeight = 0,

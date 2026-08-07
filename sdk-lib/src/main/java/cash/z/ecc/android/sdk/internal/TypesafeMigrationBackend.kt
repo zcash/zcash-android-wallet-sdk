@@ -25,6 +25,12 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): JniMigrationState
 
+    suspend fun migrationStateUnreconciled(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): JniMigrationState
+
     suspend fun migrationProgress(
         dbDataPath: String,
         network: ZcashNetwork,
@@ -113,8 +119,11 @@ internal interface TypesafeMigrationBackend {
 
     /**
      * [resultTag]: 0 = Success (requires [txId]), 1 = NetworkError (requires [retryable]),
-     * 2 = InvalidNote, 3 = Expired. [txId] is ignored except for tag 0 — pass an empty array
-     * otherwise.
+     * 2 = InvalidNote, 3 = Expired, 4 = AwaitingReevaluation (genuinely-unknown broadcast
+     * rejection, reported via `report_broadcast_failure` instead of terminally failing the
+     * plan). [txId] is ignored except for tag 0 — pass an empty array otherwise. [observedTip]
+     * is only meaningful for tag 4: a chain tip obtained from the network right after the
+     * rejection; `-1` (the default) means no tip is available.
      */
     suspend fun recordTransferResult(
         dbDataPath: String,
@@ -123,7 +132,8 @@ internal interface TypesafeMigrationBackend {
         transferId: Long,
         resultTag: Int,
         retryable: Boolean,
-        txId: ByteArray
+        txId: ByteArray,
+        observedTip: Long = -1L
     )
 
     suspend fun proposeMigrationTransfers(
@@ -202,9 +212,12 @@ internal interface TypesafeMigrationBackend {
     ): JniMigrationTransferStates?
 
     /**
-     * The guarded `next_step` driver read: `[stepCode, transferId]` (0 waiting, 1 prove,
-     * 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent), or `null` with no migration.
-     * Broadcast timing uses [estimatedTip]; proving uses the scanned tip internally.
+     * The guarded `next_step` driver read: `[stepCode, transferId, nextHeight, nextKind]`
+     * (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete, 5 replan, 6 reevaluate;
+     * transferId = -1 for waiting/complete; nextHeight/nextKind = -1 when the engine's own
+     * peek-ahead has nothing height-schedulable to report), or `null` with no migration.
+     * Broadcast timing uses [estimatedTip]; proving, rebuild, and completion use the scanned
+     * tip internally.
      */
     suspend fun nextStep(
         dbDataPath: String,
@@ -227,6 +240,17 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid,
         transferId: Long,
         signedPczt: ByteArray
+    ): Boolean
+
+    /**
+     * Marks a Replan-requesting migration Superseded — see [OrchardMigrationSdkImpl.nextStep]'s
+     * Replan handling. Returns whether it actually transitioned something (false if already
+     * terminal or no migration exists).
+     */
+    suspend fun markMigrationSuperseded(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
     ): Boolean
 
     /**

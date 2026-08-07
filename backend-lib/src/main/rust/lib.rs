@@ -1684,35 +1684,46 @@ fn encode_account_balance<'a>(
         ZatBalance::from(balance.sapling_balance().change_pending_confirmation());
     let sapling_value_pending =
         ZatBalance::from(balance.sapling_balance().value_pending_spendability());
+    // Value the wallet sees as committed to a transaction proposal or PCZT (e.g. a migration
+    // transfer's Orchard input notes from the moment it's proved) — was never plumbed through
+    // this JNI boundary before, so the Kotlin side had no way to know this value existed at all,
+    // and every *.total on the Kotlin WalletBalance silently omitted it (confirmed live
+    // 2026-08-06 — the migration Balance Breakdown's whole "funds vanish" investigation).
+    let sapling_locked = ZatBalance::from(balance.sapling_balance().locked_value());
 
     let orchard_verified_balance = ZatBalance::from(balance.orchard_balance().spendable_value());
     let orchard_change_pending =
         ZatBalance::from(balance.orchard_balance().change_pending_confirmation());
     let orchard_value_pending =
         ZatBalance::from(balance.orchard_balance().value_pending_spendability());
+    let orchard_locked = ZatBalance::from(balance.orchard_balance().locked_value());
 
     let ironwood_verified_balance = ZatBalance::from(balance.ironwood_balance().spendable_value());
     let ironwood_change_pending =
         ZatBalance::from(balance.ironwood_balance().change_pending_confirmation());
     let ironwood_value_pending =
         ZatBalance::from(balance.ironwood_balance().value_pending_spendability());
+    let ironwood_locked = ZatBalance::from(balance.ironwood_balance().locked_value());
 
     let unshielded = ZatBalance::from(balance.unshielded_balance().total());
 
     env.new_object(
         JNI_ACCOUNT_BALANCE,
-        "([BJJJJJJJJJJ)V",
+        "([BJJJJJJJJJJJJJ)V",
         &[
             (&env.byte_array_from_slice(account_uuid.expose_uuid().as_bytes())?).into(),
             JValue::Long(sapling_verified_balance.into()),
             JValue::Long(sapling_change_pending.into()),
             JValue::Long(sapling_value_pending.into()),
+            JValue::Long(sapling_locked.into()),
             JValue::Long(orchard_verified_balance.into()),
             JValue::Long(orchard_change_pending.into()),
             JValue::Long(orchard_value_pending.into()),
+            JValue::Long(orchard_locked.into()),
             JValue::Long(ironwood_verified_balance.into()),
             JValue::Long(ironwood_change_pending.into()),
             JValue::Long(ironwood_value_pending.into()),
+            JValue::Long(ironwood_locked.into()),
             JValue::Long(unshielded.into()),
         ],
     )

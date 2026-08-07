@@ -15,19 +15,22 @@ data class AccountBalance(
                     WalletBalance(
                         available = Zatoshi(jni.saplingVerifiedBalance),
                         changePending = Zatoshi(jni.saplingChangePending),
-                        valuePending = Zatoshi(jni.saplingValuePending)
+                        valuePending = Zatoshi(jni.saplingValuePending),
+                        locked = Zatoshi(jni.saplingLockedBalance)
                     ),
                 orchard =
                     WalletBalance(
                         available = Zatoshi(jni.orchardVerifiedBalance),
                         changePending = Zatoshi(jni.orchardChangePending),
-                        valuePending = Zatoshi(jni.orchardValuePending)
+                        valuePending = Zatoshi(jni.orchardValuePending),
+                        locked = Zatoshi(jni.orchardLockedBalance)
                     ),
                 ironwood =
                     WalletBalance(
                         available = Zatoshi(jni.ironwoodVerifiedBalance),
                         changePending = Zatoshi(jni.ironwoodChangePending),
-                        valuePending = Zatoshi(jni.ironwoodValuePending)
+                        valuePending = Zatoshi(jni.ironwoodValuePending),
+                        locked = Zatoshi(jni.ironwoodLockedBalance)
                     ),
                 unshielded = Zatoshi(jni.unshieldedBalance)
             )

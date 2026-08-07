@@ -15,7 +15,14 @@ data class SlipstreamPoolBalance(
     /** Shielded change awaiting sufficient confirmations. */
     val changePendingConfirmation: Long,
     /** Remaining received notes: unconfirmed, or witnesses need more scanning. */
-    val valuePendingSpendability: Long
+    val valuePendingSpendability: Long,
+    /**
+     * Value the wallet sees as committed to be spent by a transaction proposal or PCZT (e.g. a
+     * migration transfer that is signed/proved but not yet mined) - source `Balance::locked_value()`.
+     * Deliberately excluded from [total], mirroring [cash.z.ecc.android.sdk.model.WalletBalance.locked]:
+     * callers that need it folded into a displayed total add it explicitly.
+     */
+    val lockedValue: Long
 ) {
     val total: Long get() = spendableValue + changePendingConfirmation + valuePendingSpendability
 }

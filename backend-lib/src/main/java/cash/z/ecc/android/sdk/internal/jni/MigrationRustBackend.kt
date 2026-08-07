@@ -39,6 +39,22 @@ class MigrationRustBackend private constructor() {
                 ?: error("migrationState returned null")
         }
 
+    /**
+     * Same derivation as [migrationState], but WITHOUT the mark-mined promotion/write-back that
+     * happens inside `read_reconciled` on the Rust side — a verified-pure single read (2026-08-07
+     * read/write-separation design). See [migrationStateUnreconciledNative]'s Rust-side doc.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationStateUnreconciled(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): JniMigrationState =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationStateUnreconciledNative(dbDataPath, networkId, accountUuidBytes)
+                ?: error("migrationStateUnreconciled returned null")
+        }
+
     @Throws(RuntimeException::class)
     suspend fun migrationProgress(
         dbDataPath: String,
@@ -230,8 +246,13 @@ class MigrationRustBackend private constructor() {
 
     /**
      * [resultTag]: 0 = Success (requires [txId]), 1 = NetworkError (requires [retryable]),
-     * 2 = InvalidNote, 3 = Expired. [txId] is ignored except for tag 0 — pass an empty array
-     * otherwise.
+     * 2 = InvalidNote, 3 = Expired, 4 = AwaitingReevaluation (a genuinely-unknown broadcast
+     * rejection reported via `report_broadcast_failure` rather than terminally failed — see
+     * `OrchardMigrationSdkImpl.commitBroadcastOutcome`). [txId] is ignored except for tag 0 —
+     * pass an empty array otherwise. [observedTip] is only meaningful for tag 4: the chain tip
+     * obtained by actually talking to the network right after the rejection (`fetchObservedTipAfterRejection`
+     * in `OrchardMigrationSdkImpl`); `-1` (the default) means no tip is available and the Rust
+     * side falls back to the wallet's own scanned tip.
      */
     @Throws(RuntimeException::class)
     suspend fun recordTransferResult(
@@ -241,7 +262,8 @@ class MigrationRustBackend private constructor() {
         transferId: Long,
         resultTag: Int,
         retryable: Boolean,
-        txId: ByteArray
+        txId: ByteArray,
+        observedTip: Long = -1L
     ) = withContext(SdkDispatchers.DATABASE_IO) {
         recordTransferResultNative(
             dbDataPath,
@@ -250,7 +272,8 @@ class MigrationRustBackend private constructor() {
             transferId,
             resultTag,
             retryable,
-            txId
+            txId,
+            observedTip
         )
     }
 
@@ -368,10 +391,12 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
-     * The single "what now?" driver read — `[stepCode, transferId]` from the guarded
-     * `next_step` (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete; id = -1 when absent).
-     * `null` when no migration is in progress. Broadcast timing uses [estimatedTip] (the real
-     * chain tip); proving uses the scanned tip internally. Pass `-1` when no estimate is
+     * The single "what now?" driver read — `[stepCode, transferId, nextHeight, nextKind]` from
+     * the guarded `next_step` (0 waiting, 1 prove, 2 broadcast, 3 rebuild, 4 complete, 5 replan,
+     * 6 reevaluate; transferId = -1 for waiting/complete; nextHeight/nextKind = -1 when the
+     * engine's own peek-ahead has nothing height-schedulable to report). `null` when no migration
+     * is in progress. Broadcast timing uses [estimatedTip] (the real chain tip); proving,
+     * rebuild, and completion use the scanned tip internally. Pass `-1` when no estimate is
      * available (falls back to the scanned tip for both).
      */
     @Throws(RuntimeException::class)
@@ -412,6 +437,21 @@ class MigrationRustBackend private constructor() {
             applySignatureNative(dbDataPath, networkId, accountUuidBytes, transferId, signedPczt)
         }
 
+    /**
+     * Marks a Replan-requesting migration Superseded — see `OrchardMigrationSdkImpl.nextStep`'s
+     * Replan handling (sdk-lib). Returns whether it actually transitioned something (false if
+     * already terminal or no migration exists).
+     */
+    @Throws(RuntimeException::class)
+    suspend fun markMigrationSuperseded(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            markMigrationSupersededNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun restartCurrentMigrationStep(
         dbDataPath: String,
@@ -442,13 +482,14 @@ class MigrationRustBackend private constructor() {
      * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
      * rather than a residual worth migrating in its own transfer — see
      * `MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`. A fixed protocol-level constant, not
-     * derived from any wallet/account state — still routed through `SdkDispatchers.DATABASE_IO`
-     * only for consistency with every other call in this class, not because it touches a
-     * database.
+     * derived from any wallet/account state — [SdkDispatchers.CPU_BOUND] (2026-08-07 blocking-
+     * without-reason audit), not [SdkDispatchers.DATABASE_IO]: this never touches a database, so
+     * routing it through the SDK's single shared DB-IO thread bought nothing but contention with
+     * genuine migration DB reads/writes.
      */
     @Throws(RuntimeException::class)
     suspend fun migrationDustThresholdZatoshi(): Long =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             migrationDustThresholdZatoshiNative()
         }
 
@@ -555,10 +596,11 @@ class MigrationRustBackend private constructor() {
     /**
      * The engine's Keystone signing-round budget constants:
      * `[maxActionsPerRound, preparationActions, transferActions]` (today `[96, 16, 3]`). Pure
-     * constants — no wallet database access.
+     * constants — no wallet database access, hence [SdkDispatchers.CPU_BOUND] not
+     * [SdkDispatchers.DATABASE_IO] (2026-08-07 blocking-without-reason audit).
      */
     suspend fun keystoneSigningRoundBudget(): IntArray =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             keystoneSigningRoundBudgetNative()
         }
 
@@ -577,7 +619,7 @@ class MigrationRustBackend private constructor() {
         transferUnsignedPczts: Array<ByteArray>,
         maxFragmentLen: Int
     ): Array<String> =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             buildKeystoneSignBatchQrPartsNative(
                 requestId,
                 splitUnsignedPczt,
@@ -592,7 +634,7 @@ class MigrationRustBackend private constructor() {
      */
     @Throws(RuntimeException::class)
     suspend fun resetKeystoneSignBatchDecoder() =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             resetKeystoneSignBatchDecoderNative()
         }
 
@@ -606,7 +648,7 @@ class MigrationRustBackend private constructor() {
         part: String,
         expectedRequestId: ByteArray
     ): JniKeystoneBatchDecodeResult =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             decodeKeystoneSignBatchPartNative(part, expectedRequestId)
                 ?: error("decodeKeystoneSignBatchPart returned null")
         }
@@ -623,7 +665,7 @@ class MigrationRustBackend private constructor() {
         transferUnsignedPczts: Array<ByteArray>,
         batchSignResponse: ByteArray
     ): JniKeystoneBatchSignedPczts =
-        withContext(SdkDispatchers.DATABASE_IO) {
+        withContext(SdkDispatchers.CPU_BOUND) {
             applyKeystoneBatchSignaturesNative(
                 splitUnsignedPczt,
                 transferUnsignedPczts,
@@ -641,6 +683,14 @@ class MigrationRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun migrationStateNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): JniMigrationState?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationStateUnreconciledNative(
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray
@@ -766,7 +816,8 @@ class MigrationRustBackend private constructor() {
             transferId: Long,
             resultTag: Int,
             retryable: Boolean,
-            txId: ByteArray
+            txId: ByteArray,
+            observedTip: Long
         )
 
         @JvmStatic
@@ -847,6 +898,14 @@ class MigrationRustBackend private constructor() {
             accountUuidBytes: ByteArray,
             transferId: Long,
             signedPczt: ByteArray
+        ): Boolean
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun markMigrationSupersededNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
         ): Boolean
 
         @JvmStatic
