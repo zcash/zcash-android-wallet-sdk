@@ -20,6 +20,7 @@ import kotlin.math.absoluteValue
 internal object TransactionOverviewCursor {
     /** Zcash's protocol-target block interval; used only as a fallback timestamp estimator below. */
     private const val SECONDS_PER_BLOCK = 75L
+    private const val MILLIS_PER_SECOND = 1000L
 
     /**
      * Pure row mapper - [row] is already-constructed by the native, so this is fully
@@ -34,7 +35,7 @@ internal object TransactionOverviewCursor {
     fun fromRow(
         row: SlipstreamTransactionRow,
         latestHeight: BlockHeight?,
-        nowEpochSeconds: Long = System.currentTimeMillis() / 1000
+        nowEpochSeconds: Long = System.currentTimeMillis() / MILLIS_PER_SECOND
     ): TransactionOverview {
         val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
         val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
