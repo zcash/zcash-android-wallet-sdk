@@ -1858,7 +1858,7 @@ class SlipstreamSynchronizer internal constructor(
                 FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
 
             val transactionReader = SlipstreamTransactionReader(dbFile)
-            val transactionsController = TransactionsController(transactionReader, engine)
+            val transactionsController = TransactionsController(transactionReader, engine, typesafeBackend)
 
             val spendService =
                 SlipstreamSpendService(
