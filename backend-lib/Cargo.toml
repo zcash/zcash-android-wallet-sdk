@@ -1,6 +1,6 @@
 [package]
 name = "zcash-android-wallet-sdk"
-version = "2.8.0-rc.2"
+version = "2.8.0-rc.3"
 authors = [
     "Jack Grigg <jack@z.cash>",
     "Kevin Gorham <kevin.gorham@z.cash>",

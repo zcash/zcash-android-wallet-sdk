@@ -46,6 +46,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the wallet's own Ironwood outputs stayed invisible until the transaction was mined
   and scanned.
 
+## [2.8.0-rc.3] - 2026-07-29
+
+### Changed
+- Migrated to `zcash_client_backend-0.24.0-rc.6`, `zcash_client_sqlite-0.22.0-rc.6`
+
 ## [2.8.0-rc.2] - 2026-07-29
 
 ### Changed
