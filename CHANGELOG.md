@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-08-08
+
 ### Changed
 - `OrchardMigrationSdk` external-signing APIs now carry PCZTs as `Pczt` instead of raw
   `ByteArray`, including `KeystoneBatchSignedPczts` and `UnsignedPreparationPczt`; callers must
@@ -16,6 +18,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `ImportAccountCheckpointsNotReadyException` and Slipstream account-loading logs no longer expose
   backend exception details that could contain sensitive wallet input.
+- Transaction status no longer flickers back to Pending during a synchronizer rebuild (e.g. an
+  automatic server switch) - restored the DB-backed chain-height fallback the legacy synchronizer
+  had for this gap, which was dropped when this path was ported to the Slipstream engine.
+- Expired transactions with no `block_time` (never mined) now get an estimated timestamp from the
+  block-height gap to the chain tip, instead of a null timestamp that sorted the transaction as if
+  it happened at the end of today regardless of how long ago it actually expired.
 
 ## [3.0.0] - 2026-08-08
 
