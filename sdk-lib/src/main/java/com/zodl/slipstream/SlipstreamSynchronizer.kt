@@ -798,7 +798,7 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun getAccounts(): List<Account> {
         awaitDbReady()
         return runCatchingCancellable { backend.getAccounts().map(Account::new) }
-            .onFailure { Twig.error(it) { "Get wallet accounts failed." } }
+            .onFailure { Twig.error { "Get wallet accounts failed." } }
             .getOrElse { throw InitializeException.GetAccountsException(it) }
     }
 
@@ -1858,7 +1858,7 @@ class SlipstreamSynchronizer internal constructor(
                 FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
 
             val transactionReader = SlipstreamTransactionReader(dbFile)
-            val transactionsController = TransactionsController(transactionReader, engine)
+            val transactionsController = TransactionsController(transactionReader, engine, typesafeBackend)
 
             val spendService =
                 SlipstreamSpendService(

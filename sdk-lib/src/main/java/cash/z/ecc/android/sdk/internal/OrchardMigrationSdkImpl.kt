@@ -59,8 +59,10 @@ import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferen
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
+import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -401,23 +403,23 @@ internal class OrchardMigrationSdkImpl(
 
     // ── External signer (Keystone hardware wallet) ──────────────────────────
 
-    override suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): ByteArray =
+    override suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): Pczt =
         logged("createUnsignedNoteSplitPczt") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account, proposal.proposalHandle)
+            Pczt(migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account, proposal.proposalHandle))
         }
 
     /** Phase-split for the same reason as [submitNoteSplit]. */
     override suspend fun storeSignedNoteSplitPczt(
-        signedPczt: ByteArray,
+        signedPczt: Pczt,
         options: NetworkPrivacyOptions
     ): TransferResult {
         val prepared =
             logged("storeSignedNoteSplitPczt.prepare") {
                 val dbDataPath = dbDataPath()
                 val account = account ?: noAccountAvailable()
-                val stored = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt)
+                val stored = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt.toByteArray())
                 PreparedBroadcast(
                     dbDataPath = dbDataPath,
                     account = account,
@@ -432,13 +434,13 @@ internal class OrchardMigrationSdkImpl(
         return recordSubmitOutcome("storeSignedNoteSplitPczt", prepared, submitResult, minedHeight)
     }
 
-    override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, ByteArray>> =
+    override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, Pczt>> =
         logged("createUnsignedTransferPczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend
                 .createUnsignedTransferPczts(dbDataPath, network, account, schedule.proposalHandle)
-                .map { it.id to it.pcztBytes }
+                .map { it.id to Pczt(it.pcztBytes) }
         }
 
     override suspend fun createUnsignedPreparationPczts(schedule: MigrationSchedule): List<UnsignedPreparationPczt> =
@@ -447,10 +449,10 @@ internal class OrchardMigrationSdkImpl(
             val account = account ?: noAccountAvailable()
             migrationBackend
                 .createUnsignedPreparationPczts(dbDataPath, network, account, schedule.proposalHandle)
-                .map { UnsignedPreparationPczt(id = it.id, layer = it.layer, index = it.index, pcztBytes = it.pcztBytes) }
+                .map { UnsignedPreparationPczt(id = it.id, layer = it.layer, index = it.index, pczt = Pczt(it.pcztBytes)) }
         }
 
-    override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, ByteArray>>) =
+    override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, Pczt>>) =
         logged("storeSignedSchedulePczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
@@ -459,22 +461,22 @@ internal class OrchardMigrationSdkImpl(
                 network,
                 account,
                 LongArray(signed.size) { signed[it].first },
-                Array(signed.size) { signed[it].second },
+                Array(signed.size) { signed[it].second.toByteArray() },
             )
         }
 
     override suspend fun buildKeystoneSignBatchQrParts(
         requestId: ByteArray,
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         maxFragmentLen: Int
     ): List<String> =
         loggedRead("buildKeystoneSignBatchQrParts") {
             migrationBackend
                 .buildKeystoneSignBatchQrParts(
                     requestId,
-                    splitUnsignedPczt,
-                    transferUnsignedPczts.toTypedArray(),
+                    splitUnsignedPczt?.toByteArray(),
+                    transferUnsignedPczts.map(Pczt::toByteArray).toTypedArray(),
                     maxFragmentLen,
                 ).toList()
         }
@@ -493,15 +495,15 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun applyKeystoneBatchSignatures(
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         batchSignResponse: ByteArray
     ): KeystoneBatchSignedPczts =
         loggedRead("applyKeystoneBatchSignatures") {
             migrationBackend
                 .applyKeystoneBatchSignatures(
-                    splitUnsignedPczt,
-                    transferUnsignedPczts.toTypedArray(),
+                    splitUnsignedPczt?.toByteArray(),
+                    transferUnsignedPczts.map(Pczt::toByteArray).toTypedArray(),
                     batchSignResponse,
                 ).toPublic()
         }
@@ -733,7 +735,7 @@ internal class OrchardMigrationSdkImpl(
                 // already MINED, i.e. already public/on-chain, so the post-broadcast de-correlation
                 // buffer has no privacy value left to protect on this recovery path — arming
                 // `now + buffer` would just needlessly block sync for no privacy benefit.
-                TransferAttemptOutcome.Executed(TransferResult.Success(attempt.prepared.txid.toHexReversed()))
+                TransferAttemptOutcome.Executed(TransferResult.Success(TransactionId.new(attempt.prepared.txid)))
             }
         }
     }
@@ -1098,11 +1100,11 @@ internal class OrchardMigrationSdkImpl(
                 ?.map { row -> MigrationSyncWakeup(height = row[0], covers = row.drop(1)) }
         }
 
-    override suspend fun applySignature(transferId: Long, signedPczt: ByteArray): Boolean =
+    override suspend fun applySignature(transferId: Long, signedPczt: Pczt): Boolean =
         logged("applySignature") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.applySignature(dbDataPath, network, account, transferId, signedPczt)
+            migrationBackend.applySignature(dbDataPath, network, account, transferId, signedPczt.toByteArray())
         }
 
     override suspend fun keystoneSigningRoundBudget(): KeystoneSigningRoundBudget =
@@ -1462,7 +1464,7 @@ private fun mapSubmitResult(
     when (result) {
         is TransactionSubmitResult.Success -> {
             MappedTransferResult(
-                transferResult = TransferResult.Success(result.txIdString()),
+                transferResult = TransferResult.Success(TransactionId.new(result.txId)),
                 tag = 0,
                 retryable = false,
                 txIdBytes = result.txId.byteArray,
@@ -1484,7 +1486,7 @@ private fun mapSubmitResult(
                 // as Success (tag=0) so the pre-signed plan is not terminally failed.
                 classifyNonGrpcFailure(result.description, minedHeight) -> {
                     MappedTransferResult(
-                        TransferResult.Success(preparedTxid.toHexReversed()),
+                        TransferResult.Success(TransactionId.new(preparedTxid)),
                         tag = 0,
                         retryable = false,
                         txIdBytes = preparedTxid,
@@ -1722,8 +1724,8 @@ private fun JniKeystoneBatchDecodeResult.toPublic(): KeystoneBatchDecodeResult =
 
 private fun JniKeystoneBatchSignedPczts.toPublic(): KeystoneBatchSignedPczts =
     KeystoneBatchSignedPczts(
-        splitSignedPczt = splitSignedPczt,
-        transferSignedPczts = transferSignedPczts.toList(),
+        splitSignedPczt = splitSignedPczt?.let(::Pczt),
+        transferSignedPczts = transferSignedPczts.map(::Pczt),
     )
 
 private fun JniMigrationState.toPublic(): MigrationState =
