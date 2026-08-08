@@ -28,11 +28,29 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positional construction will not compile until all of them are supplied; named
   construction needs no edit.
 
+### Changed
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
+  `zcash_client_sqlite 0.22.0-rc.7`.
+
+### Fixed
+- An account created from a checkpoint now receives the Ironwood commitment tree
+  state that checkpoint carries. The SDK read only the Sapling and Orchard trees out
+  of a checkpoint's tree state and dropped the Ironwood one, so such an account was
+  created with no Ironwood tree state at its birthday height. The field is optional
+  and no mainnet checkpoint currently ships one, so this reached test networks first.
+- `Synchronizer.createTransactionFromPczt` now records the transaction's Ironwood
+  outputs, picked up from the librustzcash update. Every Ironwood output was
+  previously dropped when the transaction was stored: for a post-NU6.3 PCZT that
+  delivers its payment through the Ironwood pool, the external recipient's address
+  and decrypted memo were never persisted and are not recoverable afterwards, and
+  the wallet's own Ironwood outputs stayed invisible until the transaction was mined
+  and scanned.
+
 ## [2.7.0-rc.4] - 2026-07-29
 
 ### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
-  `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
+  `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
   (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
   boundaries rather than 16).
 - A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
@@ -42,20 +60,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note exists.
 
 ### Fixed
-- An account created from a checkpoint now receives the Ironwood commitment tree
-  state that checkpoint carries. The SDK read only the Sapling and Orchard trees out
-  of a checkpoint's tree state and dropped the Ironwood one, so such an account was
-  created with no Ironwood tree state at its birthday height. The field is optional
-  and no mainnet checkpoint currently ships one, so this reached test networks first.
+All of the following were picked up from the librustzcash update:
 
-The remainder were picked up from the librustzcash update:
-
-- `Synchronizer.createTransactionFromPczt` now records the transaction's Ironwood
-  outputs. Every Ironwood output was previously dropped when the transaction was
-  stored: for a post-NU6.3 PCZT that delivers its payment through the Ironwood pool,
-  the external recipient's address and decrypted memo were never persisted and are
-  not recoverable afterwards, and the wallet's own Ironwood outputs stayed invisible
-  until the transaction was mined and scanned.
 - A wallet whose database was upgraded by a build using
   `zcash_client_sqlite 0.22.0-rc.1` (the 2.6.6 internal build) no longer fails
   every scan. Such a wallet's `orchard_ironwood_migrations` table never acquired
