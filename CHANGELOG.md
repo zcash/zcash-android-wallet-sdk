@@ -79,7 +79,7 @@ The remainder were picked up from the librustzcash update:
   recipient address recorded at transaction construction time takes precedence
   over the receiving address.
 
-## [2.8.0-rc.2] - 2026-07-28
+## [2.8.0-rc.2] - 2026-07-29
 
 ### Changed
 - Migrated to `zcash_client_backend-0.24.0-rc.5`, `zcash_client_sqlite-0.22.0-rc.5`
