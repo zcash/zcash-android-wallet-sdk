@@ -798,7 +798,7 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun getAccounts(): List<Account> {
         awaitDbReady()
         return runCatchingCancellable { backend.getAccounts().map(Account::new) }
-            .onFailure { Twig.error(it) { "Get wallet accounts failed." } }
+            .onFailure { Twig.error { "Get wallet accounts failed." } }
             .getOrElse { throw InitializeException.GetAccountsException(it) }
     }
 

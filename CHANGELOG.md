@@ -6,6 +6,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `OrchardMigrationSdk` external-signing APIs now carry PCZTs as `Pczt` instead of raw
+  `ByteArray`, including `KeystoneBatchSignedPczts` and `UnsignedPreparationPczt`; callers must
+  wrap signer output in `Pczt` and use `Pczt.toByteArray()` when sending it to external devices.
+- `TransferResult.Success.txId` is now `TransactionId` instead of `String`; callers that need the
+  display encoding must use `TransactionId.txIdString()`.
+
+### Fixed
+- `ImportAccountCheckpointsNotReadyException` and Slipstream account-loading logs no longer expose
+  backend exception details that could contain sensitive wallet input.
+
 ## [3.0.0] - 2026-08-08
 
 ### Added
