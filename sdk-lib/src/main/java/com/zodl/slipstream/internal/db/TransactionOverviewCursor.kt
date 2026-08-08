@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOverview
+import cash.z.ecc.android.sdk.model.TransactionState
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.Zip318Kind
 import com.zodl.slipstream.model.SlipstreamTransactionRow
@@ -17,9 +18,14 @@ import kotlin.math.absoluteValue
  * the internal `DbTransactionOverview` type), built instead over the public 17-field constructor.
  */
 internal object TransactionOverviewCursor {
+    /** Zcash's protocol-target block interval; used only as a fallback timestamp estimator below. */
+    private const val SECONDS_PER_BLOCK = 75L
+
     /**
      * Pure row mapper - [row] is already-constructed by the native, so this is fully
      * JVM-unit-testable without an `android.database.Cursor` (`SDK_ADAPTER_PLAN.md` law 5).
+     * [nowEpochSeconds] is a parameter rather than an internal `System.currentTimeMillis()` read
+     * specifically to preserve that purity/determinism for tests.
      *
      * @param latestHeight the engine snapshot's `chainTip` at query time (the adapter's twin of
      *   the upstream SDK folding `processor.networkHeight` into the flow,
@@ -27,11 +33,41 @@ internal object TransactionOverviewCursor {
      */
     fun fromRow(
         row: SlipstreamTransactionRow,
-        latestHeight: BlockHeight?
+        latestHeight: BlockHeight?,
+        nowEpochSeconds: Long = System.currentTimeMillis() / 1000
     ): TransactionOverview {
         val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
         val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
         val isSent = row.accountBalanceDelta < 0
+
+        val transactionState =
+            computeTransactionState(
+                latestHeight = latestHeight,
+                minedHeight = minedBlockHeight,
+                expiryHeight = expiryBlockHeight,
+                isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L }
+            )
+
+        // MOB-1665: the legacy SdkSynchronizer path backfilled a real historical timestamp for
+        // an Expired transaction with no blockTimeEpochSeconds (upstream
+        // TransactionOverview.checkAndFillInTime, looking up the block at expiryHeight) - this
+        // read path never picked up an equivalent, so an expired transaction with a null block
+        // time fell through to the UI's `?: endOfDay` sort fallback (GetActivitiesUseCase.kt) and
+        // sorted as if it happened at the end of TODAY, no matter how long ago it actually
+        // expired (confirmed live: a ~9-month-old failed transaction surfaced at the top of the
+        // activity list). This read path has no equivalent block-time-by-height lookup to port,
+        // so estimate instead from the block-height gap to the known chain tip - accurate enough
+        // for what this value is actually used for (an approximate "how long ago" ordering key),
+        // not a claimed-precise instant.
+        val estimatedBlockTime =
+            row.blockTime ?: run {
+                if (transactionState != TransactionState.Expired || expiryBlockHeight == null || latestHeight == null) {
+                    null
+                } else {
+                    val blocksSinceExpiry = latestHeight.value - expiryBlockHeight.value
+                    (nowEpochSeconds - blocksSinceExpiry * SECONDS_PER_BLOCK).takeIf { it > 0 }
+                }
+            }
 
         return TransactionOverview(
             txId = TransactionId.new(row.txId),
@@ -48,14 +84,8 @@ internal object TransactionOverviewCursor {
             receivedNoteCount = row.receivedNoteCount,
             sentNoteCount = row.sentNoteCount,
             memoCount = row.memoCount,
-            blockTimeEpochSeconds = row.blockTime,
-            transactionState =
-                computeTransactionState(
-                    latestHeight = latestHeight,
-                    minedHeight = minedBlockHeight,
-                    expiryHeight = expiryBlockHeight,
-                    isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L }
-                ),
+            blockTimeEpochSeconds = estimatedBlockTime,
+            transactionState = transactionState,
             isShielding = row.isShielding,
             // NOT PROJECTED by this read path. `host_read.rs`'s `listTransactions` SQL selects a
             // fixed column list that does not include `spent_note_count`, `pool_crossing_value` or
