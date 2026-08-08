@@ -2,7 +2,9 @@
 
 package cash.z.ecc.android.sdk
 
+import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.flow.Flow
 import kotlin.time.Duration
@@ -186,8 +188,8 @@ data class KeystoneBatchDecodeResult(
  * their transfer ids) to [OrchardMigrationSdk.storeSignedSchedulePczts].
  */
 data class KeystoneBatchSignedPczts(
-    val splitSignedPczt: ByteArray?,
-    val transferSignedPczts: List<ByteArray>
+    val splitSignedPczt: Pczt?,
+    val transferSignedPczts: List<Pczt>
 )
 
 /**
@@ -400,7 +402,7 @@ data class UnsignedPreparationPczt(
     val id: Long,
     val layer: Int,
     val index: Int,
-    val pcztBytes: ByteArray,
+    val pczt: Pczt,
 )
 
 /**
@@ -491,7 +493,7 @@ sealed class AttentionReason {
  */
 sealed class TransferResult {
     data class Success(
-        val txId: String
+        val txId: TransactionId
     ) : TransferResult()
 
     /**
@@ -635,14 +637,14 @@ interface OrchardMigrationSdk {
      * [storeSignedNoteSplitPczt]. Throws if [proposal]'s plan has been superseded by a later
      * propose/prepare call (see [NoteSplitProposal.proposalHandle]).
      */
-    suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): ByteArray
+    suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): Pczt
 
     /**
      * Accepts the externally-signed note-split PCZT, finalizes it, and broadcasts it — the
      * back half of [createUnsignedNoteSplitPczt], mirroring [submitNoteSplit]'s composition
      * (extract → broadcast via the existing submission path → record result) exactly.
      */
-    suspend fun storeSignedNoteSplitPczt(signedPczt: ByteArray, options: NetworkPrivacyOptions): TransferResult
+    suspend fun storeSignedNoteSplitPczt(signedPczt: Pczt, options: NetworkPrivacyOptions): TransferResult
 
     /**
      * Builds one unsigned PCZT per transfer of `schedule` for an external signer — the
@@ -654,7 +656,7 @@ interface OrchardMigrationSdk {
      * placeholder-witness scheme [signAndStoreMigrationSchedule] does — callers do not need to
      * wait for the note-split to confirm on-chain before calling this either.
      */
-    suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, ByteArray>>
+    suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, Pczt>>
 
     /**
      * Every PREPARATION transaction's unsigned, ZIP32-annotated PCZT — the WHOLE note-split tree.
@@ -674,7 +676,7 @@ interface OrchardMigrationSdk {
      * role): [finalizeReadyTransfers] later completes any transfer that was staged awaiting proof,
      * exactly as it already does for the software-signing path.
      */
-    suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, ByteArray>>)
+    suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, Pczt>>)
 
     /**
      * Builds the animated multi-part QR frames for one combined Keystone batch-signing request
@@ -687,8 +689,8 @@ interface OrchardMigrationSdk {
      */
     suspend fun buildKeystoneSignBatchQrParts(
         requestId: ByteArray,
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         maxFragmentLen: Int
     ): List<String>
 
@@ -713,8 +715,8 @@ interface OrchardMigrationSdk {
      * bytes for each, ready for [storeSignedNoteSplitPczt]/[storeSignedSchedulePczts].
      */
     suspend fun applyKeystoneBatchSignatures(
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         batchSignResponse: ByteArray
     ): KeystoneBatchSignedPczts
 
@@ -993,7 +995,7 @@ interface OrchardMigrationSdk {
      * engine's `apply_signature` — the state-machine contract for the Keystone flow. Returns
      * whether the state changed.
      */
-    suspend fun applySignature(transferId: Long, signedPczt: ByteArray): Boolean
+    suspend fun applySignature(transferId: Long, signedPczt: Pczt): Boolean
 
     /**
      * The engine's Keystone signing-round budget ([KeystoneSigningRoundBudget]) — how many TOTAL

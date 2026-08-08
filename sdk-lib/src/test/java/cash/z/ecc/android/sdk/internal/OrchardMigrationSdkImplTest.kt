@@ -415,7 +415,7 @@ class OrchardMigrationSdkImplTest {
             check(outcome is TransferAttemptOutcome.Executed) { "expected Executed, got $outcome" }
             val result = outcome.result
             check(result is TransferResult.Success) { "expected Success, got $result" }
-            assertEquals(prepared.txid.toHexReversed(), result.txId)
+            assertEquals(prepared.txid.toHexReversed(), result.txId.txIdString())
         }
 
     /**
