@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# start-release.sh: open a release for review.
+# prepare-release.sh: prepare an SDK release and open it for review.
 #
 # Creates the two branches described in CONTRIBUTING.md and makes the version
 # bump commit:
 #
 #   release/vX.Y.Z   cut from the PREVIOUS release tag. It is the base of the
 #                    release PR and what eventually gets tagged.
-#   review/vX.Y.Z    cut from the revision being released. It carries the
+#   candidate/vX.Y.Z cut from the revision being released. It carries the
 #                    version bumps and the CHANGELOG promotion.
 #
-# The PR from review/vX.Y.Z into release/vX.Y.Z then shows exactly what this
+# The PR from candidate/vX.Y.Z into release/vX.Y.Z then shows exactly what this
 # release adds over the previous one, with none of the intervening history.
 #
 # Usage:
-#   ./scripts/start-release.sh [options] <remote> <version> [<revision>]
+#   ./scripts/prepare-release.sh --issue <N> [options] <remote> <version> [<revision>]
 #
 #   <remote>    git remote for zcash/zcash-android-wallet-sdk, e.g. upstream
 #   <version>   version being released, without the leading v, e.g. 2.7.1
@@ -22,68 +22,61 @@
 #               (default: current HEAD, which should be a maint/ branch)
 #
 # Options:
+#   --issue <N>       release tracking issue; the PR body gets `Closes #N`.
+#                     Required: every pull request must reference an issue.
 #   --previous <tag>  base the release branch on this tag rather than the
 #                     detected one. Use when the newest tag reachable from
 #                     <revision> is not the release you are following.
-#   --push-review     also push review/vX.Y.Z, so the PR can be opened at once.
 #   --dry-run         print what would happen and change nothing.
 #
-# It deliberately does not tag, publish, or open the PR: those are the steps
-# worth a human looking at the diff first.
+# It deliberately does not tag or publish. Those happen only after a human
+# reviews and merges the draft pull request this script opens.
 
 set -euo pipefail
 
 readonly TAG_PREFIX="v"
 
-usage() { sed -n '2,33p' "$0" | sed 's|^# \{0,1\}||'; exit "${1:-1}"; }
+cd "$(git rev-parse --show-toplevel)"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/release-lib.sh
+. "scripts/lib/release-lib.sh"
 
 PREVIOUS=""
-PUSH_REVIEW=false
+ISSUE=""
 DRY_RUN=false
 while [ $# -gt 0 ]; do
     case "$1" in
+        --issue)        ISSUE="${2:?--issue needs an issue number}"; shift 2 ;;
         --previous)     PREVIOUS="${2:?--previous needs a tag}"; shift 2 ;;
-        --push-review)  PUSH_REVIEW=true; shift ;;
         --dry-run)      DRY_RUN=true; shift ;;
-        -h|--help)      usage 0 ;;
-        --*)            echo "error: unknown option '$1'" >&2; usage ;;
+        -h|--help)      sed -n '2,34p' "$0" | sed 's|^# \{0,1\}||'; exit 0 ;;
+        --*)            die "unknown option '$1'" ;;
         *)              break ;;
     esac
 done
 
-[ $# -ge 2 ] || usage
+[ $# -eq 2 ] || [ $# -eq 3 ] ||
+    die "expected <remote> <version> and optional <revision>."
+[ -n "$ISSUE" ] || die "--issue <N> is required." \
+    "Every pull request must reference an issue (see CONTRIBUTING.md)."
+printf '%s\n' "$ISSUE" | grep -Eq '^[0-9]+$' ||
+    die "--issue must be a numeric GitHub issue number."
 readonly REMOTE="$1"
 readonly VERSION="${2#v}"
 readonly REVISION="${3:-HEAD}"
-
-cd "$(git rev-parse --show-toplevel)"
-
-run() {
-    if $DRY_RUN; then echo "  would run: $*"; else "$@"; fi
-}
-
-step() { echo; echo "==> $*"; }
-
-# Semver ordering. GNU `sort -V` ranks 2.7.0-rc.1 *above* 2.7.0, which is
-# backwards: a pre-release precedes its release. Mapping '-' to '~' fixes it,
-# because sort -V treats '~' as lower than the empty string.
-version_sort() { sed 's/-/~/' | sort -V | sed 's/~/-/'; }
-
-version_le() {
-    [ "$(printf '%s\n%s\n' "$1" "$2" | version_sort | head -1)" = "$1" ]
-}
+valid_version "$VERSION" || die "invalid version '${VERSION}'." \
+    "Expected semantic version syntax such as 2.7.1 or 2.8.0-rc.1."
 
 # ---------------------------------------------------------------- preflight
 
 step "Checking preconditions"
 
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    echo "error: working tree has uncommitted changes." >&2
-    exit 1
-fi
-
-git remote get-url "$REMOTE" >/dev/null 2>&1 || {
-    echo "error: no such remote '$REMOTE'." >&2; exit 1; }
+require_clean_tree
+require_remote "$REMOTE"
+require_gh_auth_for_run
+GH_REPO="$(repo_for_remote "$REMOTE")"
+readonly GH_REPO
+echo "  repository: ${GH_REPO}"
 
 echo "  fetching $REMOTE ..."
 git fetch --tags "$REMOTE" >/dev/null 2>&1
@@ -109,9 +102,13 @@ if [ -n "$PREVIOUS" ]; then
 else
     # Only tags reachable from the revision are candidates: a tag on a newer
     # line is not something this release can be a successor to.
-    PREV_TAG="$(git tag --list --merged "$REV_SHA" "${TAG_PREFIX}[0-9]*" \
-                | sed "s/^${TAG_PREFIX}//" | version_sort | tail -1 \
-                | sed "s/^/${TAG_PREFIX}/")"
+    PREV_TAG="$(git \
+        -c versionsort.suffix=-alpha \
+        -c versionsort.suffix=-beta \
+        -c versionsort.suffix=-rc \
+        -c versionsort.suffix= \
+        tag --list --merged "$REV_SHA" --sort=version:refname \
+        "${TAG_PREFIX}[0-9]*" | tail -1)"
     [ -n "$PREV_TAG" ] || {
         echo "error: no release tags are reachable from ${REVISION}." >&2
         echo "       pass --previous <tag> to say which release this follows." >&2
@@ -126,16 +123,16 @@ if version_le "$VERSION" "$PREV_VERSION"; then
 fi
 
 readonly RELEASE_BRANCH="release/${TAG_PREFIX}${VERSION}"
-readonly REVIEW_BRANCH="review/${TAG_PREFIX}${VERSION}"
+readonly CANDIDATE_BRANCH="candidate/${TAG_PREFIX}${VERSION}"
 
-for b in "$RELEASE_BRANCH" "$REVIEW_BRANCH"; do
+for b in "$RELEASE_BRANCH" "$CANDIDATE_BRANCH"; do
     git rev-parse -q --verify "refs/heads/${b}" >/dev/null && {
         echo "error: branch ${b} already exists locally." >&2; exit 1; }
 done
 
 echo
 echo "  ${RELEASE_BRANCH}  <- ${PREV_TAG}        (PR base, pushed to ${REMOTE})"
-echo "  ${REVIEW_BRANCH}   <- ${REVISION}   (version bumps go here)"
+echo "  ${CANDIDATE_BRANCH}   <- ${REVISION}   (version bumps go here)"
 
 # --------------------------------------------------------------- branches
 
@@ -143,8 +140,8 @@ step "Creating ${RELEASE_BRANCH} from ${PREV_TAG}"
 run git branch "$RELEASE_BRANCH" "refs/tags/${PREV_TAG}"
 run git push "$REMOTE" "${RELEASE_BRANCH}:${RELEASE_BRANCH}"
 
-step "Creating ${REVIEW_BRANCH} from ${REVISION}"
-run git switch -c "$REVIEW_BRANCH" "$REV_SHA"
+step "Creating ${CANDIDATE_BRANCH} from ${REVISION}"
+run git switch -c "$CANDIDATE_BRANCH" "$REV_SHA"
 
 # ------------------------------------------------------------ version bump
 
@@ -154,26 +151,26 @@ bump_versions() {
     # gradle.properties carries the version the Gradle publishing conventions
     # read. IS_SNAPSHOT is deliberately left alone: release publishing passes
     # -PIS_SNAPSHOT=false rather than committing the change.
-    sed -i "s/^LIBRARY_VERSION=.*/LIBRARY_VERSION=${VERSION}/" gradle.properties
+    set_gradle_property gradle.properties LIBRARY_VERSION "$VERSION"
 
-    # Only the [package] version, which is the first `version =` in the file;
-    # the dependency versions below it must not be touched.
-    sed -i "0,/^version = \".*\"$/s//version = \"${VERSION}\"/" backend-lib/Cargo.toml
+    # Only the [package] version; dependency versions must not be touched even
+    # if another table appears before [package].
+    bump_cargo_version backend-lib/Cargo.toml "$VERSION"
 
-    # Let cargo rewrite the lock's package entry rather than editing it by
-    # hand, so the lock stays internally consistent.
-    cargo update --manifest-path backend-lib/Cargo.toml --workspace --offline >/dev/null
+    # Let cargo minimally update the lock while checking that the bumped
+    # manifest still resolves, without requesting dependency upgrades.
+    cargo check --manifest-path backend-lib/Cargo.toml --offline >/dev/null
 }
 
 if $DRY_RUN; then
     echo "  would set LIBRARY_VERSION, backend-lib/Cargo.toml and Cargo.lock to ${VERSION}"
 else
     bump_versions
-    for f in gradle.properties backend-lib/Cargo.toml; do
-        grep -q "${VERSION}" "$f" || { echo "error: ${f} not updated." >&2; exit 1; }
-    done
-    grep -A1 '^name = "zcash-android-wallet-sdk"' backend-lib/Cargo.lock \
-        | grep -q "version = \"${VERSION}\"" \
+    if [ "$(gradle_property_value gradle.properties LIBRARY_VERSION)" != "$VERSION" ] ||
+       [ "$(cargo_package_version backend-lib/Cargo.toml)" != "$VERSION" ]; then
+        die "the Gradle or Cargo manifest version was not updated."
+    fi
+    [ "$(cargo_lock_package_version backend-lib/Cargo.lock zcash-android-wallet-sdk)" = "$VERSION" ] \
         || { echo "error: Cargo.lock package entry not updated." >&2; exit 1; }
     echo "  gradle.properties, backend-lib/Cargo.toml, backend-lib/Cargo.lock"
 fi
@@ -186,7 +183,7 @@ step "Promoting the CHANGELOG"
 # only ever promotes what is already there -- it never generates text. An
 # empty Unreleased section means the entries were not written, which is much
 # more likely to be an oversight than a genuinely invisible release.
-if ! awk '/^## \[Unreleased\]/{f=1;next} f && /^## \[/{exit} f && NF{found=1} END{exit !found}' CHANGELOG.md; then
+if ! changelog_unreleased_nonempty CHANGELOG.md; then
     echo "error: the [Unreleased] section is empty." >&2
     echo "       Every user-visible change needs an entry before release; see" >&2
     echo "       the CHANGELOG discipline in AGENTS.md." >&2
@@ -196,12 +193,8 @@ fi
 if $DRY_RUN; then
     echo "  would insert '## [${VERSION}] - $(date +%Y-%m-%d)' below [Unreleased]"
 else
-    awk -v ver="$VERSION" -v date="$(date +%Y-%m-%d)" '
-        !done && /^## \[Unreleased\]/ { print; print ""; print "## [" ver "] - " date; done=1; next }
-        { print }
-    ' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
-    grep -q "^## \[${VERSION}\] - " CHANGELOG.md \
-        || { echo "error: CHANGELOG not promoted." >&2; exit 1; }
+    promote_changelog CHANGELOG.md "$VERSION" "$(date +%Y-%m-%d)" ||
+        die "CHANGELOG.md has no [Unreleased] heading to promote."
     echo "  ## [${VERSION}] - $(date +%Y-%m-%d)"
 fi
 
@@ -211,27 +204,52 @@ step "Committing"
 run git add gradle.properties backend-lib/Cargo.toml backend-lib/Cargo.lock CHANGELOG.md
 run git commit -m "Prepare SDK release ${VERSION}"
 
-if $PUSH_REVIEW; then
-    step "Pushing ${REVIEW_BRANCH}"
-    run git push -u "$REMOTE" "$REVIEW_BRANCH"
+step "Pushing ${CANDIDATE_BRANCH}"
+run git push -u "$REMOTE" "$CANDIDATE_BRANCH"
+
+# --------------------------------------------------------------- draft PR
+
+step "Opening the draft pull request"
+if $DRY_RUN; then
+    echo "  would open a draft PR ${CANDIDATE_BRANCH} -> ${RELEASE_BRANCH} on ${GH_REPO}"
+    echo "  body would close issue #${ISSUE}"
+else
+    PR_BODY_FILE="$(mktemp)"
+    cat > "$PR_BODY_FILE" <<EOF
+Closes #${ISSUE}
+
+Release \`${VERSION}\`, following \`${PREV_TAG}\`.
+
+The base of this pull request is \`${RELEASE_BRANCH}\`, which starts out
+identical to \`${PREV_TAG}\`. Its diff is therefore exactly what users receive
+relative to the previous release.
+EOF
+    if ! gh pr create --repo "$GH_REPO" --draft \
+        --base "$RELEASE_BRANCH" --head "$CANDIDATE_BRANCH" \
+        --title "Release zcash-android-wallet-sdk ${VERSION}" \
+        --body-file "$PR_BODY_FILE"; then
+        die "gh pr create failed." \
+            "${RELEASE_BRANCH} and ${CANDIDATE_BRANCH} are already pushed." \
+            "The PR body remains at ${PR_BODY_FILE}; open the draft PR by hand."
+    fi
+    rm -f "$PR_BODY_FILE"
 fi
 
-# ------------------------------------------------------------- next steps
+if $DRY_RUN; then
+    cat <<EOF
 
-cat <<EOF
-
-Done. ${RELEASE_BRANCH} is on ${REMOTE}; ${REVIEW_BRANCH} is checked out here.
-
-Next:
+Dry run: nothing was changed. ${RELEASE_BRANCH} and ${CANDIDATE_BRANCH} were
+not created, nothing was pushed to ${REMOTE}, and no pull request was opened.
+The working tree is untouched.
 EOF
-$PUSH_REVIEW || echo "  git push -u ${REMOTE} ${REVIEW_BRANCH}"
-cat <<EOF
-  gh pr create --repo zcash/zcash-android-wallet-sdk \\
-      --base ${RELEASE_BRANCH} --head ${REVIEW_BRANCH} \\
-      --title "Release zcash-android-wallet-sdk ${VERSION}"
+else
+    cat <<EOF
 
-Review the PR diff: it is exactly what users get over ${PREV_TAG}. Then merge
-it, tag ${NEW_TAG} on ${RELEASE_BRANCH}, and afterwards merge the release
-branch back into its maint/ branch and forward along the chain, as described
-in CONTRIBUTING.md.
+Done. ${RELEASE_BRANCH} and ${CANDIDATE_BRANCH} are on ${REMOTE}, and the draft
+pull request is open. ${CANDIDATE_BRANCH} is checked out here.
+
+Review the PR diff, then merge it and tag ${NEW_TAG} on ${RELEASE_BRANCH}.
+Afterwards merge the release branch back into its maint/ branch and forward
+along the chain, as described in CONTRIBUTING.md.
 EOF
+fi
