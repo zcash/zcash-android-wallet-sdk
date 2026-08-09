@@ -58,7 +58,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
-  `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
+  `zcash_client_sqlite 0.22.0-rc.8`, adopting the revised ZIP 318 migration timing
   (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
   boundaries rather than 16).
 - A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
