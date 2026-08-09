@@ -40,6 +40,9 @@ jobs:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
           persist-credentials: false
+      - name: Release tooling tests
+        timeout-minutes: 1
+        run: ./scripts/tests/run-tests.sh
       - name: Gradle Wrapper Validation
         timeout-minutes: 1
         uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
