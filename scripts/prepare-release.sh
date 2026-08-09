@@ -37,6 +37,7 @@ set -euo pipefail
 readonly TAG_PREFIX="v"
 
 cd "$(git rev-parse --show-toplevel)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/release-lib.sh
 . "scripts/lib/release-lib.sh"
 
@@ -73,7 +74,8 @@ step "Checking preconditions"
 require_clean_tree
 require_remote "$REMOTE"
 require_gh_auth_for_run
-readonly GH_REPO="$(repo_for_remote "$REMOTE")"
+GH_REPO="$(repo_for_remote "$REMOTE")"
+readonly GH_REPO
 echo "  repository: ${GH_REPO}"
 
 echo "  fetching $REMOTE ..."
@@ -164,9 +166,10 @@ if $DRY_RUN; then
     echo "  would set LIBRARY_VERSION, backend-lib/Cargo.toml and Cargo.lock to ${VERSION}"
 else
     bump_versions
-    [ "$(gradle_property_value gradle.properties LIBRARY_VERSION)" = "$VERSION" ] &&
-        [ "$(cargo_package_version backend-lib/Cargo.toml)" = "$VERSION" ] ||
+    if [ "$(gradle_property_value gradle.properties LIBRARY_VERSION)" != "$VERSION" ] ||
+       [ "$(cargo_package_version backend-lib/Cargo.toml)" != "$VERSION" ]; then
         die "the Gradle or Cargo manifest version was not updated."
+    fi
     [ "$(cargo_lock_package_version backend-lib/Cargo.lock zcash-android-wallet-sdk)" = "$VERSION" ] \
         || { echo "error: Cargo.lock package entry not updated." >&2; exit 1; }
     echo "  gradle.properties, backend-lib/Cargo.toml, backend-lib/Cargo.lock"

@@ -4,6 +4,8 @@
 # without a network, a git remote, or a GitHub token. Written for bash 3.2,
 # which is what macOS ships.
 
+# shellcheck shell=bash
+
 DRY_RUN="${DRY_RUN:-false}"
 
 step() { echo; echo "==> $*"; }

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -u
 
-readonly TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-readonly REPO_ROOT="$(cd "${TESTS_DIR}/../.." && pwd)"
+TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+readonly TESTS_DIR
+REPO_ROOT="$(cd "${TESTS_DIR}/../.." && pwd)"
+readonly REPO_ROOT
 
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=../lib/release-lib.sh
 . "${REPO_ROOT}/scripts/lib/release-lib.sh"
 

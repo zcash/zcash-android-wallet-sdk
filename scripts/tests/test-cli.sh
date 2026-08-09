@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+
 _prepare() { "$REPO_ROOT/scripts/prepare-release.sh" "$@"; }
 
 test_prepare_release_is_executable() {

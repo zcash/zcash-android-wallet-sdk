@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+
 test_valid_version_accepts_release() {
     assert_succeeds "release version accepted" valid_version 2.7.1
 }
@@ -80,7 +82,12 @@ test_bump_cargo_version_scopes_to_package() {
 }
 
 _require_gh_auth_fails() (
+    # Both of these are consumed by require_gh_auth_for_run, which lives in
+    # release-lib.sh; shellcheck cannot see across the source boundary from here.
+    # SC2317 and SC2329 are the same finding under different shellcheck versions.
+    # shellcheck disable=SC2034
     DRY_RUN="$1"
+    # shellcheck disable=SC2317,SC2329
     require_gh_auth() { return 1; }
     require_gh_auth_for_run
 )
