@@ -76,13 +76,10 @@ pub(crate) fn propose_orchard_to_ironwood(
         .chain_height()
         .map_err(|e| anyhow!("Error reading the chain tip: {}", e))?
         .ok_or_else(|| anyhow!("Wallet has not yet scanned any blocks."))?;
-    match network.activation_height(NetworkUpgrade::Nu6_3) {
-        Some(h) if chain_tip >= h => (),
-        _ => {
-            return Err(anyhow!(
-                "Ironwood (NU6.3) is not active yet; there is nothing to migrate to."
-            ));
-        }
+    if !network.is_nu_active(NetworkUpgrade::Nu6_3, chain_tip) {
+        return Err(anyhow!(
+            "Ironwood (NU6.3) is not active yet; there is nothing to migrate to."
+        ));
     }
 
     let orchard_fvk = db_data
