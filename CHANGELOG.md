@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-08-10
+
 ### Fixed
 - Migration Keystone batch signing no longer stalls for seconds when building the first note-split
   PCZT of a run: spendable-note selection is now cached for the lifetime of one migration call
