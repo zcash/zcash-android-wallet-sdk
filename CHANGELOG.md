@@ -7,38 +7,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-
-- `TransactionOverview.spentNoteCount`, the number of the account's own notes the
-  transaction spent.
-- `TransactionOverview.poolCrossingValue`, the value that crossed shielded pools when
-  the transaction is a wallet-internal transfer between them, such as an Orchard to
-  Ironwood migration, and `null` when it is not one. For such a transaction
-  `TransactionOverview.netValue` is only the fee, so this is the amount to present to
-  a user rather than the balance delta.
-- `TransactionOverview.isTrusted`, whether the transaction's outputs become spendable
-  after the trusted confirmation count rather than the untrusted one.
-- `TransactionOverview.zip318Kind`, a new `Zip318Kind` reporting how a transaction
-  classifies against ZIP 318, the Orchard to Ironwood pool migration.
-  `Zip318Kind.NOT_CLASSIFIED` means the wallet has not looked at the transaction,
-  not that the transaction is not a migration, and warrants no label in a UI; a
-  transaction the wallet has examined and rejected is `NONCONFORMING` instead. Only
-  `PREPARATION` and `TRANSFER` are the wallet's own migration. Transactions already
-  in the wallet's history are not classified retroactively on upgrade: they read
-  `NOT_CLASSIFIED` until rescanned.
-- The four properties above are new `TransactionOverview` constructor parameters, so
-  positional construction will not compile until all of them are supplied; named
-  construction needs no edit.
+- Shielded voting: `voteSubmission(roundId, bundleIndex, proposalId)` returns `JniVoteSubmission`,
+  the chain-ready fields needed to resend a cast-vote transaction before it confirms, without the
+  helper-share payloads that go stale once the tree position is recorded.
+- Shielded voting: `recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)` records
+  the confirmed position of the vote commitment in the vote commitment tree.
 
 ### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
-  `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
-  (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
-  boundaries rather than 16).
-- A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
-  that covers the payment and its fee, falling back to ordinary multi-note funding
-  when no such note exists. Canonical-denomination payments that previously lost
-  the canonical shape to multi-note funding now take it whenever a single covering
-  note exists.
 - Updated the `zcash_voting` dependency to `2.0.0-rc.3` (bringing
   `vote-commitment-tree 0.4.0-rc.1` and `vote-commitment-tree-client 0.6.0-rc.1`),
   aligning the voting crates with the `zcash_client_backend 0.24.0-rc.7` release
@@ -133,13 +108,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `voteSubmission` for a pre-confirmation resend, then `recordVcPosition`, then
   `getCommitmentBundle` for fresh helper-share payloads.
 
-### Added
-- Shielded voting: `voteSubmission(roundId, bundleIndex, proposalId)` returns `JniVoteSubmission`,
-  the chain-ready fields needed to resend a cast-vote transaction before it confirms, without the
-  helper-share payloads that go stale once the tree position is recorded.
-- Shielded voting: `recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)` records
-  the confirmed position of the vote commitment in the vote commitment tree.
-
 ### Removed
 - Shielded voting: `decomposeWeight`, `buildSharePayloads`, `signCastVote`, `buildVoteCommitment`,
   `storeCommitmentBundle`, `storeVoteTxHash` and `getDelegationSubmissionWithKeystoneSig`, along
@@ -160,6 +128,70 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commitment, a nullifier — compiles cleanly while feeding one `orchard` generation's output into
   another's circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply
   rebuilt, and removing it is what allows it back on.
+- Migration Keystone batch signing no longer stalls for seconds when building the first note-split
+  PCZT of a run: spendable-note selection is now cached for the lifetime of one migration call
+  instead of being re-queried from the wallet database on every note the plan spends (MOB-1669).
+
+## [3.0.1] - 2026-08-08
+
+### Changed
+- `OrchardMigrationSdk` external-signing APIs now carry PCZTs as `Pczt` instead of raw
+  `ByteArray`, including `KeystoneBatchSignedPczts` and `UnsignedPreparationPczt`; callers must
+  wrap signer output in `Pczt` and use `Pczt.toByteArray()` when sending it to external devices.
+- `TransferResult.Success.txId` is now `TransactionId` instead of `String`; callers that need the
+  display encoding must use `TransactionId.txIdString()`.
+
+### Fixed
+- `ImportAccountCheckpointsNotReadyException` and Slipstream account-loading logs no longer expose
+  backend exception details that could contain sensitive wallet input.
+- Transaction status no longer flickers back to Pending during a synchronizer rebuild (e.g. an
+  automatic server switch) - restored the DB-backed chain-height fallback the legacy synchronizer
+  had for this gap, which was dropped when this path was ported to the Slipstream engine.
+- Expired transactions with no `block_time` (never mined) now get an estimated timestamp from the
+  block-height gap to the chain tip, instead of a null timestamp that sorted the transaction as if
+  it happened at the end of today regardless of how long ago it actually expired.
+
+## [3.0.0] - 2026-08-08
+
+### Added
+- `CompactBlockProcessor.enhanceTransactionDetails` and the per-transaction `enhanceTransaction`
+  step now emit structured diagnostic logs at each step of an enhance cycle — cycle start with
+  request count, per-request type, fetch response shape (whether a tx was returned, whether it
+  has a mined height), the decision taken (`setTransactionStatus` or `decryptAndStoreTransaction`),
+  per-request errors with error type, and cycle completion. Logs use opaque per-request
+  correlation ids (no transaction ids, addresses, or other PII) so production logs are debuggable
+  for future stuck-transaction reports without exposing user-identifying data.
+- `TransactionOverview.spentNoteCount`, the number of the account's own notes the
+  transaction spent.
+- `TransactionOverview.poolCrossingValue`, the value that crossed shielded pools when
+  the transaction is a wallet-internal transfer between them, such as an Orchard to
+  Ironwood migration, and `null` when it is not one. For such a transaction
+  `TransactionOverview.netValue` is only the fee, so this is the amount to present to
+  a user rather than the balance delta.
+- `TransactionOverview.isTrusted`, whether the transaction's outputs become spendable
+  after the trusted confirmation count rather than the untrusted one.
+- `TransactionOverview.zip318Kind`, a new `Zip318Kind` reporting how a transaction
+  classifies against ZIP 318, the Orchard to Ironwood pool migration.
+  `Zip318Kind.NOT_CLASSIFIED` means the wallet has not looked at the transaction,
+  not that the transaction is not a migration, and warrants no label in a UI; a
+  transaction the wallet has examined and rejected is `NONCONFORMING` instead. Only
+  `PREPARATION` and `TRANSFER` are the wallet's own migration. Transactions already
+  in the wallet's history are not classified retroactively on upgrade: they read
+  `NOT_CLASSIFIED` until rescanned.
+- The four properties above are new `TransactionOverview` constructor parameters, so
+  positional construction will not compile until all of them are supplied; named
+  construction needs no edit.
+
+### Changed
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
+  `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
+  (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
+  boundaries rather than 16).
+- A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
+  that covers the payment and its fee, falling back to ordinary multi-note funding
+  when no such note exists. Canonical-denomination payments that previously lost
+  the canonical shape to multi-note funding now take it whenever a single covering
+  note exists.
 - Migration transfer ids are `Long` (the engine's `u32`, widened as this JNI boundary widens every
   unsigned 32-bit value) rather than decimal strings, across `JniTransferProposal`,
   `JniPreparedTransfer`, `JniMigrationTransferState`, `JniUnsignedTransferPczt`,
@@ -248,7 +280,12 @@ The remainder were picked up from the librustzcash update:
   recipient address recorded at transaction construction time takes precedence
   over the receiving address.
 
-## [2.8.0-rc.2] - 2026-07-28
+## [2.8.0-rc.3] - 2026-07-29
+
+### Changed
+- Migrated to `zcash_client_backend-0.24.0-rc.6`, `zcash_client_sqlite-0.22.0-rc.6`
+
+## [2.8.0-rc.2] - 2026-07-29
 
 ### Changed
 - Migrated to `zcash_client_backend-0.24.0-rc.5`, `zcash_client_sqlite-0.22.0-rc.5`
@@ -312,6 +349,47 @@ The remainder were picked up from the librustzcash update:
   `PercentDecimal` when both the scan and recovery progress ranges are empty (e.g. right after
   importing an account whose birthday is at the chain tip). The combined progress ratio now uses
   the same zero-denominator semantics as the individual ratios: an empty range means 100%.
+
+## [2.7.0-rc.4] - 2026-07-29
+
+### Changed
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
+  `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
+  (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
+  boundaries rather than 16).
+- A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
+  that covers the payment and its fee, falling back to ordinary multi-note funding
+  when no such note exists. Canonical-denomination payments that previously lost
+  the canonical shape to multi-note funding now take it whenever a single covering
+  note exists.
+
+### Fixed
+All of the following were picked up from the librustzcash update:
+
+- A wallet whose database was upgraded by a build using
+  `zcash_client_sqlite 0.22.0-rc.1` (the 2.6.6 internal build) no longer fails
+  every scan. Such a wallet's `orchard_ironwood_migrations` table never acquired
+  the `anchor_bucket_interval` column, added to the table-creation migration in
+  place afterwards, and the column reference then failed on every scan — no block
+  could be written and no transaction ever acquired a mined height, whether or not
+  a pool migration was in progress. A new database migration adds the missing
+  column. The backfilled value is exact on the production network; on a test
+  network, a pool migration planned under a custom anchor grid is reported as
+  `AnchorIntervalMismatch` and must be re-planned.
+- A ZIP 318 crossing anchored to a bucket boundary whose block contains no note
+  commitments in any pool no longer fails with `ProposalError::AnchorNotFound`:
+  scanning now creates a checkpoint at every anchor-retention grid height, and
+  proposal creation additionally falls back to an ordinary crossing when no anchor
+  is computable at the boundary rather than proposing a build that would fail.
+- Note selection now draws the oldest eligible notes first, in note commitment
+  tree (chain) order. Notes were previously drawn in scan-discovery order, which
+  for a restored wallet prefers its most recently discovered — typically newest —
+  notes.
+- A payment to one of the wallet's own transparent addresses is now reported with
+  the transparent receiver address itself as the output's recipient, rather than
+  the receiving account's unified address; for outputs the wallet created, the
+  recipient address recorded at transaction construction time takes precedence
+  over the receiving address.
 
 ## [2.7.0-rc.3] - 2026-07-29
 

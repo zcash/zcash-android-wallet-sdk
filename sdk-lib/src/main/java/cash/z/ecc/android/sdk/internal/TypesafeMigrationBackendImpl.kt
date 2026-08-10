@@ -31,6 +31,12 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): JniMigrationState = rustBackend().migrationState(dbDataPath, network.id, account.value)
 
+    override suspend fun migrationStateUnreconciled(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): JniMigrationState = rustBackend().migrationStateUnreconciled(dbDataPath, network.id, account.value)
+
     override suspend fun migrationProgress(
         dbDataPath: String,
         network: ZcashNetwork,
@@ -115,7 +121,8 @@ internal class TypesafeMigrationBackendImpl(
         transferId: Long,
         resultTag: Int,
         retryable: Boolean,
-        txId: ByteArray
+        txId: ByteArray,
+        observedTip: Long
     ) = rustBackend().recordTransferResult(
         dbDataPath,
         network.id,
@@ -123,7 +130,8 @@ internal class TypesafeMigrationBackendImpl(
         transferId,
         resultTag,
         retryable,
-        txId
+        txId,
+        observedTip
     )
 
     override suspend fun proposeMigrationTransfers(
@@ -208,6 +216,12 @@ internal class TypesafeMigrationBackendImpl(
         transferId: Long,
         signedPczt: ByteArray
     ): Boolean = rustBackend().applySignature(dbDataPath, network.id, account.value, transferId, signedPczt)
+
+    override suspend fun markMigrationSuperseded(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Boolean = rustBackend().markMigrationSuperseded(dbDataPath, network.id, account.value)
 
     override suspend fun keystoneSigningRoundBudget(): IntArray = rustBackend().keystoneSigningRoundBudget()
 

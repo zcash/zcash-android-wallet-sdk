@@ -1,4 +1,5 @@
 @file:Suppress(
+    "LargeClass",
     "LongParameterList",
     "MaxLineLength",
     "SwallowedException",
@@ -9,16 +10,20 @@
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
+import android.os.SystemClock
 import cash.z.ecc.android.sdk.AttentionReason
 import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
+import cash.z.ecc.android.sdk.MigrationAdvanceResult
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
 import cash.z.ecc.android.sdk.MigrationBlocker
 import cash.z.ecc.android.sdk.MigrationNextAction
+import cash.z.ecc.android.sdk.MigrationPeek
 import cash.z.ecc.android.sdk.MigrationProgress
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
+import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
@@ -54,13 +59,18 @@ import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferen
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
+import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.util.WalletClientFactory
+import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import co.electriccoin.lightwallet.client.model.Response
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -119,6 +129,14 @@ internal class OrchardMigrationSdkImpl(
     // without a substitutable PreferenceHolder. Production callers are unaffected: MigrationSdk.new()
     // still passes a real EncryptedPreferenceProvider, which is a PreferenceHolder.
     private val preferenceProviderHolder: PreferenceHolder,
+    /**
+     * Test seam for the network phase of a broadcast, and nothing else: the real path builds a
+     * [WalletClientFactory] (plus, with Tor, a real Tor runtime), neither of which can run in a plain
+     * JVM unit test, so the broadcast-serialization and phase-ordering tests substitute a gateable
+     * implementation. Left `null` by every production caller — `MigrationSdk.new()` included — in
+     * which case [broadcast] takes its ordinary [WalletClientFactory] path.
+     */
+    private val broadcaster: MigrationTransactionBroadcaster? = null,
 ) : OrchardMigrationSdk {
     /**
      * [NetworkPrivacyOptions.useTor] is a per-migration setting, independent of the app's global
@@ -178,10 +196,94 @@ internal class OrchardMigrationSdkImpl(
      * empty, resolving itself within a second or two once that cycle finishes — retrying rides out
      * that window instead of surfacing a spurious failure. A genuine insufficient balance fails the
      * same way on every attempt and is still reported once retries are exhausted.
+     *
+     * What exactly the mutex has to cover, since [loggedRead] exists to opt out of it:
+     * 1. every mutation;
+     * 2. every multi-call block whose steps must not interleave with another operation's;
+     * 3. every entry point that reaches Rust's `read_reconciled` (`get_migration` → `mark_mined` →
+     *    `replace_migration` — a read-modify-WRITE despite reading like a query): [getMigrationState],
+     *    [getMigrationProgress], [hasOverdueTransfers], [hasInvalidTransfers], [nextStep], and
+     *    [isSyncBlockedNow]'s overdue read. Running two of those concurrently can lose an update —
+     *    including a just-recorded broadcast result.
+     *
+     * Only a VERIFIED-pure single read (or a call that touches no database at all) may use
+     * [loggedRead].
+     *
+     * The bounded retry deliberately stays INSIDE the mutex here. Releasing the lock between
+     * attempts would let another queued operation change the very state the failed attempt read
+     * (which transfer is next due, the plan cache), reintroducing the check-then-act interleaving
+     * this mutex exists to prevent. Sleeping while holding the lock is the price; since the network
+     * broadcast moved out to [BROADCAST_MUTEX] and pure reads moved to [loggedRead], no UI-visible
+     * read waits behind those sleeps.
      */
-    private suspend fun <T> logged(operation: String, block: suspend () -> T): T =
-        MIGRATION_DB_ACCESS_MUTEX.withLock { loggedRetryLoop(operation, block) }
+    private suspend fun <T> logged(operation: String, block: suspend () -> T): T {
+        // Diagnostic-only timing (2026-08-07 Review-screen slow-load investigation): the mutex
+        // itself is opaque to logcat — an operation queued behind another one produced zero log
+        // signal before this, so a slow Review propose couldn't be told apart from "contended
+        // behind another logged() call" vs "the Rust computation itself is slow". currentHolder is
+        // a best-effort label only (a plain, non-atomic var — a race between reading it here and
+        // another coroutine clearing it in its own finally can misattribute the holder on rare
+        // overlap), never used for correctness, only for this log line.
+        val queuedAtMs = SystemClock.elapsedRealtime()
+        val heldBy = currentHolder
+        if (heldBy != null) {
+            Twig.info {
+                "MIGRATION_DIAG OrchardMigrationSdk: $operation queued for " +
+                    "MIGRATION_DB_ACCESS_MUTEX (currently held by $heldBy)"
+            }
+        }
+        return MIGRATION_DB_ACCESS_MUTEX.withLock {
+            val waitMs = SystemClock.elapsedRealtime() - queuedAtMs
+            Twig.info {
+                "MIGRATION_DIAG OrchardMigrationSdk: $operation acquired MIGRATION_DB_ACCESS_MUTEX" +
+                    if (waitMs > 0) " after ${waitMs}ms wait" else ""
+            }
+            currentHolder = operation
+            try {
+                loggedRetryLoop(operation, block)
+            } finally {
+                currentHolder = null
+                val heldMs = SystemClock.elapsedRealtime() - queuedAtMs - waitMs
+                Twig.info { "MIGRATION_DIAG OrchardMigrationSdk: $operation released MIGRATION_DB_ACCESS_MUTEX (held ${heldMs}ms)" }
+            }
+        }
+    }
 
+    /**
+     * [loggedRetryLoop] WITHOUT [MIGRATION_DB_ACCESS_MUTEX]: the same logging and bounded retry, no
+     * mutual exclusion. Reserved for operations that are a single, verified-pure database read (or
+     * touch no database at all).
+     *
+     * Read consistency for the DB-touching calls on this lane does not need the Kotlin mutex: those
+     * are still serialized onto the single `zc-io` thread ([SdkDispatchers.DATABASE_IO]), and the
+     * Rust side opens its own connection per call with a `busy_timeout`, which is exactly how
+     * migration reads and the sync engine's writes coexist today. What dropping the mutex buys is
+     * liveness — the migration screens' own reads (notably [getMigrationTransferStates], the
+     * Progress screen's first paint) no longer queue behind a mutation's retry sleeps or another
+     * instance's background poll, which is what made that screen take up to ~15 s to render
+     * (MOB-1623). The retry sleeps that remain on this path now block nobody.
+     *
+     * (2026-08-07 blocking-without-reason audit) Some calls on this lane touch no database at all —
+     * e.g. the Keystone batch-signing UR bridge — and run on [SdkDispatchers.CPU_BOUND] instead,
+     * not the `zc-io` thread; their own correctness (the UR decode session) is protected by an
+     * independent Rust-side lock, not by this Kotlin lane or thread confinement.
+     *
+     * NEVER use for anything that mutates, spans multiple backend calls, or reaches Rust's
+     * `read_reconciled` — see [logged].
+     */
+    private suspend fun <T> loggedRead(operation: String, block: suspend () -> T): T =
+        loggedRetryLoop(operation, block)
+
+    /**
+     * The shared logging + bounded-retry body of [logged] and [loggedRead].
+     *
+     * Retries a `"database is locked"` failure as well as the `InsufficientFunds` sync race:
+     * rusqlite's own `busy_timeout` (15 s on the two connections `open_at` opens, 5 s on the
+     * block-rate/summary side connections) rides out short contention, but a sync cycle's long write
+     * transaction can outlast it — observed live as a main-thread crash from [hasOverdueTransfers]
+     * while the foreground synchronizer was mid-sync. Transient by nature: the lock clears when that
+     * write transaction commits.
+     */
     private suspend fun <T> loggedRetryLoop(operation: String, block: suspend () -> T): T {
         var attempt = 1
         while (true) {
@@ -196,12 +298,6 @@ internal class OrchardMigrationSdkImpl(
                 // the caller. Propagate immediately, silently.
                 throw e
             } catch (e: Throwable) {
-                // "database is locked": rusqlite's busy_timeout (5 s, set in open_at) rides out
-                // short contention, but a sync cycle's long write transaction can exceed it —
-                // observed live as a main-thread crash from hasOverdueTransfers while the
-                // foreground synchronizer was mid-sync. Transient by nature: the lock clears when
-                // that write transaction commits, so it gets the same bounded retry as the
-                // InsufficientFunds sync race.
                 val looksLikeSyncRace =
                     e.message?.contains("InsufficientFunds") == true ||
                         e.message?.contains("database is locked") == true
@@ -229,6 +325,13 @@ internal class OrchardMigrationSdkImpl(
             migrationBackend.migrationState(dbDataPath, network, account).toPublic()
         }
 
+    override suspend fun getMigrationStateUnreconciled(): MigrationState =
+        loggedRead("getMigrationStateUnreconciled") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@loggedRead MigrationState.NotStarted
+            migrationBackend.migrationStateUnreconciled(dbDataPath, network, account).toPublic()
+        }
+
     override suspend fun getMigrationProgress(): MigrationProgress? =
         logged("getMigrationProgress") {
             val dbDataPath = dbDataPath()
@@ -237,18 +340,18 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun estimateMigrationRunCount(): Int? =
-        logged("estimateMigrationRunCount") {
+        loggedRead("estimateMigrationRunCount") {
             val dbDataPath = dbDataPath()
-            val account = account ?: return@logged null
+            val account = account ?: return@loggedRead null
             migrationBackend.estimateMigrationRunCount(dbDataPath, network, account)
         }
 
     // ── Note splitting ───────────────────────────────────────────────────────
 
     override suspend fun isNoteSplitNeeded(): Boolean =
-        logged("isNoteSplitNeeded") {
+        loggedRead("isNoteSplitNeeded") {
             val dbDataPath = dbDataPath()
-            val account = account ?: return@logged false
+            val account = account ?: return@loggedRead false
             migrationBackend.isNoteSplitNeeded(dbDataPath, network, account)
         }
 
@@ -264,87 +367,80 @@ internal class OrchardMigrationSdkImpl(
             )
         }
 
-    override suspend fun submitNoteSplit(proposal: NoteSplitProposal, usk: UnifiedSpendingKey): TransferResult =
-        logged("submitNoteSplit") {
-            val dbDataPath = dbDataPath()
-            val account = account ?: noAccountAvailable()
-            val prepared =
-                migrationBackend.signNoteSplit(
-                    dbDataPath,
-                    network,
-                    account,
-                    proposal.proposalHandle,
-                    usk.copyBytes(),
+    /**
+     * Phase-split exactly like [executeNextPendingTransfer] (sign+extract under the DB mutex,
+     * broadcast under [BROADCAST_MUTEX] only, record back under the DB mutex inside
+     * [NonCancellable]). The property that matters here is the same one: a `"database is locked"`
+     * thrown by the record step used to re-run the whole `logged` block — including a SECOND network
+     * broadcast of the identical transaction.
+     */
+    override suspend fun submitNoteSplit(proposal: NoteSplitProposal, usk: UnifiedSpendingKey): TransferResult {
+        val prepared =
+            logged("submitNoteSplit.prepare") {
+                val dbDataPath = dbDataPath()
+                val account = account ?: noAccountAvailable()
+                val signed =
+                    migrationBackend.signNoteSplit(
+                        dbDataPath,
+                        network,
+                        account,
+                        proposal.proposalHandle,
+                        usk.copyBytes(),
+                    )
+                PreparedBroadcast(
+                    dbDataPath = dbDataPath,
+                    account = account,
+                    prepared = signed,
+                    rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, signed.pcztBytes),
+                    endpoint = defaultSubmitEndpoint,
+                    useTor = false,
                 )
-            val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
-            val submitResult = broadcast(rawTx, prepared.txid, useTor = false, endpoint = defaultSubmitEndpoint)
-            // F2: probe for a duplicate/already-on-chain rejection before mapping (see mapSubmitResult).
-            val minedHeight: Long =
-                if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
-                    migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
-                } else {
-                    -1L
-                }
-            val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
-            migrationBackend.recordTransferResult(
-                dbDataPath,
-                network,
-                account,
-                prepared.id,
-                mapped.tag,
-                mapped.retryable,
-                mapped.txIdBytes,
-            )
-            mapped.transferResult
-        }
+            }
+        val submitResult = serializedBroadcast(prepared)
+        val minedHeight = probeMinedHeight("submitNoteSplit", prepared, submitResult)
+        return recordSubmitOutcome("submitNoteSplit", prepared, submitResult, minedHeight)
+    }
 
     // ── External signer (Keystone hardware wallet) ──────────────────────────
 
-    override suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): ByteArray =
+    override suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): Pczt =
         logged("createUnsignedNoteSplitPczt") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account, proposal.proposalHandle)
+            Pczt(migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account, proposal.proposalHandle))
         }
 
+    /** Phase-split for the same reason as [submitNoteSplit]. */
     override suspend fun storeSignedNoteSplitPczt(
-        signedPczt: ByteArray,
+        signedPczt: Pczt,
         options: NetworkPrivacyOptions
-    ): TransferResult =
-        logged("storeSignedNoteSplitPczt") {
-            val dbDataPath = dbDataPath()
-            val account = account ?: noAccountAvailable()
-            val prepared = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt)
-            val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
-            val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
-            val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
-            // F2: probe for a duplicate/already-on-chain rejection before mapping (see mapSubmitResult).
-            val minedHeight: Long =
-                if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
-                    migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
-                } else {
-                    -1L
-                }
-            val mapped = mapSubmitResult(submitResult, prepared.txid, minedHeight)
-            migrationBackend.recordTransferResult(
-                dbDataPath,
-                network,
-                account,
-                prepared.id,
-                mapped.tag,
-                mapped.retryable,
-                mapped.txIdBytes,
-            )
-            mapped.transferResult
-        }
+    ): TransferResult {
+        val prepared =
+            logged("storeSignedNoteSplitPczt.prepare") {
+                val dbDataPath = dbDataPath()
+                val account = account ?: noAccountAvailable()
+                val stored = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt.toByteArray())
+                PreparedBroadcast(
+                    dbDataPath = dbDataPath,
+                    account = account,
+                    prepared = stored,
+                    rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, stored.pcztBytes),
+                    endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint,
+                    useTor = options.useTor,
+                )
+            }
+        val submitResult = serializedBroadcast(prepared)
+        val minedHeight = probeMinedHeight("storeSignedNoteSplitPczt", prepared, submitResult)
+        return recordSubmitOutcome("storeSignedNoteSplitPczt", prepared, submitResult, minedHeight)
+    }
 
-    override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, ByteArray>> =
+    override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, Pczt>> =
         logged("createUnsignedTransferPczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend
                 .createUnsignedTransferPczts(dbDataPath, network, account, schedule.proposalHandle)
-                .map { it.id to it.pcztBytes }
+                .map { it.id to Pczt(it.pcztBytes) }
         }
 
     override suspend fun createUnsignedPreparationPczts(schedule: MigrationSchedule): List<UnsignedPreparationPczt> =
@@ -353,10 +449,10 @@ internal class OrchardMigrationSdkImpl(
             val account = account ?: noAccountAvailable()
             migrationBackend
                 .createUnsignedPreparationPczts(dbDataPath, network, account, schedule.proposalHandle)
-                .map { UnsignedPreparationPczt(id = it.id, layer = it.layer, index = it.index, pcztBytes = it.pcztBytes) }
+                .map { UnsignedPreparationPczt(id = it.id, layer = it.layer, index = it.index, pczt = Pczt(it.pcztBytes)) }
         }
 
-    override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, ByteArray>>) =
+    override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, Pczt>>) =
         logged("storeSignedSchedulePczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
@@ -365,28 +461,28 @@ internal class OrchardMigrationSdkImpl(
                 network,
                 account,
                 LongArray(signed.size) { signed[it].first },
-                Array(signed.size) { signed[it].second },
+                Array(signed.size) { signed[it].second.toByteArray() },
             )
         }
 
     override suspend fun buildKeystoneSignBatchQrParts(
         requestId: ByteArray,
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         maxFragmentLen: Int
     ): List<String> =
-        logged("buildKeystoneSignBatchQrParts") {
+        loggedRead("buildKeystoneSignBatchQrParts") {
             migrationBackend
                 .buildKeystoneSignBatchQrParts(
                     requestId,
-                    splitUnsignedPczt,
-                    transferUnsignedPczts.toTypedArray(),
+                    splitUnsignedPczt?.toByteArray(),
+                    transferUnsignedPczts.map(Pczt::toByteArray).toTypedArray(),
                     maxFragmentLen,
                 ).toList()
         }
 
     override suspend fun resetKeystoneSignBatchDecoder() =
-        logged("resetKeystoneSignBatchDecoder") {
+        loggedRead("resetKeystoneSignBatchDecoder") {
             migrationBackend.resetKeystoneSignBatchDecoder()
         }
 
@@ -394,20 +490,20 @@ internal class OrchardMigrationSdkImpl(
         part: String,
         expectedRequestId: ByteArray
     ): KeystoneBatchDecodeResult =
-        logged("decodeKeystoneSignBatchPart") {
+        loggedRead("decodeKeystoneSignBatchPart") {
             migrationBackend.decodeKeystoneSignBatchPart(part, expectedRequestId).toPublic()
         }
 
     override suspend fun applyKeystoneBatchSignatures(
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         batchSignResponse: ByteArray
     ): KeystoneBatchSignedPczts =
-        logged("applyKeystoneBatchSignatures") {
+        loggedRead("applyKeystoneBatchSignatures") {
             migrationBackend
                 .applyKeystoneBatchSignatures(
-                    splitUnsignedPczt,
-                    transferUnsignedPczts.toTypedArray(),
+                    splitUnsignedPczt?.toByteArray(),
+                    transferUnsignedPczts.map(Pczt::toByteArray).toTypedArray(),
                     batchSignResponse,
                 ).toPublic()
         }
@@ -434,8 +530,16 @@ internal class OrchardMigrationSdkImpl(
                 ).toPublic()
         }
 
+    // loggedRead, not logged (2026-08-07 blocking-without-reason audit): proposeImmediateSendMax
+    // never reads or writes the persisted MigrationState (its own Rust doc confirms this — it
+    // discards the migration-store connection entirely and only touches the ordinary wallet, the
+    // same propose_send_max_transfer primitive an ordinary send-max uses), so it never reaches
+    // read_reconciled and needs no mutual exclusion. It was on `logged` for no reason other than
+    // every other propose*/sign* method nearby also being there — with no actual data dependency,
+    // it contended for MIGRATION_DB_ACCESS_MUTEX against every real migration operation (up to the
+    // ~6s worst case a loggedRetryLoop race retry holds it for) for zero benefit.
     override suspend fun proposeImmediateMigration(): Proposal =
-        logged("proposeImmediateMigration") {
+        loggedRead("proposeImmediateMigration") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             Proposal.fromByteArray(migrationBackend.proposeImmediateSendMax(dbDataPath, network, account))
@@ -481,6 +585,99 @@ internal class OrchardMigrationSdkImpl(
         val prefs: PreferenceProvider,
         val wasOverdue: Boolean,
     )
+
+    /**
+     * Everything the network phase and the record phase need, resolved by the preceding DB-mutexed
+     * phase. Every broadcasting method (`executeNextPendingTransfer`, `submitNoteSplit`,
+     * `storeSignedNoteSplitPczt`) runs the same three flat phases — prepare under
+     * [MIGRATION_DB_ACCESS_MUTEX], send under [BROADCAST_MUTEX], record under
+     * [MIGRATION_DB_ACCESS_MUTEX] again inside [NonCancellable] — so the two mutexes are never held
+     * at the same time and a failed record retries WITHOUT re-sending.
+     *
+     * [inFlightPrefs] is non-null only for [executeNextPendingTransfer], the one path that owns the
+     * `MIGRATION_BROADCAST_IN_FLIGHT_UNTIL` mark; [serializedBroadcast] refreshes the mark through it
+     * on acquiring [BROADCAST_MUTEX].
+     */
+    private class PreparedBroadcast(
+        val dbDataPath: String,
+        val account: AccountUuid,
+        val prepared: JniPreparedTransfer,
+        val rawTx: ByteArray,
+        val endpoint: LightWalletEndpoint,
+        val useTor: Boolean,
+        val inFlightPrefs: PreferenceProvider? = null,
+    )
+
+    /**
+     * Phase 2 for every broadcasting method: the network send, serialized against other broadcasts
+     * by [BROADCAST_MUTEX] and NOT holding [MIGRATION_DB_ACCESS_MUTEX] — a 60 s Tor submit used to
+     * hold the database lock for its whole duration, blocking every read behind it.
+     *
+     * The in-flight mark (when this path owns one) is refreshed to a full window right here, on
+     * acquiring the mutex: a queued caller can have waited most of a [BROADCAST_TIMEOUT] behind
+     * another broadcast, and a mark that expires mid-send would un-gate the sync engine while this
+     * transaction's bytes are still on the wire.
+     */
+    private suspend fun serializedBroadcast(plan: PreparedBroadcast): TransactionSubmitResult =
+        BROADCAST_MUTEX.withLock {
+            plan.inFlightPrefs?.putString(
+                EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
+                (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
+            )
+            broadcast(plan.rawTx, plan.prepared.txid, useTor = plan.useTor, endpoint = plan.endpoint)
+        }
+
+    /**
+     * F2: probe for a duplicate/already-on-chain rejection before mapping (see [mapSubmitResult]).
+     *
+     * A pure read, so it takes [loggedRead]'s bounded retry rather than the DB mutex: it runs right
+     * after a send that may well have SUCCEEDED, and losing it to a transient lock would strand that
+     * outcome unrecorded. Deliberately outside the record phase's [NonCancellable] boundary (with
+     * the send itself) so an outer timeout can still kill a hung attempt.
+     */
+    private suspend fun probeMinedHeight(
+        operation: String,
+        plan: PreparedBroadcast,
+        submitResult: TransactionSubmitResult,
+    ): Long =
+        if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
+            loggedRead("$operation.minedHeightProbe") {
+                migrationBackend.transactionMinedHeight(plan.dbDataPath, network, plan.prepared.txid)
+            }
+        } else {
+            -1L
+        }
+
+    /**
+     * Phase 3 for the note-split paths: map the submit outcome and record it, under the DB mutex and
+     * inside [NonCancellable] (the send has already happened — losing the record is the one outcome
+     * worth being uncancellable for). Retried on a locked database WITHOUT re-running the send.
+     *
+     * Unlike [commitBroadcastOutcome] this touches no preference at all, matching what these two
+     * paths have always done: they neither set nor own the in-flight mark, so clearing it here could
+     * un-gate sync for a transfer broadcast that another caller has in flight.
+     */
+    private suspend fun recordSubmitOutcome(
+        operation: String,
+        plan: PreparedBroadcast,
+        submitResult: TransactionSubmitResult,
+        minedHeight: Long,
+    ): TransferResult =
+        withContext(NonCancellable) {
+            logged("$operation.record") {
+                val mapped = mapSubmitResult(submitResult, plan.prepared.txid, minedHeight)
+                migrationBackend.recordTransferResult(
+                    plan.dbDataPath,
+                    network,
+                    plan.account,
+                    plan.prepared.id,
+                    mapped.tag,
+                    mapped.retryable,
+                    mapped.txIdBytes,
+                )
+                mapped.transferResult
+            }
+        }
 
     /**
      * Entry guard (spec §2a). A prior send may have reached the network but never persisted its
@@ -538,7 +735,7 @@ internal class OrchardMigrationSdkImpl(
                 // already MINED, i.e. already public/on-chain, so the post-broadcast de-correlation
                 // buffer has no privacy value left to protect on this recovery path — arming
                 // `now + buffer` would just needlessly block sync for no privacy benefit.
-                TransferAttemptOutcome.Executed(TransferResult.Success(attempt.prepared.txid.toHexReversed()))
+                TransferAttemptOutcome.Executed(TransferResult.Success(TransactionId.new(attempt.prepared.txid)))
             }
         }
     }
@@ -551,24 +748,35 @@ internal class OrchardMigrationSdkImpl(
      * happened, so a cancellation landing between the send and the record is precisely the state
      * [recoverAlreadyBroadcastTransfer] exists to clean up after; keeping the whole commit
      * uncancellable is what makes that state rare rather than routine. Everything that may
-     * legitimately be cancelled — the send itself, and the mined-height probe that classifies its
-     * failure — belongs to the caller and stays outside this boundary.
+     * legitimately be cancelled — the send itself, the mined-height probe that classifies its
+     * failure, and (per the same reasoning) [fetchObservedTipAfterRejection]'s follow-up network
+     * call — belongs to the caller and stays outside this boundary; [mapped] and [observedTip] are
+     * therefore passed in already computed, not derived here.
+     *
+     * [mapped].tag == 2 (a genuinely-unknown non-gRPC rejection, `classifyNonGrpcFailure` ruled out
+     * every known-duplicate/already-mined explanation) is recorded to the engine as tag 4
+     * (AwaitingReevaluation) instead: `report_broadcast_failure` withholds the transaction pending
+     * reevaluation once the wallet's scan reaches [observedTip], rather than [mapped].tag == 2's old
+     * behavior of terminally failing the whole pre-signed plan. [mapped].transferResult itself is
+     * untouched — the caller still sees [TransferResult.InvalidNote] for THIS attempt (see
+     * `MigrationDriveOnce.handleExecuted`'s `InvalidNote` arm for how the app now interprets that
+     * given the persisted state is InProgress, not Failed).
      */
     private suspend fun commitBroadcastOutcome(
         attempt: BroadcastAttempt,
-        submitResult: TransactionSubmitResult,
-        minedHeight: Long,
+        mapped: MappedTransferResult,
+        observedTip: Long,
     ): TransferResult =
         withContext(NonCancellable) {
-            val mapped = mapSubmitResult(submitResult, attempt.prepared.txid, minedHeight)
             migrationBackend.recordTransferResult(
                 attempt.dbDataPath,
                 network,
                 attempt.account,
                 attempt.prepared.id,
-                mapped.tag,
+                recordedResultTag(mapped.tag),
                 mapped.retryable,
                 mapped.txIdBytes,
+                observedTip,
             )
             // Clear the in-flight mark now that the result is recorded.
             attempt.prefs.putString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key, "0")
@@ -581,72 +789,171 @@ internal class OrchardMigrationSdkImpl(
             mapped.transferResult
         }
 
-    override suspend fun executeNextPendingTransfer(
+    /**
+     * The outcome of phase 1: either the call is already answered (nothing due, awaiting proof, an
+     * already-mined recovery, or a broadcast someone else has in flight), or a transaction is ready
+     * to go out.
+     */
+    private sealed interface BroadcastPreparation {
+        class Ready(
+            val attempt: BroadcastAttempt,
+            val plan: PreparedBroadcast,
+        ) : BroadcastPreparation
+
+        class Settled(
+            val outcome: TransferAttemptOutcome
+        ) : BroadcastPreparation
+    }
+
+    /**
+     * Phase 1: due-transfer triage, the two entry guards, and the extraction of the raw transaction
+     * to send — everything that must not interleave with another migration operation, and nothing
+     * that touches the network. Runs under [MIGRATION_DB_ACCESS_MUTEX] via [logged], which also
+     * means a locked-database failure retries this phase (and only this phase).
+     */
+    @Suppress("LongMethod", "ReturnCount")
+    private suspend fun prepareNextPendingTransfer(
         options: NetworkPrivacyOptions,
         useEstimatedTip: Boolean,
-    ): TransferAttemptOutcome =
-        logged("executeNextPendingTransfer") {
-            val dbDataPath = dbDataPath()
-            val account = account ?: return@logged TransferAttemptOutcome.NothingDue
-            val est = if (useEstimatedTip) chainTipEstimator.estimatedTip() else -1L
-            val wasOverdue = migrationBackend.hasOverdueTransfers(dbDataPath, network, account, est)
-            val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account, est)
-            val prepared =
-                when (dueResult.status) {
-                    DUE_READY -> {
-                        dueResult.prepared
-                    }
+    ): BroadcastPreparation {
+        val dbDataPath = dbDataPath()
+        val account = account ?: return BroadcastPreparation.Settled(TransferAttemptOutcome.NothingDue)
+        val est = if (useEstimatedTip) chainTipEstimator.estimatedTip() else -1L
+        val dueResult = migrationBackend.nextDueTransfer(dbDataPath, network, account, est)
+        // No separate hasOverdueTransfers() read: dueResult already tells us whether something
+        // was ready to send this pass, which is what "overdue" means for the privacy-buffer
+        // decision below — avoids a second read-modify-write backend call per attempt.
+        val wasOverdue = dueResult.status == DUE_READY
+        val prepared =
+            when (dueResult.status) {
+                DUE_READY -> {
+                    dueResult.prepared
+                }
 
-                    DUE_AWAITING_PROOF -> {
-                        return@logged TransferAttemptOutcome.AwaitingProof(
+                DUE_AWAITING_PROOF -> {
+                    return BroadcastPreparation.Settled(
+                        TransferAttemptOutcome.AwaitingProof(
                             dueResult.awaitingProofTransferId
                                 ?: error(
                                     "nextDueTransfer returned status=2 (AwaitingProof) with null " +
                                         "transferId — Rust contract violation"
                                 )
                         )
-                    }
+                    )
+                }
 
-                    else -> {
-                        null
-                    }
-                } ?: return@logged TransferAttemptOutcome.NothingDue
+                else -> {
+                    null
+                }
+            } ?: return BroadcastPreparation.Settled(TransferAttemptOutcome.NothingDue)
 
-            val attempt =
-                BroadcastAttempt(
+        val attempt =
+            BroadcastAttempt(
+                dbDataPath = dbDataPath,
+                account = account,
+                prepared = prepared,
+                prefs = preferenceProviderHolder(),
+                wasOverdue = wasOverdue,
+            )
+        recoverAlreadyBroadcastTransfer(attempt)?.let { return BroadcastPreparation.Settled(it) }
+        // In-progress guard. The whole-method DB mutex used to be what stopped a second caller
+        // (MigrationProgressVM's foreground pass, MigrationSendingVM, MigrationWorker — all real
+        // concurrent entrants) from re-extracting and re-broadcasting the SAME transfer while the
+        // first send was still on the wire; now that the send happens outside that mutex, the
+        // in-flight mark has to do it. The guard above has already established that the marked
+        // transaction is NOT mined yet, so an active mark here means a send is genuinely in
+        // progress. Cost of a crash mid-broadcast: recovery of an unmined transaction waits out the
+        // mark's BROADCAST_IN_FLIGHT_WINDOW_SECONDS self-expiry.
+        if (isBroadcastInFlightNow(attempt.prefs)) {
+            Twig.debug {
+                "MIGRATION_DIAG OrchardMigrationSdk: a broadcast is already in flight — skipping this pass"
+            }
+            return BroadcastPreparation.Settled(TransferAttemptOutcome.NothingDue)
+        }
+
+        val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
+        // Mark the broadcast as in-flight before attempting the network call so the sync engine
+        // is gated for the duration. A stale mark from a crash self-expires in
+        // BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
+        attempt.prefs.putString(
+            EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
+            (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
+        )
+        return BroadcastPreparation.Ready(
+            attempt = attempt,
+            plan =
+                PreparedBroadcast(
                     dbDataPath = dbDataPath,
                     account = account,
                     prepared = prepared,
-                    prefs = preferenceProviderHolder(),
-                    wasOverdue = wasOverdue,
-                )
-            recoverAlreadyBroadcastTransfer(attempt)?.let { return@logged it }
+                    rawTx = rawTx,
+                    endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint,
+                    useTor = options.useTor,
+                    inFlightPrefs = attempt.prefs,
+                ),
+        )
+    }
 
-            val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
-            val endpoint = options.submissionEndpoint?.let(::parseSubmissionEndpoint) ?: defaultSubmitEndpoint
-            // Mark the broadcast as in-flight before attempting the network call so the sync engine
-            // is gated for the duration. A stale mark from a crash self-expires in
-            // BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
-            attempt.prefs.putString(
-                EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
-                (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
-            )
-            val submitResult = broadcast(rawTx, prepared.txid, useTor = options.useTor, endpoint = endpoint)
-            // F2: a non-gRPC submit Failure must NOT be terminally recorded as InvalidNote (tag=2)
-            // until we rule out "our transaction is already on-chain / already in the mempool" —
-            // otherwise a duplicate rejection after a submit-then-crash kills the whole pre-signed
-            // plan (and, for Keystone, forces a fresh signing ceremony). Probe the prepared txid's
-            // mined height before mapping; the rejection text is the mempool-duplicate fallback.
-            // Deliberately OUTSIDE commitBroadcastOutcome's NonCancellable boundary (with
-            // broadcast() itself) so the worker's own outer timeout can still kill a hung Tor send.
-            val minedHeight: Long =
-                if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
-                    migrationBackend.transactionMinedHeight(dbDataPath, network, prepared.txid)
-                } else {
-                    -1L
+    private suspend fun isBroadcastInFlightNow(prefs: PreferenceProvider): Boolean =
+        isBroadcastInFlight(
+            nowEpochSeconds = Clock.System.now().epochSeconds,
+            inFlightUntilEpochSeconds =
+                prefs
+                    .getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)
+                    ?.toLongOrNull() ?: 0L,
+        )
+
+    /**
+     * Three flat phases, never nested, so [MIGRATION_DB_ACCESS_MUTEX] and [BROADCAST_MUTEX] are
+     * never held at the same time: triage and extract (DB mutex), send (broadcast mutex), record
+     * (DB mutex, uncancellable).
+     *
+     * Splitting the record out of the sending phase also fixes a latent bug: a `"database is
+     * locked"` thrown by `recordTransferResult` used to make [logged]'s retry re-run the WHOLE
+     * block, i.e. broadcast the same transaction a second time — survivable only because
+     * [classifyNonGrpcFailure] maps a duplicate rejection back to success, and terminally fatal to
+     * the pre-signed plan for any node whose rejection text lacks those markers.
+     */
+    override suspend fun executeNextPendingTransfer(
+        options: NetworkPrivacyOptions,
+        useEstimatedTip: Boolean,
+    ): TransferAttemptOutcome {
+        val preparation =
+            logged("executeNextPendingTransfer.prepare") {
+                prepareNextPendingTransfer(options, useEstimatedTip)
+            }
+        val ready =
+            when (preparation) {
+                is BroadcastPreparation.Settled -> return preparation.outcome
+                is BroadcastPreparation.Ready -> preparation
+            }
+        val submitResult = serializedBroadcast(ready.plan)
+        // F2: a non-gRPC submit Failure must NOT be terminally recorded as InvalidNote (tag=2)
+        // until we rule out "our transaction is already on-chain / already in the mempool" —
+        // otherwise a duplicate rejection after a submit-then-crash kills the whole pre-signed
+        // plan (and, for Keystone, forces a fresh signing ceremony).
+        val minedHeight = probeMinedHeight("executeNextPendingTransfer", ready.plan, submitResult)
+        val mapped = mapSubmitResult(submitResult, ready.plan.prepared.txid, minedHeight)
+        // Fetch a REAL network-obtained tip only when actually needed (tag=2 → about to be
+        // reported via report_broadcast_failure/tag=4 in commitBroadcastOutcome) — a second
+        // network round-trip specifically on the rejection path, not the common (success) case.
+        // Deliberately outside commitBroadcastOutcome's NonCancellable boundary (with the send
+        // itself and the mined-height probe above) so the worker's own outer timeout can still
+        // kill a hung follow-up call.
+        val observedTip =
+            if (recordedResultTag(mapped.tag) == RESULT_TAG_AWAITING_REEVALUATION) {
+                fetchObservedTipAfterRejection(options.useTor, ready.plan.endpoint)
+            } else {
+                -1L
+            }
+        val result =
+            withContext(NonCancellable) {
+                logged("executeNextPendingTransfer.commit") {
+                    commitBroadcastOutcome(ready.attempt, mapped, observedTip)
                 }
-            TransferAttemptOutcome.Executed(commitBroadcastOutcome(attempt, submitResult, minedHeight))
-        }
+            }
+        return TransferAttemptOutcome.Executed(result)
+    }
 
     // ── Sync coordination ────────────────────────────────────────────────────
 
@@ -710,13 +1017,13 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun getMigrationTransferStates(): MigrationTransferStates? =
-        logged("getMigrationTransferStates") {
+        loggedRead("getMigrationTransferStates") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend.migrationTransferStates(dbDataPath, network, account)?.toPublic()
         }
 
-    override suspend fun nextStep(): MigrationAdvanceStep? =
+    override suspend fun nextStep(): MigrationAdvanceResult? =
         logged("nextStep") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
@@ -725,20 +1032,67 @@ internal class OrchardMigrationSdkImpl(
             val est = chainTipEstimator.estimatedTip()
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
-                when (arr.getOrElse(0) { STEP_WAITING }) {
-                    STEP_PROVE -> MigrationAdvanceStep.Prove(id)
-                    STEP_BROADCAST -> MigrationAdvanceStep.Broadcast(id)
-                    STEP_REBUILD -> MigrationAdvanceStep.Rebuild(id)
-                    STEP_COMPLETE -> MigrationAdvanceStep.Complete
-                    STEP_REPLAN -> MigrationAdvanceStep.Replan
-                    STEP_REEVALUATE -> MigrationAdvanceStep.Reevaluate
-                    else -> MigrationAdvanceStep.Waiting
-                }
+                val step =
+                    when (arr.getOrElse(0) { STEP_WAITING }) {
+                        STEP_PROVE -> {
+                            MigrationAdvanceStep.Prove(id)
+                        }
+
+                        STEP_BROADCAST -> {
+                            MigrationAdvanceStep.Broadcast(id)
+                        }
+
+                        STEP_REBUILD -> {
+                            MigrationAdvanceStep.Rebuild(id)
+                        }
+
+                        STEP_COMPLETE -> {
+                            MigrationAdvanceStep.Complete
+                        }
+
+                        STEP_REPLAN -> {
+                            // Every consumer of nextStep() gets a superseded migration automatically,
+                            // not just the app worker's specific Replan handler.
+                            migrationBackend.markMigrationSuperseded(dbDataPath, network, account)
+                            MigrationAdvanceStep.Replan
+                        }
+
+                        STEP_REEVALUATE -> {
+                            MigrationAdvanceStep.Reevaluate
+                        }
+
+                        else -> {
+                            MigrationAdvanceStep.Waiting
+                        }
+                    }
+                MigrationAdvanceResult(step = step, next = parsePeek(arr))
             }
         }
 
+    /**
+     * `arr[2]`/`arr[3]` — the engine's own peek-ahead (`Advance::next`, see [MigrationPeek]'s
+     * doc), `-1`/`-1` when it has nothing height-schedulable to report. Same `STEP_*` encoding as
+     * `arr[0]`.
+     */
+    @Suppress("MagicNumber")
+    private fun parsePeek(arr: LongArray): MigrationPeek? {
+        val height = arr.getOrElse(2) { -1L }
+        if (height < 0) return null
+        val kind =
+            when (arr.getOrElse(3) { -1L }) {
+                STEP_PROVE -> MigrationStepKind.PROVE
+                STEP_BROADCAST -> MigrationStepKind.BROADCAST
+                STEP_REBUILD -> MigrationStepKind.REBUILD
+                STEP_REPLAN -> MigrationStepKind.REPLAN
+                STEP_REEVALUATE -> MigrationStepKind.REEVALUATE
+                STEP_COMPLETE -> MigrationStepKind.COMPLETE
+                else -> MigrationStepKind.WAITING
+            }
+        return MigrationPeek(height = height, kind = kind)
+    }
+
     override suspend fun syncWakeupSchedule(): List<MigrationSyncWakeup>? =
-        logged("syncWakeupSchedule") {
+        loggedRead("syncWakeupSchedule") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend
@@ -746,11 +1100,11 @@ internal class OrchardMigrationSdkImpl(
                 ?.map { row -> MigrationSyncWakeup(height = row[0], covers = row.drop(1)) }
         }
 
-    override suspend fun applySignature(transferId: Long, signedPczt: ByteArray): Boolean =
+    override suspend fun applySignature(transferId: Long, signedPczt: Pczt): Boolean =
         logged("applySignature") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.applySignature(dbDataPath, network, account, transferId, signedPczt)
+            migrationBackend.applySignature(dbDataPath, network, account, transferId, signedPczt.toByteArray())
         }
 
     override suspend fun keystoneSigningRoundBudget(): KeystoneSigningRoundBudget =
@@ -763,7 +1117,7 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun getMigrationSummary(): MigrationSummary? =
-        logged("getMigrationSummary") {
+        loggedRead("getMigrationSummary") {
             val dbDataPath = dbDataPath()
             // No account needed — the migration tables are wallet-scoped. An EMPTY array means no
             // migration data / no mined transfer yet; map it to null so the screen zero-fills.
@@ -783,7 +1137,7 @@ internal class OrchardMigrationSdkImpl(
     // ── Dust locking ─────────────────────────────────────────────────────────
 
     override suspend fun migrationDustThresholdZatoshi(): Long =
-        logged("migrationDustThresholdZatoshi") {
+        loggedRead("migrationDustThresholdZatoshi") {
             migrationBackend.migrationDustThresholdZatoshi()
         }
 
@@ -807,20 +1161,31 @@ internal class OrchardMigrationSdkImpl(
 
     private suspend fun isSyncBlockedNow(preferenceProvider: PreferenceProvider): Boolean {
         val dbDataPath = dbDataPath()
+        val estimatedTip = chainTipEstimator.estimatedTip()
         // Same mutex as logged() — this poll must never read the wallet DB at the same moment a
         // real migration operation (propose/sign/execute) does; see logged()'s doc comment.
-        val overdue =
+        //
+        // Driven by the same guarded `nextStep` read the worker loop itself uses (two-tip:
+        // broadcast timing at the ESTIMATED tip, proving/rebuild at the SCANNED tip — see
+        // nextStep()'s doc), not a blanket "does anything exist overdue anywhere in the plan"
+        // scan. hasOverdueTransfers() without an estimated tip answers a plan-wide existence
+        // question that's essentially permanently true once migration starts on a fast chain
+        // (e.g. testnet) — starving syncRun()'s syncToTip() call forever. What sync actually
+        // needs to know is narrower: is a transfer ready to BROADCAST right now (so the privacy
+        // buffer around it isn't disturbed by a concurrent sync)? Prove/Rebuild readiness doesn't
+        // need sync to back off — those are local, not a Tor-correlatable network action.
+        val readyToBroadcast =
             MIGRATION_DB_ACCESS_MUTEX.withLock {
                 // No account was bound at construction (the WalletCoordinatorFactory gate case,
                 // evaluated before any account is chosen) — check every account in the wallet rather
-                // than assuming one, so sync stays blocked if *any* of them has an overdue migration
-                // transfer.
+                // than assuming one, so sync stays blocked if *any* of them has a transfer ready to
+                // broadcast right now.
                 if (account != null) {
-                    migrationBackend.hasOverdueTransfers(dbDataPath, network, account)
+                    isReadyToBroadcast(dbDataPath, account, estimatedTip)
                 } else {
                     migrationBackend
                         .getAccountUuids(dbDataPath, network)
-                        .any { migrationBackend.hasOverdueTransfers(dbDataPath, network, it) }
+                        .any { isReadyToBroadcast(dbDataPath, it, estimatedTip) }
                 }
             }
         val nowEpochSeconds = Clock.System.now().epochSeconds
@@ -831,10 +1196,19 @@ internal class OrchardMigrationSdkImpl(
             preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)?.toLongOrNull()
                 ?: 0L
         val broadcastInFlight = isBroadcastInFlight(nowEpochSeconds, inFlightUntilEpochSeconds)
-        return overdue || bufferActive || broadcastInFlight
+        return readyToBroadcast || bufferActive || broadcastInFlight
     }
 
-    // Time passing alone can flip "overdue"/"buffer elapsed" even with no data change, so
+    private suspend fun isReadyToBroadcast(
+        dbDataPath: String,
+        account: AccountUuid,
+        estimatedTip: Long
+    ): Boolean =
+        migrationBackend.nextStep(dbDataPath, network, account, estimatedTip)?.let { arr ->
+            arr.getOrElse(0) { STEP_WAITING } == STEP_BROADCAST
+        } ?: false
+
+    // Time passing alone can flip "ready to broadcast"/"buffer elapsed" even with no data change, so
     // isSyncBlocked() needs to re-evaluate periodically, not just when the resume-at timestamp
     // itself changes.
     private fun tickerFlow(interval: Duration): Flow<Unit> =
@@ -852,6 +1226,9 @@ internal class OrchardMigrationSdkImpl(
      * have no equivalent of (the engine tracks its own state via `record_transfer_result`/
      * `next_due_transfer`) — routing through them would silently register an untracked entry in
      * `PendingSubmitPlanStore` that the ordinary resubmit loop could never find.
+     *
+     * Delegates to [broadcaster] when one was supplied; production never supplies one (see that
+     * property's doc).
      */
     private suspend fun broadcast(
         rawTx: ByteArray,
@@ -859,6 +1236,7 @@ internal class OrchardMigrationSdkImpl(
         useTor: Boolean,
         endpoint: LightWalletEndpoint,
     ): TransactionSubmitResult {
+        broadcaster?.let { return it.submit(rawTx, txId, useTor, endpoint) }
         val torClient = if (useTor) torClientLazy.getInstance(Unit) else null
         val client = WalletClientFactory(context, torClient?.let { resolved -> LazyTorClient { resolved } }).create(endpoint)
         return try {
@@ -874,6 +1252,38 @@ internal class OrchardMigrationSdkImpl(
         }
     }
 
+    /**
+     * A tip obtained by actually talking to the network right now — the shape
+     * `report_broadcast_failure`'s "observed_tip" contract requires (state.rs's doc: "the
+     * application has such a tip even when its wallet is far behind — it talked to the network in
+     * order to broadcast"). [ChainTipEstimator]'s wall-clock extrapolation does NOT satisfy this —
+     * confirmed during design (spec §5) that using it risks over-shooting and prolonging the
+     * Reevaluate freeze. Called on a FRESH client/session (the one held by [broadcast] is already
+     * disposed by the time the caller can react to its result), on the same [endpoint] and Tor
+     * preference as the rejected broadcast.
+     *
+     * Returns -1 if the follow-up call itself fails — [commitBroadcastOutcome]'s caller must treat
+     * that as "no tip available" (the Rust side then falls back to the wallet's own scanned tip),
+     * not retry indefinitely for one.
+     */
+    private suspend fun fetchObservedTipAfterRejection(
+        useTor: Boolean,
+        endpoint: LightWalletEndpoint,
+    ): Long {
+        val torClient = if (useTor) torClientLazy.getInstance(Unit) else null
+        val client = WalletClientFactory(context, torClient?.let { resolved -> LazyTorClient { resolved } }).create(endpoint)
+        val sdkFlags = SdkFlags(isTorEnabled = useTor && torClient != null, isExchangeRateEnabled = false)
+        return try {
+            parseObservedTipResponse(
+                client.getLatestBlockHeight(sdkFlags ifTor ServiceMode.Group("migration-observed-tip"))
+            )
+        } catch (e: Exception) {
+            -1L
+        } finally {
+            withContext(NonCancellable) { client.dispose() }
+        }
+    }
+
     private suspend fun migrationTorDir(context: Context): File =
         File(Files.getZcashNoBackupSubdirectory(context), MIGRATION_TOR_SUBDIR)
 
@@ -883,6 +1293,21 @@ internal class OrchardMigrationSdkImpl(
         // migration operation never touch the wallet database at the same moment. See logged()'s
         // doc comment for the full rationale.
         val MIGRATION_DB_ACCESS_MUTEX = Mutex()
+
+        // Diagnostic-only label of whichever operation currently holds [MIGRATION_DB_ACCESS_MUTEX]
+        // — see [logged]'s timing/attribution log lines. Never read for control flow.
+        @Volatile
+        var currentHolder: String? = null
+
+        /**
+         * Serializes the NETWORK phase of the three broadcasting methods against each other —
+         * without holding [MIGRATION_DB_ACCESS_MUTEX], which a 60 s Tor submit used to occupy for
+         * its whole duration. Shared across instances for the same reason as the DB mutex.
+         *
+         * Never held together with [MIGRATION_DB_ACCESS_MUTEX]: the phases are flat, so there is no
+         * lock ordering to get wrong.
+         */
+        val BROADCAST_MUTEX = Mutex()
 
         val SYNC_BLOCK_TICK = 15.seconds
 
@@ -907,6 +1332,19 @@ internal class OrchardMigrationSdkImpl(
         // being an independent, per-migration setting rather than the app's global Tor toggle.
         const val MIGRATION_TOR_SUBDIR = "tor_migration"
     }
+}
+
+/**
+ * The network send of an already-extracted migration transaction, behind an interface purely so it
+ * can be substituted in unit tests (see [OrchardMigrationSdkImpl]'s `broadcaster` parameter).
+ */
+internal fun interface MigrationTransactionBroadcaster {
+    suspend fun submit(
+        rawTx: ByteArray,
+        txId: ByteArray,
+        useTor: Boolean,
+        endpoint: LightWalletEndpoint,
+    ): TransactionSubmitResult
 }
 
 /**
@@ -957,6 +1395,39 @@ internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Bo
         description?.lowercase()?.let { text -> DUPLICATE_REJECTION_MARKERS.any { text.contains(it) } } == true
 
 /**
+ * Pure decision core for [OrchardMigrationSdkImpl.fetchObservedTipAfterRejection]'s network
+ * response — extracted so the exact `Response<BlockHeightUnsafe>` success/failure mapping is
+ * unit-testable without a network stack. `-1` for anything other than [Response.Success] (a gRPC
+ * failure, a Tor failure, or the JVM-level Exception the caller's own `catch` handles) — the same
+ * "no tip available" sentinel `report_broadcast_failure`'s tag=4 path treats as "fall back to the
+ * wallet's own scanned tip" (see `recordTransferResultNative`'s `4 =>` arm in migration.rs).
+ */
+internal fun parseObservedTipResponse(response: Response<BlockHeightUnsafe>): Long =
+    when (response) {
+        is Response.Success -> response.result.value
+        else -> -1L
+    }
+
+/**
+ * The tag actually persisted by `recordTransferResult` for a [MappedTransferResult.tag]. Overrides
+ * tag=2 (InvalidNote — a genuinely-unknown non-gRPC rejection, per [classifyNonGrpcFailure]) to
+ * tag=4 (AwaitingReevaluation): the Rust layer then reports it via `report_broadcast_failure`,
+ * withholding the transaction pending reevaluation, instead of tag=2's old behavior of terminally
+ * failing the whole pre-signed plan. Every other tag passes through unchanged. Top-level and
+ * `internal` so this reclassification is unit-testable without a network stack — see
+ * [OrchardMigrationSdkImpl.commitBroadcastOutcome], the one call site that uses it.
+ */
+internal fun recordedResultTag(mappedTag: Int): Int =
+    if (mappedTag == RESULT_TAG_INVALID_NOTE) RESULT_TAG_AWAITING_REEVALUATION else mappedTag
+
+// `record_transfer_result`'s InvalidNote input tag ([mapSubmitResult]'s classification for a
+// genuinely-unknown non-gRPC rejection) and the tag it is reclassified to before being persisted —
+// mirroring migration.rs's `recordTransferResultNative` match arms (2 => terminal Fail, 4 =>
+// report_broadcast_failure/AwaitingReevaluation).
+private const val RESULT_TAG_INVALID_NOTE = 2
+private const val RESULT_TAG_AWAITING_REEVALUATION = 4
+
+/**
  * Maps a raw submission outcome to the engine's [TransferResult], both as the public value and
  * as the scalar params `record_transfer_result` needs. Used by [OrchardMigrationSdkImpl.submitNoteSplit],
  * [OrchardMigrationSdkImpl.executeNextPendingTransfer], and the immediate send-max path.
@@ -973,6 +1444,17 @@ internal fun classifyNonGrpcFailure(description: String?, minedHeight: Long): Bo
  * genuinely-unknown non-network rejection can't yet be told apart from an expired anchor and is
  * treated as [TransferResult.InvalidNote]. Disambiguating those two needs either extending
  * `PreparedTransfer` or the scanned-tip expiry filter — flagged as a follow-up, not a blocker.
+ *
+ * This function itself still returns tag=2 for a genuinely-unknown rejection — it is a pure
+ * function over [TransactionSubmitResult] with no network access, so it cannot fetch the observed
+ * tip `report_broadcast_failure` needs. [OrchardMigrationSdkImpl.executeNextPendingTransfer]'s call
+ * site is the ONE place that reclassifies a tag=2 result to tag=4 (AwaitingReevaluation) before
+ * recording it, once it has fetched that tip via [OrchardMigrationSdkImpl.fetchObservedTipAfterRejection]
+ * — see [OrchardMigrationSdkImpl.commitBroadcastOutcome]. [OrchardMigrationSdkImpl.submitNoteSplit]
+ * and [OrchardMigrationSdkImpl.storeSignedNoteSplitPczt] (the other two callers) are deliberately
+ * NOT rewired: they are foreground, user-initiated signing flows outside the background broadcast
+ * loop this task's spec scoped the behavior change to, and still record a genuinely-unknown
+ * rejection as a terminal tag=2 failure.
  */
 private fun mapSubmitResult(
     result: TransactionSubmitResult,
@@ -982,7 +1464,7 @@ private fun mapSubmitResult(
     when (result) {
         is TransactionSubmitResult.Success -> {
             MappedTransferResult(
-                transferResult = TransferResult.Success(result.txIdString()),
+                transferResult = TransferResult.Success(TransactionId.new(result.txId)),
                 tag = 0,
                 retryable = false,
                 txIdBytes = result.txId.byteArray,
@@ -1004,7 +1486,7 @@ private fun mapSubmitResult(
                 // as Success (tag=0) so the pre-signed plan is not terminally failed.
                 classifyNonGrpcFailure(result.description, minedHeight) -> {
                     MappedTransferResult(
-                        TransferResult.Success(preparedTxid.toHexReversed()),
+                        TransferResult.Success(TransactionId.new(preparedTxid)),
                         tag = 0,
                         retryable = false,
                         txIdBytes = preparedTxid,
@@ -1242,8 +1724,8 @@ private fun JniKeystoneBatchDecodeResult.toPublic(): KeystoneBatchDecodeResult =
 
 private fun JniKeystoneBatchSignedPczts.toPublic(): KeystoneBatchSignedPczts =
     KeystoneBatchSignedPczts(
-        splitSignedPczt = splitSignedPczt,
-        transferSignedPczts = transferSignedPczts.toList(),
+        splitSignedPczt = splitSignedPczt?.let(::Pczt),
+        transferSignedPczts = transferSignedPczts.map(::Pczt),
     )
 
 private fun JniMigrationState.toPublic(): MigrationState =

@@ -1,5 +1,6 @@
 package com.zodl.slipstream.internal.db
 
+import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionOverview
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.onStart
 internal class TransactionsController(
     private val reader: SlipstreamTransactionReader,
     private val engine: SlipstreamEngine,
+    private val typesafeBackend: TypesafeBackend,
 ) {
     @OptIn(ExperimentalCoroutinesApi::class)
     val allTransactions =
@@ -49,9 +51,27 @@ internal class TransactionsController(
 
     private fun isRecovering(): Boolean = engine.lastSnapshot.value?.isRecovering ?: false
 
-    private fun latestHeight(): BlockHeight? =
-        engine.lastSnapshot.value
-            ?.chainTip
-            ?.takeIf { it > 0 }
-            ?.let(BlockHeight::new)
+    /**
+     * MOB-1664: [SlipstreamEngine.lastSnapshot] is per-engine-instance state that starts back at
+     * `null` every time the synchronizer is rebuilt (e.g. an automatic server switch tears down
+     * and reconstructs the whole engine via `WalletCoordinator`'s `flatMapLatest`) - unlike the
+     * legacy `SdkSynchronizer.getTransactions()`, which always had `backend.getMaxScannedHeight()`
+     * as a DB-backed fallback for exactly this gap. That fallback was lost when this path was
+     * ported; restoring it here (rather than trying to seed the new engine instance from the old
+     * one's last-known height) keeps every account's confirmation math tied to its own DB file,
+     * so it can't leak state across a network/account switch and stays reorg-safe (a reorged-out
+     * tx's `minedHeight` is cleared in the DB, so `computeTransactionState` still won't report it
+     * Confirmed even once `latestHeight` resolves again).
+     */
+    private suspend fun latestHeight(): BlockHeight? =
+        resolveLiveChainTip(engine.lastSnapshot.value?.chainTip) ?: typesafeBackend.getMaxScannedHeight()
 }
+
+/**
+ * MOB-1664: the live-height half of [TransactionsController.latestHeight]'s decision, pulled out
+ * as a pure function so the "is this snapshot's chainTip trustworthy" check is directly testable
+ * without a live [SlipstreamEngine]/native handle. Returns `null` for a fresh engine instance
+ * (chainTip absent) or a degraded snapshot (chainTip <= 0), signalling the caller to fall back to
+ * the DB-backed scanned height instead of treating the raw reading as ground truth.
+ */
+internal fun resolveLiveChainTip(chainTip: Long?): BlockHeight? = chainTip?.takeIf { it > 0 }?.let(BlockHeight::new)

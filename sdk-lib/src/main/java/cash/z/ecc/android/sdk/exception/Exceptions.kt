@@ -323,7 +323,7 @@ sealed class InitializeException(
     ) : InitializeException(
             "Failed to import new account based on UFVK because its checkpoints are not yet " +
                 "in sync across shielded pools. This is usually transient and resolves once " +
-                "more blocks are scanned; retry the import later. Cause: ${cause?.message}",
+                "more blocks are scanned; retry the import later.",
             cause
         )
 
