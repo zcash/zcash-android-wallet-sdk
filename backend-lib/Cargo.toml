@@ -189,6 +189,10 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
+# `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
+# published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
+# the rest of the released family — the old git pin was not dropped by accident.
+#
 # `zcash_voting` is deliberately absent here: 2.0.0-rc.3 resolves from crates.io already
 # pinned to the Ironwood librustzcash family, so it needs no patch to avoid the duplicate
 # Zcash crates of issue #2056.
