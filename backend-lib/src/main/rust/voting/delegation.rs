@@ -988,6 +988,7 @@ mod tests {
             vote_round_id: "round-1".to_string(),
             spend_auth_sig,
             sighash,
+            tx1_effects: vec![8; voting::tx1::TX1_EFFECTS_LEN],
         }
     }
 }
