@@ -20,6 +20,7 @@ import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommittedVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
@@ -498,6 +499,10 @@ internal interface VotingDbBackend {
         shareIndex: Int,
         newUrls: List<String>
     )
+
+    suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase>
+
+    suspend fun resetVotingSessionState(roundId: String)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -830,6 +835,12 @@ private class RustVotingDbBackend(
         shareIndex: Int,
         newUrls: List<String>
     ) = votingDb.addSentServers(roundId, bundleIndex, proposalId, shareIndex, newUrls)
+
+    override suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase> =
+        votingDb.delegationPhases(roundId)
+
+    override suspend fun resetVotingSessionState(roundId: String) =
+        votingDb.resetVotingSessionState(roundId)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -1193,6 +1204,12 @@ internal class TypesafeVotingDbImpl(
         shareIndex: Int,
         newUrls: List<String>
     ) = votingDb.addSentServers(roundId, bundleIndex, proposalId, shareIndex, newUrls)
+
+    override suspend fun delegationPhases(roundId: String): List<JniDelegationPhase> =
+        votingDb.delegationPhases(roundId).asList()
+
+    override suspend fun resetVotingSessionState(roundId: String) =
+        votingDb.resetVotingSessionState(roundId)
 }
 
 internal fun JniGovernancePczt.toGovernancePcztResult(): GovernancePcztResult {

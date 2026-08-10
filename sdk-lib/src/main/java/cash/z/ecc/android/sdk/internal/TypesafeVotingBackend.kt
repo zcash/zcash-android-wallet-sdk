@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
@@ -334,6 +335,18 @@ internal interface TypesafeVotingDb {
         shareIndex: Int,
         newUrls: List<String>
     )
+
+    /**
+     * The canonical, per-bundle delegation phase for every bundle with recorded progress in
+     * [roundId] — see [cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase]'s doc.
+     */
+    suspend fun delegationPhases(roundId: String): List<JniDelegationPhase>
+
+    /**
+     * Clears a bundle's unsigned delegation setup fields (PCZT/rk/sighash) and any stale proof
+     * row so a subsequent construct call starts clean. Does not delete round-level state.
+     */
+    suspend fun resetVotingSessionState(roundId: String)
 }
 
 internal data class VotingNoteInfo(

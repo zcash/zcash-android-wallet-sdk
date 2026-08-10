@@ -11,6 +11,7 @@ import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommittedVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
@@ -494,6 +495,43 @@ class TypesafeVotingBackendImplTest {
             assertEquals(false, backend.buildVoteSingleShare)
             assertNotNull(backend.buildVoteProgress).onProgress(0.5)
             assertEquals(0.5, progressValue)
+        }
+
+    @Test
+    fun delegationPhases_returns_backend_result_as_list() =
+        runTest {
+            val backend = RecordingVotingDbBackend(
+                proofResult = jniDelegationProofResult(),
+                submissionResult = jniDelegationSubmissionResult(),
+                keystoneSubmissionResult = jniDelegationSubmissionResult()
+            )
+            backend.delegationPhasesResult =
+                arrayOf(
+                    JniDelegationPhase(bundleIndex = 0, phase = "proved"),
+                    JniDelegationPhase(bundleIndex = 1, phase = "prepared")
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val result = db.delegationPhases("round-1")
+
+            assertEquals(2, result.size)
+            assertEquals("proved", result[0].phase)
+            assertEquals(1, result[1].bundleIndex)
+        }
+
+    @Test
+    fun resetVotingSessionState_forwards_round_id() =
+        runTest {
+            val backend = RecordingVotingDbBackend(
+                proofResult = jniDelegationProofResult(),
+                submissionResult = jniDelegationSubmissionResult(),
+                keystoneSubmissionResult = jniDelegationSubmissionResult()
+            )
+            val db = TypesafeVotingDbImpl(backend)
+
+            db.resetVotingSessionState("round-1")
+
+            assertEquals(listOf("round-1"), backend.resetVotingSessionStateCalls)
         }
 
     @Test
@@ -1213,6 +1251,8 @@ class TypesafeVotingBackendImplTest {
         var addSentProposalId: Int? = null
         var addSentShareIndex: Int? = null
         var addSentNewUrls: List<String>? = null
+        var delegationPhasesResult: Array<JniDelegationPhase> = emptyArray()
+        var resetVotingSessionStateCalls = mutableListOf<String>()
 
         override suspend fun close() = unused()
 
@@ -1599,6 +1639,13 @@ class TypesafeVotingBackendImplTest {
             addSentProposalId = proposalId
             addSentShareIndex = shareIndex
             addSentNewUrls = newUrls
+        }
+
+        override suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase> =
+            delegationPhasesResult
+
+        override suspend fun resetVotingSessionState(roundId: String) {
+            resetVotingSessionStateCalls.add(roundId)
         }
 
         private fun unused(): Nothing = error("unused")
