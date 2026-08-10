@@ -13,18 +13,24 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_UUID_BYTES_SIZE
  * @param saplingValuePending The value in the account of all remaining received Sapling
  *        notes that either do not have sufficient confirmations to be spendable, or for
  *        which witnesses cannot yet be constructed without additional scanning.
+ * @param saplingLockedBalance The value in the account of Sapling notes the wallet sees
+ *        as committed to be spent by a transaction proposal or PCZT.
  * @param orchardVerifiedBalance The verified account balance in the Orchard pool.
  * @param orchardChangePending The value in the account of Orchard change notes that do
  *        not yet have sufficient confirmations to be spendable.
  * @param orchardValuePending The value in the account of all remaining received Orchard
  *        notes that either do not have sufficient confirmations to be spendable, or for
  *        which witnesses cannot yet be constructed without additional scanning.
+ * @param orchardLockedBalance The value in the account of Orchard notes the wallet sees
+ *        as committed to be spent by a transaction proposal or PCZT.
  * @param ironwoodVerifiedBalance The verified account balance in the Ironwood pool.
  * @param ironwoodChangePending The value in the account of Ironwood change notes that do
  *        not yet have sufficient confirmations to be spendable.
  * @param ironwoodValuePending The value in the account of all remaining received Ironwood
  *        notes that either do not have sufficient confirmations to be spendable, or for
  *        which witnesses cannot yet be constructed without additional scanning.
+ * @param ironwoodLockedBalance The value in the account of Ironwood notes the wallet sees
+ *        as committed to be spent by a transaction proposal or PCZT.
  * @param unshieldedBalance The total account balance in the transparent pool,
  *        including unconfirmed funds, that must be shielded before use.
  * @throws IllegalArgumentException if the values are inconsistent.
@@ -36,12 +42,15 @@ class JniAccountBalance(
     val saplingVerifiedBalance: Long,
     val saplingChangePending: Long,
     val saplingValuePending: Long,
+    val saplingLockedBalance: Long,
     val orchardVerifiedBalance: Long,
     val orchardChangePending: Long,
     val orchardValuePending: Long,
+    val orchardLockedBalance: Long,
     val ironwoodVerifiedBalance: Long,
     val ironwoodChangePending: Long,
     val ironwoodValuePending: Long,
+    val ironwoodLockedBalance: Long,
     val unshieldedBalance: Long,
 ) {
     init {
@@ -57,6 +66,9 @@ class JniAccountBalance(
         require(saplingValuePending >= MIN_INCLUSIVE) {
             "Sapling value pending $saplingValuePending must by equal or above $MIN_INCLUSIVE"
         }
+        require(saplingLockedBalance >= MIN_INCLUSIVE) {
+            "Sapling locked balance $saplingLockedBalance must by equal or above $MIN_INCLUSIVE"
+        }
         require(orchardVerifiedBalance >= MIN_INCLUSIVE) {
             "Orchard verified balance $orchardVerifiedBalance must by equal or above $MIN_INCLUSIVE"
         }
@@ -66,6 +78,9 @@ class JniAccountBalance(
         require(orchardValuePending >= MIN_INCLUSIVE) {
             "Orchard value pending $orchardValuePending must by equal or above $MIN_INCLUSIVE"
         }
+        require(orchardLockedBalance >= MIN_INCLUSIVE) {
+            "Orchard locked balance $orchardLockedBalance must by equal or above $MIN_INCLUSIVE"
+        }
         require(ironwoodVerifiedBalance >= MIN_INCLUSIVE) {
             "Ironwood verified balance $ironwoodVerifiedBalance must by equal or above $MIN_INCLUSIVE"
         }
@@ -74,6 +89,9 @@ class JniAccountBalance(
         }
         require(ironwoodValuePending >= MIN_INCLUSIVE) {
             "Ironwood value pending $ironwoodValuePending must by equal or above $MIN_INCLUSIVE"
+        }
+        require(ironwoodLockedBalance >= MIN_INCLUSIVE) {
+            "Ironwood locked balance $ironwoodLockedBalance must by equal or above $MIN_INCLUSIVE"
         }
         require(unshieldedBalance >= MIN_INCLUSIVE) {
             "Unshielded balance $unshieldedBalance must by equal or above $MIN_INCLUSIVE"

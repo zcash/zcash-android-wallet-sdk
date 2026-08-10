@@ -2,7 +2,9 @@
 
 package cash.z.ecc.android.sdk
 
+import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.flow.Flow
 import kotlin.time.Duration
@@ -186,8 +188,8 @@ data class KeystoneBatchDecodeResult(
  * their transfer ids) to [OrchardMigrationSdk.storeSignedSchedulePczts].
  */
 data class KeystoneBatchSignedPczts(
-    val splitSignedPczt: ByteArray?,
-    val transferSignedPczts: List<ByteArray>
+    val splitSignedPczt: Pczt?,
+    val transferSignedPczts: List<Pczt>
 )
 
 /**
@@ -345,6 +347,37 @@ sealed class MigrationAdvanceStep {
     }
 }
 
+/** The kind of step [MigrationPeek] predicts — [MigrationAdvanceStep]'s variants without a transaction id. */
+enum class MigrationStepKind {
+    PROVE,
+    BROADCAST,
+    REBUILD,
+    REPLAN,
+    REEVALUATE,
+    WAITING,
+    COMPLETE,
+}
+
+/**
+ * The engine's own peek-ahead at the step SUBSEQUENT to the one just returned by [OrchardMigrationSdk.nextStep]
+ * — assuming that step is executed and recorded. ADVISORY: [height] is a floor, not an appointment
+ * (dependencies still have to mine, and the wake-up's own next `nextStep()` call verifies — and may
+ * displace — the step), and it holds only as of the call that returned it, so a later call's peek
+ * supersedes it. `MigrationDriveOnce.reArm` folds [height] in as an ADDITIONAL wake-height
+ * candidate alongside [OrchardMigrationSdk.syncWakeupSchedule] and the next unsent due height
+ * (`min` of all three) — it does not yet replace that merge outright.
+ */
+data class MigrationPeek(
+    val height: Long,
+    val kind: MigrationStepKind,
+)
+
+/** [step] paired with the engine's own [next] peek-ahead — see [MigrationPeek]'s doc for its semantics. */
+data class MigrationAdvanceResult(
+    val step: MigrationAdvanceStep,
+    val next: MigrationPeek?,
+)
+
 /** One sync/prove wake-up of the engine's schedule: wake at [height], prove [covers]. */
 data class MigrationSyncWakeup(
     val height: Long,
@@ -369,7 +402,7 @@ data class UnsignedPreparationPczt(
     val id: Long,
     val layer: Int,
     val index: Int,
-    val pcztBytes: ByteArray,
+    val pczt: Pczt,
 )
 
 /**
@@ -460,7 +493,7 @@ sealed class AttentionReason {
  */
 sealed class TransferResult {
     data class Success(
-        val txId: String
+        val txId: TransactionId
     ) : TransferResult()
 
     /**
@@ -528,6 +561,21 @@ interface OrchardMigrationSdk {
      */
     suspend fun getMigrationState(): MigrationState
 
+    /**
+     * Same derivation as [getMigrationState], but WITHOUT the mark-mined promotion/write-back
+     * that the engine normally performs as a side effect of reading state (`read_reconciled` on
+     * the Rust side) — a verified-pure read with no mutual-exclusion requirement (2026-08-07
+     * read/write-separation design, `spec/2026-08-07-migration-read-write-separation-design.md`).
+     *
+     * For UI/gate code that only wants to *display or gate on* the current state: whatever
+     * `Broadcast`→`Mined` promotion hasn't been persisted yet by the drive loop's own reconcile
+     * pass simply isn't reflected here, and self-corrects on the drive loop's next cycle (the
+     * same staleness bound already accepted for the Progress screen's live readout). Never use
+     * this where the caller genuinely needs the freshest post-reconcile view for correctness —
+     * that's what [getMigrationState] is for, and it correctly requires the drive loop's mutex.
+     */
+    suspend fun getMigrationStateUnreconciled(): MigrationState
+
     /** Convenience accessor for progress details when state is InProgress. */
     suspend fun getMigrationProgress(): MigrationProgress?
 
@@ -589,14 +637,14 @@ interface OrchardMigrationSdk {
      * [storeSignedNoteSplitPczt]. Throws if [proposal]'s plan has been superseded by a later
      * propose/prepare call (see [NoteSplitProposal.proposalHandle]).
      */
-    suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): ByteArray
+    suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): Pczt
 
     /**
      * Accepts the externally-signed note-split PCZT, finalizes it, and broadcasts it — the
      * back half of [createUnsignedNoteSplitPczt], mirroring [submitNoteSplit]'s composition
      * (extract → broadcast via the existing submission path → record result) exactly.
      */
-    suspend fun storeSignedNoteSplitPczt(signedPczt: ByteArray, options: NetworkPrivacyOptions): TransferResult
+    suspend fun storeSignedNoteSplitPczt(signedPczt: Pczt, options: NetworkPrivacyOptions): TransferResult
 
     /**
      * Builds one unsigned PCZT per transfer of `schedule` for an external signer — the
@@ -608,7 +656,7 @@ interface OrchardMigrationSdk {
      * placeholder-witness scheme [signAndStoreMigrationSchedule] does — callers do not need to
      * wait for the note-split to confirm on-chain before calling this either.
      */
-    suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, ByteArray>>
+    suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, Pczt>>
 
     /**
      * Every PREPARATION transaction's unsigned, ZIP32-annotated PCZT — the WHOLE note-split tree.
@@ -628,7 +676,7 @@ interface OrchardMigrationSdk {
      * role): [finalizeReadyTransfers] later completes any transfer that was staged awaiting proof,
      * exactly as it already does for the software-signing path.
      */
-    suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, ByteArray>>)
+    suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, Pczt>>)
 
     /**
      * Builds the animated multi-part QR frames for one combined Keystone batch-signing request
@@ -641,8 +689,8 @@ interface OrchardMigrationSdk {
      */
     suspend fun buildKeystoneSignBatchQrParts(
         requestId: ByteArray,
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         maxFragmentLen: Int
     ): List<String>
 
@@ -667,8 +715,8 @@ interface OrchardMigrationSdk {
      * bytes for each, ready for [storeSignedNoteSplitPczt]/[storeSignedSchedulePczts].
      */
     suspend fun applyKeystoneBatchSignatures(
-        splitUnsignedPczt: ByteArray?,
-        transferUnsignedPczts: List<ByteArray>,
+        splitUnsignedPczt: Pczt?,
+        transferUnsignedPczts: List<Pczt>,
         batchSignResponse: ByteArray
     ): KeystoneBatchSignedPczts
 
@@ -924,13 +972,16 @@ interface OrchardMigrationSdk {
 
     /**
      * The engine state machine's single "what now?" answer (guarded `next_step`): the app worker
-     * performs exactly this and asks again. `null` when no migration is in progress. Broadcast
-     * timing uses the estimated (real) chain tip — a proved, due transfer returns
-     * [MigrationAdvanceStep.Broadcast] directly, broadcast-first over a ready prove (retention-
-     * justified); proving stays on the scanned tip (a witness needs a real settled checkpoint).
-     * Broadcast execution itself stays [executeNextPendingTransfer].
+     * performs exactly [MigrationAdvanceResult.step] and asks again. `null` when no migration is
+     * in progress. Broadcast timing uses the estimated (real) chain tip — a proved, due transfer
+     * returns [MigrationAdvanceStep.Broadcast] directly, broadcast-first over a ready prove
+     * (retention-justified); proving stays on the scanned tip (a witness needs a real settled
+     * checkpoint). Broadcast execution itself stays [executeNextPendingTransfer].
+     *
+     * [MigrationAdvanceResult.next] is the engine's own peek-ahead at the SUBSEQUENT step — see
+     * [MigrationPeek]'s doc — from the same call, no extra round trip.
      */
-    suspend fun nextStep(): MigrationAdvanceStep?
+    suspend fun nextStep(): MigrationAdvanceResult?
 
     /**
      * The engine's minimal sync/prove wake-up schedule (windows, minimality, jitter,
@@ -944,7 +995,7 @@ interface OrchardMigrationSdk {
      * engine's `apply_signature` — the state-machine contract for the Keystone flow. Returns
      * whether the state changed.
      */
-    suspend fun applySignature(transferId: Long, signedPczt: ByteArray): Boolean
+    suspend fun applySignature(transferId: Long, signedPczt: Pczt): Boolean
 
     /**
      * The engine's Keystone signing-round budget ([KeystoneSigningRoundBudget]) — how many TOTAL

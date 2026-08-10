@@ -141,4 +141,184 @@ class TransactionOverviewCursorTest {
         assertTrue(overview.isShielding)
         assertEquals(TransactionState.Pending, overview.transactionState)
     }
+
+    /**
+     * Shape of a row from `v_transactions_with_pending_migrations`'s migration branch: no
+     * `raw` (not broadcast yet), no `mined_height`, a real `expiry_height`, `fee_paid` present
+     * (unlike an ordinary unbroadcast send, which has none yet either), and a real
+     * `zip318Kind`. Locks in that the existing null-safe mapping needs no changes for
+     * z/wt/migration_fixes/spec/2026-08-06-activity-pending-migrations-plan.md.
+     */
+    @Test
+    fun migration_transfer_pending_row_maps_to_pending_state_with_transfer_kind() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row =
+                    SlipstreamTransactionRow(
+                        txId = ByteArray(32) { 5 },
+                        minedHeight = null,
+                        expiryHeight = 2_500_000,
+                        txIndex = null,
+                        raw = null,
+                        accountBalanceDelta = -1_000,
+                        totalSpent = 500_000,
+                        totalReceived = 499_000,
+                        feePaid = 1_000,
+                        hasChange = false,
+                        sentNoteCount = 1,
+                        receivedNoteCount = 1,
+                        memoCount = 0,
+                        blockTime = null,
+                        isShielding = false,
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 3 // Zip318Kind.TRANSFER
+                    ),
+                latestHeight = BlockHeight.new(2_000_000)
+            )
+
+        assertTrue(overview.isSentTransaction)
+        assertNull(overview.raw)
+        assertNull(overview.minedHeight)
+        assertEquals(TransactionState.Pending, overview.transactionState)
+        assertEquals(cash.z.ecc.android.sdk.model.Zip318Kind.TRANSFER, overview.zip318Kind)
+    }
+
+    /**
+     * MOB-1665: an Expired transaction with no real block_time (never mined, so nothing in the
+     * `blocks` table joins to it) used to reach the UI as a null timestamp, sorting as if it
+     * happened at the end of today (GetActivitiesUseCase.kt's `?: endOfDay` fallback) no matter
+     * how long ago it actually expired. Estimated from the block-height gap to the known chain
+     * tip instead, at the fixed 75s/block protocol target.
+     */
+    @Test
+    fun expired_transaction_with_no_block_time_gets_an_estimated_timestamp() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row =
+                    SlipstreamTransactionRow(
+                        txId = ByteArray(32) { 7 },
+                        minedHeight = null,
+                        expiryHeight = 100,
+                        txIndex = null,
+                        raw = null,
+                        accountBalanceDelta = -1,
+                        totalSpent = 1,
+                        totalReceived = 0,
+                        feePaid = null,
+                        hasChange = false,
+                        sentNoteCount = 1,
+                        receivedNoteCount = 0,
+                        memoCount = 0,
+                        blockTime = null,
+                        isShielding = false,
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 0
+                    ),
+                latestHeight = BlockHeight.new(200),
+                nowEpochSeconds = 1_800_000_000L
+            )
+
+        assertEquals(TransactionState.Expired, overview.transactionState)
+        // 100 blocks past expiry, at 75s/block = 7_500s ago.
+        assertEquals(1_800_000_000L - 7_500L, overview.blockTimeEpochSeconds)
+    }
+
+    /** A real block_time on the row is always used verbatim — the estimate is a fallback only. */
+    @Test
+    fun expired_transaction_with_a_real_block_time_keeps_it_unestimated() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row =
+                    SlipstreamTransactionRow(
+                        txId = ByteArray(32) { 8 },
+                        minedHeight = null,
+                        expiryHeight = 100,
+                        txIndex = null,
+                        raw = null,
+                        accountBalanceDelta = -1,
+                        totalSpent = 1,
+                        totalReceived = 0,
+                        feePaid = null,
+                        hasChange = false,
+                        sentNoteCount = 1,
+                        receivedNoteCount = 0,
+                        memoCount = 0,
+                        blockTime = 1_650_000_000L,
+                        isShielding = false,
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 0
+                    ),
+                latestHeight = BlockHeight.new(200),
+                nowEpochSeconds = 1_800_000_000L
+            )
+
+        assertEquals(TransactionState.Expired, overview.transactionState)
+        assertEquals(1_650_000_000L, overview.blockTimeEpochSeconds)
+    }
+
+    /** A non-expired (Pending) transaction with no block_time is left null — no estimate applies. */
+    @Test
+    fun pending_transaction_with_no_block_time_is_not_estimated() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row =
+                    SlipstreamTransactionRow(
+                        txId = ByteArray(32) { 9 },
+                        minedHeight = null,
+                        expiryHeight = 300,
+                        txIndex = null,
+                        raw = null,
+                        accountBalanceDelta = -1,
+                        totalSpent = 1,
+                        totalReceived = 0,
+                        feePaid = null,
+                        hasChange = false,
+                        sentNoteCount = 1,
+                        receivedNoteCount = 0,
+                        memoCount = 0,
+                        blockTime = null,
+                        isShielding = false,
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 0
+                    ),
+                latestHeight = BlockHeight.new(200),
+                nowEpochSeconds = 1_800_000_000L
+            )
+
+        assertEquals(TransactionState.Pending, overview.transactionState)
+        assertNull(overview.blockTimeEpochSeconds)
+    }
+
+    /** Same shape, `PREPARATION` (note-split) kind — the other migration branch case. */
+    @Test
+    fun migration_preparation_pending_row_maps_to_pending_state_with_preparation_kind() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row =
+                    SlipstreamTransactionRow(
+                        txId = ByteArray(32) { 6 },
+                        minedHeight = null,
+                        expiryHeight = 2_500_100,
+                        txIndex = null,
+                        raw = null,
+                        accountBalanceDelta = -300,
+                        totalSpent = 300,
+                        totalReceived = 0,
+                        feePaid = 300,
+                        hasChange = false,
+                        sentNoteCount = 0,
+                        receivedNoteCount = 3,
+                        memoCount = 0,
+                        blockTime = null,
+                        isShielding = false,
+                        isExpiredUnmined = 0L,
+                        zip318Kind = 2 // Zip318Kind.PREPARATION
+                    ),
+                latestHeight = BlockHeight.new(2_000_000)
+            )
+
+        assertTrue(overview.isSentTransaction)
+        assertEquals(TransactionState.Pending, overview.transactionState)
+        assertEquals(cash.z.ecc.android.sdk.model.Zip318Kind.PREPARATION, overview.zip318Kind)
+    }
 }

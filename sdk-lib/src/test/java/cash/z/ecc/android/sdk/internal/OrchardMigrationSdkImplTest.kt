@@ -1,11 +1,16 @@
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
+import cash.z.ecc.android.sdk.MigrationAdvanceStep
+import cash.z.ecc.android.sdk.MigrationPeek
+import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
+import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferResult
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
+import cash.z.ecc.android.sdk.internal.model.JniUnifiedSpendingKey
 import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.internal.model.migration.JniKeystoneBatchSignedPczts
@@ -26,14 +31,20 @@ import cash.z.ecc.android.sdk.internal.storage.preference.model.entry.Preference
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
+import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import co.electriccoin.lightwallet.client.model.Response
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito.mock
@@ -41,12 +52,28 @@ import org.mockito.Mockito.`when`
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
+@Suppress("LargeClass")
 class OrchardMigrationSdkImplTest {
+    private companion object {
+        /**
+         * How long the read-liveness test waits for a pure read while a broadcast is parked. Long
+         * enough that a slow machine cannot fail it, short enough to fail fast if the read is once
+         * again queued behind the send's mutex.
+         */
+        val READ_LIVENESS_TIMEOUT = 5.seconds
+
+        /** How long each fake send holds the broadcast mutex in the serialization test. */
+        val BROADCAST_HOLD = 200.milliseconds
+    }
+
     @Test
     fun `privacy buffer is 10 minutes on mainnet and 3 on testnet`() {
         assertEquals(10.minutes, privacySyncBufferFor(ZcashNetwork.Mainnet))
@@ -84,6 +111,44 @@ class OrchardMigrationSdkImplTest {
         assertFalse(classifyNonGrpcFailure("insufficient fee", minedHeight = -1L))
         assertFalse(classifyNonGrpcFailure(null, minedHeight = -1L))
         assertFalse(classifyNonGrpcFailure("", minedHeight = -1L))
+    }
+
+    // ── Task 9: report_broadcast_failure observed_tip plumbing ──────────────
+    // recordedResultTag/parseObservedTipResponse are the two pure decision points
+    // executeNextPendingTransfer's call site wires together (see commitBroadcastOutcome /
+    // fetchObservedTipAfterRejection). Neither broadcast() nor fetchObservedTipAfterRejection()
+    // itself is unit-testable end-to-end: both construct a real WalletClientFactory/
+    // CombinedWalletClient with no injection seam in this class's constructor, so there is no way
+    // to feed executeNextPendingTransfer a controlled non-gRPC TransactionSubmitResult.Failure (a
+    // real "genuinely unknown rejection" requires a live/mocked gRPC server actually answering
+    // SendResponse with a nonzero code — this suite has no such fixture, see the entry/post-send
+    // commit cancellation tests above, whose own comments note "nothing is listening on the
+    // endpoint" produces a *gRPC-level* failure, i.e. tag=1, not tag=2/4). These two functions are
+    // exactly the reclassification/response-mapping logic pulled out to keep it testable anyway.
+
+    @Test
+    fun `recordedResultTag overrides InvalidNote (tag 2) to AwaitingReevaluation (tag 4)`() {
+        assertEquals(4, recordedResultTag(2))
+    }
+
+    @Test
+    fun `recordedResultTag passes every other tag through unchanged`() {
+        assertEquals(0, recordedResultTag(0))
+        assertEquals(1, recordedResultTag(1))
+        assertEquals(3, recordedResultTag(3))
+    }
+
+    @Test
+    fun `parseObservedTipResponse returns the height on a Success response`() {
+        val response: Response<BlockHeightUnsafe> = Response.Success(BlockHeightUnsafe(4_226_123L))
+        assertEquals(4_226_123L, parseObservedTipResponse(response))
+    }
+
+    @Test
+    fun `parseObservedTipResponse returns -1 when the follow-up call itself fails`() {
+        val response: Response<BlockHeightUnsafe> =
+            Response.Failure.Connection(cause = IllegalStateException("no route to host"))
+        assertEquals(-1L, parseObservedTipResponse(response))
     }
 
     @Test
@@ -350,7 +415,7 @@ class OrchardMigrationSdkImplTest {
             check(outcome is TransferAttemptOutcome.Executed) { "expected Executed, got $outcome" }
             val result = outcome.result
             check(result is TransferResult.Success) { "expected Success, got $result" }
-            assertEquals(prepared.txid.toHexReversed(), result.txId)
+            assertEquals(prepared.txid.toHexReversed(), result.txId.txIdString())
         }
 
     /**
@@ -476,6 +541,466 @@ class OrchardMigrationSdkImplTest {
             assertEquals(1, fakeBackend.broadcastCallCount, "the entry guard must fall through to a send here")
         }
 
+    /**
+     * Regression test for the double-sweep collapse itself: `executeNextPendingTransfer` used to
+     * call `hasOverdueTransfers()` unconditionally (a second, redundant `advance_step` sweep) on
+     * every attempt before deriving `wasOverdue` from it. Now `wasOverdue` is derived directly from
+     * `nextDueTransfer()`'s own `DUE_READY` status (see the collapse at `OrchardMigrationSdkImpl.kt`),
+     * so `hasOverdueTransfers` must never be called from this path at all — it stays reachable only
+     * from the public `hasOverdueTransfers()` method and `isSyncBlockedNow` (unaffected here).
+     *
+     * A real network broadcast is attempted (nothing is listening on the test endpoint, so it fails
+     * with a transport-level error) — immaterial to what this test asserts, matching the sibling
+     * cancellation-safety tests above, which document the same real-broadcast constraint.
+     */
+    @Test
+    fun executeNextPendingTransfer_no_longer_calls_hasOverdueTransfers() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val prepared = preparedTransfer()
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(status = 1, awaitingProofTransferId = null, prepared = prepared),
+                    // If the old double-call ever regresses, this would flip wasOverdue's would-be
+                    // source to false and the call count assertion below would fail either way.
+                    hasOverdueTransfersResult = true,
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val outcome = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+
+            check(outcome is TransferAttemptOutcome.Executed) { "expected Executed, got $outcome" }
+            assertEquals(
+                0,
+                fakeBackend.hasOverdueTransfersCallCount,
+                "executeNextPendingTransfer must derive wasOverdue from nextDueTransfer's own result, " +
+                    "not from a second hasOverdueTransfers sweep"
+            )
+        }
+
+    // ── isSyncBlocked: nextStep-driven, not a blanket plan-wide overdue scan ─
+
+    /**
+     * `isSyncBlockedNow`'s `readyToBroadcast` check is driven by the same guarded `nextStep` read
+     * the worker loop itself uses — `STEP_BROADCAST` (code 2) means "a transfer is ready to
+     * broadcast right now", so sync should back off.
+     */
+    @Test
+    fun isSyncBlocked_emits_true_when_nextStep_says_broadcast_is_ready() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    nextStepResult = longArrayOf(2L, 5L), // STEP_BROADCAST, transferId=5
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            assertTrue(sdk.isSyncBlocked().first())
+        }
+
+    /**
+     * Regression test for the fix itself: before this fix, `isSyncBlockedNow` used
+     * `hasOverdueTransfers()` (no estimated tip) — a blanket "does anything exist overdue
+     * anywhere in the plan" scan that stays true for the plan's whole duration on a fast chain
+     * (e.g. testnet), permanently starving `syncRun()`'s `syncToTip()` call. `nextStep()` reporting
+     * `Waiting` (code 0) — even while some transfer elsewhere in the plan is nominally overdue —
+     * must NOT block sync: only an imminent broadcast should.
+     */
+    @Test
+    fun isSyncBlocked_emits_false_when_nextStep_says_waiting_even_though_something_is_overdue_elsewhere_in_plan() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    hasOverdueTransfersResult = true, // old signal — must no longer gate sync
+                    nextStepResult = longArrayOf(0L, -1L), // STEP_WAITING
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            assertFalse(sdk.isSyncBlocked().first())
+        }
+
+    /** The privacy-buffer and broadcast-in-flight signals must still gate sync independently of nextStep. */
+    @Test
+    fun isSyncBlocked_emits_true_when_privacy_buffer_is_active_even_though_nextStep_says_waiting() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val resumeAt = (Clock.System.now().epochSeconds + 60).toString()
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(0L, -1L))
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder =
+                        FakePreferenceHolder(
+                            FakePreferenceProvider(
+                                mapOf(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key to resumeAt)
+                            )
+                        ),
+                )
+
+            assertTrue(sdk.isSyncBlocked().first())
+        }
+
+    // ── mark_superseded write-through (Task 7): nextStep's Replan branch ─────
+
+    /**
+     * `nextStep()`'s `STEP_REPLAN` branch must call `markMigrationSuperseded` before returning
+     * `MigrationAdvanceStep.Replan`, so every consumer of `nextStep()` gets a superseded
+     * migration automatically (not just the app worker's own Replan handler) — see
+     * `OrchardMigrationSdkImpl.kt`'s `nextStep()`.
+     */
+    @Test
+    fun nextStep_marks_the_migration_superseded_when_the_engine_reports_replan() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(5L, -1L)) // STEP_REPLAN
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertEquals(MigrationAdvanceStep.Replan, result?.step)
+            assertTrue(fakeBackend.markMigrationSupersededCalled)
+        }
+
+    // ── nextStep peek-ahead: arr[2]/arr[3] parsing (MigrationPeek) ────────────
+
+    /**
+     * `nextStep()` must parse `arr[2]`/`arr[3]` (the engine's own peek-ahead, new on the
+     * librustzcash main pin adopted 2026-08-05) into `MigrationAdvanceResult.next` — a regression
+     * guard against a sign-flip or index-swap in that parsing, since every other test above only
+     * ever supplies a 2-long array and would not catch one.
+     */
+    @Test
+    fun nextStep_parses_the_peek_height_and_kind_from_arr_2_and_arr_3() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    // STEP_PROVE (id=5), peek: height=4200000, kind=STEP_BROADCAST (2).
+                    nextStepResult = longArrayOf(1L, 5L, 4_200_000L, 2L),
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertEquals(MigrationAdvanceStep.Prove(5L), result?.step)
+            assertEquals(MigrationPeek(height = 4_200_000L, kind = MigrationStepKind.BROADCAST), result?.next)
+        }
+
+    /** A `-1`/`-1` pair (nothing height-schedulable) must parse to `next = null`, not a bogus peek. */
+    @Test
+    fun nextStep_parses_the_sentinel_pair_as_a_null_peek() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    nextStepResult = longArrayOf(0L, -1L, -1L, -1L), // STEP_WAITING, no peek
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertEquals(MigrationAdvanceStep.Waiting, result?.step)
+            assertNull(result?.next)
+        }
+
+    /** A bare 2-long array (a fake/backend that hasn't been updated yet) must still parse cleanly. */
+    @Test
+    fun nextStep_treats_a_missing_peek_pair_as_a_null_peek() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(0L, -1L))
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
+                )
+
+            val result = sdk.nextStep()
+
+            assertNull(result?.next)
+        }
+    // ── MOB-1623: lock scoping (pure reads out of the DB mutex, the send out of it entirely) ──
+
+    /**
+     * A pure read must not queue behind a broadcast. Before the split, `executeNextPendingTransfer`
+     * held MIGRATION_DB_ACCESS_MUTEX across the whole send (up to the 60 s broadcast timeout) and
+     * `getMigrationTransferStates` — the Progress screen's first paint — waited for the same mutex;
+     * this test would hang until the parked broadcast was released.
+     */
+    @Test
+    fun getMigrationTransferStates_completes_while_a_broadcast_is_parked() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val gate = CompletableDeferred<Unit>()
+            val broadcaster = GatedBroadcaster(gate = gate)
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    migrationTransferStatesResult =
+                        JniMigrationTransferStates(transfers = emptyArray(), tipHeight = 4_226_000L),
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val broadcasting =
+                launch {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
+            broadcaster.entered.await()
+
+            val states = withTimeout(READ_LIVENESS_TIMEOUT) { sdk.getMigrationTransferStates() }
+
+            assertEquals(4_226_000L, states?.tipHeight)
+            gate.complete(Unit)
+            broadcasting.join()
+            assertEquals(1, broadcaster.callCount)
+        }
+
+    /**
+     * A locked database thrown by the record step used to re-run the whole `logged` block —
+     * including a SECOND network send of the identical transaction, absorbed only by the
+     * duplicate-rejection classification. With the phases split, only the record retries.
+     */
+    @Test
+    fun executeNextPendingTransfer_retries_the_record_without_re_broadcasting() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val broadcaster = GatedBroadcaster()
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    recordTransferResultLockedFailures = 1,
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val outcome = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+
+            assertEquals(1, broadcaster.callCount, "a failed record must NOT re-send the transaction")
+            assertEquals(2, fakeBackend.recordTransferResultCallCount, "the record step itself must retry")
+            check(outcome is TransferAttemptOutcome.Executed) { "expected Executed, got $outcome" }
+            val result = outcome.result
+            check(result is TransferResult.Success) { "expected Success, got $result" }
+        }
+
+    /**
+     * Two concurrent entrants (the Progress screen's foreground pass, the Sending screen and
+     * MigrationWorker are all real ones) served the same next-due transfer: exactly one may send it.
+     * The DB mutex used to provide that by covering the whole method; now the in-flight mark and its
+     * phase-1 guard do, and the second caller must back off rather than re-send.
+     */
+    @Test
+    fun a_second_caller_does_not_re_broadcast_the_transfer_already_in_flight() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val gate = CompletableDeferred<Unit>()
+            val broadcaster = GatedBroadcaster(gate = gate)
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val first =
+                async {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
+            broadcaster.entered.await()
+            val second = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+
+            assertTrue(
+                second is TransferAttemptOutcome.NothingDue,
+                "the second caller must back off while the first send is in flight, got $second"
+            )
+            gate.complete(Unit)
+            val firstOutcome = first.await()
+            assertEquals(1, broadcaster.callCount, "the same transfer must be sent exactly once")
+            check(firstOutcome is TransferAttemptOutcome.Executed) { "expected Executed, got $firstOutcome" }
+            assertTrue(firstOutcome.result is TransferResult.Success)
+        }
+
+    /**
+     * Broadcasts of DIFFERENT operations still serialize — against BROADCAST_MUTEX now, not the DB
+     * mutex. Each fake send holds for [BROADCAST_HOLD]; if the two overlapped, `maxConcurrent` would
+     * be 2. Both outcomes must still commit.
+     */
+    @Test
+    fun a_transfer_send_and_a_note_split_send_never_overlap() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val broadcaster = GatedBroadcaster(holdFor = BROADCAST_HOLD)
+            val fakeBackend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    signNoteSplitResult =
+                        JniPreparedTransfer(
+                            id = 2L,
+                            txid = ByteArray(32) { (it + 1).toByte() },
+                            pcztBytes = ByteArray(4) { it.toByte() },
+                        ),
+                )
+            val sdk = sdkWith(account, fakeBackend, broadcaster)
+
+            val transfer =
+                async {
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                }
+            val noteSplit =
+                async {
+                    sdk.submitNoteSplit(
+                        NoteSplitProposal(outputNotes = listOf(1_000_000L), fee = 10_000L, proposalHandle = 7L),
+                        UnifiedSpendingKey(JniUnifiedSpendingKey(ByteArray(32) { 1 })),
+                    )
+                }
+
+            val transferOutcome = transfer.await()
+            val noteSplitResult = noteSplit.await()
+
+            assertEquals(2, broadcaster.callCount)
+            assertEquals(1, broadcaster.maxConcurrent, "broadcasts must not overlap")
+            check(transferOutcome is TransferAttemptOutcome.Executed) { "expected Executed, got $transferOutcome" }
+            assertTrue(transferOutcome.result is TransferResult.Success)
+            assertTrue(noteSplitResult is TransferResult.Success)
+            assertEquals(2, fakeBackend.recordTransferResultCallCount, "both outcomes must be recorded")
+        }
+
+    private fun sdkWith(
+        account: AccountUuid,
+        fakeBackend: FakeTypesafeMigrationBackend,
+        broadcaster: MigrationTransactionBroadcaster,
+    ): OrchardMigrationSdkImpl =
+        OrchardMigrationSdkImpl(
+            context = fakeAndroidContext(),
+            network = ZcashNetwork.Testnet,
+            alias = "OrchardMigrationSdkImplTest",
+            account = account,
+            migrationBackend = fakeBackend,
+            defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+            preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider(emptyMap())),
+            broadcaster = broadcaster,
+        )
+
+    /**
+     * Stands in for the whole network phase (see [OrchardMigrationSdkImpl]'s `broadcaster`
+     * parameter). Signals [entered] on the first call, optionally parks on [gate] and/or holds for
+     * [holdFor], and always reports success for the txid it was handed. [maxConcurrent] records how
+     * many sends were in flight at once, which is how the BROADCAST_MUTEX tests tell serialization
+     * from luck.
+     */
+    private class GatedBroadcaster(
+        private val gate: CompletableDeferred<Unit>? = null,
+        private val holdFor: Duration = Duration.ZERO,
+    ) : MigrationTransactionBroadcaster {
+        val entered = CompletableDeferred<Unit>()
+        var callCount = 0
+        var maxConcurrent = 0
+
+        private var inFlight = 0
+
+        override suspend fun submit(
+            rawTx: ByteArray,
+            txId: ByteArray,
+            useTor: Boolean,
+            endpoint: LightWalletEndpoint
+        ): TransactionSubmitResult {
+            callCount++
+            inFlight++
+            maxConcurrent = maxOf(maxConcurrent, inFlight)
+            entered.complete(Unit)
+            return try {
+                gate?.await()
+                if (holdFor > Duration.ZERO) delay(holdFor)
+                TransactionSubmitResult.Success(FirstClassByteArray(txId))
+            } finally {
+                inFlight--
+            }
+        }
+    }
+
     private fun preparedTransfer(): JniPreparedTransfer =
         JniPreparedTransfer(
             id = 1L,
@@ -500,7 +1025,11 @@ class OrchardMigrationSdkImplTest {
 
         override suspend fun getString(key: PreferenceKey): String? = values[key.key]
 
-        override fun observe(key: PreferenceKey): Flow<Unit> = emptyFlow()
+        // A real PreferenceProvider.observe() emits on subscription — combine() in
+        // isSyncBlocked() depends on that to produce its first value. One-shot emission is
+        // enough for tests, which set up preference state before collecting; they don't rely on
+        // observing a live change mid-collection.
+        override fun observe(key: PreferenceKey): Flow<Unit> = flowOf(Unit)
 
         override suspend fun clearPreferences(): Boolean {
             values.clear()
@@ -564,9 +1093,15 @@ class OrchardMigrationSdkImplTest {
         private val migrationDustThresholdZatoshiResult: Long = 100_000L,
         private val migrationSummaryResult: LongArray = LongArray(0),
         private val hasOverdueTransfersResult: Boolean = false,
+        private val nextStepResult: LongArray? = null,
         private val dueTransferResult: JniDueTransferResult =
             JniDueTransferResult(status = 0, awaitingProofTransferId = null, prepared = null),
         private val transactionMinedHeightResult: Long = -1L,
+        private val migrationTransferStatesResult: JniMigrationTransferStates? = null,
+        private val signNoteSplitResult: JniPreparedTransfer? = null,
+        // How many times recordTransferResult throws a "database is locked" failure before
+        // succeeding — the transient sync-race shape loggedRetryLoop is built to ride out.
+        private val recordTransferResultLockedFailures: Int = 0,
         // Task 1 cancellation-safety test hooks: when set, recordTransferResult signals
         // [onRecordTransferResultEntered] on entry, then suspends on [recordTransferResultGate]
         // until the test releases it, so a test can cancel the caller while this call is
@@ -583,13 +1118,33 @@ class OrchardMigrationSdkImplTest {
         // cancellation of the caller while suspended on recordTransferResultGate above).
         var recordTransferResultCompleted = false
 
+        // Captures the args of the LAST recordTransferResult call — task 9's observed_tip plumbing
+        // coverage (resultTag == 4, not 2, for a genuinely-unknown rejection; observedTip carried
+        // through from fetchObservedTipAfterRejection).
+        var lastResultTag: Int? = null
+        var lastObservedTip: Long? = null
+
+        // Every entry into recordTransferResult, including the ones that throw — so a test can tell
+        // "the record step retried" from "the whole broadcast block retried".
+        var recordTransferResultCallCount = 0
+
         // Counts calls that fetch the raw tx to broadcast — the call the Task 1 entry guard is
         // specifically there to skip on an already-mined in-flight resend.
         var broadcastCallCount = 0
 
+        // Counts calls to hasOverdueTransfers — must stay 0 across executeNextPendingTransfer now
+        // that wasOverdue is derived from nextDueTransfer's own result (Task 4's collapse).
+        var hasOverdueTransfersCallCount = 0
+
         override suspend fun migrationDustThresholdZatoshi(): Long = migrationDustThresholdZatoshiResult
 
         override suspend fun migrationState(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid
+        ): JniMigrationState = error("Unused")
+
+        override suspend fun migrationStateUnreconciled(
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
@@ -630,7 +1185,10 @@ class OrchardMigrationSdkImplTest {
             network: ZcashNetwork,
             account: AccountUuid,
             estimatedTip: Long
-        ): Boolean = hasOverdueTransfersResult
+        ): Boolean {
+            hasOverdueTransfersCallCount++
+            return hasOverdueTransfersResult
+        }
 
         override suspend fun hasInvalidTransfers(
             dbDataPath: String,
@@ -662,7 +1220,7 @@ class OrchardMigrationSdkImplTest {
             account: AccountUuid,
             proposalHandle: Long,
             usk: ByteArray
-        ): JniPreparedTransfer = error("Unused")
+        ): JniPreparedTransfer = signNoteSplitResult ?: error("Unused")
 
         override suspend fun extractBroadcastTx(
             dbDataPath: String,
@@ -681,8 +1239,15 @@ class OrchardMigrationSdkImplTest {
             transferId: Long,
             resultTag: Int,
             retryable: Boolean,
-            txId: ByteArray
+            txId: ByteArray,
+            observedTip: Long
         ) {
+            recordTransferResultCallCount++
+            if (recordTransferResultCallCount <= recordTransferResultLockedFailures) {
+                error("database is locked")
+            }
+            lastResultTag = resultTag
+            lastObservedTip = observedTip
             onRecordTransferResultEntered?.complete(Unit)
             recordTransferResultGate?.await()
             recordTransferResultCompleted = true
@@ -744,23 +1309,19 @@ class OrchardMigrationSdkImplTest {
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
-        ): JniMigrationTransferStates? = error("Unused")
+        ): JniMigrationTransferStates? = migrationTransferStatesResult
 
         override suspend fun migrationSummary(dbDataPath: String): LongArray {
             migrationSummaryDbDataPath = dbDataPath
             return migrationSummaryResult
         }
 
-        // Pre-existing gap (unrelated to Task 1): these five TypesafeMigrationBackend members
-        // were added by later commits (a9a13884, e616a0dc, cbc794bd) without a matching update
-        // here, leaving this fake non-compiling against the current interface. Stubbed the same
-        // way as this class's other not-exercised-by-this-suite members.
         override suspend fun nextStep(
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid,
             estimatedTip: Long
-        ): LongArray? = error("Unused")
+        ): LongArray? = nextStepResult
 
         override suspend fun syncWakeupSchedule(
             dbDataPath: String,
@@ -775,6 +1336,20 @@ class OrchardMigrationSdkImplTest {
             transferId: Long,
             signedPczt: ByteArray
         ): Boolean = error("Unused")
+
+        // Set true when markMigrationSuperseded is called — proves nextStep()'s STEP_REPLAN
+        // branch wires the write through (see
+        // nextStep_marks_the_migration_superseded_when_the_engine_reports_replan).
+        var markMigrationSupersededCalled = false
+
+        override suspend fun markMigrationSuperseded(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid
+        ): Boolean {
+            markMigrationSupersededCalled = true
+            return true
+        }
 
         override suspend fun keystoneSigningRoundBudget(): IntArray = error("Unused")
 

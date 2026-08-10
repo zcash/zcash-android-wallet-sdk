@@ -76,6 +76,9 @@ use slipstream_core::{AnchorRetention, Endpoint, EngineConfig, Network, Progress
 use zcash_client_backend::keys::UnifiedFullViewingKey;
 use zcash_protocol::consensus::BlockHeight;
 
+// Migration anchor retention floor — delegated to typed migration.rs implementation.
+use crate::migration::min_pending_anchor_boundary;
+
 // ── JNI class descriptors + constructor signatures (normative; the JNI binding contract §4.2) ──
 // Constructor arg ORDER is part of the contract; it must match the `@Keep data class`
 // declarations in the `com.zodl.slipstream.model` package exactly — hence the `model/`
@@ -401,55 +404,26 @@ fn open_handle(
 /// left to protect). See `zcash_client_sqlite::pool_migration::store`'s DDL builders
 /// (`create_migrations_sql`/`create_transactions_sql`) for the column set this mirrors.
 ///
-/// ## Why raw SQL instead of calling into `backend-lib`'s typed `migration.rs`
-/// The obvious-looking alternative — calling `migration.rs`'s `Backend`/`PoolMigrationRead` API
-/// (typed `MigrationState`/`MigrationTxState`, no ad-hoc SQL) — is not just less convenient here,
-/// it is IMPOSSIBLE: `backend-lib`'s own `Cargo.toml` already depends on this crate
-/// (`slipstream-jni = { path = "slipstream-jni" }`, so `backend-lib` can re-export/link this
-/// crate's JNI symbols into one merged `libzcashlc.so` — see this crate's module doc). Adding a
-/// dependency in the other direction would make `slipstream-jni` depend on `backend-lib` depend
-/// on `slipstream-jni`: a cyclic package dependency, which Cargo rejects regardless of the two
-/// crates' separate `[workspace]` roots. Raw SQL also keeps this crate from having to link
-/// `zcash_pool_migration`/`orchard` at all, which it otherwise has no reason to depend
-/// on.
-///
-/// Reads via `read_query::open_read_only` (the shared bundled-SQLite-instance path — see that
-/// module's doc comment for the dual-SQLite-instance/SIGBUS hazard it avoids), never a second,
-/// independent `rusqlite::Connection::open`.
+/// ## Implementation
+/// This function now delegates directly to `migration.rs`'s typed implementation
+/// (`min_pending_anchor_boundary`). Previously, it used raw SQL to avoid a cyclic package
+/// dependency (when `slipstream-jni` was a separate crate). That constraint no longer exists:
+/// `slipstream-jni` is now the `slipstream` module of this same crate (`backend-lib`), so both
+/// modules can share code without any cyclic dependency. The migration.rs function provides
+/// the same result — the minimum `anchor_boundary` across all non-terminal, non-broadcast/mined
+/// migration transactions — but via typed `Backend`/`PoolMigrationRead` access rather than
+/// ad-hoc SQL, and accounting for all accounts in the wallet at once.
 ///
 /// Deliberately returns `anyhow::Result` rather than swallowing errors internally: this function
 /// has no JNI boundary of its own, so the CALLER (`start_session`) is responsible for treating
 /// any `Err` as "no retention floor" (log + fall back to `None`) — a wallet DB read glitch here
-/// must never block a sync session from starting. The overwhelmingly common case (no migration
-/// ever attempted in this wallet) resolves via the `Ok(None)` arm below (aggregate `MIN` over
-/// zero matching rows is SQL `NULL`, not a query error) or the "no such table" arm on a wallet
-/// that predates the migration schema entirely — neither should ever be logged as a failure.
-fn min_pending_migration_anchor_boundary(db_path: &str) -> anyhow::Result<Option<u32>> {
-    let conn = read_query::open_read_only(db_path)?;
-    let boundary = conn.query_row(
-        "SELECT MIN(t.anchor_boundary) \
-         FROM orchard_ironwood_migration_transactions t \
-         JOIN orchard_ironwood_migrations m ON m.id = t.migration_id \
-         WHERE m.status NOT IN ('complete', 'failed') \
-           AND t.state NOT IN ('broadcast', 'mined') \
-           AND t.anchor_boundary IS NOT NULL",
-        [],
-        |row| row.get::<_, Option<i64>>(0),
-    );
-    match boundary {
-        Ok(Some(h)) => {
-            Ok(Some(u32::try_from(h).map_err(|_| {
-                anyhow!("anchor_boundary {h} out of u32 range")
-            })?))
-        }
-        Ok(None) => Ok(None),
-        // A wallet that has never attempted a migration doesn't have these tables at all — not
-        // an error, just nothing to protect.
-        Err(rusqlite::Error::SqliteFailure(_, Some(ref msg))) if msg.contains("no such table") => {
-            Ok(None)
-        }
-        Err(e) => Err(anyhow!("reading pending migration anchor boundary: {e}")),
-    }
+/// must never block a sync session from starting.
+fn min_pending_migration_anchor_boundary(
+    db_path: &str,
+    network: Network,
+) -> anyhow::Result<Option<u32>> {
+    let path = std::path::Path::new(db_path);
+    min_pending_anchor_boundary(path, network)
 }
 
 /// The wallet's max scanned block height, for the always-on anchor-retention baseline below —
@@ -518,12 +492,12 @@ fn start_session(
         .scaled_for_device_memory(h.total_memory_bytes);
 
     // [MOB-1455 fix] Protect the checkpoint(s) any not-yet-broadcast migration transfer is
-    // anchored to from this session's own checkpoint pruning — see
-    // `min_pending_migration_anchor_boundary`'s doc comment for the full rationale (including
-    // why this queries raw SQL instead of calling into backend-lib's migration.rs). A lookup
-    // failure must never block sync from starting: fall back to no retention floor (the
-    // pre-fix behavior) and log loudly enough to notice, since silently reverting to "no
-    // protection" is itself worth knowing about.
+    // anchored to from this session's own checkpoint pruning — delegates to
+    // `migration.rs`'s `min_pending_anchor_boundary` for the typed implementation (see that
+    // function's doc comment for the full rationale). A lookup failure must never block sync
+    // from starting: fall back to no retention floor (the pre-fix behavior) and log loudly
+    // enough to notice, since silently reverting to "no protection" is itself worth knowing
+    // about.
     let db_path_str: Option<&str> = h.wallet_db_path.to_str();
     if db_path_str.is_none() {
         tracing::warn!(
@@ -531,7 +505,9 @@ fn start_session(
         );
     }
     let pending_floor = db_path_str
-        .map_or(Ok(None), min_pending_migration_anchor_boundary)
+        .map_or(Ok(None), |path| {
+            min_pending_migration_anchor_boundary(path, h.network)
+        })
         .unwrap_or_else(|e| {
             tracing::warn!(
                 error = %e,

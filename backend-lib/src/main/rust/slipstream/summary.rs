@@ -57,7 +57,7 @@ const JNI_ACCOUNT_BALANCE: &str = "com/zodl/slipstream/model/SlipstreamAccountBa
 const JNI_SCAN_PROGRESS: &str = "com/zodl/slipstream/model/SlipstreamScanProgress";
 const JNI_WALLET_SUMMARY: &str = "com/zodl/slipstream/model/SlipstreamWalletSummary";
 
-const POOL_BALANCE_CTOR: &str = "(JJJ)V";
+const POOL_BALANCE_CTOR: &str = "(JJJJ)V";
 const ACCOUNT_BALANCE_CTOR: &str = "([BLcom/zodl/slipstream/model/SlipstreamPoolBalance;Lcom/zodl/slipstream/model/SlipstreamPoolBalance;Lcom/zodl/slipstream/model/SlipstreamPoolBalance;J)V";
 const SCAN_PROGRESS_CTOR: &str = "(JJ)V";
 const WALLET_SUMMARY_CTOR: &str = "([Lcom/zodl/slipstream/model/SlipstreamAccountBalance;JJLcom/zodl/slipstream/model/SlipstreamScanProgress;Lcom/zodl/slipstream/model/SlipstreamScanProgress;JJJ)V";
@@ -206,9 +206,9 @@ pub(crate) fn wallet_summary_object<'local>(
             // `v_transactions.account_balance_delta` — ironwood value is already folded into that
             // single collapsed net, so surfacing it again as a pool object would double-count it.
             let net = recovery_nets.get(uuid_bytes).copied().unwrap_or(0);
-            let sapling = pool_balance(env, 0, 0, 0)?;
-            let orchard = pool_balance(env, net.max(0), 0, 0)?;
-            let ironwood = pool_balance(env, 0, 0, 0)?;
+            let sapling = pool_balance(env, 0, 0, 0, 0)?;
+            let orchard = pool_balance(env, net.max(0), 0, 0, 0)?;
+            let ironwood = pool_balance(env, 0, 0, 0, 0)?;
             account_balance(env, uuid_bytes, &sapling, &orchard, &ironwood, 0)?
         } else {
             let sapling = pool_balance(
@@ -216,12 +216,14 @@ pub(crate) fn wallet_summary_object<'local>(
                 zat(balance.sapling_balance().spendable_value()),
                 zat(balance.sapling_balance().change_pending_confirmation()),
                 zat(balance.sapling_balance().value_pending_spendability()),
+                zat(balance.sapling_balance().locked_value()),
             )?;
             let orchard = pool_balance(
                 env,
                 zat(balance.orchard_balance().spendable_value()),
                 zat(balance.orchard_balance().change_pending_confirmation()),
                 zat(balance.orchard_balance().value_pending_spendability()),
+                zat(balance.orchard_balance().locked_value()),
             )?;
             // Ironwood is read with the same `zcash_client_backend` accessors the mainline
             // `encode_account_balance` uses (`balance.ironwood_balance()`, lib.rs:1647-1651), so
@@ -231,6 +233,7 @@ pub(crate) fn wallet_summary_object<'local>(
                 zat(balance.ironwood_balance().spendable_value()),
                 zat(balance.ironwood_balance().change_pending_confirmation()),
                 zat(balance.ironwood_balance().value_pending_spendability()),
+                zat(balance.ironwood_balance().locked_value()),
             )?;
             let unshielded = zat(balance.unshielded_balance().total());
             account_balance(env, uuid_bytes, &sapling, &orchard, &ironwood, unshielded)?
@@ -331,6 +334,7 @@ fn pool_balance<'local>(
     spendable: i64,
     change_pending: i64,
     value_pending: i64,
+    locked: i64,
 ) -> anyhow::Result<JObject<'local>> {
     Ok(env.new_object(
         JNI_POOL_BALANCE,
@@ -339,6 +343,7 @@ fn pool_balance<'local>(
             JValue::Long(spendable),
             JValue::Long(change_pending),
             JValue::Long(value_pending),
+            JValue::Long(locked),
         ],
     )?)
 }
