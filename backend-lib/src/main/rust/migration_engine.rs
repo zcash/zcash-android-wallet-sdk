@@ -66,6 +66,16 @@ pub struct Backend<'a, W> {
     /// transaction's outputs (needing `params`) and stamps the sent-transaction time (needing the
     /// clock). Both are unused by the read/write-state methods.
     store: PoolMigrations<&'a mut Connection, Network, SystemClock>,
+    /// The spendable-note snapshot every `resolve_wallet_note`/`spendable_orchard_note_values`
+    /// read is served from, filled on first use — see `spendable_orchard` (MOB-1669, 2026-08-10:
+    /// this used to re-run `select_unspent_notes` from scratch on EVERY call, confirmed live as
+    /// the ~7s-per-call cost behind "Android took 3.5 minutes to generate 3 batched QRs" — a note
+    /// split with N wallet-sourced inputs paid that full query cost N times over). Mirrors
+    /// upstream `zcash_pool_migration::wallet::WalletMigration`'s own field of the same purpose
+    /// (`wallet.rs`): the engine addresses a note by its index into this sequence, so every read
+    /// through one `Backend` instance must see the same set — a fresh `Backend` (one per JNI call)
+    /// observes wallet changes by construction, not by invalidating this cache.
+    spendable: std::cell::RefCell<Option<Vec<SpendableNote>>>,
 }
 
 impl<'a, W> Backend<'a, W>
@@ -90,6 +100,7 @@ where
             account,
             usk,
             store,
+            spendable: std::cell::RefCell::new(None),
         })
     }
 
@@ -122,32 +133,41 @@ where
     /// The account's spendable Orchard notes as `(note, tree position, value)`, sorted by tree
     /// position so an index is stable across calls within one JNI invocation (matches
     /// `WalletMigration`'s own ordering contract, which the engine relies on).
-    fn spendable_orchard(&self) -> Result<Vec<SpendableNote>, EngineError> {
-        let target = self.selection_target()?;
-        // Exclude notes locked by another in-flight proposal (e.g. a concurrent foreground send)
-        // rather than ignoring locks — migration actually spends these notes, so racing a locked
-        // one would double-spend against whatever proposal is holding it.
-        let received = self
-            .wallet
-            .select_unspent_notes(
-                self.account,
-                &[ShieldedPool::Orchard],
-                target,
-                &[],
-                LockFilter::Policy(&LockedInputPolicy::Exclude),
-            )
-            .map_err(|e| anyhow::anyhow!("selecting spendable Orchard notes failed: {e}"))?;
-        let mut notes: Vec<SpendableNote> = received
-            .orchard()
-            .iter()
-            .map(|rn| {
-                let note = *rn.note();
-                let value = note.value().inner();
-                (note, rn.note_commitment_tree_position(), value)
-            })
-            .collect();
-        notes.sort_by_key(|(_, pos, _)| *pos);
-        Ok(notes)
+    ///
+    /// Snapshotted on the FIRST read within this `Backend` instance's lifetime — see the
+    /// `spendable` field's doc comment. Every subsequent call within the same instance is served
+    /// from the cache instead of re-running `select_unspent_notes`.
+    fn spendable_orchard(&self) -> Result<std::cell::Ref<'_, [SpendableNote]>, EngineError> {
+        if self.spendable.borrow().is_none() {
+            let target = self.selection_target()?;
+            // Exclude notes locked by another in-flight proposal (e.g. a concurrent foreground
+            // send) rather than ignoring locks — migration actually spends these notes, so racing
+            // a locked one would double-spend against whatever proposal is holding it.
+            let received = self
+                .wallet
+                .select_unspent_notes(
+                    self.account,
+                    &[ShieldedPool::Orchard],
+                    target,
+                    &[],
+                    LockFilter::Policy(&LockedInputPolicy::Exclude),
+                )
+                .map_err(|e| anyhow::anyhow!("selecting spendable Orchard notes failed: {e}"))?;
+            let mut notes: Vec<SpendableNote> = received
+                .orchard()
+                .iter()
+                .map(|rn| {
+                    let note = *rn.note();
+                    let value = note.value().inner();
+                    (note, rn.note_commitment_tree_position(), value)
+                })
+                .collect();
+            notes.sort_by_key(|(_, pos, _)| *pos);
+            *self.spendable.borrow_mut() = Some(notes);
+        }
+        Ok(std::cell::Ref::map(self.spendable.borrow(), |cached| {
+            cached.as_deref().expect("filled above")
+        }))
     }
 }
 
@@ -161,9 +181,9 @@ where
 
     fn spendable_orchard_note_values(&self) -> Result<Vec<Zatoshis>, Self::Error> {
         self.spendable_orchard()?
-            .into_iter()
+            .iter()
             .enumerate()
-            .map(|(i, (_, _, value))| {
+            .map(|(i, &(_, _, value))| {
                 Zatoshis::from_u64(value)
                     .map_err(|_| anyhow::anyhow!("spendable note {i} has an invalid value"))
             })
