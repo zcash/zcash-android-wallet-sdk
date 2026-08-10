@@ -1343,8 +1343,6 @@ internal fun JniRoundPhase.toPublic(): VotingRoundPhase =
         JniRoundPhase.VOTE_READY -> VotingRoundPhase.VOTE_READY
     }
 
-internal fun VotingNoteInfo.toInternal(): VotingNoteInfo = this // TypesafeVotingBackend's own VotingNoteInfo — see note below.
-
 internal fun JniNoteInfo.toPublic(): VotingNoteInfo =
     VotingNoteInfo(
         commitment = commitment,
@@ -1475,11 +1473,7 @@ internal fun JniVoteRecord.toPublic(): cash.z.ecc.android.sdk.model.voting.Votin
 
 internal fun JniDelegationPhase.toPublic(): cash.z.ecc.android.sdk.model.voting.VotingDelegationPhase =
     cash.z.ecc.android.sdk.model.voting.VotingDelegationPhase(bundleIndex = bundleIndex, phase = phase)
-```
 
-Delete the placeholder `internal fun VotingNoteInfo.toInternal(): VotingNoteInfo = this` line above — it was a marker for the note below, not real code. The real mapping is:
-
-```kotlin
 internal fun VotingNoteInfo.toInternal(): cash.z.ecc.android.sdk.internal.VotingNoteInfo =
     cash.z.ecc.android.sdk.internal.VotingNoteInfo(
         commitment = commitment,
@@ -1499,7 +1493,7 @@ internal fun VotingNoteInfo.toInternal(): cash.z.ecc.android.sdk.internal.Voting
     )
 ```
 
-(`TypesafeVotingBackend.kt` already defines an `internal data class VotingNoteInfo` and `internal enum class VotingNoteScope` in the `cash.z.ecc.android.sdk.internal` package — same names as this plan's new public types in `cash.z.ecc.android.sdk.model.voting`, in a different package, which is why every reference to the internal ones in this mapper file must be fully qualified as shown, never a bare `VotingNoteInfo`/`VotingNoteScope` import, to avoid colliding with the public ones already imported for the public side of each mapping.)
+`TypesafeVotingBackend.kt` already defines an `internal data class VotingNoteInfo` and `internal enum class VotingNoteScope` in the `cash.z.ecc.android.sdk.internal` package — same names as this plan's new public types in `cash.z.ecc.android.sdk.model.voting`, in a different package. That's why the function above fully qualifies every reference to the internal ones (`cash.z.ecc.android.sdk.internal.VotingNoteInfo`/`.VotingNoteScope`): a bare `VotingNoteInfo`/`VotingNoteScope` would resolve to the public ones already imported at the top of this file for the public side of each mapping, not the internal ones this function needs to construct.
 
 - [ ] **Step 4: Compile-check**
 
