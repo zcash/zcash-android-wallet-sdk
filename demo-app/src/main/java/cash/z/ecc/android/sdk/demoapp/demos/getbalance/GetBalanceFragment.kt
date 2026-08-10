@@ -153,6 +153,21 @@ class GetBalanceFragment : BaseDemoFragment<FragmentGetBalanceBinding>() {
                             val account = it.getAccounts()[CURRENT_ZIP_32_ACCOUNT_INDEX.toInt()]
                             it.walletBalances.combine(it.exchangeRateUsd) { balances, rate ->
                                 balances?.let {
+                                    val walletBalance = balances[account.accountUuid]!!.ironwood
+                                    walletBalance to
+                                        rate.currencyConversion
+                                            ?.priceOfZec
+                                            ?.toBigDecimal()
+                                }
+                            }
+                        }.collect { onIronwoodBalance(it) }
+
+                    sharedViewModel.synchronizerFlow
+                        .filterNotNull()
+                        .flatMapLatest {
+                            val account = it.getAccounts()[CURRENT_ZIP_32_ACCOUNT_INDEX.toInt()]
+                            it.walletBalances.combine(it.exchangeRateUsd) { balances, rate ->
+                                balances?.let {
                                     val walletBalance = balances[account.accountUuid]!!.unshielded
                                     walletBalance to
                                         rate.currencyConversion
@@ -169,6 +184,12 @@ class GetBalanceFragment : BaseDemoFragment<FragmentGetBalanceBinding>() {
     private fun onOrchardBalance(orchardBalance: Pair<WalletBalance, BigDecimal?>?) {
         binding.orchardBalance.apply {
             text = orchardBalance.balanceHumanString()
+        }
+    }
+
+    private fun onIronwoodBalance(ironwoodBalance: Pair<WalletBalance, BigDecimal?>?) {
+        binding.ironwoodBalance.apply {
+            text = ironwoodBalance.balanceHumanString()
         }
     }
 
@@ -225,6 +246,11 @@ class GetBalanceFragment : BaseDemoFragment<FragmentGetBalanceBinding>() {
                 onOrchardBalance(
                     synchronizer.walletBalances.value?.let {
                         Pair(it[account.accountUuid]!!.orchard, rate)
+                    }
+                )
+                onIronwoodBalance(
+                    synchronizer.walletBalances.value?.let {
+                        Pair(it[account.accountUuid]!!.ironwood, rate)
                     }
                 )
                 onSaplingBalance(
