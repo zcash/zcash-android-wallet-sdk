@@ -12,7 +12,6 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
-import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -26,16 +25,10 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
-// Kept compiling, and kept @Ignore'd, so the suite is ready to run again the moment the
-// native voting symbols come back. The fixtures here are already updated for the
-// zcash_voting 1.0 / NU6.3 API, so re-enabling voting should not need to touch them.
+// Re-enabled on the chp worktree: cfg(zcash_voting) is now threaded through
+// backend-lib/build.gradle.kts's cargo exec block and the zcash_voting dependency is
+// uncommented in Cargo.toml (pinned to valargroup/zcash_voting@7d39d02b, v1.0.0).
 @Suppress("LargeClass", "MagicNumber", "DEPRECATION_ERROR")
-@Ignore(
-    "Voting is gated off behind cfg(zcash_voting) on this branch and its dependency is " +
-        "commented out of Cargo.toml, so the native library exports none of the symbols these " +
-        "tests bind to and every one of them would fail with UnsatisfiedLinkError. Voting is " +
-        "re-enabled against main by zcash/zcash-android-wallet-sdk#2075."
-)
 class VotingRustBackendTest {
     companion object {
         private const val FIELD_BYTES = 32
@@ -65,6 +58,9 @@ class VotingRustBackendTest {
         private const val PCZT_ROUND_ID =
             "0101010101010101010101010101010101010101010101010101010101010101"
         private const val ROUND_NAME = "Test Round"
+        private const val TEST_PIR_DEPTH = 1
+        private const val TEST_PIR_TIER0_LAYERS = 1
+        private const val TEST_PIR_TIER1_LAYERS = 1
         private const val NOTE_VALUE = 13_000_000L
         private const val PCZT_NOTE_VALUE = 15_000_000L
         private const val LARGE_BUNDLE_WEIGHT = 62_500_000L
@@ -702,8 +698,15 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun build_governance_pczt_advances_phase_from_initialized_round() =
+    fun build_governance_pczt_does_not_advance_round_phase() =
         runTest {
+            // 2026-08-10: build_governance_pczt_for_bundle deliberately stopped advancing the
+            // round-level phase (see its doc comment) — the round-level phase can't distinguish
+            // "this round's bundles are all still Prepared" from "some OTHER bundle in this round
+            // already raced ahead to Proved", which made constructing bundle 1+ of a multi-bundle
+            // round fail with "refusing to regress round phase" once bundle 0 had been proved.
+            // Per-bundle status now comes from zcash_voting::phases::DelegationPhase (surfaced via
+            // delegationPhasesNative), not this round-level phase.
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
                 val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
@@ -726,7 +729,7 @@ class VotingRustBackendTest {
 
                 assertTrue(pczt.pcztBytes.isNotEmpty())
                 assertEquals(
-                    JniRoundPhase.DELEGATION_CONSTRUCTED,
+                    JniRoundPhase.INITIALIZED,
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
                 )
             } finally {
@@ -752,10 +755,6 @@ class VotingRustBackendTest {
                 assertEquals(FIELD_BYTES, pczt.sighash.size)
                 assertTrue(pczt.actionIndex >= 0)
                 assertContentEquals(pczt.sighash, extractedSighash)
-                assertEquals(
-                    JniRoundPhase.DELEGATION_CONSTRUCTED,
-                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
                 assertFailsWith<RuntimeException> {
                     backend.extractSpendAuthSig(pczt.pcztBytes, pczt.actionIndex)
                 }
@@ -997,6 +996,9 @@ class VotingRustBackendTest {
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 1,
                         pirServerUrl = "not-a-valid-url",
+                        pirDepth = TEST_PIR_DEPTH,
+                        pirTier0Layers = TEST_PIR_TIER0_LAYERS,
+                        pirTier1Layers = TEST_PIR_TIER1_LAYERS,
                         notes = notes
                     )
                 }
@@ -1005,6 +1007,9 @@ class VotingRustBackendTest {
                         roundId = PCZT_ROUND_ID,
                         bundleIndex = 1,
                         pirServerUrl = "http://127.0.0.1:1",
+                        pirDepth = TEST_PIR_DEPTH,
+                        pirTier0Layers = TEST_PIR_TIER0_LAYERS,
+                        pirTier1Layers = TEST_PIR_TIER1_LAYERS,
                         notes = notes,
                         fvkBytes = SHORT_FIELD,
                         hotkeySecret = HOTKEY_SEED,
@@ -1183,7 +1188,7 @@ class VotingRustBackendTest {
 
                 assertEquals(emptyList(), db.getVotes(PCZT_ROUND_ID).asList())
                 assertEquals(
-                    JniRoundPhase.DELEGATION_CONSTRUCTED,
+                    JniRoundPhase.INITIALIZED,
                     assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
                 )
             } finally {
@@ -1666,7 +1671,7 @@ class VotingRustBackendTest {
         assertTrue(pczt.actionIndex >= 0)
         assertContentEquals(pczt.sighash, backend.extractPcztSighash(pczt.pcztBytes))
         assertEquals(
-            JniRoundPhase.DELEGATION_CONSTRUCTED,
+            JniRoundPhase.INITIALIZED,
             assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
         )
     }

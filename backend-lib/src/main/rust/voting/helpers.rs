@@ -35,6 +35,8 @@ const JNI_VOTE_COMMIT_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult";
 const JNI_COMMITTED_VOTE_RECORD: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniCommittedVoteRecord";
+const JNI_DELEGATION_PHASE: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationPhase";
 
 // Must match JniNoteInfo(ByteArray, ByteArray, Long, Long, ByteArray,
 // ByteArray, ByteArray, Int, String) in JniVotingModels.kt.
@@ -80,9 +82,15 @@ const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ)V";
 // ByteArray, Array<ByteArray>, ByteArray, ByteArray) in JniVotingModels.kt.
 const JNI_DELEGATION_PROOF_RESULT_CTOR_SIG: &str = "([B[[B[B[B[[B[B[B)V";
 // Must match JniDelegationSubmissionResult(ByteArray, ByteArray, ByteArray,
-// ByteArray, ByteArray, ByteArray, ByteArray, Array<ByteArray>, String) in
-// JniVotingModels.kt.
-const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str = "([B[B[B[B[B[B[B[[BLjava/lang/String;)V";
+// ByteArray, ByteArray, ByteArray, ByteArray, ByteArray, Array<ByteArray>,
+// String) in JniVotingModels.kt. `sighash` (32 bytes) is the local ZIP-244
+// signing digest, still needed for Keystone-signature verification;
+// `tx1_effects` (821 bytes, zcash_voting::tx1::TX1_EFFECTS_LEN) is the
+// versioned Ironwood effecting data the vote-chain server now requires in
+// place of sighash on delegate-vote submission (2026-08-10 vote-chain 400:
+// "invalid message field: tx1 effects must be 821 bytes, got 0").
+const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str =
+    "([B[B[B[B[B[B[B[B[[BLjava/lang/String;)V";
 // Must match JniVoteCommitResult(Int, Int, Int, String, ByteArray, ByteArray,
 // ByteArray, ByteArray, Array<JniWireEncryptedShare>, Long, ByteArray,
 // Array<ByteArray>, ByteArray, ByteArray, Array<JniSharePayload>) in
@@ -769,6 +777,33 @@ pub(super) fn make_jni_round_summaries(
                     JValue::Long(round.snapshot_height),
                     JValue::Long(round.created_at),
                 ],
+            )
+        })?
+        .into_raw(),
+    )
+}
+
+// Must match JniDelegationPhase(Int, String) in JniVotingModels.kt.
+const JNI_DELEGATION_PHASE_CTOR_SIG: &str = "(ILjava/lang/String;)V";
+
+pub(super) fn make_jni_delegation_phases(
+    env: &mut JNIEnv<'_>,
+    phases: Vec<(u32, voting::phases::DelegationPhase)>,
+) -> anyhow::Result<jobjectArray> {
+    // jint conversion happens up front (anyhow::Result) since the rust_vec_to_java
+    // element closure below must return a plain jni::errors::Result.
+    let payloads = phases
+        .into_iter()
+        .map(|(bundle_index, phase)| Ok((u32_to_jint(bundle_index, "bundle_index")?, phase)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(
+        rust_vec_to_java(env, payloads, JNI_DELEGATION_PHASE, |env, (bundle_index, phase)| {
+            let phase_obj: JObject<'_> = env.new_string(phase.as_str())?.into();
+            env.new_object(
+                JNI_DELEGATION_PHASE,
+                JNI_DELEGATION_PHASE_CTOR_SIG,
+                &[JValue::Int(bundle_index), JValue::Object(&phase_obj)],
             )
         })?
         .into_raw(),
@@ -1582,6 +1617,12 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
         SPEND_AUTH_SIG_BYTES,
     )?;
     let sighash = make_jni_fixed_bytes(env, data.sighash, "sighash", PROTOCOL_FIELD_BYTES)?;
+    let tx1_effects = make_jni_fixed_bytes(
+        env,
+        data.tx1_effects,
+        "tx1_effects",
+        voting::tx1::TX1_EFFECTS_LEN,
+    )?;
     let nf_signed = make_jni_fixed_bytes(env, data.nf_signed, "nf_signed", PROTOCOL_FIELD_BYTES)?;
     let cmx_new = make_jni_fixed_bytes(env, data.cmx_new, "cmx_new", PROTOCOL_FIELD_BYTES)?;
     let gov_comm = make_jni_fixed_bytes(env, data.gov_comm, "gov_comm", PROTOCOL_FIELD_BYTES)?;
@@ -1603,6 +1644,7 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
             JValue::Object(&rk),
             JValue::Object(&spend_auth_sig),
             JValue::Object(&sighash),
+            JValue::Object(&tx1_effects),
             JValue::Object(&nf_signed),
             JValue::Object(&cmx_new),
             JValue::Object(&gov_comm),
@@ -1693,17 +1735,6 @@ pub(super) fn bundled_notes_for_index(
         .ok_or_else(|| anyhow!("bundle_index {bundle_index} is not present in note bundle set"))
 }
 
-/// Advances a round phase without allowing regressions; equal phases are
-/// treated as idempotent.
-pub(super) fn update_round_phase_forward(
-    db: &VotingDb,
-    round_id: &str,
-    phase: RoundPhase,
-) -> anyhow::Result<()> {
-    db.advance_round_phase(round_id, phase)
-        .map_err(|e| anyhow!("advance_round_phase: {}", e))
-}
-
 pub(super) fn select_bundle_notes(
     conn: &rusqlite::Connection,
     round_id: &str,
@@ -1773,53 +1804,3 @@ pub(super) fn received_note_to_note_info(
     .map_err(|e| anyhow!("NoteInfo::from_orchard_note: {}", e))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TEST_ROUND_ID: &str = "round-id";
-    const TEST_WALLET_ID: &str = "wallet-id";
-
-    #[test]
-    fn update_round_phase_forward_is_idempotent() {
-        let db = test_db();
-
-        update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::HotkeyGenerated)
-            .expect("first phase update");
-        update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::HotkeyGenerated)
-            .expect("idempotent phase update");
-
-        let state = db.get_round_state(TEST_ROUND_ID).expect("round state");
-        assert_eq!(RoundPhase::HotkeyGenerated, state.phase);
-    }
-
-    #[test]
-    fn update_round_phase_forward_rejects_regression() {
-        let db = test_db();
-
-        update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::DelegationConstructed)
-            .expect("advance phase");
-        let err = update_round_phase_forward(&db, TEST_ROUND_ID, RoundPhase::HotkeyGenerated)
-            .expect_err("regression rejected");
-
-        assert!(err.to_string().contains("refusing to regress round phase"));
-    }
-
-    fn test_db() -> VotingDb {
-        let db = VotingDb::open(":memory:").expect("test DB");
-        db.set_wallet_id(TEST_WALLET_ID);
-        db.init_round(voting::types::Network::Testnet, &test_round_params(), None)
-            .expect("round initialized");
-        db
-    }
-
-    fn test_round_params() -> voting::types::VotingRoundParams {
-        voting::types::VotingRoundParams {
-            vote_round_id: TEST_ROUND_ID.to_string(),
-            snapshot_height: 100_000,
-            ea_pk: vec![0xEA; PROTOCOL_FIELD_BYTES],
-            nc_root: vec![0x01; PROTOCOL_FIELD_BYTES],
-            nullifier_imt_root: vec![0x02; PROTOCOL_FIELD_BYTES],
-        }
-    }
-}
