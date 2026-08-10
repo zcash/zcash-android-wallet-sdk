@@ -217,3 +217,74 @@ internal fun VotingNoteInfo.toInternal(): cash.z.ecc.android.sdk.internal.Voting
             },
         ufvk = ufvk
     )
+
+internal fun cash.z.ecc.android.sdk.internal.DelegationPirPrecomputeResult.toPublic():
+    cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult =
+    cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount
+    )
+
+internal fun cash.z.ecc.android.sdk.internal.DelegationProofResult.toPublic():
+    cash.z.ecc.android.sdk.model.voting.VotingDelegationProofResult =
+    cash.z.ecc.android.sdk.model.voting.VotingDelegationProofResult(
+        proof = proof,
+        publicInputs = publicInputs,
+        nfSigned = nfSigned,
+        cmxNew = cmxNew,
+        govNullifiers = govNullifiers,
+        vanComm = vanComm,
+        rk = rk
+    )
+
+internal fun cash.z.ecc.android.sdk.internal.DelegationSubmissionResult.toPublic():
+    cash.z.ecc.android.sdk.model.voting.VotingDelegationSubmissionResult =
+    cash.z.ecc.android.sdk.model.voting.VotingDelegationSubmissionResult(
+        proof = proof,
+        rk = rk,
+        spendAuthSig = spendAuthSig,
+        sighash = sighash,
+        tx1Effects = tx1Effects,
+        nfSigned = nfSigned,
+        cmxNew = cmxNew,
+        govComm = govComm,
+        govNullifiers = govNullifiers,
+        voteRoundId = voteRoundId
+    )
+
+internal fun cash.z.ecc.android.sdk.internal.VotingTxHashLookup.toPublic():
+    cash.z.ecc.android.sdk.model.voting.VotingTxHashLookup =
+    when (this) {
+        is cash.z.ecc.android.sdk.internal.VotingTxHashLookup.Missing ->
+            cash.z.ecc.android.sdk.model.voting.VotingTxHashLookup.Missing
+        is cash.z.ecc.android.sdk.internal.VotingTxHashLookup.Found ->
+            cash.z.ecc.android.sdk.model.voting.VotingTxHashLookup.Found(txHash)
+    }
+
+internal fun cash.z.ecc.android.sdk.internal.CommitmentBundleRecord.toPublic():
+    cash.z.ecc.android.sdk.model.voting.VotingCommitmentBundleRecord =
+    cash.z.ecc.android.sdk.model.voting.VotingCommitmentBundleRecord(
+        commitment = commitment.toPublic(),
+        vcTreePosition = vcTreePosition
+    )
+
+internal fun cash.z.ecc.android.sdk.internal.CommittedVoteRecord.toPublic():
+    cash.z.ecc.android.sdk.model.voting.VotingCommittedVoteRecord =
+    cash.z.ecc.android.sdk.model.voting.VotingCommittedVoteRecord(
+        commit = commit.toPublic(),
+        vcTreePosition = vcTreePosition
+    )
+
+internal fun cash.z.ecc.android.sdk.internal.ShareDelegationRecord.toPublic():
+    cash.z.ecc.android.sdk.model.voting.VotingShareDelegationRecord =
+    cash.z.ecc.android.sdk.model.voting.VotingShareDelegationRecord(
+        roundId = roundId,
+        bundleIndex = bundleIndex,
+        proposalId = proposalId,
+        shareIndex = shareIndex,
+        sentToUrls = sentToUrls,
+        nullifier = nullifier,
+        confirmed = confirmed,
+        submitAt = submitAt,
+        createdAt = createdAt
+    )
