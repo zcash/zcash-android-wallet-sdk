@@ -89,8 +89,7 @@ const JNI_DELEGATION_PROOF_RESULT_CTOR_SIG: &str = "([B[[B[B[B[[B[B[B)V";
 // versioned Ironwood effecting data the vote-chain server now requires in
 // place of sighash on delegate-vote submission (2026-08-10 vote-chain 400:
 // "invalid message field: tx1 effects must be 821 bytes, got 0").
-const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str =
-    "([B[B[B[B[B[B[B[B[[BLjava/lang/String;)V";
+const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str = "([B[B[B[B[B[B[B[B[[BLjava/lang/String;)V";
 // Must match JniVoteCommitResult(Int, Int, Int, String, ByteArray, ByteArray,
 // ByteArray, ByteArray, Array<JniWireEncryptedShare>, Long, ByteArray,
 // Array<ByteArray>, ByteArray, ByteArray, Array<JniSharePayload>) in
@@ -797,17 +796,20 @@ pub(super) fn make_jni_delegation_phases(
         .map(|(bundle_index, phase)| Ok((u32_to_jint(bundle_index, "bundle_index")?, phase)))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    Ok(
-        rust_vec_to_java(env, payloads, JNI_DELEGATION_PHASE, |env, (bundle_index, phase)| {
+    Ok(rust_vec_to_java(
+        env,
+        payloads,
+        JNI_DELEGATION_PHASE,
+        |env, (bundle_index, phase)| {
             let phase_obj: JObject<'_> = env.new_string(phase.as_str())?.into();
             env.new_object(
                 JNI_DELEGATION_PHASE,
                 JNI_DELEGATION_PHASE_CTOR_SIG,
                 &[JValue::Int(bundle_index), JValue::Object(&phase_obj)],
             )
-        })?
-        .into_raw(),
-    )
+        },
+    )?
+    .into_raw())
 }
 
 pub(super) fn make_jni_vote_records(
@@ -1803,4 +1805,3 @@ pub(super) fn received_note_to_note_info(
     )
     .map_err(|e| anyhow!("NoteInfo::from_orchard_note: {}", e))
 }
-
