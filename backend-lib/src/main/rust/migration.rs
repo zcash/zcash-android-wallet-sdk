@@ -13,8 +13,8 @@
 
 use anyhow::anyhow;
 use rand::rngs::OsRng;
-use zcash_address::{ToAddress, ZcashAddress, unified, unified::Encoding as _};
 use zcash_client_backend::{
+    address::Receiver,
     data_api::{
         Account as _, InputSource, MaxSpendMode, WalletRead,
         wallet::{
@@ -93,14 +93,16 @@ pub(crate) fn propose_orchard_to_ironwood(
 
     // The internal scope is the account's own change address, so the funds
     // stay with the account rather than being exposed as an external payment.
+    //
+    // [`Receiver::to_zcash_address`] wraps a bare Orchard address as the
+    // single-receiver unified address this call needs. It performs the same
+    // three steps (raw address bytes, one-item `unified::Address`,
+    // `from_unified`) that this function used to spell out by hand. The
+    // hand-rolled form also propagated a `try_from_items` error that cannot
+    // occur: a unified address may always hold one Orchard receiver, which is
+    // why upstream asserts it instead.
     let receiver = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
-    let recipient = ZcashAddress::from_unified(
-        network.network_type(),
-        unified::Address::try_from_items(vec![unified::Receiver::Orchard(
-            receiver.to_raw_address_bytes(),
-        )])
-        .map_err(|e| anyhow!("Unable to construct the migration recipient: {}", e))?,
-    );
+    let recipient = Receiver::Orchard(receiver).to_zcash_address(network.network_type());
 
     // Orchard only. Sapling and transparent funds are deliberately left where
     // they are: this migrates one pool, it is not a sweep of the wallet.
