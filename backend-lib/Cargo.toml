@@ -44,7 +44,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_voting)'] }
 # unstable-voting-circuits` should stay empty; if it ever isn't, the circuits are back in the
 # shipped library. Re-enabling voting means asking for it again — see the shielded-voting
 # block below.
-orchard = "0.15"
+orchard = { version = "0.15", features = ["unstable-voting-circuits"] }
 zcash_pool_migration = { version = "0.1.0-rc.7", features = ["wallet"] }
 # `signer` is this branch's addition, for the Keystone batch-signing recipe below
 # (`pczt::roles::signer::batch`).
@@ -140,14 +140,14 @@ xz2 = { version = "0.1", features = ["static"] }
 # below (the 1.0 sources this tree is written against are the git rev, not the published
 # crate), and build with `--cfg zcash_voting`. `incrementalmerkletree` above stays
 # uncommented either way -- the migration engine uses it too.
-# zcash_voting = { version = "1.0.0" }
+zcash_voting = { version = "2.0.0-rc.4" }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
 # orchard already carry transitively; pin to the versions already resolved for them
 # (see Cargo.lock) so this stays the same crate instance, not a second copy.
-# pasta_curves = { version = "0.5" }
-# ff = { version = "0.13" }
+pasta_curves = { version = "0.5" }
+ff = { version = "0.13" }
 
 # Slipstream sync engine. Its JNI binding is folded into this crate as the `slipstream` module
 # (src/main/rust/slipstream/), gated by the off-by-default `slipstream` feature above, so the
@@ -212,9 +212,7 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
-# Commented out with the `zcash_voting` dependency itself: cargo warns about a patch
-# entry for a crate that is not in the graph. Uncomment together with it.
-# zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "7d39d02b297f0ce23751f2638bf403285e34e675" }
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "60f468a42ade1b021439b2d0bdd238044703ea3f" }
 
 # DO NOT ALTER THIS COMMENT
 #

@@ -127,10 +127,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 /// Builds a governance PCZT for one deterministic bundle from the full snapshot note set.
 ///
 /// Shared by the explicit-FVK Keystone path and the seed-validated software path. Callers must
-/// provide already validated signer material; this helper verifies the bundle index, advances the
-/// round phase forward to `HotkeyGenerated` at PCZT-build time (the delegation ordering is
-/// data-enforced — the build consumes the hotkey secret directly), persists the constructed
-/// delegation state, and advances the phase to `DelegationConstructed` on success.
+/// provide already validated signer material; this helper verifies the bundle index and persists
+/// the constructed delegation state.
+///
+/// Deliberately does NOT touch the round-level `phase` column (the crate's own
+/// per-bundle `DelegationPhase`, derived on read from persisted artifacts via
+/// `zcash_voting::phases`, is the source of truth for "has this bundle been constructed" —
+/// mirrors upstream `zcash_voting::delegate::setup`/Vizor, which does zero phase manipulation
+/// here. The round `phase` column only ever advances via `build_and_prove_delegation` and
+/// `build_vote_commitment`. A prior version advanced it to `HotkeyGenerated`/`DelegationConstructed`
+/// here too, which made this call fail with "refusing to regress round phase" for any bundle
+/// after the first once an earlier bundle had already been proved — multi-bundle rounds always
+/// crashed constructing bundle 1+ with a NULL `alpha` at prove time).
 #[allow(clippy::too_many_arguments)]
 fn build_governance_pczt_for_bundle(
     db: &VotingDbHandle,
@@ -144,7 +152,6 @@ fn build_governance_pczt_for_bundle(
     round_name: &str,
 ) -> anyhow::Result<GovernancePczt> {
     let bundle_notes = bundled_notes_for_index(notes, bundle_index)?;
-    update_round_phase_forward(db, round_id, RoundPhase::HotkeyGenerated)?;
 
     let hotkey = voting::types::VotingHotkey::from_stored_secret(hotkey_secret, db.network)
         .map_err(|e| anyhow!("VotingHotkey::from_stored_secret: {}", e))?;
@@ -176,7 +183,6 @@ fn build_governance_pczt_for_bundle(
             consensus_branch_id,
         )
         .map_err(|e| anyhow!("build_governance_pczt: {}", e))?;
-    update_round_phase_forward(db, round_id, RoundPhase::DelegationConstructed)?;
     Ok(pczt)
 }
 
@@ -275,9 +281,24 @@ fn extract_indexed_spend_auth_sig(
     ))
 }
 
-fn connect_pir_client(pir_url: &str) -> anyhow::Result<voting::PirClientBlocking> {
-    voting::PirClientBlocking::with_transport(pir_url, Arc::new(voting::HyperTransport::new()))
+fn connect_pir_client(
+    pir_url: &str,
+    pir_layout: voting::config::PirLayout,
+) -> anyhow::Result<voting::PirClientBlocking> {
+    voting::connect_pir_blocking(pir_layout, pir_url, Arc::new(voting::HyperTransport::new()))
         .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
+}
+
+fn pir_layout_from_jni(
+    pir_depth: jint,
+    tier0_layers: jint,
+    tier1_layers: jint,
+) -> anyhow::Result<voting::config::PirLayout> {
+    Ok(voting::config::PirLayout {
+        pir_depth: jint_to_u32(pir_depth, "pir_depth")?,
+        tier0_layers: jint_to_u32(tier0_layers, "tier0_layers")?,
+        tier1_layers: jint_to_u32(tier1_layers, "tier1_layers")?,
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -318,6 +339,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     round_id: JString<'local>,
     bundle_index: jint,
     pir_server_url: JString<'local>,
+    pir_depth: jint,
+    pir_tier0_layers: jint,
+    pir_tier1_layers: jint,
     notes: JObjectArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -329,7 +353,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let round_id = java_string_to_rust(env, &round_id)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
-        let pir_client = connect_pir_client(&pir_url)?;
+        let pir_layout = pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers)?;
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
         let result = db
             .precompute_delegation_pir(
                 &round_id,
@@ -355,6 +380,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     round_id: JString<'local>,
     bundle_index: jint,
     pir_server_url: JString<'local>,
+    pir_depth: jint,
+    pir_tier0_layers: jint,
+    pir_tier1_layers: jint,
     notes: JObjectArray<'local>,
     fvk_bytes: JByteArray<'local>,
     hotkey_secret: JByteArray<'local>,
@@ -370,7 +398,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
 
         let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
@@ -399,7 +426,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         .map_err(|e| anyhow!("DelegationKeys::with_voting_hotkey: {}", e))?;
 
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
-        let pir_client = connect_pir_client(&pir_url)?;
+        let pir_layout = pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers)?;
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = DelegationProgressReporterBridge(reporter.as_ref());
         let result = db
@@ -751,25 +779,6 @@ fn require_witnesses_match_bundle(
                 note.position
             ));
         }
-    }
-
-    Ok(())
-}
-
-fn require_round_phase_not_after(
-    db: &VotingDb,
-    round_id: &str,
-    max_phase: RoundPhase,
-) -> anyhow::Result<()> {
-    let state = db
-        .get_round_state(round_id)
-        .map_err(|e| anyhow!("get_round_state: {}", e))?;
-    if state.phase as i32 > max_phase as i32 {
-        return Err(anyhow!(
-            "round {round_id} is already past {:?}: {:?}",
-            max_phase,
-            state.phase
-        ));
     }
 
     Ok(())
