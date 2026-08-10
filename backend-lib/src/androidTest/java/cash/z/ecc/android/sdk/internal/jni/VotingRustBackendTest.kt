@@ -700,7 +700,7 @@ class VotingRustBackendTest {
     @Test
     fun build_governance_pczt_does_not_advance_round_phase() =
         runTest {
-            // 2026-08-10: build_governance_pczt_for_bundle deliberately stopped advancing the
+            // build_governance_pczt_for_bundle deliberately stopped advancing the
             // round-level phase (see its doc comment) — the round-level phase can't distinguish
             // "this round's bundles are all still Prepared" from "some OTHER bundle in this round
             // already raced ahead to Proved", which made constructing bundle 1+ of a multi-bundle

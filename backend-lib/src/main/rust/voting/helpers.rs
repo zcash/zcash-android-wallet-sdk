@@ -87,7 +87,7 @@ const JNI_DELEGATION_PROOF_RESULT_CTOR_SIG: &str = "([B[[B[B[B[[B[B[B)V";
 // signing digest, still needed for Keystone-signature verification;
 // `tx1_effects` (821 bytes, zcash_voting::tx1::TX1_EFFECTS_LEN) is the
 // versioned Ironwood effecting data the vote-chain server now requires in
-// place of sighash on delegate-vote submission (2026-08-10 vote-chain 400:
+// place of sighash on delegate-vote submission (vote-chain 400:
 // "invalid message field: tx1 effects must be 821 bytes, got 0").
 const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str = "([B[B[B[B[B[B[B[B[[BLjava/lang/String;)V";
 // Must match JniVoteCommitResult(Int, Int, Int, String, ByteArray, ByteArray,

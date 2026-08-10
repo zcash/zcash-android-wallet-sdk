@@ -71,7 +71,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 /// `pczt_built`, `proved`, `submitted`, `confirmed` — see `zcash_voting::phases::DelegationPhase`),
 /// derived on read from persisted artifacts rather than the coarse round-level `phase` column.
 /// This is the primitive multi-bundle-aware callers should use instead of `getRoundStateNative`'s
-/// round-level phase for per-bundle "is this already done" decisions (2026-08-10, see
+/// round-level phase for per-bundle "is this already done" decisions (see
 /// `build_governance_pczt_for_bundle`'s doc comment for why the round-level phase can't do this).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_delegationPhasesNative<

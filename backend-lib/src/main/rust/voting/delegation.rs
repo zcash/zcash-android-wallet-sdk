@@ -130,7 +130,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 /// provide already validated signer material; this helper verifies the bundle index and persists
 /// the constructed delegation state.
 ///
-/// Deliberately does NOT touch the round-level `phase` column (2026-08-10: the crate's own
+/// Deliberately does NOT touch the round-level `phase` column (the crate's own
 /// per-bundle `DelegationPhase`, derived on read from persisted artifacts via
 /// `zcash_voting::phases`, is the source of truth for "has this bundle been constructed" —
 /// mirrors upstream `zcash_voting::delegate::setup`/Vizor, which does zero phase manipulation
