@@ -36,7 +36,10 @@ interface VotingSdk {
      * True if this build's native library actually exports the voting JNI symbols. Callers must
      * check this before any other call — a mismatch between the app's runtime feature flag and
      * how this SDK artifact was compiled otherwise surfaces as an [UnsatisfiedLinkError] crash
-     * instead of a graceful no-op. Cheap: does not open a database or touch the network.
+     * instead of a graceful no-op. Not free: this warms the native proving caches as a side
+     * effect (its implementation calls [warmProvingCaches]), so call it once and cache the
+     * result rather than polling it on a hot path. Does not open a database or touch the
+     * network.
      */
     suspend fun isAvailable(): Boolean
 
