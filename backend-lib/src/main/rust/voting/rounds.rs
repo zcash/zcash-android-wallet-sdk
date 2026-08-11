@@ -14,11 +14,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ini
     ea_pk: JByteArray<'local>,
     nc_root: JByteArray<'local>,
     nullifier_imt_root: JByteArray<'local>,
+    network_id: jint,
     session_json: JString<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
+        let network = voting_network_from_id(network_id)?;
         let params = voting::types::VotingRoundParams {
             vote_round_id: java_string_to_rust(env, &round_id)?,
             snapshot_height: jlong_to_u64(snapshot_height, "snapshot_height")?,
@@ -32,7 +34,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ini
             )?,
         };
         let session = java_nullable_string_to_rust(env, &session_json)?;
-        db.init_round(db.network, &params, session.as_deref())
+        db.init_round(network, &params, session.as_deref())
             .map_err(|e| anyhow!("init_round: {}", e))?;
         Ok(())
     });
@@ -172,12 +174,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        // VoteRecord no longer carries a `submitted` flag in zcash_voting 1.0;
-        // the round recovery snapshot's tx_hash presence stands in for it.
         let round_id = java_string_to_rust(env, &round_id)?;
-        let snapshot = voting::recovery::round_snapshot(&db, &round_id)
-            .map_err(|e| anyhow!("round_snapshot: {}", e))?;
-        make_jni_vote_records(env, snapshot.votes)
+        let votes = db
+            .get_votes(&round_id)
+            .map_err(|e| anyhow!("get_votes: {}", e))?;
+        let phases = db
+            .vote_phases(&round_id)
+            .map_err(|e| anyhow!("vote_phases: {}", e))?
+            .into_iter()
+            .map(|(bundle_index, proposal_id, phase)| ((bundle_index, proposal_id), phase))
+            .collect();
+        make_jni_vote_records(env, votes, &phases)
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }

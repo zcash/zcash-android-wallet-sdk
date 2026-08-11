@@ -114,12 +114,6 @@ mod migration_plan_cache;
 mod migration_send_max;
 mod tor;
 mod utils;
-// Voting is disabled on this branch: the `zcash_voting` dependency these sources need is
-// commented out in Cargo.toml, so they are gated off entirely rather than behind a cargo
-// feature (a feature would have to name `dep:zcash_voting`). Build with `--cfg zcash_voting`
-// to compile them locally. Voting is re-enabled separately, against `main`, by
-// https://github.com/zcash/zcash-android-wallet-sdk/pull/2075.
-#[cfg(zcash_voting)]
 mod voting;
 
 /// The Slipstream sync engine's JNI binding, folded in as a module so its
