@@ -29,14 +29,30 @@ import cash.z.ecc.android.sdk.model.voting.VotingTxHashLookup
 import cash.z.ecc.android.sdk.model.voting.VotingVanWitness
 import cash.z.ecc.android.sdk.model.voting.VotingVoteRecord
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal class VotingSdkImpl(
     private val backend: TypesafeVotingBackend = TypesafeVotingBackendImpl()
 ) : VotingSdk {
+    private val isAvailableMutex = Mutex()
+
+    @Volatile
+    private var cachedIsAvailable: Boolean? = null
+
+    // Probing availability warms the (expensive) Halo2 proving caches as a side effect, so the
+    // result is computed at most once per process and cached here rather than on every call.
+    // Any failure -- not just UnsatisfiedLinkError -- means unavailable: NativeLibraryLoader
+    // wraps a failed System.loadLibrary in AssertionError, not UnsatisfiedLinkError, so a
+    // `!is UnsatisfiedLinkError` check would previously report "available" for exactly the
+    // missing-native-library case this gate exists to catch.
     override suspend fun isAvailable(): Boolean =
-        runCatching { backend.warmProvingCaches() }
-            .fold(onSuccess = { true }, onFailure = { it !is UnsatisfiedLinkError })
+        cachedIsAvailable ?: isAvailableMutex.withLock {
+            cachedIsAvailable ?: runCatching { backend.warmProvingCaches() }.isSuccess.also {
+                cachedIsAvailable = it
+            }
+        }
 
     override suspend fun openDb(dbPath: String, walletId: String, networkId: Int): VotingDbSession =
         VotingDbSessionImpl(backend.openVotingDb(dbPath, walletId, networkId))

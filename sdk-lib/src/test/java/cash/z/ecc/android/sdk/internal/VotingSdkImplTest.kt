@@ -33,6 +33,35 @@ class VotingSdkImplTest {
             assertFalse(sdk.isAvailable())
         }
 
+    // NativeLibraryLoader wraps a failed System.loadLibrary in AssertionError, not
+    // UnsatisfiedLinkError -- this is the case the old `it !is UnsatisfiedLinkError` check
+    // silently reported as "available" for.
+    @Test
+    fun isAvailable_returns_false_on_AssertionError_from_a_missing_native_library() =
+        runBlocking {
+            val backend = mock(TypesafeVotingBackend::class.java)
+            `when`(backend.warmProvingCaches())
+                .thenThrow(AssertionError("Failed loading native library zcashwalletsdk"))
+            val sdk = VotingSdkImpl(backend)
+
+            assertFalse(sdk.isAvailable())
+        }
+
+    @Test
+    fun isAvailable_memoizes_and_only_warms_proving_caches_once() =
+        runBlocking {
+            val backend = mock(TypesafeVotingBackend::class.java)
+            val sdk = VotingSdkImpl(backend)
+
+            assertTrue(sdk.isAvailable())
+            assertTrue(sdk.isAvailable())
+            assertTrue(sdk.isAvailable())
+
+            org.mockito.Mockito
+                .verify(backend, org.mockito.Mockito.times(1))
+                .warmProvingCaches()
+        }
+
     @Test
     fun openDb_wraps_the_returned_TypesafeVotingDb() =
         runBlocking {
