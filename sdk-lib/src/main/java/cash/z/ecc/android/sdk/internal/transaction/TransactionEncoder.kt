@@ -88,10 +88,13 @@ internal interface TransactionEncoder {
      *
      * @return the successfully encoded transactions or an exception
      *
+     * @throws TransactionEncoderException.AnchorNotFoundException if no anchor was computable
+     * at the height the proposal anchors to; sync further, then create a new proposal.
      * @throws TransactionEncoderException.TransactionNotCreatedException
      * @throws TransactionEncoderException.TransactionNotFoundException
      */
     @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
         TransactionEncoderException.TransactionNotCreatedException::class,
         TransactionEncoderException.TransactionNotFoundException::class,
     )

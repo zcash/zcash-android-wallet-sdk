@@ -368,6 +368,15 @@ interface Synchronizer {
      * @return a flow of result objects for the transactions that were created as part of
      *         the proposal, indicating whether they were submitted to the network or if
      *         an error occurred.
+     *
+     * @throws TransactionEncoderException.AnchorNotFoundException if the transactions could
+     *         not be created because no anchor was computable at the height the proposal
+     *         anchors to. Scanning creates a checkpoint at every height a proposal can anchor
+     *         to, so the expected recovery is to sync further and then create a new proposal;
+     *         the failed proposal anchors to the same height, so retrying it unchanged is not
+     *         expected to succeed on its own.
+     * @throws TransactionEncoderException.TransactionNotCreatedException if the transactions
+     *         could not be created for another reason.
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
@@ -385,7 +394,10 @@ interface Synchronizer {
      *
      * @return The partially created transaction in [Pczt] format.
      *
-     * @throws PcztException.CreatePcztFromProposalException as a common indicator of the operation failure
+     * @throws PcztException.CreatePcztFromProposalException as a common indicator of the operation failure.
+     *         When the failure is that no anchor was computable at the height the proposal
+     *         anchors to, its `cause` is a [TransactionEncoderException.AnchorNotFoundException];
+     *         sync further, then create a new proposal.
      */
     @Throws(PcztException.CreatePcztFromProposalException::class)
     suspend fun createPcztFromProposal(
