@@ -85,6 +85,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ext
 /// arbitrary account here would allow delegation to be built against a hotkey the vote
 /// construction path cannot subsequently sign for, so the API surface hides the constraint
 /// instead of leaving it as a runtime trap.
+///
+/// `hotkey_seed` must be exactly `HOTKEY_STORED_SECRET_BYTES` (64) bytes, matching every other
+/// hotkey-secret validation site in this module (`generateHotkeyNative`, `buildGovernancePcztNative`,
+/// `buildAndProveDelegationNative`). This is not an arbitrary tightening: `hotkey_orchard_raw_address`
+/// below runs the exact same `UnifiedSpendingKey::from_seed` ZIP-32 derivation, with the same
+/// hardcoded account/address indices, that `VotingHotkey::from_stored_secret` runs internally
+/// (`zcash_voting::hotkey::spending_key_from_hotkey_seed`) — so the two paths compute the same
+/// address for the same bytes and must accept the same lengths. Accepting a shorter seed here
+/// let callers derive a "hotkey address" for material that would then unconditionally fail
+/// `from_stored_secret`'s own length check the first time it was actually used to sign anything.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_deriveHotkeyRawAddressNative<
     'local,
@@ -96,8 +106,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_der
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
         let network = network_from_id(network_id)?;
-        let hotkey_seed =
-            java_secret_bytes_at_least(env, &hotkey_seed, "hotkeySeed", PROTOCOL_FIELD_BYTES)?;
+        let hotkey_seed = java_secret_bytes_exact(
+            env,
+            &hotkey_seed,
+            "hotkeySeed",
+            HOTKEY_STORED_SECRET_BYTES,
+        )?;
         let bytes =
             hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, HOTKEY_ACCOUNT_INDEX)?;
         Ok(env.byte_array_from_slice(&bytes)?.into_raw())

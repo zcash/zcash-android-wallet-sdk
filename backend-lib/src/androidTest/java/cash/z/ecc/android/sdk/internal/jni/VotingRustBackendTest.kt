@@ -185,6 +185,25 @@ class VotingRustBackendTest {
             }
         }
 
+    /**
+     * `deriveHotkeyRawAddress` and `generateHotkey`'s `storedSecret` run the exact same
+     * ZIP-32 derivation over the same bytes (`VotingHotkey::from_stored_secret` internally
+     * delegates to the same `UnifiedSpendingKey::from_seed` call), so a length this call
+     * silently accepted but `generateHotkey` would go on to reject (32..63 bytes) would let
+     * an app derive a "hotkey address" preview for material that can never actually become a
+     * usable hotkey.
+     */
+    @Test
+    fun derive_hotkey_raw_address_rejects_seed_shorter_than_hotkey_stored_secret() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            val fieldOnlySeed = ByteArray(FIELD_BYTES) { 0x42 }
+
+            assertFailsWith<RuntimeException> {
+                backend.deriveHotkeyRawAddress(fieldOnlySeed, TESTNET_NETWORK_ID)
+            }
+        }
+
     @Test
     fun extract_nc_root_decodes_tree_state() =
         runTest {
