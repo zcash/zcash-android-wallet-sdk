@@ -10,7 +10,7 @@ import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 
-internal suspend fun CombinedWalletClient.submitTransaction(
+suspend fun CombinedWalletClient.submitTransaction(
     rawTransaction: FirstClassByteArray,
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags

@@ -16,7 +16,7 @@ import cash.z.ecc.android.sdk.model.BlockHeight
  * checkpoints do not carry it yet, so this cannot be required the way
  * [orchardTree] is.
  */
-internal data class Checkpoint(
+data class Checkpoint(
     val height: BlockHeight,
     val hash: String,
     // Note: this field does NOT match the name of the JSON, so will break with field-based JSON parsing

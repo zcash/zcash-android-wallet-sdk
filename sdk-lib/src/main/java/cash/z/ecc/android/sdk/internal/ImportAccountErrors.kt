@@ -11,7 +11,7 @@ package cash.z.ecc.android.sdk.internal
  * `SqliteClientError::CorruptedData` raised by `rewind_to_chain_state`'s cross-pool checkpoint
  * parity check.
  */
-internal object ImportAccountErrors {
+object ImportAccountErrors {
     private const val CHECKPOINTS_NOT_READY_MARKER = "ImportAccountCheckpointsNotReady"
 
     /**

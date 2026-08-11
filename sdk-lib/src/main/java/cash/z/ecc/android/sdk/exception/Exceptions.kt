@@ -481,7 +481,7 @@ sealed class PcztException(
     message: String,
     cause: Throwable? = null
 ) : SdkException(message, cause) {
-    class CreatePcztFromProposalException internal constructor(
+    class CreatePcztFromProposalException(
         description: String?,
         cause: Throwable?
     ) : PcztException(
@@ -489,7 +489,7 @@ sealed class PcztException(
             cause
         )
 
-    class RedactPcztForSignerException internal constructor(
+    class RedactPcztForSignerException(
         description: String?,
         cause: Throwable?
     ) : PcztException(
@@ -497,7 +497,7 @@ sealed class PcztException(
             cause
         )
 
-    class PcztRequiresSaplingProofsException internal constructor(
+    class PcztRequiresSaplingProofsException(
         description: String?,
         cause: Throwable?
     ) : PcztException(
@@ -505,7 +505,7 @@ sealed class PcztException(
             cause
         )
 
-    class AddProofsToPcztException internal constructor(
+    class AddProofsToPcztException(
         description: String?,
         cause: Throwable?
     ) : PcztException(

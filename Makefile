@@ -44,13 +44,15 @@ NETWORK ?= Zcashmainnet
 #   make test-instrumented MANAGED_DEVICE=pixel2Target
 MANAGED_DEVICE ?= pixel2Min
 
-# Scoped to the four modules CI covers. The unqualified task would also pull in
+# Scoped to the five modules CI covers. The unqualified task would also pull in
 # darkside-test-lib, which needs a live darkside server, and the demo-app
-# modules.
+# modules. :slipstream-lib only exists when IS_SLIPSTREAM_ENABLED is true, so
+# drop it from this list when running with the flag off.
 ANDROID_TEST_MODULES := \
 	:sdk-lib:$(MANAGED_DEVICE)DebugAndroidTest \
 	:lightwallet-client-lib:$(MANAGED_DEVICE)DebugAndroidTest \
 	:sdk-incubator-lib:$(MANAGED_DEVICE)DebugAndroidTest \
+	:slipstream-lib:$(MANAGED_DEVICE)DebugAndroidTest \
 	:backend-lib:$(MANAGED_DEVICE)DebugAndroidTest
 
 # maxConcurrentDevices=1 keeps a single emulator booted at a time so the
@@ -225,7 +227,7 @@ ktlint-format: ## Apply Kotlin code style with ktlint
 
 .PHONY: lint-android
 lint-android: ## Static analysis with Android Lint
-	$(GRADLE) :sdk-lib:lintRelease :demo-app:lint$(NETWORK)Release
+	$(GRADLE) :sdk-lib:lintRelease :slipstream-lib:lintRelease :demo-app:lint$(NETWORK)Release
 
 .PHONY: check-properties
 check-properties: ## Validate the Gradle properties

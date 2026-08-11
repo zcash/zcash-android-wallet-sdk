@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.internal.model
 
-internal data class RecoveryProgress(
+data class RecoveryProgress(
     val numerator: Long,
     val denominator: Long
 ) : Progress(numerator, denominator) {

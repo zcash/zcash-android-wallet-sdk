@@ -31,7 +31,7 @@ import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 
 @Suppress("TooManyFunctions")
-internal interface TypesafeBackend {
+interface TypesafeBackend {
     val backend: Backend
 
     val network: ZcashNetwork

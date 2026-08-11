@@ -19,10 +19,19 @@ mavenPublishing {
     )
 }
 
+// Selects which sync engine WalletCoordinator drives. Exactly one of the two source directories
+// supplies `engineSynchronizerFactory`, so the engine choice is resolved at SDK build time and no
+// runtime flag survives into the published artifact.
+val isSlipstreamEnabled = project.property("IS_SLIPSTREAM_ENABLED").toString().toBoolean()
+
 android {
     namespace = "cash.z.ecc.android.sdk.incubator"
 
     useLibrary("android.test.runner")
+
+    sourceSets.getByName("main") {
+        java.srcDir(if (isSlipstreamEnabled) "src/engineSlipstream/java" else "src/engineDefault/java")
+    }
 
     defaultConfig {
         consumerProguardFiles("proguard-consumer.txt")
@@ -60,6 +69,12 @@ tasks.dokkaHtml.configure {
 }
 
 dependencies {
+    // Deliberately the string notation: the `projects.slipstreamLib` typesafe accessor does not
+    // exist when the module is not included, which would break configuration of flag-off builds.
+    if (isSlipstreamEnabled) {
+        implementation(project(":slipstream-lib"))
+    }
+
     implementation(projects.sdkLib)
     implementation(libs.bip39)
 

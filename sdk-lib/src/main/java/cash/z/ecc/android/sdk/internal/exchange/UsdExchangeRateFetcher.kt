@@ -9,7 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlin.time.Clock
 
-internal class UsdExchangeRateFetcher(
+class UsdExchangeRateFetcher(
     private val isolatedTorClient: LazyTorClient,
 ) : Disposable {
     @Suppress("TooGenericExceptionCaught", "ReturnCount")
