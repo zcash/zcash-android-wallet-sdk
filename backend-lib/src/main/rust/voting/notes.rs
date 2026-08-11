@@ -306,12 +306,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let network = db.network;
-        let stored_secret = java_bytes(env, &stored_secret, "storedSecret")?;
-        let hotkey = if stored_secret.is_empty() {
+        // Wrap in SecretVec like every other hotkey-secret call site in this module
+        // (buildGovernancePcztNative, buildAndProveDelegationNative, buildVoteCommitmentNative,
+        // deriveHotkeyRawAddressNative): this was the one JNI entry point that read the
+        // caller-supplied secret as a bare Vec<u8>, which neither zeroizes on drop nor guards
+        // against an incidental `{:?}` from printing the material.
+        let stored_secret = SecretVec::new(java_bytes(env, &stored_secret, "storedSecret")?);
+        let hotkey = if stored_secret.expose_secret().is_empty() {
             voting::hotkey::generate_random_voting_hotkey(network)
                 .map_err(|e| anyhow!("generate_random_voting_hotkey: {}", e))?
         } else {
-            voting::types::VotingHotkey::from_stored_secret(&stored_secret, network)
+            voting::types::VotingHotkey::from_stored_secret(stored_secret.expose_secret(), network)
                 .map_err(|e| anyhow!("VotingHotkey::from_stored_secret: {}", e))?
         };
         make_jni_voting_hotkey(env, hotkey)
