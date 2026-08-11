@@ -47,6 +47,7 @@ use zcash_client_backend::{
         TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
         WalletSummary, WalletWrite, Zip32Derivation,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
+        error::Error as DataApiError,
         scanning::{ScanPriority, ScanRange},
         wallet::{
             self, SignerView, create_pczt_from_proposal, create_proposed_transactions,
@@ -61,6 +62,7 @@ use zcash_client_backend::{
         DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
         UnifiedFullViewingKey, UnifiedSpendingKey,
     },
+    proposal::ProposalError,
     proto::{proposal::Proposal, service::TreeState},
     tor::{
         DormantMode,
@@ -2107,6 +2109,47 @@ fn zip317_helper<DbT>(
     )
 }
 
+/// The JVM class thrown when creating transactions from a proposal fails with
+/// [`ProposalError::AnchorNotFound`]. The `(String, long)` constructor signature is part of
+/// the JNI contract with the Kotlin class.
+const ANCHOR_NOT_FOUND_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/jni/ProposalAnchorNotFoundException";
+
+/// Converts a failure from building transactions (or a PCZT) out of a proposal into the
+/// `anyhow` error reported through the generic exception path, first raising a typed
+/// `ProposalAnchorNotFoundException` on the JVM when the failure is
+/// [`ProposalError::AnchorNotFound`], so that callers can react to it without matching
+/// message text. `utils::exception::throw_object` owns the pending-exception contract: the
+/// typed throw wins when it succeeds and the generic `RuntimeException` remains the fallback
+/// when it does not.
+fn map_proposal_error<DE, TE, SE, FE, CE, N>(
+    env: &mut JNIEnv,
+    context: &str,
+    e: DataApiError<DE, TE, SE, FE, CE, N>,
+) -> anyhow::Error
+where
+    DataApiError<DE, TE, SE, FE, CE, N>: std::fmt::Display,
+{
+    if let DataApiError::Proposal(ProposalError::AnchorNotFound(anchor_height)) = &e {
+        let description = format!(
+            "{}: no anchor is computable at height {}",
+            context, anchor_height
+        );
+        utils::exception::throw_object(env, ANCHOR_NOT_FOUND_EXCEPTION_CLASS, |env| {
+            let message = env.new_string(&description)?;
+            env.new_object(
+                ANCHOR_NOT_FOUND_EXCEPTION_CLASS,
+                "(Ljava/lang/String;J)V",
+                &[
+                    JValue::Object(&message),
+                    JValue::Long(u32::from(*anchor_height) as jlong),
+                ],
+            )
+        });
+    }
+    anyhow!("{}: {}", context, e)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTransferFromUri<
     'local,
@@ -2119,7 +2162,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
     network_id: jint,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let _span = tracing::info_span!("RustBackend.proposeTransfer").entered();
+        let _span = tracing::info_span!("RustBackend.proposeTransferFromUri").entered();
         let network = parse_network(network_id as u32)?;
         let mut db_data = wallet_db(env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
@@ -2439,7 +2482,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             &proposal,
             expiry_height,
         )
-        .map_err(|e| anyhow!("Error while creating transactions: {}", e))?;
+        .map_err(|e| map_proposal_error(env, "Error while creating transactions", e))?;
 
         Ok(
             utils::rust_vec_to_java(env, txids.into(), "[B", |env, txid| {
@@ -2494,7 +2537,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
                 expiry_height,
                 orchard_pool_padding,
             )
-            .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
+            .map_err(|e| {
+                map_proposal_error(env, "Error creating PCZT from single-step proposal", e)
+            })?;
 
             Ok(utils::rust_bytes_to_java(
                 env,

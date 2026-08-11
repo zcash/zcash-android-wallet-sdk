@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk
 
+import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
@@ -21,6 +22,15 @@ interface Broadcaster {
      *
      * Created transactions will not be automatically resubmitted until they are
      * submitted through this API.
+     *
+     * @throws TransactionEncoderException.AnchorNotFoundException if the transactions could
+     *         not be created because no anchor was computable at the height the proposal
+     *         anchors to. Scanning creates a checkpoint at every height a proposal can anchor
+     *         to, so the expected recovery is to sync further and then create a new proposal;
+     *         the failed proposal anchors to the same height, so retrying it unchanged is not
+     *         expected to succeed on its own.
+     * @throws TransactionEncoderException.TransactionNotCreatedException if the transactions
+     *         could not be created for another reason.
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
