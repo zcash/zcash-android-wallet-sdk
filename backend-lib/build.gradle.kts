@@ -143,11 +143,17 @@ cargo {
     // https://developer.android.com/about/versions/15/behavior-changes-all#16-kb
     exec = { spec, _ ->
         spec.environment["RUST_ANDROID_GRADLE_CC_LINK_ARG"] = "-Wl,-z,max-page-size=16384"
-        // chp worktree: shielded voting re-enabled for real-device trial. `mod voting` in lib.rs
-        // is gated behind this cfg (not a Cargo feature, see backend-lib/Cargo.toml), so it must
-        // be threaded through here too or the shipped .so still omits the VotingRustBackend_*
-        // JNI exports even with the zcash_voting dependency uncommented.
-        spec.environment["RUSTFLAGS"] = "--cfg zcash_voting"
+        // `--cfg zcash_voting` is currently a no-op: `mod voting;` in lib.rs is an unconditional
+        // module declaration (not `#[cfg(zcash_voting)]`-gated), and nothing else in this crate
+        // reads this cfg either (see backend-lib/Cargo.toml's `zcash_voting` dependency comment
+        // for the historical "how to re-enable" note this flag was originally written for, back
+        // when voting was toggled by commenting out its Cargo.toml dependency block instead).
+        // Kept as a cheap, harmless forward-compatible hook in case gating returns; not required
+        // for today's build. Appended (not assigned) so CI/dev-set ambient RUSTFLAGS survive.
+        val existingRustflags = spec.environment["RUSTFLAGS"]?.toString()
+        spec.environment["RUSTFLAGS"] =
+            listOfNotNull(existingRustflags?.takeIf { it.isNotBlank() }, "--cfg zcash_voting")
+                .joinToString(" ")
     }
     // GUI-launched IDEs (Android Studio from Finder/Dock) inherit a minimal PATH that omits
     // ~/.cargo/bin, so the rustup `cargo`/`rustc` shims are not found and cargoBuild fails with
