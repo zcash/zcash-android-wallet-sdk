@@ -106,12 +106,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_der
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
         let network = network_from_id(network_id)?;
-        let hotkey_seed = java_secret_bytes_exact(
-            env,
-            &hotkey_seed,
-            "hotkeySeed",
-            HOTKEY_STORED_SECRET_BYTES,
-        )?;
+        let hotkey_seed =
+            java_secret_bytes_exact(env, &hotkey_seed, "hotkeySeed", HOTKEY_STORED_SECRET_BYTES)?;
         let bytes =
             hotkey_orchard_raw_address(hotkey_seed.expose_secret(), network, HOTKEY_ACCOUNT_INDEX)?;
         Ok(env.byte_array_from_slice(&bytes)?.into_raw())
