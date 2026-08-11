@@ -398,6 +398,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
+        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
 
         let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
@@ -779,6 +780,33 @@ fn require_witnesses_match_bundle(
                 note.position
             ));
         }
+    }
+
+    Ok(())
+}
+
+/// Fails fast if the round has already advanced past `max_phase`, instead of letting a stale
+/// retry silently re-enter minutes-long Halo2 proving for an already-past-submission round.
+///
+/// This is a read-only check (unlike the round-level `phase` writes `build_governance_pczt_for_bundle`
+/// deliberately no longer performs — see that function's doc comment) and does not reintroduce
+/// the multi-bundle "refusing to regress round phase" regression: it only ever rejects a round
+/// that is *further along* than `max_phase`, never blocks a bundle that simply hasn't reached it
+/// yet.
+fn require_round_phase_not_after(
+    db: &VotingDb,
+    round_id: &str,
+    max_phase: RoundPhase,
+) -> anyhow::Result<()> {
+    let state = db
+        .get_round_state(round_id)
+        .map_err(|e| anyhow!("get_round_state: {}", e))?;
+    if state.phase as i32 > max_phase as i32 {
+        return Err(anyhow!(
+            "round {round_id} is already past {:?}: {:?}",
+            max_phase,
+            state.phase
+        ));
     }
 
     Ok(())
