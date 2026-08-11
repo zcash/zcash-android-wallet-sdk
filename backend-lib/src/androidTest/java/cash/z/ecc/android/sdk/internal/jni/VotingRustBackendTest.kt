@@ -1284,6 +1284,48 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun store_keystone_signature_reaches_native_boundary_and_validates_lengths() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            try {
+                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+
+                // Reaches the native boundary and persists successfully -- resetVotingSessionState's
+                // preservation of Keystone-signed bundles (verified at the Rust unit-test level:
+                // store_keystone_signature_persists_and_is_retrievable) depends on this call
+                // actually landing in the crate's keystone_signatures table.
+                db.storeKeystoneSignature(
+                    roundId = PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE) { 0x11 },
+                    keystoneSighash = ByteArray(FIELD_BYTES) { 0xAA.toByte() },
+                    rk = ByteArray(FIELD_BYTES) { 0x22 }
+                )
+
+                assertFailsWith<RuntimeException> {
+                    db.storeKeystoneSignature(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE - 1),
+                        keystoneSighash = ByteArray(FIELD_BYTES),
+                        rk = ByteArray(FIELD_BYTES)
+                    )
+                }
+                assertFailsWith<RuntimeException> {
+                    db.storeKeystoneSignature(
+                        roundId = PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE),
+                        keystoneSighash = ByteArray(FIELD_BYTES),
+                        rk = ByteArray(FIELD_BYTES - 1)
+                    )
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun add_sent_servers_appends_and_deduplicates_native_jni() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)

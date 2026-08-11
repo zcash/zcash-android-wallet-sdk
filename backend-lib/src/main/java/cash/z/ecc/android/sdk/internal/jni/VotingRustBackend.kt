@@ -583,6 +583,35 @@ class VotingRustBackend private constructor() {
                 ) ?: error("getDelegationSubmissionWithKeystoneSig returned null")
             }
 
+        /**
+         * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+         * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+         * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+         * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not
+         * arbitrary caller-supplied values — this call does not itself re-verify the signature.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun storeKeystoneSignature(
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray,
+            rk: ByteArray
+        ) = withHandle { handle ->
+            check(
+                storeKeystoneSignatureNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    keystoneSig,
+                    keystoneSighash,
+                    rk
+                )
+            ) {
+                "storeKeystoneSignature failed for roundId=$roundId bundleIndex=$bundleIndex"
+            }
+        }
+
         @Throws(RuntimeException::class)
         suspend fun storeTreeState(
             roundId: String,
@@ -1219,6 +1248,17 @@ class VotingRustBackend private constructor() {
             keystoneSig: ByteArray,
             keystoneSighash: ByteArray
         ): JniDelegationSubmissionResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeKeystoneSignatureNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray,
+            rk: ByteArray
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)

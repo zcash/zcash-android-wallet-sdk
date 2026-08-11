@@ -503,6 +503,20 @@ internal interface VotingDbBackend {
     suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase>
 
     suspend fun resetVotingSessionState(roundId: String)
+
+    /**
+     * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+     * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+     * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+     * [getDelegationSubmissionWithKeystoneSig] call, not arbitrary caller-supplied values.
+     */
+    suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    )
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -841,6 +855,14 @@ private class RustVotingDbBackend(
 
     override suspend fun resetVotingSessionState(roundId: String) =
         votingDb.resetVotingSessionState(roundId)
+
+    override suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    ) = votingDb.storeKeystoneSignature(roundId, bundleIndex, keystoneSig, keystoneSighash, rk)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -1223,6 +1245,14 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun resetVotingSessionState(roundId: String) =
         votingDb.resetVotingSessionState(roundId)
+
+    override suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    ) = votingDb.storeKeystoneSignature(roundId, bundleIndex, keystoneSig, keystoneSighash, rk)
 }
 
 internal fun JniGovernancePczt.toGovernancePcztResult(): GovernancePcztResult {

@@ -657,6 +657,50 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Persists a Keystone-signed delegation bundle's signature so a later round-wide
+/// `resetVotingSessionStateNative` preserves this bundle instead of wiping its unsigned setup
+/// fields for a rebuild. Wraps the crate's own `store_keystone_signature`
+/// (`storage/queries.rs`/`storage/operations.rs`), which `clear_unsigned_delegation_setup_fields`
+/// already checks against (`bundle_index NOT IN (SELECT bundle_index FROM keystone_signatures ...)`)
+/// — so simply calling this after a successful `getDelegationSubmissionWithKeystoneSigNative` is
+/// enough to make that preservation take effect; nothing else needs to change.
+///
+/// Callers should pass the `rk`/`sighash` pair `getDelegationSubmissionWithKeystoneSigNative`
+/// already verified `keystone_sig` against (its returned submission result's `rk`), not
+/// arbitrary caller-supplied values — this call does not itself re-verify the signature.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeKeystoneSignatureNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    keystone_sig: JByteArray<'local>,
+    keystone_sighash: JByteArray<'local>,
+    rk: JByteArray<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let sig = java_bytes_exact(env, &keystone_sig, "keystoneSig", SPEND_AUTH_SIG_BYTES)?;
+        let sighash = java_bytes_exact(
+            env,
+            &keystone_sighash,
+            "keystoneSighash",
+            PROTOCOL_FIELD_BYTES,
+        )?;
+        let rk = java_bytes_exact(env, &rk, "rk", PROTOCOL_FIELD_BYTES)?;
+        db.store_keystone_signature(&round_id, bundle_index, &sig, &sighash, &rk)
+            .map_err(|e| anyhow!("store_keystone_signature: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
 #[cfg(feature = "android-test-fixtures")]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_delegationProofResultFixtureNative<
@@ -840,6 +884,55 @@ mod tests {
     use super::*;
     use rand::rngs::OsRng;
     use voting::types::VotingHotkey;
+
+    #[test]
+    fn require_round_phase_not_after_allows_phase_at_or_before_max() {
+        let (db, round_id) = test_db_with_round();
+
+        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)
+            .expect("Initialized is not after DelegationProved");
+
+        db.advance_round_phase(&round_id, RoundPhase::DelegationProved)
+            .expect("advance to DelegationProved");
+        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)
+            .expect("DelegationProved is not after DelegationProved");
+    }
+
+    #[test]
+    fn require_round_phase_not_after_fails_fast_once_round_moved_past_max() {
+        let (db, round_id) = test_db_with_round();
+        db.advance_round_phase(&round_id, RoundPhase::VoteReady)
+            .expect("advance to VoteReady");
+
+        let err = require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("already past"));
+    }
+
+    #[test]
+    fn store_keystone_signature_persists_and_is_retrievable() {
+        let (db, round_id) = test_db_with_round();
+        let notes = [note_info()];
+        db.ensure_bundles_with_skipped_suffix_with_policy(
+            &round_id,
+            &notes,
+            voting::BundlePolicy::default(),
+        )
+        .expect("bundle setup");
+
+        db.store_keystone_signature(&round_id, 0, &[0x11; 64], &[0xAA; 32], &[0x22; 32])
+            .expect("store keystone signature");
+
+        let signatures = db
+            .get_keystone_signatures(&round_id)
+            .expect("get keystone signatures");
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(signatures[0].bundle_index, 0);
+        assert_eq!(signatures[0].sig, vec![0x11; 64]);
+        assert_eq!(signatures[0].sighash, vec![0xAA; 32]);
+        assert_eq!(signatures[0].rk, vec![0x22; 32]);
+    }
 
     #[test]
     fn extract_spend_auth_sig_accepts_signed_governance_pczt() {

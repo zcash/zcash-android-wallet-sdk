@@ -538,6 +538,37 @@ class TypesafeVotingBackendImplTest {
         }
 
     @Test
+    fun storeKeystoneSignature_forwards_all_arguments() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+            val keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE) { 1 }
+            val keystoneSighash = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) { 2 }
+            val rk = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) { 3 }
+
+            db.storeKeystoneSignature(
+                roundId = "round-1",
+                bundleIndex = 4,
+                keystoneSig = keystoneSig,
+                keystoneSighash = keystoneSighash,
+                rk = rk
+            )
+
+            assertEquals(1, backend.storeKeystoneSignatureCalls.size)
+            val call = backend.storeKeystoneSignatureCalls.single()
+            assertEquals("round-1", call.roundId)
+            assertEquals(4, call.bundleIndex)
+            assertContentEquals(keystoneSig, call.keystoneSig)
+            assertContentEquals(keystoneSighash, call.keystoneSighash)
+            assertContentEquals(rk, call.rk)
+        }
+
+    @Test
     fun recovery_methods_forward_arguments_and_map_results() =
         runTest {
             val commitment = jniVoteCommitmentResult(voteCommitment = field(31))
@@ -1371,6 +1402,16 @@ class TypesafeVotingBackendImplTest {
         var delegationPhasesResult: Array<JniDelegationPhase> = emptyArray()
         var resetVotingSessionStateCalls = mutableListOf<String>()
 
+        data class StoreKeystoneSignatureCall(
+            val roundId: String,
+            val bundleIndex: Int,
+            val keystoneSig: ByteArray,
+            val keystoneSighash: ByteArray,
+            val rk: ByteArray
+        )
+
+        var storeKeystoneSignatureCalls = mutableListOf<StoreKeystoneSignatureCall>()
+
         override suspend fun close() = unused()
 
         override suspend fun initRound(
@@ -1763,6 +1804,18 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun resetVotingSessionState(roundId: String) {
             resetVotingSessionStateCalls.add(roundId)
+        }
+
+        override suspend fun storeKeystoneSignature(
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray,
+            rk: ByteArray
+        ) {
+            storeKeystoneSignatureCalls.add(
+                StoreKeystoneSignatureCall(roundId, bundleIndex, keystoneSig, keystoneSighash, rk)
+            )
         }
 
         private fun unused(): Nothing = error("unused")

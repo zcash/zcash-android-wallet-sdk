@@ -350,10 +350,34 @@ internal interface TypesafeVotingDb {
     suspend fun delegationPhases(roundId: String): List<JniDelegationPhase>
 
     /**
-     * Clears a bundle's unsigned delegation setup fields (PCZT/rk/sighash) and any stale proof
-     * row so a subsequent construct call starts clean. Does not delete round-level state.
+     * Clears unsigned delegation setup fields (PCZT/rk/sighash) for every bundle in [roundId]
+     * that has neither a submitted delegation tx nor a persisted [storeKeystoneSignature] entry
+     * — see the crate's `clear_unsigned_delegation_setup_fields` for the exact predicate — so a
+     * subsequent construct call starts clean. Does not delete round-level state.
+     *
+     * Known gap: this does **not** clear the `proofs` table row for those bundles, only the
+     * `bundles` table's setup columns — the underlying crate has no public API for that (see
+     * MOB-1678 investigation notes). A bundle reset+rebuilt this way keeps its old (now
+     * stale-alpha) proof row until a fresh proof overwrites it via
+     * `buildAndProveDelegation`/`storeDelegationProofFixture`; callers must not treat proof-row
+     * presence alone as proof-freshness for a bundle that has gone through a reset.
      */
     suspend fun resetVotingSessionState(roundId: String)
+
+    /**
+     * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+     * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+     * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+     * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not arbitrary
+     * caller-supplied values — this call does not itself re-verify the signature.
+     */
+    suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    )
 }
 
 internal data class VotingNoteInfo(

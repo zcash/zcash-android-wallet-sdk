@@ -229,8 +229,32 @@ interface VotingDbSession {
     /** The canonical per-bundle delegation phase for every bundle with recorded progress. */
     suspend fun delegationPhases(roundId: String): List<VotingDelegationPhase>
 
-    /** Clears a bundle's unsigned delegation setup fields and any stale proof row. */
+    /**
+     * Clears unsigned delegation setup fields for every bundle in [roundId] that has neither a
+     * submitted delegation tx nor a persisted [storeKeystoneSignature] entry, so a subsequent
+     * construct call starts clean.
+     *
+     * Known gap: this does **not** clear a reset bundle's stale `proofs` row — the underlying
+     * crate has no public API for that. Callers must not treat proof-row presence alone as
+     * proof-freshness for a bundle that has gone through a reset; only a fresh
+     * `buildAndProveDelegation` call actually overwrites it.
+     */
     suspend fun resetVotingSessionState(roundId: String)
+
+    /**
+     * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+     * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+     * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+     * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not arbitrary
+     * caller-supplied values — this call does not itself re-verify the signature.
+     */
+    suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    )
 
     suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray)
 
@@ -270,6 +294,14 @@ interface VotingDbSession {
 
     suspend fun storeVoteTxHash(roundId: String, bundleIndex: Int, proposalId: Int, txHash: String)
 
+    /**
+     * Vestigial: [storeVoteTxHash] is now the sole atomic recorder for "this vote's tx hash is
+     * known and it is submitted" — that single call already does everything this method used
+     * to. Calling this after [storeVoteTxHash] is always a harmless no-op (it re-asserts the
+     * same already-recorded hash); calling it before [storeVoteTxHash] for the same vote throws.
+     * Kept only for existing callers — do not add new call sites, rely on [storeVoteTxHash]
+     * alone instead.
+     */
     suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int)
 
     suspend fun getVoteTxHash(roundId: String, bundleIndex: Int, proposalId: Int): VotingTxHashLookup

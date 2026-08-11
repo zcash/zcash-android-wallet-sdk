@@ -204,6 +204,14 @@ internal class VotingDbSessionImpl(
 
     override suspend fun resetVotingSessionState(roundId: String) = db.resetVotingSessionState(roundId)
 
+    override suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    ) = db.storeKeystoneSignature(roundId, bundleIndex, keystoneSig, keystoneSighash, rk)
+
     override suspend fun precomputeDelegationPir(
         roundId: String,
         bundleIndex: Int,
