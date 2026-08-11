@@ -1168,7 +1168,11 @@ internal class TypesafeVotingDbImpl(
         nullifier: ByteArray,
         submitAt: Long
     ) {
-        nullifier.requireByteArraySize("nullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+        // Matches the JNI layer's contract (see `VotingRustBackend.VotingDb.recordShareDelegation`):
+        // the native side derives and persists the authoritative nullifier itself, so the
+        // caller-supplied value is only shape-validated when non-empty. An empty nullifier is the
+        // normal case for callers that do not have it yet.
+        nullifier.requireByteArraySizeIfNotEmpty("nullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
         votingDb.recordShareDelegation(
             roundId,
             bundleIndex,
@@ -1395,6 +1399,11 @@ private fun ((Double) -> Unit).asVotingProgressCallback() =
 private fun ByteArray.requireByteArraySize(name: String, expectedSize: Int) =
     require(size == expectedSize) {
         "$name must be $expectedSize bytes, got $size"
+    }
+
+private fun ByteArray.requireByteArraySizeIfNotEmpty(name: String, expectedSize: Int) =
+    require(isEmpty() || size == expectedSize) {
+        "$name must be empty or $expectedSize bytes, got $size"
     }
 
 private fun ByteArray.requireByteArrayNotEmpty(name: String) =

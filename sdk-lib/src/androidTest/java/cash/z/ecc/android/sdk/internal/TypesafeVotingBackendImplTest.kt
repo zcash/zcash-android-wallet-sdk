@@ -701,6 +701,60 @@ class TypesafeVotingBackendImplTest {
         }
 
     @Test
+    fun recordShareDelegation_accepts_empty_nullifier() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            // The native side derives the authoritative nullifier itself; an empty caller-supplied
+            // nullifier is the documented normal case for callers that do not have it yet.
+            db.recordShareDelegation(
+                roundId = "round-recovery",
+                bundleIndex = 1,
+                proposalId = 2,
+                shareIndex = 3,
+                sentToUrls = listOf("https://helper.example"),
+                nullifier = ByteArray(0),
+                submitAt = 123
+            )
+
+            assertEquals("round-recovery", backend.recordShareRoundId)
+            assertContentEquals(ByteArray(0), backend.recordShareNullifier)
+        }
+
+    @Test
+    fun recordShareDelegation_rejects_non_empty_wrong_size_nullifier() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.recordShareDelegation(
+                        roundId = "round-recovery",
+                        bundleIndex = 1,
+                        proposalId = 2,
+                        shareIndex = 3,
+                        sentToUrls = listOf("https://helper.example"),
+                        nullifier = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE - 1),
+                        submitAt = 123
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("nullifier"))
+        }
+
+    @Test
     fun vote_commitment_wrapper_rejects_invalid_commitment_result() =
         runTest {
             val backend =

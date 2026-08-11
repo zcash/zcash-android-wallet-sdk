@@ -272,6 +272,13 @@ interface VotingDbSession {
 
     suspend fun clearRecoveryState(roundId: String)
 
+    /**
+     * Records that share [shareIndex] was sent to [sentToUrls].
+     *
+     * The native side derives and persists the authoritative nullifier from the vote's own
+     * recovery state; [nullifier] is only shape-validated when non-empty and is never itself
+     * stored. An empty [nullifier] is the normal case for callers that do not have it yet.
+     */
     suspend fun recordShareDelegation(
         roundId: String,
         bundleIndex: Int,
