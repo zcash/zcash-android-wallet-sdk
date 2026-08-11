@@ -558,6 +558,22 @@ sealed class TransactionEncoderException(
             rootCause
         )
 
+    /**
+     * Transactions could not be created from the proposal because no anchor was computable at
+     * [anchorHeight], the height the proposal anchors to. Scanning creates a checkpoint at
+     * every height a proposal can anchor to, so the expected recovery is to sync further and
+     * then create a new proposal; the failed proposal anchors to the same height, so retrying
+     * it unchanged is not expected to succeed on its own.
+     */
+    data class AnchorNotFoundException(
+        val anchorHeight: BlockHeight,
+        val rootCause: Throwable
+    ) : TransactionEncoderException(
+            "Transactions could not be created from the proposal because no anchor was computable" +
+                " at height ${anchorHeight.value}. Sync further, then create a new proposal.",
+            rootCause
+        )
+
     data class ProposalFromUriException(
         val rootCause: Throwable
     ) : TransactionEncoderException(

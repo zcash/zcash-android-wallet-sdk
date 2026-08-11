@@ -7,6 +7,22 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `TransactionEncoderException.AnchorNotFoundException`, thrown by
+  `Synchronizer.createProposedTransactions` when transactions cannot be created from a
+  proposal because no anchor is computable at the height the proposal anchors to
+  (`zcash_client_backend`'s `ProposalError::AnchorNotFound`). When
+  `Synchronizer.createPcztFromProposal` fails for the same reason, the
+  `CreatePcztFromProposalException` it throws now carries this exception as its `cause`.
+  The failure previously surfaced only as the generic
+  `TransactionEncoderException.TransactionNotCreatedException` (or the generic PCZT
+  exception), identifiable only by matching the formatted Rust error message. The new
+  exception is a sibling of `TransactionNotCreatedException`, not a subtype: code that
+  catches `TransactionNotCreatedException` around `createProposedTransactions` and
+  needs to handle this case must add a catch for the new exception. Scanning
+  creates a checkpoint at every height a proposal can anchor to, so the expected
+  recovery is to sync further and then create a new proposal; the failed proposal
+  anchors to the same height, so retrying it unchanged is not expected to succeed on
+  its own.
 - `TransactionOverview.spentNoteCount`, the number of the account's own notes the
   transaction spent.
 - `TransactionOverview.poolCrossingValue`, the value that crossed shielded pools when
@@ -71,7 +87,9 @@ All of the following were picked up from the librustzcash update:
   a pool migration was in progress. A new database migration adds the missing
   column. The backfilled value is exact on the production network; on a test
   network, a pool migration planned under a custom anchor grid is reported as
-  `AnchorIntervalMismatch` and must be re-planned.
+  `AnchorIntervalMismatch` and must be re-planned. (That report originates in the
+  `zcash_pool_migration` engine's prove and rebuild steps, which this SDK does not
+  currently invoke, so it is not surfaced through this SDK's API.)
 - A ZIP 318 crossing anchored to a bucket boundary whose block contains no note
   commitments in any pool no longer fails with `ProposalError::AnchorNotFound`:
   scanning now creates a checkpoint at every anchor-retention grid height, and
