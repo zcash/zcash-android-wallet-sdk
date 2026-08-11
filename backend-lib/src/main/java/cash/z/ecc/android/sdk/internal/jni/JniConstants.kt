@@ -24,19 +24,16 @@ const val JNI_METADATA_KEY_SK_SIZE = 32
 const val JNI_METADATA_KEY_CHAIN_CODE_SIZE = 32
 
 /**
- * The number of bytes in a voting hotkey's stored secret. It's used e.g. in
- * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.storedSecret].
- *
- * Must match VOTING_HOTKEY_STORED_SECRET_LEN in `zcash_voting`, mirrored as
- * HOTKEY_STORED_SECRET_BYTES in backend-lib/src/main/rust/voting/helpers.rs.
+ * The number of bytes in a voting hotkey's opaque stored secret. It's used e.g. in
+ * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.storedSecret]
  */
 const val JNI_HOTKEY_STORED_SECRET_BYTES_SIZE = 64
 
 /**
- * The number of bytes in a raw Orchard address. It's used e.g. in
- * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.rawOrchardAddress].
+ * The number of bytes in a voting hotkey's raw Orchard address. It's used e.g. in
+ * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.rawAddress]
  */
-const val JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE = 43
+const val JNI_HOTKEY_RAW_ADDRESS_BYTES_SIZE = 43
 
 /**
  * The number of bytes in a protocol field element crossing the voting JNI boundary.

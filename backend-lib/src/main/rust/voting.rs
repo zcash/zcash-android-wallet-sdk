@@ -19,13 +19,13 @@ use zcash_client_backend::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
 use zcash_protocol::consensus::Network;
 use zcash_voting as voting;
 
-use voting::phases::VotePhase;
-use voting::storage::{RoundPhase, RoundState, RoundSummary, VoteRecord, VotingDb};
+use voting::recovery::VoteRecovery;
+use voting::storage::{RoundPhase, RoundState, RoundSummary, VotingDb};
 use voting::tree_sync::VoteTreeSync;
 use voting::types::{
     DelegationPirPrecomputeResult, DelegationProofResult, DelegationSubmissionData, GovernancePczt,
-    Network as VotingNetwork, NoopProgressReporter, NoteInfo, ProgressReporter, SharePayload,
-    VoteCommitStageReporter, VotingError, VotingHotkey, WireEncryptedShare, WitnessData,
+    NoopProgressReporter, NoteInfo, ProgressReporter, SharePayload, VoteCommitmentBundle,
+    WireEncryptedShare, WitnessData,
 };
 
 use crate::utils::{

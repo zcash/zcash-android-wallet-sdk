@@ -14,9 +14,8 @@ const JNI_WITNESS_DATA: &str = "cash/z/ecc/android/sdk/internal/model/voting/Jni
 const JNI_VAN_WITNESS: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVanWitness";
 const JNI_WIRE_ENCRYPTED_SHARE: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare";
-const JNI_VOTE_COMMIT_RESULT: &str =
-    "cash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult";
-const JNI_VOTE_SUBMISSION: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVoteSubmission";
+const JNI_VOTE_COMMITMENT_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitmentResult";
 const JNI_SHARE_PAYLOAD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniSharePayload";
 const JNI_COMMITMENT_BUNDLE_RECORD: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniCommitmentBundleRecord";
@@ -32,6 +31,10 @@ const JNI_DELEGATION_PROOF_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationProofResult";
 const JNI_DELEGATION_SUBMISSION_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationSubmissionResult";
+const JNI_VOTE_COMMIT_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult";
+const JNI_COMMITTED_VOTE_RECORD: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniCommittedVoteRecord";
 const JNI_DELEGATION_PHASE: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationPhase";
 
@@ -48,18 +51,15 @@ const JNI_VAN_WITNESS_CTOR_SIG: &str = "([[BJJ)V";
 // Must match JniWireEncryptedShare(ByteArray, ByteArray, Int) in
 // JniVotingModels.kt.
 const JNI_WIRE_ENCRYPTED_SHARE_CTOR_SIG: &str = "([B[BI)V";
-// Must match JniVoteCommitResult(ByteArray, ByteArray, ByteArray, Int, Int,
-// ByteArray, Long, ByteArray, ByteArray, Array<JniWireEncryptedShare>,
-// Array<JniSharePayload>) in JniVotingModels.kt. Guarded by JniVotingModelsTest.
-const JNI_VOTE_COMMIT_RESULT_CTOR_SIG: &str = "([B[B[BII[BJ[B[B[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[Lcash/z/ecc/android/sdk/internal/model/voting/JniSharePayload;)V";
-// Must match JniVoteSubmission(String, Int, Int, ByteArray, ByteArray, ByteArray,
-// ByteArray, ByteArray, ByteArray, Long) in JniVotingModels.kt. Guarded by
-// JniVotingModelsTest.
-const JNI_VOTE_SUBMISSION_CTOR_SIG: &str = "(Ljava/lang/String;II[B[B[B[B[B[BJ)V";
-// Must match JniCommitmentBundleRecord(JniVoteCommitResult, Long) in
+// Must match JniVoteCommitmentResult(ByteArray, ByteArray, ByteArray, Int, Int,
+// ByteArray, Array<JniWireEncryptedShare>, Long, String, ByteArray,
+// Array<ByteArray>, Array<ByteArray>, ByteArray, ByteArray) in
+// JniVotingModels.kt. Guarded by JniVotingModelsTest.
+const JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG: &str = "([B[B[BII[B[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;JLjava/lang/String;[B[[B[[B[B[B)V";
+// Must match JniCommitmentBundleRecord(JniVoteCommitmentResult, Long) in
 // JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_COMMITMENT_BUNDLE_RECORD_CTOR_SIG: &str =
-    "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult;J)V";
+    "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitmentResult;J)V";
 // Must match JniSharePayload(ByteArray, Int, Int, JniWireEncryptedShare,
 // Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray) in
 // JniVotingModels.kt. Guarded by JniVotingModelsTest.
@@ -69,8 +69,8 @@ const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/
 // JniVotingModelsTest.
 const JNI_SHARE_DELEGATION_RECORD_CTOR_SIG: &str =
     "(Ljava/lang/String;III[Ljava/lang/String;[BZJJ)V";
-// Must match JniVotingHotkey(ByteArray, ByteArray, Int) in JniVotingModels.kt.
-const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([B[BI)V";
+// Must match JniVotingHotkey(ByteArray, ByteArray, String) in JniVotingModels.kt.
+const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([B[BLjava/lang/String;)V";
 // Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
 const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
 // Must match JniGovernancePczt(ByteArray, ByteArray, ByteArray, Int) in
@@ -100,15 +100,22 @@ const JNI_VOTE_COMMIT_RESULT_CTOR_SIG: &str = "(IIILjava/lang/String;[B[B[B[B[Lc
 const JNI_COMMITTED_VOTE_RECORD_CTOR_SIG: &str =
     "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult;J)V";
 
+pub(super) const ORCHARD_RAW_ADDRESS_BYTES: usize = 43;
 pub(super) const ORCHARD_FVK_BYTES: usize = 96;
 pub(super) const PROTOCOL_FIELD_BYTES: usize = 32;
 pub(super) const VOTE_COMMITMENT_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const BLIND_BYTES: usize = PROTOCOL_FIELD_BYTES;
 pub(super) const SHARE_NULLIFIER_BYTES: usize = PROTOCOL_FIELD_BYTES;
-// Width of the opaque app-owned voting hotkey secret. zcash_voting owns this
-// value; mirroring it here keeps the JNI length errors specific.
-pub(super) const HOTKEY_STORED_SECRET_BYTES: usize =
-    voting::hotkey::VOTING_HOTKEY_STORED_SECRET_LEN;
+// Length of VotingHotkey::stored_secret(), the opaque app-owned secret Android
+// must persist after a fresh generateHotkeyNative call.
+pub(super) const HOTKEY_STORED_SECRET_BYTES: usize = 64;
+// Hotkeys use one stable Orchard address for voting identity and recovery.
+pub(super) const HOTKEY_ADDRESS_INDEX: u32 = 0;
+// ZIP-32 account for deriving hotkey material from the hotkey seed. This is intentionally
+// distinct from HOTKEY_ADDRESS_INDEX: account selects the Orchard account, address index
+// selects the stable address within that account. zcash_voting's vote path currently derives
+// hotkey signing material only for account 0.
+pub(super) const HOTKEY_ACCOUNT_INDEX: u32 = 0;
 pub(super) const SPEND_AUTH_SIG_BYTES: usize = 64;
 pub(super) const NOTE_SCOPE_EXTERNAL: u32 = 0;
 pub(super) const NOTE_SCOPE_INTERNAL: u32 = 1;
@@ -136,6 +143,23 @@ struct JniVoteRecordPayload {
     bundle_index: jint,
     choice: jint,
     submitted: bool,
+}
+
+struct JniVoteCommitmentResultPayload {
+    van_nullifier: Vec<u8>,
+    vote_authority_note_new: Vec<u8>,
+    vote_commitment: Vec<u8>,
+    proposal_id: u32,
+    bundle_index: u32,
+    proof: Vec<u8>,
+    enc_shares: Vec<WireEncryptedShare>,
+    anchor_height: u32,
+    vote_round_id: String,
+    shares_hash: Vec<u8>,
+    share_blinds: Vec<Vec<u8>>,
+    share_comms: Vec<Vec<u8>>,
+    r_vpk_bytes: Vec<u8>,
+    alpha_v: Vec<u8>,
 }
 
 pub(super) fn jint_to_u32(value: jint, field: &str) -> anyhow::Result<u32> {
@@ -293,21 +317,6 @@ pub(super) fn java_secret_bytes_at_least(
     require_min_len(java_bytes(env, array, field)?, field, minimum).map(SecretVec::new)
 }
 
-/// Reads a secret whose length is fixed by the protocol.
-///
-/// Distinct from `java_secret_bytes_at_least`, which exists for inputs like a
-/// wallet seed whose length genuinely varies. Where the width is fixed, checking
-/// it exactly keeps the JNI boundary and `zcash_voting` agreeing on the contract
-/// rather than accepting an over-long value here and having it rejected deeper in.
-pub(super) fn java_secret_bytes_exact(
-    env: &mut JNIEnv<'_>,
-    array: &JByteArray<'_>,
-    field: &str,
-    expected: usize,
-) -> anyhow::Result<SecretVec<u8>> {
-    require_len(java_bytes(env, array, field)?, field, expected).map(SecretVec::new)
-}
-
 pub(super) fn java_bytes32(
     env: &mut JNIEnv<'_>,
     array: &JByteArray<'_>,
@@ -364,16 +373,38 @@ pub(super) fn network_from_id(id: jint) -> anyhow::Result<Network> {
     }
 }
 
-/// Maps the JNI network id onto `zcash_voting`'s typed network selector.
+/// Resolves the `voting::types::Network` a voting DB handle is opened for.
 ///
-/// `zcash_voting` replaced its historical numeric `network_id` convention with
-/// this enum, so the numeric form now stops at the JNI boundary.
-pub(super) fn voting_network_from_id(id: jint) -> anyhow::Result<VotingNetwork> {
+/// Android has no custom-network registry in this path, so only the two
+/// well-known network ids are accepted; everything else (including the
+/// legacy "custom network" id 2) is rejected here.
+pub(super) fn voting_network_from_id(id: jint) -> anyhow::Result<voting::types::Network> {
     match id {
-        NETWORK_ID_TESTNET => Ok(VotingNetwork::Testnet),
-        NETWORK_ID_MAINNET => Ok(VotingNetwork::Mainnet),
+        NETWORK_ID_TESTNET => Ok(voting::types::Network::Testnet),
+        NETWORK_ID_MAINNET => Ok(voting::types::Network::Mainnet),
         _ => Err(anyhow!("invalid network_id {}", id)),
     }
+}
+
+pub(super) fn hotkey_orchard_raw_address(
+    hotkey_seed: &[u8],
+    network: Network,
+    account_index: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let account_id = zip32::AccountId::try_from(account_index)
+        .map_err(|_| anyhow!("invalid account_index {}", account_index))?;
+    let usk = UnifiedSpendingKey::from_seed(&network, hotkey_seed, account_id)
+        .map_err(|e| anyhow!("failed to derive hotkey USK: {}", e))?;
+    let fvk = usk.to_unified_full_viewing_key();
+    let orchard_fvk = fvk
+        .orchard()
+        .ok_or_else(|| anyhow!("hotkey UFVK has no Orchard component"))?;
+    let addr = orchard_fvk.address_at(HOTKEY_ADDRESS_INDEX, Scope::External);
+    require_len(
+        addr.to_raw_address_bytes().to_vec(),
+        "hotkey_raw_address",
+        ORCHARD_RAW_ADDRESS_BYTES,
+    )
 }
 
 pub(super) fn orchard_fvk_bytes_from_wallet_seed(
@@ -500,6 +531,8 @@ pub(super) fn java_witness_data(
     })
 }
 
+// zcash_voting 1.0.0 (merged-library patch) no longer re-exports `VanWitness` from
+// `tree_sync` (it's defined in, and now only publicly reachable via, `vote`); same fields.
 pub(super) fn java_van_witness(
     env: &mut JNIEnv<'_>,
     witness: &JObject<'_>,
@@ -511,10 +544,168 @@ pub(super) fn java_van_witness(
         "anchorHeight",
     )?;
 
-    // `VanWitness::from_wire` owns the sibling-count and sibling-width checks,
-    // so the JNI layer does not duplicate them.
     voting::vote::VanWitness::from_wire(&auth_path, position, anchor_height)
-        .map_err(|e| anyhow!("invalid VAN witness: {}", e))
+        .map_err(|e| anyhow!("VanWitness::from_wire: {}", e))
+}
+
+fn java_wire_encrypted_share(
+    env: &mut JNIEnv<'_>,
+    share: &JObject<'_>,
+) -> anyhow::Result<WireEncryptedShare> {
+    let share_index = require_share_index(
+        jint_to_u32(env.get_field(share, "shareIndex", "I")?.i()?, "shareIndex")?,
+        "shareIndex",
+    )?;
+
+    Ok(WireEncryptedShare {
+        c1: require_len(
+            java_byte_array_field(env, share, "c1")?,
+            "c1",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        c2: require_len(
+            java_byte_array_field(env, share, "c2")?,
+            "c2",
+            PROTOCOL_FIELD_BYTES,
+        )?,
+        share_index,
+    })
+}
+
+fn java_wire_encrypted_share_list_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<Vec<WireEncryptedShare>> {
+    let list = env.get_field(obj, name, "Ljava/util/List;")?.l()?;
+    let count = env.call_method(&list, "size", "()I", &[])?.i()?;
+    if count < 0 {
+        return Err(anyhow!("{name}.size() returned negative count {count}"));
+    }
+
+    (0..count)
+        .map(|index| {
+            let share = env
+                .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(index)])?
+                .l()?;
+            java_wire_encrypted_share(env, &share).map_err(|e| anyhow!("{name}[{index}]: {e}"))
+        })
+        .collect()
+}
+
+pub(super) struct JavaVoteCommitmentBundle {
+    pub(super) enc_shares: Vec<WireEncryptedShare>,
+    pub(super) bundle: VoteCommitmentBundle,
+}
+
+pub(super) fn java_vote_commitment_bundle(
+    env: &mut JNIEnv<'_>,
+    commitment: &JObject<'_>,
+) -> anyhow::Result<JavaVoteCommitmentBundle> {
+    let enc_shares = require_count(
+        java_wire_encrypted_share_list_field(env, commitment, "encShares")?,
+        "encShares",
+        VOTE_SHARE_COUNT,
+    )?;
+    let share_blinds = require_count(
+        java_byte_array_list_field(env, commitment, "shareBlinds")?,
+        "shareBlinds",
+        VOTE_SHARE_COUNT,
+    )?;
+    let share_comms = require_count(
+        java_byte_array_list_field(env, commitment, "shareComms")?,
+        "shareComms",
+        VOTE_SHARE_COUNT,
+    )?;
+
+    Ok(JavaVoteCommitmentBundle {
+        enc_shares,
+        bundle: VoteCommitmentBundle {
+            van_nullifier: require_len(
+                java_byte_array_field(env, commitment, "vanNullifier")?,
+                "vanNullifier",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            vote_authority_note_new: require_len(
+                java_byte_array_field(env, commitment, "voteAuthorityNoteNew")?,
+                "voteAuthorityNoteNew",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            vote_commitment: require_len(
+                java_byte_array_field(env, commitment, "voteCommitment")?,
+                "voteCommitment",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            proposal_id: jint_to_u32(
+                env.get_field(commitment, "proposalId", "I")?.i()?,
+                "proposalId",
+            )?,
+            proof: java_byte_array_field(env, commitment, "proof")?,
+            // Java carries WireEncryptedShare values plus transient reveal and
+            // signing inputs. The encrypted-share plaintext/randomness fields
+            // intentionally never cross JNI.
+            enc_shares: Vec::new(),
+            anchor_height: jlong_to_u32(
+                env.get_field(commitment, "anchorHeight", "J")?.j()?,
+                "anchorHeight",
+            )?,
+            vote_round_id: java_string_field(env, commitment, "voteRoundId")?,
+            shares_hash: require_len(
+                java_byte_array_field(env, commitment, "sharesHash")?,
+                "sharesHash",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            share_blinds: require_each_len(share_blinds, "shareBlinds", PROTOCOL_FIELD_BYTES)?,
+            share_comms: require_each_len(share_comms, "shareComms", PROTOCOL_FIELD_BYTES)?,
+            r_vpk_bytes: require_len(
+                java_byte_array_field(env, commitment, "rVpk")?,
+                "rVpk",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+            alpha_v: require_len(
+                java_byte_array_field(env, commitment, "alphaV")?,
+                "alphaV",
+                PROTOCOL_FIELD_BYTES,
+            )?,
+        },
+    })
+}
+
+impl JniVoteCommitmentResultPayload {
+    // zcash_voting 1.0.0 persists commitment recovery state as its own
+    // VoteRecoveryBundle JSON (crate::vote::parse_recovery), not the hand-rolled
+    // hex-string JSON this SDK used to own. Recovery fields are already
+    // typed byte arrays, so no hex encode/decode round trip is needed anymore.
+    fn from_recovery_bundle(bundle: voting::vote::VoteRecoveryBundle, bundle_index: u32) -> Self {
+        Self {
+            van_nullifier: bundle.van_nullifier.to_vec(),
+            vote_authority_note_new: bundle.vote_authority_note_new.to_vec(),
+            vote_commitment: bundle.vote_commitment.to_vec(),
+            proposal_id: bundle.proposal_id,
+            bundle_index,
+            proof: bundle.proof,
+            enc_shares: bundle
+                .encrypted_shares
+                .iter()
+                .map(WireEncryptedShare::from)
+                .collect(),
+            anchor_height: bundle.anchor_height,
+            vote_round_id: bundle.vote_round_id,
+            shares_hash: bundle.shares_hash.to_vec(),
+            share_blinds: bundle
+                .share_blinds
+                .iter()
+                .map(|value| value.to_vec())
+                .collect(),
+            share_comms: bundle
+                .share_comms
+                .iter()
+                .map(|value| value.to_vec())
+                .collect(),
+            r_vpk_bytes: bundle.r_vpk.to_vec(),
+            alpha_v: bundle.alpha_v.to_vec(),
+        }
+    }
 }
 
 fn require_note_scope(scope: u32) -> anyhow::Result<u32> {
@@ -623,12 +814,11 @@ pub(super) fn make_jni_delegation_phases(
 
 pub(super) fn make_jni_vote_records(
     env: &mut JNIEnv<'_>,
-    votes: Vec<VoteRecord>,
-    phases: &HashMap<(u32, u32), VotePhase>,
+    votes: Vec<VoteRecovery>,
 ) -> anyhow::Result<jobjectArray> {
     let payloads = votes
         .into_iter()
-        .map(|vote| JniVoteRecordPayload::from_record(vote, phases))
+        .map(JniVoteRecordPayload::try_from)
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(
@@ -662,33 +852,17 @@ impl TryFrom<RoundSummary> for JniRoundSummaryPayload {
     }
 }
 
-impl JniVoteRecordPayload {
-    /// Pairs a vote row with its lifecycle phase.
-    ///
-    /// `VoteRecord` no longer carries a submission flag: submission is one step
-    /// of the vote's lifecycle phase, which is loaded separately and keyed by the
-    /// same bundle/proposal pair.
-    fn from_record(
-        record: VoteRecord,
-        phases: &HashMap<(u32, u32), VotePhase>,
-    ) -> anyhow::Result<Self> {
-        let phase = phases
-            .get(&(record.bundle_index, record.proposal_id))
-            .ok_or_else(|| {
-                anyhow!(
-                    "no lifecycle phase recorded for bundle {} proposal {}",
-                    record.bundle_index,
-                    record.proposal_id
-                )
-            })?;
+// VoteRecord no longer carries a `submitted` flag in zcash_voting 1.0; derive it
+// from recovery state instead (a recorded tx_hash means the vote was submitted).
+impl TryFrom<VoteRecovery> for JniVoteRecordPayload {
+    type Error = anyhow::Error;
 
+    fn try_from(record: VoteRecovery) -> anyhow::Result<Self> {
         Ok(JniVoteRecordPayload {
             proposal_id: u32_to_jint(record.proposal_id, "proposal_id")?,
             bundle_index: u32_to_jint(record.bundle_index, "bundle_index")?,
             choice: u32_to_jint(record.choice, "choice")?,
-            // A confirmed vote was necessarily submitted first, so both terminal
-            // phases report as submitted.
-            submitted: matches!(phase, VotePhase::Submitted | VotePhase::Confirmed),
+            submitted: record.tx_hash.is_some(),
         })
     }
 }
@@ -821,9 +995,14 @@ pub(super) fn make_jni_van_witness<'local>(
     witness: voting::vote::VanWitness,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_VAN_WITNESS)?;
+    let auth_path = witness
+        .auth_path
+        .into_iter()
+        .map(|bytes| bytes.to_vec())
+        .collect();
     let auth_path = make_jni_fixed_byte_array_vec(
         env,
-        witness.auth_path,
+        auth_path,
         "auth_path",
         VAN_WITNESS_PATH_DEPTH,
         PROTOCOL_FIELD_BYTES,
@@ -889,81 +1068,191 @@ fn make_jni_wire_encrypted_share_array<'local>(
     }
 }
 
-/// Builds the Kotlin cast-vote JNI model from a committed vote.
+/// Builds the one-shot `vote::commit` result: the signed commitment bundle
+/// plus the vote_auth_sig and share_payloads it produces.
 pub(super) fn make_jni_vote_commit_result<'local>(
     env: &mut JNIEnv<'local>,
-    commit: voting::vote::VoteCommit,
+    commit: voting::vote::SignedVoteCommitment,
     bundle_index: u32,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_VOTE_COMMIT_RESULT)?;
-    let van_nullifier = make_jni_bytes(env, &commit.van_nullifier)?;
-    let vote_authority_note_new = make_jni_bytes(env, &commit.vote_authority_note_new)?;
-    let vote_commitment = make_jni_bytes(env, &commit.vote_commitment)?;
+    let vote_round_id: JObject<'local> = env.new_string(&commit.vote_round_id)?.into();
+    let van_nullifier = make_jni_fixed_bytes(
+        env,
+        commit.van_nullifier.to_vec(),
+        "van_nullifier",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let vote_authority_note_new = make_jni_fixed_bytes(
+        env,
+        commit.vote_authority_note_new.to_vec(),
+        "vote_authority_note_new",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let vote_commitment = make_jni_fixed_bytes(
+        env,
+        commit.vote_commitment.to_vec(),
+        "vote_commitment",
+        PROTOCOL_FIELD_BYTES,
+    )?;
     let proof = make_jni_bytes(env, &commit.proof)?;
-    let r_vpk = make_jni_bytes(env, &commit.r_vpk)?;
-    let vote_auth_sig = make_jni_bytes(env, &commit.vote_auth_sig)?;
-    let enc_shares = make_jni_wire_encrypted_share_array(env, commit.encrypted_shares)?;
+    let enc_shares = require_count(commit.encrypted_shares, "enc_shares", VOTE_SHARE_COUNT)?;
+    let enc_shares = make_jni_wire_encrypted_share_array(env, enc_shares)?;
     let enc_shares = JObject::from(enc_shares);
-    let share_payloads = make_jni_share_payload_object_array(env, commit.share_payloads)?;
-    let share_payloads = JObject::from(share_payloads);
+    let shares_hash = make_jni_fixed_bytes(
+        env,
+        commit.shares_hash.to_vec(),
+        "shares_hash",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let share_comms = commit
+        .share_comms
+        .iter()
+        .map(|value| value.to_vec())
+        .collect::<Vec<_>>();
+    let share_comms = make_jni_fixed_byte_array_vec(
+        env,
+        share_comms,
+        "share_comms",
+        VOTE_SHARE_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let share_comms = JObject::from(share_comms);
+    let r_vpk = make_jni_fixed_bytes(env, commit.r_vpk.to_vec(), "r_vpk", PROTOCOL_FIELD_BYTES)?;
+    let vote_auth_sig = make_jni_fixed_bytes(
+        env,
+        commit.vote_auth_sig.to_vec(),
+        "vote_auth_sig",
+        SPEND_AUTH_SIG_BYTES,
+    )?;
+    let share_payloads = make_jni_share_payload_array(env, commit.share_payloads)?;
+    let share_payloads = unsafe { JObject::from_raw(share_payloads) };
 
     Ok(env
         .new_object(
             &class,
             JNI_VOTE_COMMIT_RESULT_CTOR_SIG,
             &[
+                JValue::Int(u32_to_jint(bundle_index, "bundle_index")?),
+                JValue::Int(u32_to_jint(commit.proposal_id, "proposal_id")?),
+                JValue::Int(u32_to_jint(commit.choice, "choice")?),
+                JValue::Object(&vote_round_id),
                 JValue::Object(&van_nullifier),
                 JValue::Object(&vote_authority_note_new),
                 JValue::Object(&vote_commitment),
-                JValue::Int(u32_to_jint(commit.proposal_id, "proposal_id")?),
-                JValue::Int(u32_to_jint(bundle_index, "bundle_index")?),
                 JValue::Object(&proof),
+                JValue::Object(&enc_shares),
                 JValue::Long(u64_to_jlong(
                     u64::from(commit.anchor_height),
                     "anchor_height",
                 )?),
+                JValue::Object(&shares_hash),
+                JValue::Object(&share_comms),
                 JValue::Object(&r_vpk),
                 JValue::Object(&vote_auth_sig),
-                JValue::Object(&enc_shares),
                 JValue::Object(&share_payloads),
             ],
         )?
         .into_raw())
 }
 
-/// Builds the Kotlin cast-vote submission JNI model.
-pub(super) fn make_jni_vote_submission<'local>(
+/// Wraps a recovered `vote::commit` result with its confirmed vote commitment
+/// tree position, for `recoverCommittedVoteNative`.
+pub(super) fn make_jni_committed_vote_record<'local>(
     env: &mut JNIEnv<'local>,
-    submission: voting::vote::VoteSubmission,
+    commit: voting::vote::SignedVoteCommitment,
     bundle_index: u32,
+    vc_tree_position: u64,
 ) -> anyhow::Result<jobject> {
-    let class = env.find_class(JNI_VOTE_SUBMISSION)?;
-    let vote_round_id: JObject<'local> = env.new_string(submission.vote_round_id)?.into();
-    let van_nullifier = make_jni_bytes(env, &submission.van_nullifier)?;
-    let vote_authority_note_new = make_jni_bytes(env, &submission.vote_authority_note_new)?;
-    let vote_commitment = make_jni_bytes(env, &submission.vote_commitment)?;
-    let proof = make_jni_bytes(env, &submission.proof)?;
-    let r_vpk = make_jni_bytes(env, &submission.r_vpk)?;
-    let vote_auth_sig = make_jni_bytes(env, &submission.vote_auth_sig)?;
+    let class = env.find_class(JNI_COMMITTED_VOTE_RECORD)?;
+    let result = make_jni_vote_commit_result(env, commit, bundle_index)?;
+    let result = unsafe { JObject::from_raw(result) };
+    let record = env.new_object(
+        &class,
+        JNI_COMMITTED_VOTE_RECORD_CTOR_SIG,
+        &[
+            JValue::Object(&result),
+            JValue::Long(u64_to_jlong(vc_tree_position, "vc_tree_position")?),
+        ],
+    )?;
+    Ok(record.into_raw())
+}
+
+fn make_jni_vote_commitment_result_payload<'local>(
+    env: &mut JNIEnv<'local>,
+    payload: JniVoteCommitmentResultPayload,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_VOTE_COMMITMENT_RESULT)?;
+    let enc_shares = require_count(payload.enc_shares, "enc_shares", VOTE_SHARE_COUNT)?;
+    let van_nullifier = make_jni_fixed_bytes(
+        env,
+        payload.van_nullifier,
+        "van_nullifier",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let vote_authority_note_new = make_jni_fixed_bytes(
+        env,
+        payload.vote_authority_note_new,
+        "vote_authority_note_new",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let vote_commitment = make_jni_fixed_bytes(
+        env,
+        payload.vote_commitment,
+        "vote_commitment",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let proof = make_jni_bytes(env, &payload.proof)?;
+    let enc_shares = make_jni_wire_encrypted_share_array(env, enc_shares)?;
+    let enc_shares = JObject::from(enc_shares);
+    let vote_round_id: JObject<'local> = env.new_string(payload.vote_round_id)?.into();
+    let shares_hash = make_jni_fixed_bytes(
+        env,
+        payload.shares_hash,
+        "shares_hash",
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let share_blinds = make_jni_fixed_byte_array_vec(
+        env,
+        payload.share_blinds,
+        "share_blinds",
+        VOTE_SHARE_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let share_comms = make_jni_fixed_byte_array_vec(
+        env,
+        payload.share_comms,
+        "share_comms",
+        VOTE_SHARE_COUNT,
+        PROTOCOL_FIELD_BYTES,
+    )?;
+    let share_blinds = JObject::from(share_blinds);
+    let share_comms = JObject::from(share_comms);
+    let r_vpk = make_jni_fixed_bytes(env, payload.r_vpk_bytes, "r_vpk", PROTOCOL_FIELD_BYTES)?;
+    let alpha_v = make_jni_fixed_bytes(env, payload.alpha_v, "alpha_v", PROTOCOL_FIELD_BYTES)?;
 
     Ok(env
         .new_object(
             &class,
-            JNI_VOTE_SUBMISSION_CTOR_SIG,
+            JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG,
             &[
-                JValue::Object(&vote_round_id),
-                JValue::Int(u32_to_jint(submission.proposal_id, "proposal_id")?),
-                JValue::Int(u32_to_jint(bundle_index, "bundle_index")?),
                 JValue::Object(&van_nullifier),
                 JValue::Object(&vote_authority_note_new),
                 JValue::Object(&vote_commitment),
+                JValue::Int(u32_to_jint(payload.proposal_id, "proposal_id")?),
+                JValue::Int(u32_to_jint(payload.bundle_index, "bundle_index")?),
                 JValue::Object(&proof),
-                JValue::Object(&r_vpk),
-                JValue::Object(&vote_auth_sig),
+                JValue::Object(&enc_shares),
                 JValue::Long(u64_to_jlong(
-                    u64::from(submission.anchor_height),
+                    u64::from(payload.anchor_height),
                     "anchor_height",
                 )?),
+                JValue::Object(&vote_round_id),
+                JValue::Object(&shares_hash),
+                JValue::Object(&share_blinds),
+                JValue::Object(&share_comms),
+                JValue::Object(&r_vpk),
+                JValue::Object(&alpha_v),
             ],
         )?
         .into_raw())
@@ -971,14 +1260,15 @@ pub(super) fn make_jni_vote_submission<'local>(
 
 pub(super) fn make_jni_commitment_bundle_record<'local>(
     env: &mut JNIEnv<'local>,
-    commit: voting::vote::VoteCommit,
+    bundle: voting::vote::VoteRecoveryBundle,
     bundle_index: u32,
     vc_tree_position: u64,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_COMMITMENT_BUNDLE_RECORD)?;
-    let commitment = make_jni_vote_commit_result(env, commit, bundle_index)?;
-    // SAFETY: make_jni_vote_commit_result returns a freshly created local
-    // reference that is still owned by this frame.
+    let commitment = make_jni_vote_commitment_result_payload(
+        env,
+        JniVoteCommitmentResultPayload::from_recovery_bundle(bundle, bundle_index),
+    )?;
     let commitment = unsafe { JObject::from_raw(commitment) };
     let record = env.new_object(
         &class,
@@ -991,10 +1281,10 @@ pub(super) fn make_jni_commitment_bundle_record<'local>(
     Ok(record.into_raw())
 }
 
-fn make_jni_share_payload_object_array<'local>(
+pub(super) fn make_jni_share_payload_array<'local>(
     env: &mut JNIEnv<'local>,
     payloads: Vec<SharePayload>,
-) -> anyhow::Result<JObjectArray<'local>> {
+) -> anyhow::Result<jobjectArray> {
     let len = usize_to_jint(payloads.len(), "payloads length")?;
     let class = env.find_class(JNI_SHARE_PAYLOAD)?;
     let mut payloads = payloads.into_iter().enumerate();
@@ -1011,9 +1301,9 @@ fn make_jni_share_payload_object_array<'local>(
             )?;
             env.delete_local_ref(payload)?;
         }
-        Ok(array)
+        Ok(array.into_raw())
     } else {
-        Ok(env.new_object_array(0, &class, JObject::null())?)
+        Ok(env.new_object_array(0, &class, JObject::null())?.into_raw())
     }
 }
 
@@ -1138,58 +1428,59 @@ fn make_jni_string_array<'local>(
     )?)
 }
 
-/// Builds the Kotlin hotkey JNI model.
+/// Builds the Kotlin hotkey JNI model, including the opaque stored secret.
 ///
-/// The stored secret now crosses JNI deliberately. A voting hotkey is app-owned
-/// random material rather than a wallet-seed derivation, so nothing else can
-/// reproduce it: the caller must persist these bytes in platform secure storage
-/// or forfeit the voting power delegated to the hotkey.
+/// Unlike the pre-1.0 wallet-seed-derived hotkey, `generateHotkeyNative` can
+/// mint a fresh app-owned hotkey identity, so its stored secret must cross
+/// JNI here for Android to persist in secure storage; the crate never
+/// re-derives it from the wallet seed.
 pub(super) fn make_jni_voting_hotkey<'local>(
     env: &mut JNIEnv<'local>,
-    hotkey: VotingHotkey,
+    hotkey: voting::types::VotingHotkey,
 ) -> anyhow::Result<jobject> {
     let stored_secret = require_len(
         hotkey.stored_secret().to_vec(),
         "hotkey_stored_secret",
         HOTKEY_STORED_SECRET_BYTES,
     )?;
+    let raw_address = *hotkey.raw_orchard_address();
+    let address = hotkey_unified_address(&raw_address, hotkey.network())?;
+
     let class = env.find_class(JNI_VOTING_HOTKEY)?;
     let secret_obj: JObject<'local> = env.byte_array_from_slice(&stored_secret)?.into();
-    let addr_obj: JObject<'local> = env
-        .byte_array_from_slice(hotkey.raw_orchard_address())?
-        .into();
+    let raw_address_obj: JObject<'local> = env.byte_array_from_slice(&raw_address)?.into();
+    let addr_obj: JObject<'local> = env.new_string(&address)?.into();
     let obj = env.new_object(
         &class,
         JNI_VOTING_HOTKEY_CTOR_SIG,
         &[
             JValue::Object(&secret_obj),
+            JValue::Object(&raw_address_obj),
             JValue::Object(&addr_obj),
-            JValue::Int(u32_to_jint(hotkey.address_index(), "address_index")?),
         ],
     )?;
     Ok(obj.into_raw())
 }
 
-/// Reconstructs a voting hotkey from the stored secret a caller persisted.
-///
-/// The secret is opaque app-owned material, so its content is `zcash_voting`'s
-/// business, but its width is fixed and is checked here against the same
-/// constant the crate uses. Checking it at the boundary means a caller that
-/// passes the wrong material gets an error naming the parameter, rather than one
-/// phrased in terms of the crate's internals.
-pub(super) fn java_voting_hotkey(
-    env: &mut JNIEnv<'_>,
-    stored_secret: &JByteArray<'_>,
-    network: VotingNetwork,
-) -> anyhow::Result<VotingHotkey> {
-    let stored_secret = java_secret_bytes_exact(
-        env,
-        stored_secret,
-        "hotkeyStoredSecret",
-        HOTKEY_STORED_SECRET_BYTES,
-    )?;
-    VotingHotkey::from_stored_secret(stored_secret.expose_secret(), network)
-        .map_err(|e| anyhow!("failed to reconstruct voting hotkey: {}", e))
+/// Encodes a hotkey's raw Orchard receiver as a Unified Address string.
+fn hotkey_unified_address(
+    raw_address: &[u8; ORCHARD_RAW_ADDRESS_BYTES],
+    network: voting::types::Network,
+) -> anyhow::Result<String> {
+    let orchard_address =
+        Option::<orchard::Address>::from(orchard::Address::from_raw_address_bytes(raw_address))
+            .ok_or_else(|| anyhow!("hotkey raw Orchard address bytes are invalid"))?;
+    let unified_address = zcash_client_backend::address::UnifiedAddress::from_receivers(
+        Some(orchard_address),
+        None,
+        None,
+    )
+    .ok_or_else(|| anyhow!("failed to build unified address from hotkey Orchard receiver"))?;
+    let encode_network = match network {
+        voting::types::Network::Mainnet => Network::MainNetwork,
+        voting::types::Network::Testnet | voting::types::Network::Regtest => Network::TestNetwork,
+    };
+    Ok(unified_address.encode(&encode_network))
 }
 
 /// Builds the Kotlin bundle setup JNI model with width-checked Java primitives.
@@ -1403,42 +1694,45 @@ fn make_jni_fixed_byte_array_vec<'local>(
     })?)
 }
 
-/// Runs the canonical voting note bundler and returns total count, total
-/// eligible weight, and each bundle's quantized voting weight.
-///
-/// This uses the same public bundling entry point `VotingDb::ensure_bundles`
-/// applies, so a dry run and a persisted setup cannot disagree about which
-/// notes survive.
+/// Runs the voting note chunker and returns total count, total eligible weight,
+/// and each bundle's quantized voting weight.
 pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32, u64, Vec<u64>)> {
-    let bundles = voting::round::note_bundles(notes).map_err(|e| anyhow!("note_bundles: {}", e))?;
-    let bundle_weights = bundles
+    // zcash_voting 1.0.0 (merged-library patch) moved `chunk_notes` from `types` to
+    // `note_bundling`; same `&[NoteInfo] -> ChunkResult` signature.
+    let chunk_result = voting::note_bundling::chunk_notes(notes);
+    let bundle_weights = chunk_result
+        .bundles
         .iter()
         .map(|bundle| {
-            voting::round::quantized_bundle_weight(bundle)
-                .map_err(|e| anyhow!("quantized_bundle_weight: {}", e))
+            let total = bundle.iter().try_fold(0u64, |acc, note| {
+                acc.checked_add(note.value)
+                    .ok_or_else(|| anyhow!("bundle note value overflows u64"))
+            })?;
+            Ok((total / voting::BALLOT_DIVISOR) * voting::BALLOT_DIVISOR)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let eligible_weight = voting::round::quantized_bundle_set_weight(&bundles)
-        .map_err(|e| anyhow!("quantized_bundle_set_weight: {}", e))?;
-
     Ok((
-        u32::try_from(bundles.len()).map_err(|_| anyhow!("bundle count is too large for u32"))?,
-        eligible_weight,
+        u32::try_from(chunk_result.bundles.len())
+            .map_err(|_| anyhow!("bundle count is too large for u32"))?,
+        chunk_result.eligible_weight,
         bundle_weights,
     ))
 }
 
-/// Recomputes the canonical note bundles and returns the requested bundle.
+/// Recomputes deterministic note chunking and returns the requested bundle.
 pub(super) fn bundled_notes_for_index(
     notes: &[NoteInfo],
     bundle_index: u32,
 ) -> anyhow::Result<Vec<NoteInfo>> {
-    let bundles = voting::round::note_bundles(notes).map_err(|e| anyhow!("note_bundles: {}", e))?;
-    let index = usize::try_from(bundle_index)
+    // zcash_voting 1.0.0 (merged-library patch) moved `chunk_notes` from `types` to
+    // `note_bundling`; same `&[NoteInfo] -> ChunkResult` signature.
+    let chunk_result = voting::note_bundling::chunk_notes(notes);
+    let bundle_index = usize::try_from(bundle_index)
         .map_err(|_| anyhow!("bundle_index is too large for this platform: {bundle_index}"))?;
 
-    bundles
-        .get(index)
+    chunk_result
+        .bundles
+        .get(bundle_index)
         .cloned()
         .ok_or_else(|| anyhow!("bundle_index {bundle_index} is not present in note bundle set"))
 }
@@ -1494,16 +1788,6 @@ pub(super) fn select_bundle_notes(
     Ok(bundle_notes)
 }
 
-pub(super) fn replace_bundle_witnesses(
-    db: &VotingDb,
-    round_id: &str,
-    bundle_index: u32,
-    witnesses: &[WitnessData],
-) -> anyhow::Result<()> {
-    db.replace_bundle_witnesses(round_id, bundle_index, witnesses)
-        .map_err(|e| anyhow!("replace_bundle_witnesses: {}", e))
-}
-
 pub(super) fn received_note_to_note_info(
     note: &zcash_client_backend::wallet::ReceivedNote<
         zcash_client_sqlite::ReceivedNoteId,
@@ -1512,27 +1796,12 @@ pub(super) fn received_note_to_note_info(
     ufvk: &UnifiedFullViewingKey,
     network: &Network,
 ) -> anyhow::Result<NoteInfo> {
-    let orchard_note = note.note();
-    let fvk = ufvk
-        .orchard()
-        .ok_or_else(|| anyhow!("UFVK has no Orchard component"))?;
-
-    let nullifier = orchard_note.nullifier(fvk);
-    let cmx: orchard::note::ExtractedNoteCommitment = orchard_note.commitment().into();
-    let scope = match note.spending_key_scope() {
-        Scope::External => NOTE_SCOPE_EXTERNAL,
-        Scope::Internal => NOTE_SCOPE_INTERNAL,
-    };
-
-    Ok(NoteInfo {
-        commitment: cmx.to_bytes().to_vec(),
-        nullifier: nullifier.to_bytes().to_vec(),
-        value: orchard_note.value().inner(),
-        position: u64::from(note.note_commitment_tree_position()),
-        diversifier: orchard_note.recipient().diversifier().as_array().to_vec(),
-        rho: orchard_note.rho().to_bytes().to_vec(),
-        rseed: orchard_note.rseed().as_bytes().to_vec(),
-        scope,
-        ufvk_str: ufvk.encode(network),
-    })
+    NoteInfo::from_orchard_note(
+        note.note(),
+        u64::from(note.note_commitment_tree_position()),
+        note.spending_key_scope(),
+        ufvk,
+        network,
+    )
+    .map_err(|e| anyhow!("NoteInfo::from_orchard_note: {}", e))
 }
