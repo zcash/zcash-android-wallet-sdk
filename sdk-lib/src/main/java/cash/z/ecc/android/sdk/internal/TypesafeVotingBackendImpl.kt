@@ -1103,6 +1103,15 @@ internal class TypesafeVotingDbImpl(
                 proofProgress?.asVotingProgressCallback()
             ).also { commitment ->
                 commitment.requireValid()
+                require(commitment.bundleIndex == bundleIndex) {
+                    "commitVote result bundleIndex ${commitment.bundleIndex} does not match " +
+                        "requested bundleIndex $bundleIndex"
+                }
+                val expectedShareCount = if (singleShare) 1 else JNI_VOTE_SHARE_COUNT
+                require(commitment.sharePayloads.size == expectedShareCount) {
+                    "commitVote result sharePayloads must contain $expectedShareCount entries " +
+                        "for singleShare=$singleShare, got ${commitment.sharePayloads.size}"
+                }
             }
 
     override suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String) =

@@ -435,6 +435,7 @@ class TypesafeVotingBackendImplTest {
                 )
             val commitment =
                 jniVoteCommitResult(
+                    bundleIndex = 3,
                     voteCommitment = field(35),
                     proposalId = 2,
                     voteRoundId = "round-vote"
@@ -782,6 +783,66 @@ class TypesafeVotingBackendImplTest {
                 }
 
             assertTrue(error.message.orEmpty().contains("encShares"))
+        }
+
+    @Test
+    fun commit_vote_rejects_a_result_for_a_different_bundle() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    commitmentResult = jniVoteCommitResult(bundleIndex = 1)
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.buildVoteCommitment(
+                        roundId = "round-vote",
+                        bundleIndex = 2,
+                        hotkeySecret = byteArrayOf(1, 2, 3),
+                        proposalId = 2,
+                        choice = 1,
+                        numOptions = 3,
+                        witness = jniVanWitness()
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("bundleIndex"))
+        }
+
+    @Test
+    fun commit_vote_rejects_a_result_with_share_payload_count_that_does_not_match_single_share_mode() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    // Default fixture has JNI_VOTE_SHARE_COUNT payloads, which requireValid()
+                    // alone accepts even in singleShare mode -- only the mode-aware check added
+                    // here catches the mismatch.
+                    commitmentResult = jniVoteCommitResult(bundleIndex = 1)
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.buildVoteCommitment(
+                        roundId = "round-vote",
+                        bundleIndex = 1,
+                        hotkeySecret = byteArrayOf(1, 2, 3),
+                        proposalId = 2,
+                        choice = 1,
+                        numOptions = 3,
+                        witness = jniVanWitness(),
+                        singleShare = true
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("sharePayloads"))
         }
 
     private fun jniDelegationProofResult(
