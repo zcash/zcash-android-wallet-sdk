@@ -37,6 +37,25 @@ class JniVotingModelsTest {
     }
 
     @Test
+    fun note_info_to_string_omits_note_secrets() {
+        val text =
+            JniNoteInfo(
+                commitment = byteArrayOf(1),
+                nullifier = byteArrayOf(2),
+                value = 3,
+                position = 4,
+                diversifier = byteArrayOf(5),
+                rho = byteArrayOf(6),
+                rseed = byteArrayOf(7),
+                scope = 0,
+                ufvk = "ufvk-fixture"
+            ).toString()
+
+        assertEquals("JniNoteInfo(redacted)", text)
+        assertFalse(text.contains("ufvk-fixture"))
+    }
+
+    @Test
     fun note_info_constructor_matches_rust_jni_signature() {
         val constructor =
             JniNoteInfo::class.java.getDeclaredConstructor(
@@ -230,6 +249,25 @@ class JniVotingModelsTest {
     }
 
     @Test
+    fun share_payload_to_string_omits_primary_blind() {
+        val text =
+            JniSharePayload(
+                sharesHash = byteArrayOf(1),
+                proposalId = 2,
+                voteDecision = 3,
+                encShare = JniWireEncryptedShare(byteArrayOf(4), byteArrayOf(5), 0),
+                treePosition = 6,
+                allEncShares = listOf(JniWireEncryptedShare(byteArrayOf(4), byteArrayOf(5), 0)),
+                shareComms = listOf(byteArrayOf(7)),
+                primaryBlind = byteArrayOf(101)
+            ).toString()
+
+        assertEquals("JniSharePayload(redacted)", text)
+        assertFalse(text.contains("primaryBlind"))
+        assertFalse(text.contains("101"))
+    }
+
+    @Test
     fun share_payload_constructor_matches_rust_jni_signature() {
         val constructor =
             JniSharePayload::class.java.getDeclaredConstructor(
@@ -249,6 +287,26 @@ class JniVotingModelsTest {
                 "JniWireEncryptedShare;[[B[B)V",
             constructor.jniDescriptor()
         )
+    }
+
+    @Test
+    fun share_delegation_record_to_string_omits_nullifier() {
+        val text =
+            JniShareDelegationRecord(
+                roundId = "round-recovery",
+                bundleIndex = 1,
+                proposalId = 2,
+                shareIndex = 3,
+                sentToUrls = listOf("https://helper.example"),
+                nullifier = byteArrayOf(101),
+                confirmed = false,
+                submitAt = 4,
+                createdAt = 5
+            ).toString()
+
+        assertEquals("JniShareDelegationRecord(redacted)", text)
+        assertFalse(text.contains("nullifier"))
+        assertFalse(text.contains("101"))
     }
 
     @Test

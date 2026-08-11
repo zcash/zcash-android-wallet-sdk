@@ -14,6 +14,8 @@ data class JniNoteInfo(
     val scope: Int,
     val ufvk: String
 ) {
+    override fun toString(): String = "JniNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniNoteInfo) return false
@@ -397,6 +399,8 @@ data class JniSharePayload(
         primaryBlind = primaryBlind
     )
 
+    override fun toString(): String = "JniSharePayload(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniSharePayload) return false
@@ -456,6 +460,8 @@ data class JniShareDelegationRecord(
         submitAt = submitAt,
         createdAt = createdAt
     )
+
+    override fun toString(): String = "JniShareDelegationRecord(redacted)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -663,6 +669,12 @@ data class JniDelegationProofResult(
     }
 }
 
+/**
+ * @property sighash The PCZT sighash. Verification-only (local `spend_auth_sig`/Keystone
+ * signature verification against [rk]) — do **not** submit this to the vote-chain server.
+ * @property tx1Effects The versioned effects blob the vote-chain server requires on submission;
+ * the sole field that goes over the wire for the delegation transaction.
+ */
 @Keep
 data class JniDelegationSubmissionResult(
     val proof: ByteArray,

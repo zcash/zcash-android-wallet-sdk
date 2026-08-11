@@ -6,7 +6,10 @@ enum class VotingNoteScope {
     INTERNAL
 }
 
-/** A shielded note eligible for voting weight, as read from wallet state. */
+/**
+ * A shielded note eligible for voting weight, as read from wallet state. `rho`/`rseed` are
+ * note secrets and must not be logged.
+ */
 data class VotingNoteInfo(
     val commitment: ByteArray,
     val nullifier: ByteArray,
@@ -18,6 +21,8 @@ data class VotingNoteInfo(
     val scope: VotingNoteScope,
     val ufvk: String
 ) {
+    override fun toString(): String = "VotingNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VotingNoteInfo) return false
@@ -180,7 +185,16 @@ data class VotingCommitmentResult(
     }
 }
 
-/** The signed result of a one-shot `vote::commit` call, ready to broadcast and share out. */
+/**
+ * The signed result of a one-shot `vote::commit` call, ready to broadcast — but its
+ * [sharePayloads] are provisional/pre-position, not "ready to share out": they are built
+ * against a placeholder `vcTreePosition=0` because the real vote-commitment-tree position is
+ * only known once the cast-vote tx confirms on chain. There is no direct rebuild path from this
+ * type. Once the tx confirms and [VotingDbSession.recordVcPosition] has been called, rebuild the
+ * final, position-correct share payloads via [VotingDbSession.getCommitmentBundle] (which
+ * returns the confirmed [VotingCommitmentBundleRecord.vcTreePosition] alongside the underlying
+ * [VotingCommitmentResult]) and [VotingSdk.buildSharePayloads].
+ */
 data class VotingCommitResult(
     val bundleIndex: Int,
     val proposalId: Int,
@@ -224,7 +238,10 @@ data class VotingCommitResult(
     }
 }
 
-/** One share payload ready to send to a helper server for delegated submission. */
+/**
+ * One share payload ready to send to a helper server for delegated submission.
+ * `primaryBlind` is the vote-opening blind and must not be logged.
+ */
 data class VotingSharePayload(
     val sharesHash: ByteArray,
     val proposalId: Int,
@@ -235,6 +252,8 @@ data class VotingSharePayload(
     val shareComms: List<ByteArray>,
     val primaryBlind: ByteArray
 ) {
+    override fun toString(): String = "VotingSharePayload(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VotingSharePayload) return false
@@ -374,6 +393,15 @@ data class VotingDelegationProofResult(
     override fun hashCode(): Int = rk.contentHashCode()
 }
 
+/**
+ * @property sighash The PCZT sighash. Verification-only: used locally to check
+ * [spendAuthSig] against [rk] (see the JNI layer's `verify_delegation_submission_sig`) and for
+ * Keystone signature verification. Do **not** submit this to the vote-chain server.
+ * @property tx1Effects The versioned effects blob (821 bytes,
+ * `zcash_voting::tx1::TX1_EFFECTS_LEN`) the vote-chain server requires on submission. This is
+ * the sole field that goes over the wire to the server for the delegation transaction; a legacy
+ * sighash-only submission is rejected server-side.
+ */
 data class VotingDelegationSubmissionResult(
     val proof: ByteArray,
     val rk: ByteArray,
@@ -417,6 +445,7 @@ data class VotingCommittedVoteRecord(
     val vcTreePosition: Long
 )
 
+/** `nullifier` is the share nullifier and must not be logged. */
 data class VotingShareDelegationRecord(
     val roundId: String,
     val bundleIndex: Int,
@@ -428,6 +457,8 @@ data class VotingShareDelegationRecord(
     val submitAt: Long,
     val createdAt: Long
 ) {
+    override fun toString(): String = "VotingShareDelegationRecord(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VotingShareDelegationRecord) return false
