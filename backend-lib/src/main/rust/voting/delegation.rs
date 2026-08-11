@@ -988,6 +988,14 @@ mod tests {
             vote_round_id: "round-1".to_string(),
             spend_auth_sig,
             sighash,
+            // `sighash` (32 bytes) is still required for local Keystone-signature
+            // verification (see `verify_delegation_submission_sig`), but the
+            // vote-chain server now requires `tx1_effects` (821 bytes,
+            // zcash_voting::tx1::TX1_EFFECTS_LEN) on submission instead of sighash
+            // — see JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG's doc comment in
+            // helpers.rs. Both fields are exercised here since this fixture feeds
+            // signature-verification tests, not submission-payload tests.
+            tx1_effects: vec![8; voting::tx1::TX1_EFFECTS_LEN],
         }
     }
 }
