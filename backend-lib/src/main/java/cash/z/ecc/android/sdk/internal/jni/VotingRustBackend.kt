@@ -313,6 +313,13 @@ class VotingRustBackend private constructor() {
             }
         }
 
+        /**
+         * Creates a round in this voting db, which is already bound to the network passed to
+         * [openVotingDb].
+         *
+         * [roundId] must be 64 lowercase hex characters encoding a canonical Pallas field
+         * element; the native side rejects anything else.
+         */
         @Throws(RuntimeException::class)
         suspend fun initRound(
             roundId: String,

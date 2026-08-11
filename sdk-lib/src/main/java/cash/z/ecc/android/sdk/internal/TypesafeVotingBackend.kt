@@ -244,6 +244,12 @@ internal interface TypesafeVotingDb {
         anchorHeight: Long
     ): JniVanWitness
 
+    /**
+     * Builds, signs and stores the vote commitment for a proposal in one call.
+     *
+     * The helper-share payloads arrive on [JniVoteCommitResult.sharePayloads]. [hotkeySecret] is
+     * the persisted secret from [TypesafeVotingDb.generateHotkey].
+     */
     suspend fun buildVoteCommitment(
         roundId: String,
         bundleIndex: Int,
@@ -260,6 +266,13 @@ internal interface TypesafeVotingDb {
 
     suspend fun getDelegationTxHash(roundId: String, bundleIndex: Int): VotingTxHashLookup
 
+    /**
+     * Records [txHash] as the cast-vote transaction for this vote and marks it submitted.
+     *
+     * A vote is "submitted" by having a recorded transaction hash; there is no separate flag.
+     * Recording the same hash twice is idempotent, but recording a *different* hash for a vote
+     * that already has one fails, so the wallet keeps polling the transaction it first submitted.
+     */
     suspend fun storeVoteTxHash(
         roundId: String,
         bundleIndex: Int,
@@ -267,6 +280,14 @@ internal interface TypesafeVotingDb {
         txHash: String
     )
 
+    /**
+     * Vestigial: [storeVoteTxHash] already records the tx hash and marks the vote submitted in
+     * one atomic, idempotency-checked call, so this is a no-op re-assertion of the
+     * already-recorded hash on every reachable caller. Kept only because a live external caller
+     * still calls this after [storeVoteTxHash] on both the fresh- and cached-bundle submission
+     * paths; new code should rely on [storeVoteTxHash] alone. Throws if no tx hash has been
+     * recorded yet for this vote — call [storeVoteTxHash] first.
+     */
     suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int)
 
     suspend fun getVoteTxHash(
@@ -275,6 +296,13 @@ internal interface TypesafeVotingDb {
         proposalId: Int
     ): VotingTxHashLookup
 
+    /**
+     * Reconstructs the stored vote commitment, with fresh helper-share payloads.
+     *
+     * Reports null until the vote reaches the confirmed phase — its transaction hash recorded via
+     * [storeVoteTxHash] and its tree position via [recordVcPosition] — and for a vote that was
+     * never stored.
+     */
     suspend fun getCommitmentBundle(
         roundId: String,
         bundleIndex: Int,
@@ -380,6 +408,14 @@ internal interface TypesafeVotingDb {
     )
 }
 
+/**
+ * The typesafe view of a spendable note the voting backend may draw voting weight from.
+ *
+ * [toString] is redacted: [rseed] and [rho] reconstruct the note's spending randomness,
+ * [nullifier] links the note to its spend, and [ufvk] is a full viewing key that discloses
+ * the entire account's transaction history. The generated `data class` rendering would print
+ * all four into any log line that interpolates a note.
+ */
 internal data class VotingNoteInfo(
     val commitment: ByteArray,
     val nullifier: ByteArray,
@@ -391,6 +427,8 @@ internal data class VotingNoteInfo(
     val scope: VotingNoteScope,
     val ufvk: String
 ) {
+    override fun toString(): String = "VotingNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VotingNoteInfo) return false
