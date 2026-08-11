@@ -7,6 +7,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A newly created transaction now becomes visible in `Synchronizer.allTransactions` on the next
+  engine tick (~2 s) instead of only after its network broadcast round-trip resolves: the
+  Slipstream broadcaster pokes the engine's transaction-change signal at store time in both
+  `createProposedTransactions` and `createTransactionFromPczt`, in addition to the existing
+  submit-time poke. Under a degraded network the submit-time-only poke left a sent transaction
+  invisible in the Activity list for the whole multi-endpoint submit window (MOB-1584).
 - Migration Keystone batch signing no longer stalls for seconds when building the first note-split
   PCZT of a run: spendable-note selection is now cached for the lifetime of one migration call
   instead of being re-queried from the wallet database on every note the plan spends (MOB-1669).
