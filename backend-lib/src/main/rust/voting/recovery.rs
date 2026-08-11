@@ -73,8 +73,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
         let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
         let tx_hash = java_string_to_rust(env, &tx_hash)?;
-        // zcash_voting 1.0.0 folded the old store-then-mark-submitted split into
-        // one atomic hash+submitted recorder.
+        // record_vote_submission is the atomic hash+submitted recorder; see
+        // markVoteSubmittedNative's doc comment for why that method is now redundant.
         db.record_vote_submission(&round_id, bundle_index, proposal_id, &tx_hash)
             .map_err(|e| anyhow!("record_vote_submission: {e}"))?;
         Ok(JNI_TRUE)
@@ -82,6 +82,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
+/// Deprecated / vestigial: `storeVoteTxHashNative` (`record_vote_submission`) is now the sole
+/// atomic recorder for "this vote's tx hash is known and it is submitted" — that single call
+/// already does everything this method used to. Every reachable call to this method is now
+/// either a hard error (no tx hash recorded yet — call `storeVoteTxHashNative` first) or a
+/// no-op (the exact same, already-recorded hash gets redundantly re-written to itself), because
+/// `mark_vote_submitted` requires a pre-existing tx_hash and only re-asserts it via the same
+/// idempotency check `record_vote_submission` already performs.
+///
+/// Kept (rather than deleted) only because a live external caller (zodl-android's
+/// `SubmitVotesUseCase`) still calls this after `storeVoteTxHash` on both the fresh- and
+/// cached-vote-bundle submission paths — always in the harmless no-op case, never the error
+/// case, since it is always called after the hash is already stored there. Do not add new
+/// callers; new code should rely on `storeVoteTxHashNative` alone. Removing this method
+/// entirely requires a coordinated change in the app repo first.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_markVoteSubmittedNative<
     'local,
@@ -158,6 +172,7 @@ where
     match result {
         Ok(value) => Ok(value),
         Err(error) if is_query_returned_no_rows(&error) => Ok(None),
+        Err(error) if is_uncommitted_commitment_bundle_position(&error) => Ok(None),
         Err(error) => Err(anyhow!("{label}: {error}")),
     }
 }
@@ -167,6 +182,20 @@ fn is_query_returned_no_rows(error: &impl std::fmt::Display) -> bool {
         .to_string()
         .to_ascii_lowercase()
         .contains("query returned no rows")
+}
+
+/// zcash_voting's `get_commitment_bundle` (`storage/queries.rs`) raises this exact
+/// `VotingError::Internal` message when a vote has been committed
+/// (`commitment_bundle_json` persisted) but its vote-commitment-tree position has not
+/// yet been recorded. That is the normal state between `vote::commit` and the cast-vote
+/// tx confirming on chain (`recordVcPositionNative` is only reachable once the tx
+/// confirms), so `getCommitmentBundleNative`'s nullable public API must map it to null,
+/// not surface it as a thrown exception — a poll-until-non-null loop on the Kotlin side
+/// would otherwise crash on every vote during that window.
+fn is_uncommitted_commitment_bundle_position(error: &impl std::fmt::Display) -> bool {
+    error.to_string().contains(
+        "commitment bundle is stored without vc_tree_position; refusing to assume position 0",
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -567,5 +596,22 @@ mod tests {
         let error = result.unwrap_err().to_string();
         assert!(error.contains("get_vote_tx_hash"));
         assert!(error.contains("database is locked"));
+    }
+
+    /// A committed-but-unconfirmed vote (commitment persisted, vc_tree_position not yet
+    /// recorded) is the normal state between `vote::commit` and the cast-vote tx confirming.
+    /// `getCommitmentBundleNative`'s nullable poll must see this as "not yet available", not
+    /// as a fatal error, or a poll-until-non-null loop crashes on every vote.
+    #[test]
+    fn optional_recovery_lookup_maps_uncommitted_vc_tree_position_to_none() {
+        let result: anyhow::Result<Option<String>> = optional_recovery_lookup(
+            Err(
+                "Internal error: commitment bundle is stored without vc_tree_position; \
+                 refusing to assume position 0",
+            ),
+            "get_commitment_bundle",
+        );
+
+        assert!(result.unwrap().is_none());
     }
 }
