@@ -41,8 +41,11 @@ internal class VotingSdkImpl(
     override suspend fun openDb(dbPath: String, walletId: String, networkId: Int): VotingDbSession =
         VotingDbSessionImpl(backend.openVotingDb(dbPath, walletId, networkId))
 
-    override suspend fun computeShareNullifier(voteCommitment: ByteArray, shareIndex: Int, blind: ByteArray): ByteArray =
-        backend.computeShareNullifier(voteCommitment, shareIndex, blind)
+    override suspend fun computeShareNullifier(
+        voteCommitment: ByteArray,
+        shareIndex: Int,
+        blind: ByteArray
+    ): ByteArray = backend.computeShareNullifier(voteCommitment, shareIndex, blind)
 
     override suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): VotingBundleSetupResult =
         backend.computeBundleSetup(notes.map { it.toInternal() }).toPublic()
@@ -82,7 +85,8 @@ internal class VotingSdkImpl(
         snapshotHeight: BlockHeight,
         networkId: Int,
         accountUuid: AccountUuid
-    ): List<VotingNoteInfo> = backend.getWalletNotes(walletDbPath, snapshotHeight, networkId, accountUuid).map { it.toPublic() }
+    ): List<VotingNoteInfo> =
+        backend.getWalletNotes(walletDbPath, snapshotHeight, networkId, accountUuid).map { it.toPublic() }
 
     override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray = backend.extractPcztSighash(pcztBytes)
 
@@ -121,7 +125,8 @@ internal class VotingDbSessionImpl(
     override suspend fun setupBundles(roundId: String, notes: List<VotingNoteInfo>): VotingBundleSetupResult =
         db.setupBundles(roundId, notes.map { it.toInternal() }).toPublic()
 
-    override suspend fun generateHotkey(storedSecret: ByteArray): VotingHotkey = db.generateHotkey(storedSecret).toPublic()
+    override suspend fun generateHotkey(storedSecret: ByteArray): VotingHotkey =
+        db.generateHotkey(storedSecret).toPublic()
 
     override suspend fun buildGovernancePczt(
         roundId: String,
@@ -135,8 +140,14 @@ internal class VotingDbSessionImpl(
     ): VotingGovernancePczt =
         db
             .buildGovernancePczt(
-                roundId, bundleIndex, fvkBytes, hotkeySecret, accountIndex,
-                notes.map { it.toInternal() }, seedFingerprint, roundName
+                roundId,
+                bundleIndex,
+                fvkBytes,
+                hotkeySecret,
+                accountIndex,
+                notes.map { it.toInternal() },
+                seedFingerprint,
+                roundName
             ).toPublic()
 
     override suspend fun buildGovernancePcztFromSeed(
@@ -153,8 +164,16 @@ internal class VotingDbSessionImpl(
     ): VotingGovernancePczt =
         db
             .buildGovernancePcztFromSeed(
-                roundId, bundleIndex, ufvk, networkId, accountIndex,
-                notes.map { it.toInternal() }, walletSeed, hotkeySecret, seedFingerprint, roundName
+                roundId,
+                bundleIndex,
+                ufvk,
+                networkId,
+                accountIndex,
+                notes.map { it.toInternal() },
+                walletSeed,
+                hotkeySecret,
+                seedFingerprint,
+                roundName
             ).toPublic()
 
     override suspend fun storeWitnesses(
@@ -180,7 +199,12 @@ internal class VotingDbSessionImpl(
     ): VotingDelegationPirPrecomputeResult =
         db
             .precomputeDelegationPir(
-                roundId, bundleIndex, pirServerUrl, pirDepth, pirTier0Layers, pirTier1Layers,
+                roundId,
+                bundleIndex,
+                pirServerUrl,
+                pirDepth,
+                pirTier0Layers,
+                pirTier1Layers,
                 notes.map { it.toInternal() }
             ).toPublic()
 
@@ -201,9 +225,19 @@ internal class VotingDbSessionImpl(
     ): VotingDelegationProofResult =
         db
             .buildAndProveDelegation(
-                roundId, bundleIndex, pirServerUrl, pirDepth, pirTier0Layers, pirTier1Layers,
-                notes.map { it.toInternal() }, fvkBytes, hotkeySecret, seedFingerprint, accountIndex,
-                roundName, proofProgress
+                roundId,
+                bundleIndex,
+                pirServerUrl,
+                pirDepth,
+                pirTier0Layers,
+                pirTier1Layers,
+                notes.map { it.toInternal() },
+                fvkBytes,
+                hotkeySecret,
+                seedFingerprint,
+                accountIndex,
+                roundName,
+                proofProgress
             ).toPublic()
 
     override suspend fun getDelegationSubmission(
@@ -216,8 +250,15 @@ internal class VotingDbSessionImpl(
         senderSeed: ByteArray
     ): VotingDelegationSubmissionResult =
         db
-            .getDelegationSubmission(roundId, bundleIndex, walletDbPath, accountUuid, hotkeySecret, roundName, senderSeed)
-            .toPublic()
+            .getDelegationSubmission(
+                roundId,
+                bundleIndex,
+                walletDbPath,
+                accountUuid,
+                hotkeySecret,
+                roundName,
+                senderSeed
+            ).toPublic()
 
     override suspend fun getDelegationSubmissionWithKeystoneSig(
         roundId: String,
@@ -227,7 +268,8 @@ internal class VotingDbSessionImpl(
     ): VotingDelegationSubmissionResult =
         db.getDelegationSubmissionWithKeystoneSig(roundId, bundleIndex, keystoneSig, keystoneSighash).toPublic()
 
-    override suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray) = db.storeTreeState(roundId, treeStateBytes)
+    override suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray) =
+        db.storeTreeState(roundId, treeStateBytes)
 
     override suspend fun generateNoteWitnesses(
         roundId: String,
@@ -236,7 +278,8 @@ internal class VotingDbSessionImpl(
         networkId: Int,
         notes: List<VotingNoteInfo>
     ): List<VotingWitness> =
-        db.generateNoteWitnesses(roundId, bundleIndex, walletDbPath, networkId, notes.map { it.toInternal() })
+        db
+            .generateNoteWitnesses(roundId, bundleIndex, walletDbPath, networkId, notes.map { it.toInternal() })
             .map { it.toPublic() }
 
     override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = db.syncVoteTree(roundId, nodeUrl)
@@ -264,8 +307,15 @@ internal class VotingDbSessionImpl(
     ): VotingCommitResult =
         db
             .buildVoteCommitment(
-                roundId, bundleIndex, hotkeySecret, proposalId, choice, numOptions,
-                witness.toInternal(), singleShare, proofProgress
+                roundId,
+                bundleIndex,
+                hotkeySecret,
+                proposalId,
+                choice,
+                numOptions,
+                witness.toInternal(),
+                singleShare,
+                proofProgress
             ).toPublic()
 
     override suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String) =
@@ -283,14 +333,20 @@ internal class VotingDbSessionImpl(
     override suspend fun getVoteTxHash(roundId: String, bundleIndex: Int, proposalId: Int): VotingTxHashLookup =
         db.getVoteTxHash(roundId, bundleIndex, proposalId).toPublic()
 
-    override suspend fun getCommitmentBundle(roundId: String, bundleIndex: Int, proposalId: Int): VotingCommitmentBundleRecord? =
-        db.getCommitmentBundle(roundId, bundleIndex, proposalId)?.toPublic()
+    override suspend fun getCommitmentBundle(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): VotingCommitmentBundleRecord? = db.getCommitmentBundle(roundId, bundleIndex, proposalId)?.toPublic()
 
     override suspend fun recordVcPosition(roundId: String, bundleIndex: Int, proposalId: Int, vcTreePosition: Long) =
         db.recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)
 
-    override suspend fun recoverCommittedVote(roundId: String, bundleIndex: Int, proposalId: Int): VotingCommittedVoteRecord =
-        db.recoverCommittedVote(roundId, bundleIndex, proposalId).toPublic()
+    override suspend fun recoverCommittedVote(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): VotingCommittedVoteRecord = db.recoverCommittedVote(roundId, bundleIndex, proposalId).toPublic()
 
     override suspend fun clearRecoveryState(roundId: String) = db.clearRecoveryState(roundId)
 

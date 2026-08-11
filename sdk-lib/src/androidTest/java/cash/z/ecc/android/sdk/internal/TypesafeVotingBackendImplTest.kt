@@ -500,11 +500,12 @@ class TypesafeVotingBackendImplTest {
     @Test
     fun delegationPhases_returns_backend_result_as_list() =
         runTest {
-            val backend = RecordingVotingDbBackend(
-                proofResult = jniDelegationProofResult(),
-                submissionResult = jniDelegationSubmissionResult(),
-                keystoneSubmissionResult = jniDelegationSubmissionResult()
-            )
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
             backend.delegationPhasesResult =
                 arrayOf(
                     JniDelegationPhase(bundleIndex = 0, phase = "proved"),
@@ -522,11 +523,12 @@ class TypesafeVotingBackendImplTest {
     @Test
     fun resetVotingSessionState_forwards_round_id() =
         runTest {
-            val backend = RecordingVotingDbBackend(
-                proofResult = jniDelegationProofResult(),
-                submissionResult = jniDelegationSubmissionResult(),
-                keystoneSubmissionResult = jniDelegationSubmissionResult()
-            )
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
             val db = TypesafeVotingDbImpl(backend)
 
             db.resetVotingSessionState("round-1")

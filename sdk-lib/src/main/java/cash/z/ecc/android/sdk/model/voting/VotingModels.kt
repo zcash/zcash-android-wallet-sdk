@@ -138,26 +138,38 @@ data class VotingCommitmentResult(
 ) {
     override fun toString(): String = "VotingCommitmentResult(redacted)"
 
+    // Split into per-field-group helpers (rather than one long `&&`-chained expression) to keep
+    // `equals`'s own cyclomatic complexity under detekt's threshold; each field group is a
+    // small, independently readable comparison.
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VotingCommitmentResult) return false
-        return proposalId == other.proposalId &&
+        return scalarFieldsMatch(other) && byteArrayFieldsMatch(other) && collectionFieldsMatch(other)
+    }
+
+    private fun scalarFieldsMatch(other: VotingCommitmentResult): Boolean =
+        proposalId == other.proposalId &&
             bundleIndex == other.bundleIndex &&
             anchorHeight == other.anchorHeight &&
-            voteRoundId == other.voteRoundId &&
-            vanNullifier.contentEquals(other.vanNullifier) &&
-            voteAuthorityNoteNew.contentEquals(other.voteAuthorityNoteNew) &&
-            voteCommitment.contentEquals(other.voteCommitment) &&
-            proof.contentEquals(other.proof) &&
-            sharesHash.contentEquals(other.sharesHash) &&
-            rVpk.contentEquals(other.rVpk) &&
-            alphaV.contentEquals(other.alphaV) &&
-            encShares == other.encShares &&
+            voteRoundId == other.voteRoundId
+
+    private fun byteArrayFieldsMatch(other: VotingCommitmentResult): Boolean =
+        listOf(
+            vanNullifier to other.vanNullifier,
+            voteAuthorityNoteNew to other.voteAuthorityNoteNew,
+            voteCommitment to other.voteCommitment,
+            proof to other.proof,
+            sharesHash to other.sharesHash,
+            rVpk to other.rVpk,
+            alphaV to other.alphaV
+        ).all { (a, b) -> a.contentEquals(b) }
+
+    private fun collectionFieldsMatch(other: VotingCommitmentResult): Boolean =
+        encShares == other.encShares &&
             shareBlinds.size == other.shareBlinds.size &&
             shareBlinds.zip(other.shareBlinds).all { (a, b) -> a.contentEquals(b) } &&
             shareComms.size == other.shareComms.size &&
             shareComms.zip(other.shareComms).all { (a, b) -> a.contentEquals(b) }
-    }
 
     override fun hashCode(): Int {
         var result = vanNullifier.contentHashCode()
@@ -390,7 +402,9 @@ data class VotingDelegationSubmissionResult(
 sealed interface VotingTxHashLookup {
     data object Missing : VotingTxHashLookup
 
-    data class Found(val txHash: String) : VotingTxHashLookup
+    data class Found(
+        val txHash: String
+    ) : VotingTxHashLookup
 }
 
 data class VotingCommitmentBundleRecord(

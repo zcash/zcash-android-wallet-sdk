@@ -1,5 +1,7 @@
 package cash.z.ecc.android.sdk
 
+import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
 import cash.z.ecc.android.sdk.model.voting.VotingCommitResult
 import cash.z.ecc.android.sdk.model.voting.VotingCommitmentBundleRecord
@@ -20,8 +22,6 @@ import cash.z.ecc.android.sdk.model.voting.VotingTxHashLookup
 import cash.z.ecc.android.sdk.model.voting.VotingVanWitness
 import cash.z.ecc.android.sdk.model.voting.VotingVoteRecord
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
-import cash.z.ecc.android.sdk.model.AccountUuid
-import cash.z.ecc.android.sdk.model.BlockHeight
 
 /**
  * The public SDK entry point for shielded voting (CHP). The only sanctioned path from the app
@@ -96,8 +96,13 @@ interface VotingSdk {
     suspend fun extractSpendAuthSig(signedPcztBytes: ByteArray, actionIndex: Int): ByteArray
 
     companion object {
-        /** Constructs the real, Rust-backed [VotingSdk]. No Android [android.content.Context] is needed at this layer. */
-        fun new(): VotingSdk = cash.z.ecc.android.sdk.internal.VotingSdkImpl()
+        /**
+         * Constructs the real, Rust-backed [VotingSdk]. No Android [android.content.Context] is needed at
+         * this layer.
+         */
+        fun new(): VotingSdk =
+            cash.z.ecc.android.sdk.internal
+                .VotingSdkImpl()
     }
 }
 
@@ -169,7 +174,12 @@ interface VotingDbSession {
         roundName: String
     ): VotingGovernancePczt
 
-    suspend fun storeWitnesses(roundId: String, bundleIndex: Int, notes: List<VotingNoteInfo>, witnesses: List<VotingWitness>)
+    suspend fun storeWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<VotingNoteInfo>,
+        witnesses: List<VotingWitness>
+    )
 
     suspend fun precomputeDelegationPir(
         roundId: String,
@@ -296,5 +306,11 @@ interface VotingDbSession {
     suspend fun markShareConfirmed(roundId: String, bundleIndex: Int, proposalId: Int, shareIndex: Int)
 
     /** Appends [newUrls] to the sent-server list for this share, ignoring duplicates. */
-    suspend fun addSentServers(roundId: String, bundleIndex: Int, proposalId: Int, shareIndex: Int, newUrls: List<String>)
+    suspend fun addSentServers(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        shareIndex: Int,
+        newUrls: List<String>
+    )
 }

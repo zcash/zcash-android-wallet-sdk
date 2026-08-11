@@ -44,7 +44,9 @@ class VotingSdkImplTest {
             val session = sdk.openDb("path", "wallet-1", 0)
 
             session.close()
-            org.mockito.Mockito.verify(votingDb).close()
+            org.mockito.Mockito
+                .verify(votingDb)
+                .close()
         }
 
     @Test
@@ -136,6 +138,8 @@ class VotingSdkImplTest {
 
             session.resetVotingSessionState("round-1")
 
-            org.mockito.Mockito.verify(votingDb).resetVotingSessionState("round-1")
+            org.mockito.Mockito
+                .verify(votingDb)
+                .resetVotingSessionState("round-1")
         }
 }
