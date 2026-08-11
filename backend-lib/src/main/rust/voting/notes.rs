@@ -5,13 +5,15 @@ use super::*;
 /// Validate that a cached lightwalletd TreeState is anchored to the voting
 /// round it will be used for.
 ///
-/// Witness generation trusts the cached Orchard frontier as the historical
-/// checkpoint input. The generated Merkle path can verify against that
-/// frontier's own root, so also enforce that the frontier is exactly the round
+/// Witness generation trusts the cached Ironwood frontier as the historical
+/// checkpoint input (voting notes are Ironwood/V3 notes, not Orchard/V2 — see
+/// `validate_tree_state_bytes_for_round`, this function's only caller, for where the
+/// Ironwood root is actually extracted). The generated Merkle path can verify against
+/// that frontier's own root, so also enforce that the frontier is exactly the round
 /// snapshot: same block height and same note commitment tree root.
 fn validate_cached_tree_state_for_round(
     tree_state: &zcash_client_backend::proto::service::TreeState,
-    orchard_root: &[u8],
+    nc_root: &[u8],
     params: &voting::types::VotingRoundParams,
 ) -> anyhow::Result<()> {
     if tree_state.height != params.snapshot_height {
@@ -22,9 +24,9 @@ fn validate_cached_tree_state_for_round(
         ));
     }
 
-    if orchard_root != params.nc_root.as_slice() {
+    if nc_root != params.nc_root.as_slice() {
         return Err(anyhow!(
-            "cached TreeState orchard root does not match round nc_root"
+            "cached TreeState note commitment root does not match round nc_root"
         ));
     }
 
