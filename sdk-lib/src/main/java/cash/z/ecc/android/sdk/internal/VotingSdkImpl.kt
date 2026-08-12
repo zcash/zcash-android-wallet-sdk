@@ -24,6 +24,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingTxHashLookup
 import cash.z.ecc.android.sdk.model.voting.VotingVanWitness
 import cash.z.ecc.android.sdk.model.voting.VotingVoteRecord
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -44,9 +45,10 @@ internal class VotingSdkImpl(
     // missing-native-library case this gate exists to catch.
     override suspend fun isAvailable(): Boolean =
         cachedIsAvailable ?: isAvailableMutex.withLock {
-            cachedIsAvailable ?: runCatching { backend.warmProvingCaches() }.isSuccess.also {
-                cachedIsAvailable = it
-            }
+            cachedIsAvailable ?: runCatching { backend.warmProvingCaches() }
+                .onFailure { if (it is CancellationException) throw it }
+                .isSuccess
+                .also { cachedIsAvailable = it }
         }
 
     override suspend fun openDb(dbPath: String, walletId: String, networkId: Int): VotingDbSession =

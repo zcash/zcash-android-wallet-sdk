@@ -5,11 +5,13 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -45,6 +47,19 @@ class VotingSdkImplTest {
             val sdk = VotingSdkImpl(backend)
 
             assertFalse(sdk.isAvailable())
+        }
+
+    // Cancellation mid-probe (e.g. screen rotation, scope teardown) is not a genuine probe
+    // failure -- it must propagate rather than being memoized as "unavailable", or a healthy
+    // native library would be reported unavailable for the rest of the process lifetime.
+    @Test
+    fun isAvailable_rethrows_cancellation_and_does_not_memoize_it(): Unit =
+        runBlocking {
+            val backend = mock(TypesafeVotingBackend::class.java)
+            `when`(backend.warmProvingCaches()).thenThrow(CancellationException("probe cancelled"))
+            val sdk = VotingSdkImpl(backend)
+
+            assertFailsWith<CancellationException> { sdk.isAvailable() }
         }
 
     @Test
