@@ -54,6 +54,29 @@ private fun SlipstreamPoolBalance.maskIfStale(mask: Boolean): SlipstreamPoolBala
     }
 
 /**
+ * How many consecutive stale-tip ticks the mask tolerates before it fails open - 450 ticks at the
+ * 2 s poll interval, i.e. 15 minutes.
+ */
+internal const val STALE_MASK_FAIL_OPEN_TICKS = 450
+
+/**
+ * The tip freshness [toAccountBalances] should mask against, given the engine's own `tipFresh` and
+ * how many consecutive ticks have reported a stale tip.
+ *
+ * `tipFresh` only latches once the engine's serial network prologue completes, so any condition
+ * that keeps the prologue from finishing (a wedged sync, a dead network session, MOB-1667's
+ * permanent migration pause) pins spendable at zero indefinitely while the total balance stays
+ * correct - the wallet looks funded but nothing can be spent, forever. Past
+ * [STALE_MASK_FAIL_OPEN_TICKS] live ticks the mask therefore fails open: showing spendable against
+ * an unverified tip cannot lose funds (a spend built on a stale tip fails at propose or broadcast),
+ * whereas hiding it indefinitely bricks the wallet.
+ */
+internal fun effectiveTipFresh(
+    tipFresh: Boolean,
+    consecutiveStaleTicks: Int
+): Boolean = tipFresh || consecutiveStaleTicks >= STALE_MASK_FAIL_OPEN_TICKS
+
+/**
  * Maps the engine's phase-resolving summary to the SDK's public balance model. `ironwood` is
  * read straight from the engine's own `SlipstreamAccountBalance.ironwood` field, which the JNI
  * layer populates from the linked librustzcash summary (`balance.ironwood_balance()`), so migrated
