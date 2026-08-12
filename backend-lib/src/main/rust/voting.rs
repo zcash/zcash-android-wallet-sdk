@@ -40,6 +40,10 @@ use crate::utils::{
 // actually needs reviewing.
 pub(crate) use crate::zcash_jni::{array::*, bytes::*, convert::*, fields::*};
 
+// `self::` is load-bearing: a bare `use jni::...` here resolves to the external
+// `jni` crate, not to this module's own `jni` submodule.
+pub(crate) use self::jni::*;
+
 mod db;
 mod delegation;
 mod helpers;
