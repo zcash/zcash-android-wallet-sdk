@@ -22,12 +22,14 @@
 // Submodules are declared as their first function arrives, so that every commit
 // in the migration compiles with no unused-import warnings.
 
+pub(crate) mod delegation;
 pub(crate) mod note;
 pub(crate) mod round;
 pub(crate) mod share;
 pub(crate) mod vote;
 pub(crate) mod witness;
 
+pub(crate) use delegation::*;
 pub(crate) use note::*;
 pub(crate) use round::*;
 pub(crate) use share::*;
@@ -134,3 +136,5 @@ pub(crate) const JNI_VOTE_COMMIT_RESULT_CTOR_SIG: &str = "(IIILjava/lang/String;
 // Must match JniCommittedVoteRecord(JniVoteCommitResult, Long) in JniVotingModels.kt.
 pub(crate) const JNI_COMMITTED_VOTE_RECORD_CTOR_SIG: &str =
     "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult;J)V";
+// Must match JniDelegationPhase(Int, String) in JniVotingModels.kt.
+pub(crate) const JNI_DELEGATION_PHASE_CTOR_SIG: &str = "(ILjava/lang/String;)V";
