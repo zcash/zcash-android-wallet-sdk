@@ -115,6 +115,7 @@ mod migration_send_max;
 mod tor;
 mod utils;
 mod voting;
+mod zcash_jni;
 
 /// The Slipstream sync engine's JNI binding, folded in as a module so its
 /// `Java_com_zodl_slipstream_*` `#[unsafe(no_mangle)]` exports link directly into this cdylib
