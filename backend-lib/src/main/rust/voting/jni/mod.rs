@@ -24,10 +24,12 @@
 
 pub(crate) mod note;
 pub(crate) mod share;
+pub(crate) mod vote;
 pub(crate) mod witness;
 
 pub(crate) use note::*;
 pub(crate) use share::*;
+pub(crate) use vote::*;
 pub(crate) use witness::*;
 
 pub(crate) const JNI_ROUND_SUMMARY: &str =
