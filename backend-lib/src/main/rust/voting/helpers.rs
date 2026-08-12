@@ -1493,15 +1493,6 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
     Ok(obj.into_raw())
 }
 
-fn make_jni_fixed_bytes<'local>(
-    env: &mut JNIEnv<'local>,
-    bytes: Vec<u8>,
-    field: &str,
-    expected: usize,
-) -> anyhow::Result<JObject<'local>> {
-    make_jni_bytes(env, &require_len(bytes, field, expected)?)
-}
-
 fn make_jni_fixed_byte_array_vec<'local>(
     env: &mut JNIEnv<'local>,
     values: Vec<Vec<u8>>,
