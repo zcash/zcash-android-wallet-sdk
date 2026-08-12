@@ -1,11 +1,11 @@
 //! JNI bindings for the zcash_voting crate.
 
-use anyhow::anyhow;
-use jni::{
+use ::jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
 };
+use anyhow::anyhow;
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
 use std::{
@@ -43,6 +43,7 @@ pub(crate) use crate::zcash_jni::{array::*, bytes::*, convert::*, fields::*};
 mod db;
 mod delegation;
 mod helpers;
+mod jni;
 mod notes;
 mod progress;
 mod recovery;
