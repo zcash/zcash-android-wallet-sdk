@@ -162,10 +162,6 @@ struct JniVoteCommitmentResultPayload {
     alpha_v: Vec<u8>,
 }
 
-pub(super) fn usize_to_jint(value: usize, field: &str) -> anyhow::Result<jint> {
-    jint::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Int range: {value}"))
-}
-
 pub(super) fn u64_to_jlong(value: u64, field: &str) -> anyhow::Result<jlong> {
     jlong::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Long range: {value}"))
 }

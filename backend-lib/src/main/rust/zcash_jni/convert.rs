@@ -27,3 +27,7 @@ pub(crate) fn jint_to_usize(value: jint, field: &str) -> anyhow::Result<usize> {
 pub(crate) fn u32_to_jint(value: u32, field: &str) -> anyhow::Result<jint> {
     jint::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Int range: {value}"))
 }
+
+pub(crate) fn usize_to_jint(value: usize, field: &str) -> anyhow::Result<jint> {
+    jint::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Int range: {value}"))
+}
