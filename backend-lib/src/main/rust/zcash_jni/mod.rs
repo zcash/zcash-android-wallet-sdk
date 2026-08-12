@@ -34,6 +34,7 @@
 //! `jni::` everywhere. Feature-local submodules are free to be called `jni`
 //! (`voting::jni`) because they are not at the crate root.
 
+pub(crate) mod array;
 pub(crate) mod bytes;
 pub(crate) mod convert;
 pub(crate) mod fields;

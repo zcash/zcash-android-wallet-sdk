@@ -1493,13 +1493,6 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
     Ok(obj.into_raw())
 }
 
-fn make_jni_bytes<'local>(
-    env: &mut JNIEnv<'local>,
-    bytes: &[u8],
-) -> anyhow::Result<JObject<'local>> {
-    Ok(env.byte_array_from_slice(bytes)?.into())
-}
-
 fn make_jni_fixed_bytes<'local>(
     env: &mut JNIEnv<'local>,
     bytes: Vec<u8>,
