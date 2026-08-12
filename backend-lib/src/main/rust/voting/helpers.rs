@@ -193,19 +193,6 @@ pub(super) fn round_phase_to_u32(phase: RoundPhase) -> u32 {
     }
 }
 
-/// Like [`java_secret_bytes_at_least`], but for call sites where the caller-supplied bytes
-/// feed the exact same ZIP-32 `UnifiedSpendingKey::from_seed` derivation
-/// `VotingHotkey::from_stored_secret` uses internally, so a length that from_stored_secret
-/// would reject should be rejected here too rather than accepted and only failing later.
-pub(super) fn java_secret_bytes_exact(
-    env: &mut JNIEnv<'_>,
-    array: &JByteArray<'_>,
-    field: &str,
-    expected: usize,
-) -> anyhow::Result<SecretVec<u8>> {
-    require_len(java_bytes(env, array, field)?, field, expected).map(SecretVec::new)
-}
-
 pub(super) fn java_bytes32(
     env: &mut JNIEnv<'_>,
     array: &JByteArray<'_>,
