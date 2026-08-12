@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.internal.model
 
-open class Progress(
+internal open class Progress(
     private val numerator: Long,
     private val denominator: Long
 ) {

@@ -49,6 +49,18 @@ android {
     }
 }
 
+/**
+ * slipstream-lib was extracted out of sdk-lib and still uses its `internal` declarations.
+ * Registering sdk-lib as a Kotlin friend module preserves that access across the module
+ * boundary at compile time without widening sdk-lib's public API for external consumers.
+ * The compiler matches friend paths by directory prefix, so sdk-lib's build directory covers
+ * the per-variant intermediates for every variant and compilation (main, unit test, androidTest).
+ */
+val sdkLibBuildDir = project(":sdk-lib").layout.buildDirectory
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    friendPaths.from(sdkLibBuildDir)
+}
+
 tasks.dokkaHtml.configure {
     dokkaSourceSets {
         configureEach {

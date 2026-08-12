@@ -3,7 +3,7 @@ package cash.z.ecc.android.sdk.internal.model
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.model.BlockHeight
 
-data class ScanRange(
+internal data class ScanRange(
     val range: ClosedRange<BlockHeight>,
     val priority: Long
 ) {

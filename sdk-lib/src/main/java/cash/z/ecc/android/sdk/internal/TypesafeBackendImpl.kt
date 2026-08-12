@@ -31,7 +31,7 @@ import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlinx.coroutines.withContext
 
 @Suppress("TooManyFunctions")
-class TypesafeBackendImpl(
+internal class TypesafeBackendImpl(
     override val backend: Backend
 ) : TypesafeBackend {
     override val network: ZcashNetwork

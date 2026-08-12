@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.model
 
-sealed interface FetchFiatCurrencyResult {
+internal sealed interface FetchFiatCurrencyResult {
     val fiatCurrency: FiatCurrency
         get() = FiatCurrency.USD
 

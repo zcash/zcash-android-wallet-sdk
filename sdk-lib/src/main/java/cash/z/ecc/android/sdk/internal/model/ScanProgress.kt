@@ -1,6 +1,6 @@
 package cash.z.ecc.android.sdk.internal.model
 
-data class ScanProgress(
+internal data class ScanProgress(
     val numerator: Long,
     val denominator: Long
 ) : Progress(numerator, denominator) {

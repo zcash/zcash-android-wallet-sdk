@@ -4,7 +4,7 @@ import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 
-data class WalletSummary(
+internal data class WalletSummary(
     val accountBalances: Map<AccountUuid, AccountBalance>,
     val chainTipHeight: BlockHeight,
     val fullyScannedHeight: BlockHeight,

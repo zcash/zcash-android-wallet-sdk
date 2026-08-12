@@ -3,7 +3,7 @@ package cash.z.ecc.android.sdk.internal.model
 import cash.z.ecc.android.sdk.model.BlockHeight
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 
-data class SubtreeRoot(
+internal data class SubtreeRoot(
     val rootHash: ByteArray,
     val completingBlockHash: ByteArray,
     val completingBlockHeight: BlockHeight

@@ -2,7 +2,7 @@ package cash.z.ecc.android.sdk.internal.model
 
 import cash.z.ecc.android.sdk.model.BlockHeight
 
-data class ScanSummary(
+internal data class ScanSummary(
     val scannedRange: ClosedRange<BlockHeight>,
     val spentSaplingNoteCount: Long,
     val receivedSaplingNoteCount: Long

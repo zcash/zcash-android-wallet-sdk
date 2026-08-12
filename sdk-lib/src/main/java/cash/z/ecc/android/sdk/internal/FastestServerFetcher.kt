@@ -32,7 +32,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTime
 
-class FastestServerFetcher(
+internal class FastestServerFetcher(
     private val backend: TypesafeBackend,
     private val network: ZcashNetwork,
     private val walletClientFactory: WalletClientFactory,

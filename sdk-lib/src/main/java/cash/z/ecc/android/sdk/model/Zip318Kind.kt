@@ -41,6 +41,6 @@ enum class Zip318Kind(
          * transaction in a way this SDK does not know, and having learned nothing about it is the
          * honest reading, rather than claiming it is [NONCONFORMING].
          */
-        fun new(code: Int?): Zip318Kind = entries.firstOrNull { it.code == code } ?: NOT_CLASSIFIED
+        internal fun new(code: Int?): Zip318Kind = entries.firstOrNull { it.code == code } ?: NOT_CLASSIFIED
     }
 }

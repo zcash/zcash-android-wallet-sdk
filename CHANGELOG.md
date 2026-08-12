@@ -17,7 +17,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Gradle module (`:slipstream-lib`) and its own published library. Consumers of
   `zcash-android-sdk-incubator` get it transitively at runtime scope and need no explicit
   dependency; the package names are unchanged, so direct `com.zodl.slipstream` call sites keep
-  compiling once the artifact is on the classpath.
+  compiling once the artifact is on the classpath. The engine module compiles against
+  `zcash-android-sdk`'s `internal` declarations through a Kotlin friend-module relationship, so the
+  two artifacts are version-locked siblings and must always be used at matching versions.
 - New Gradle property `IS_SLIPSTREAM_ENABLED` (default `true`) decides at SDK build time whether a
   build carries Slipstream at all. With it set to `false`, `:slipstream-lib` is not configured, the
   `slipstream` Cargo feature is off — so `libzcashwalletsdk.so` carries no

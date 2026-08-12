@@ -10,7 +10,7 @@ internal suspend fun Context.getDatabasePathSuspend(fileName: String) =
         getDatabasePath(fileName)
     }
 
-suspend fun Context.getNoBackupFilesDirSuspend() = withContext(Dispatchers.IO) { noBackupFilesDir }
+internal suspend fun Context.getNoBackupFilesDirSuspend() = withContext(Dispatchers.IO) { noBackupFilesDir }
 
 internal suspend fun Context.getCacheDirSuspend() = withContext(Dispatchers.IO) { cacheDir }
 
