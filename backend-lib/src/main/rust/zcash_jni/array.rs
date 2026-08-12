@@ -49,3 +49,15 @@ pub(crate) fn make_jni_fixed_byte_array_vec<'local>(
         Ok(JObject::from(env.byte_array_from_slice(&bytes)?))
     })?)
 }
+
+pub(crate) fn make_jni_string_array<'local>(
+    env: &mut JNIEnv<'local>,
+    values: Vec<String>,
+) -> anyhow::Result<JObjectArray<'local>> {
+    Ok(rust_vec_to_java(
+        env,
+        values,
+        "java/lang/String",
+        |env, value| Ok(JObject::from(env.new_string(value)?)),
+    )?)
+}

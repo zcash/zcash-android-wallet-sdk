@@ -1252,18 +1252,6 @@ fn make_jni_share_delegation_record<'local>(
     })
 }
 
-fn make_jni_string_array<'local>(
-    env: &mut JNIEnv<'local>,
-    values: Vec<String>,
-) -> anyhow::Result<JObjectArray<'local>> {
-    Ok(rust_vec_to_java(
-        env,
-        values,
-        "java/lang/String",
-        |env, value| Ok(JObject::from(env.new_string(value)?)),
-    )?)
-}
-
 /// Builds the Kotlin hotkey JNI model, including the opaque stored secret.
 ///
 /// Unlike the pre-1.0 wallet-seed-derived hotkey, `generateHotkeyNative` can
