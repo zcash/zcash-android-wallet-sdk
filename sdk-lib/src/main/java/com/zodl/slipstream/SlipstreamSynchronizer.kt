@@ -1508,13 +1508,6 @@ class SlipstreamSynchronizer internal constructor(
                 lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
             }
 
-            // Mirror pause(): the privacy gate closed mid-burst (typically because the burst reached
-            // the target and hasOverdueTransfers flipped, so WalletCoordinator paused us). Keep the
-            // engine warm but stop polling, per the keep-alive sync-block design.
-            migrationPaused.value -> {
-                engine.stopPolling()
-            }
-
             // Mirror onForeground(): a live foreground wallet — leave it running and polling.
             else -> {
                 engine.startPolling()

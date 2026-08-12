@@ -563,6 +563,43 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    /**
+     * MOB-1667 follow-through: a migration pause landing mid-burst must not leave the poll loop
+     * stopped when the burst ends — [SlipstreamSynchronizer.pause] no longer suppresses polling,
+     * and `restoreAfterBurst` mirrors that. Expects two `startPolling` calls: the burst's own at
+     * start, and the foreground restore at the end.
+     */
+    @Test
+    fun sync_burst_ending_under_a_pause_keeps_polling_in_the_foreground() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+            clearInvocations(engine)
+            synchronizer.onForeground()
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
+            clearInvocations(engine)
+
+            val result =
+                runBlocking {
+                    synchronizer.syncBurst(timeout = TWO_SECONDS, targetCheckInterval = TICK) {
+                        synchronizer.pause()
+                        true
+                    }
+                }
+
+            assertEquals(Synchronizer.SyncBurstResult.TARGET_REACHED, result)
+            runBlocking<Unit> {
+                verify(engine, timeout(TIMEOUT_MS).times(2)).startPolling()
+                verify(engine, never()).stopPolling()
+                verify(engine, never()).stop()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
     @Test
     fun sync_burst_after_close_returns_unavailable() {
         val engine = mock(SlipstreamEngine::class.java)
