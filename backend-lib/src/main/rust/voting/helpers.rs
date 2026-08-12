@@ -162,10 +162,6 @@ struct JniVoteCommitmentResultPayload {
     alpha_v: Vec<u8>,
 }
 
-pub(super) fn u64_to_jlong(value: u64, field: &str) -> anyhow::Result<jlong> {
-    jlong::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Long range: {value}"))
-}
-
 pub(super) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyhow::Result<Vec<u8>> {
     if bytes.len() == expected {
         Ok(bytes)
