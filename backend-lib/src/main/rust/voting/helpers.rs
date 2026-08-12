@@ -162,18 +162,6 @@ struct JniVoteCommitmentResultPayload {
     alpha_v: Vec<u8>,
 }
 
-fn require_each_len(
-    values: Vec<Vec<u8>>,
-    field: &str,
-    expected: usize,
-) -> anyhow::Result<Vec<Vec<u8>>> {
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| require_len(value, &format!("{field}[{index}]"), expected))
-        .collect()
-}
-
 pub(super) fn require_count<T>(
     values: Vec<T>,
     field: &str,

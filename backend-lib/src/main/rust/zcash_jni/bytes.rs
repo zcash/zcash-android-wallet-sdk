@@ -21,3 +21,15 @@ pub(crate) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyho
         ))
     }
 }
+
+pub(crate) fn require_each_len(
+    values: Vec<Vec<u8>>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| require_len(value, &format!("{field}[{index}]"), expected))
+        .collect()
+}
