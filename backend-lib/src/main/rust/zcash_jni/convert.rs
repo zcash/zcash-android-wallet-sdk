@@ -19,3 +19,7 @@ pub(crate) fn jlong_to_u64(value: jlong, field: &str) -> anyhow::Result<u64> {
 pub(crate) fn jlong_to_u32(value: jlong, field: &str) -> anyhow::Result<u32> {
     u32::try_from(value).map_err(|_| anyhow!("{field} must be in range 0..=u32::MAX, got {value}"))
 }
+
+pub(crate) fn jint_to_usize(value: jint, field: &str) -> anyhow::Result<usize> {
+    usize::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
+}
