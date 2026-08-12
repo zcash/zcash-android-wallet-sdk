@@ -199,14 +199,6 @@ pub(super) fn java_bytes32(
     require_32(java_bytes(env, array, field)?, field)
 }
 
-pub(super) fn network_from_id(id: jint) -> anyhow::Result<Network> {
-    match id {
-        NETWORK_ID_TESTNET => Ok(Network::TestNetwork),
-        NETWORK_ID_MAINNET => Ok(Network::MainNetwork),
-        _ => Err(anyhow!("invalid network_id {}", id)),
-    }
-}
-
 /// Resolves the `voting::types::Network` a voting DB handle is opened for.
 ///
 /// Android has no custom-network registry in this path, so only the two

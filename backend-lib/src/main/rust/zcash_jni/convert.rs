@@ -7,6 +7,7 @@
 
 use anyhow::anyhow;
 use jni::sys::{jint, jlong};
+use zcash_protocol::consensus::Network;
 
 /// The network identifiers Kotlin passes across the boundary. These are the JNI
 /// wire encoding, shared by every feature, not a per-feature value: `lib.rs`
@@ -40,6 +41,14 @@ pub(crate) fn usize_to_jint(value: usize, field: &str) -> anyhow::Result<jint> {
 
 pub(crate) fn u64_to_jlong(value: u64, field: &str) -> anyhow::Result<jlong> {
     jlong::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Long range: {value}"))
+}
+
+pub(crate) fn network_from_id(id: jint) -> anyhow::Result<Network> {
+    match id {
+        NETWORK_ID_TESTNET => Ok(Network::TestNetwork),
+        NETWORK_ID_MAINNET => Ok(Network::MainNetwork),
+        _ => Err(anyhow!("invalid network_id {}", id)),
+    }
 }
 
 #[cfg(test)]
