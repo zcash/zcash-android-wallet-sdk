@@ -132,9 +132,7 @@ cargo {
         // `Java_com_zodl_slipstream_*` exports remain in libzcashwalletsdk.so.
         val features = mutableListOf("slipstream")
         if (enableAndroidTestNativeFixtures) {
-            // Test-only fixture exports. The voting JNI surface is NOT enabled here: it is
-            // gated off behind `cfg(zcash_voting)` on this branch and its dependency is
-            // commented out of Cargo.toml, so VotingRustBackendTest stays @Ignore'd.
+            // Test-only fixture exports.
             features.add("android-test-fixtures")
         }
         listOf("--features", features.joinToString(","))
@@ -145,6 +143,17 @@ cargo {
     // https://developer.android.com/about/versions/15/behavior-changes-all#16-kb
     exec = { spec, _ ->
         spec.environment["RUST_ANDROID_GRADLE_CC_LINK_ARG"] = "-Wl,-z,max-page-size=16384"
+        // `--cfg zcash_voting` is currently a no-op: `mod voting;` in lib.rs is an unconditional
+        // module declaration (not `#[cfg(zcash_voting)]`-gated), and nothing else in this crate
+        // reads this cfg either (see backend-lib/Cargo.toml's `zcash_voting` dependency comment
+        // for the historical "how to re-enable" note this flag was originally written for, back
+        // when voting was toggled by commenting out its Cargo.toml dependency block instead).
+        // Kept as a cheap, harmless forward-compatible hook in case gating returns; not required
+        // for today's build. Appended (not assigned) so CI/dev-set ambient RUSTFLAGS survive.
+        val existingRustflags = spec.environment["RUSTFLAGS"]?.toString()
+        spec.environment["RUSTFLAGS"] =
+            listOfNotNull(existingRustflags?.takeIf { it.isNotBlank() }, "--cfg zcash_voting")
+                .joinToString(" ")
     }
     // GUI-launched IDEs (Android Studio from Finder/Dock) inherit a minimal PATH that omits
     // ~/.cargo/bin, so the rustup `cargo`/`rustc` shims are not found and cargoBuild fails with

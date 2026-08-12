@@ -14,13 +14,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ini
     ea_pk: JByteArray<'local>,
     nc_root: JByteArray<'local>,
     nullifier_imt_root: JByteArray<'local>,
-    network_id: jint,
     session_json: JString<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let network = voting_network_from_id(network_id)?;
         let params = voting::types::VotingRoundParams {
             vote_round_id: java_string_to_rust(env, &round_id)?,
             snapshot_height: jlong_to_u64(snapshot_height, "snapshot_height")?,
@@ -34,7 +32,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ini
             )?,
         };
         let session = java_nullable_string_to_rust(env, &session_json)?;
-        db.init_round(network, &params, session.as_deref())
+        db.init_round(db.network, &params, session.as_deref())
             .map_err(|e| anyhow!("init_round: {}", e))?;
         Ok(())
     });
@@ -67,6 +65,60 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
         }
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+/// Returns the canonical, per-bundle delegation phase for every bundle in a round (`prepared`,
+/// `pczt_built`, `proved`, `submitted`, `confirmed` — see `zcash_voting::phases::DelegationPhase`),
+/// derived on read from persisted artifacts rather than the coarse round-level `phase` column.
+/// This is the primitive multi-bundle-aware callers should use instead of `getRoundStateNative`'s
+/// round-level phase for per-bundle "is this already done" decisions (see
+/// `build_governance_pczt_for_bundle`'s doc comment for why the round-level phase can't do this).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_delegationPhasesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+) -> jobjectArray {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let phases = db
+            .delegation_phases(&round_id)
+            .map_err(|e| anyhow!("delegation_phases: {}", e))?;
+        make_jni_delegation_phases(env, phases)
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+/// Clears unsigned/unproved delegation setup fields for one round (preserving submitted bundles
+/// and bundles with persisted Keystone signatures) so an interrupted or corrupted per-bundle setup
+/// can be safely rebuilt from scratch. Wraps `zcash_voting::precompute::reset_voting_session_state`
+/// — the crate's sanctioned recovery path (also drops the process-local vote-tree cache for this
+/// round). Callers should treat this as the response to a `refusing to overwrite pczt_sighash`
+/// (or similar) error from `buildGovernancePcztNative`/`buildGovernancePcztFromSeedNative`, not a
+/// routine call.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_resetVotingSessionStateNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        voting::precompute::reset_voting_session_state(&db, &round_id)
+            .map_err(|e| anyhow!("reset_voting_session_state: {}", e))?;
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
 }
 
 #[unsafe(no_mangle)]
@@ -120,17 +172,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
+        // VoteRecord no longer carries a `submitted` flag in zcash_voting 1.0;
+        // the round recovery snapshot's tx_hash presence stands in for it.
         let round_id = java_string_to_rust(env, &round_id)?;
-        let votes = db
-            .get_votes(&round_id)
-            .map_err(|e| anyhow!("get_votes: {}", e))?;
-        let phases = db
-            .vote_phases(&round_id)
-            .map_err(|e| anyhow!("vote_phases: {}", e))?
-            .into_iter()
-            .map(|(bundle_index, proposal_id, phase)| ((bundle_index, proposal_id), phase))
-            .collect();
-        make_jni_vote_records(env, votes, &phases)
+        let snapshot = voting::recovery::round_snapshot(&db, &round_id)
+            .map_err(|e| anyhow!("round_snapshot: {}", e))?;
+        make_jni_vote_records(env, snapshot.votes)
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }

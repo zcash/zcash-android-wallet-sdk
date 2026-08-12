@@ -1,12 +1,14 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
+import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
 import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
-import cash.z.ecc.android.sdk.internal.model.voting.JniVoteSubmission
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -14,7 +16,7 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal interface TypesafeVotingBackend {
-    suspend fun openVotingDb(dbPath: String, walletId: String): TypesafeVotingDb
+    suspend fun openVotingDb(dbPath: String, walletId: String, networkId: Int): TypesafeVotingDb
 
     suspend fun computeShareNullifier(
         voteCommitment: ByteArray,
@@ -26,21 +28,39 @@ internal interface TypesafeVotingBackend {
 
     suspend fun warmProvingCaches()
 
+    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
+
+    /**
+     * Computes when a delegated helper share should submit, honoring the ceremony's
+     * last-moment buffer window. A passthrough to the Rust backend, which sources its own
+     * entropy. Returns unix seconds; `0` means "submit immediately".
+     */
+    suspend fun scheduledShareSubmitAt(
+        nowSeconds: Long,
+        ceremonyStartSeconds: Long,
+        voteEndTimeSeconds: Long,
+        singleShare: Boolean
+    ): Long
+
+    suspend fun buildSharePayloads(
+        commitment: JniVoteCommitmentResult,
+        voteDecision: Int,
+        numOptions: Int,
+        vcTreePosition: Long,
+        singleShareMode: Boolean = false
+    ): List<JniSharePayload>
+
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
     /**
-     * Recomputes the raw Orchard address of the voting hotkey owning [hotkeyStoredSecret].
+     * Derives the raw Orchard address for the voting hotkey.
      *
-     * This is the only way to recover a hotkey's address: the round state never reports it, and
-     * it cannot be derived from the wallet seed. It requires the secret the application persisted
-     * when the hotkey was generated — see [JniVotingHotkey].
-     *
-     * The hotkey address index is fixed by the voting backend to match the vote-signing path and
-     * is not caller-selectable; otherwise delegation could be built for a hotkey that later vote
-     * construction cannot sign for.
+     * The hotkey account index is intentionally fixed by the Rust voting backend to match the
+     * vote-signing path. Do not add an `accountIndex` parameter unless that path changes with it;
+     * otherwise delegation can be built for a hotkey that later vote construction cannot sign for.
      */
     suspend fun deriveHotkeyRawAddress(
-        hotkeyStoredSecret: ByteArray,
+        hotkeySeed: ByteArray,
         networkId: Int
     ): ByteArray
 
@@ -63,36 +83,19 @@ internal interface TypesafeVotingBackend {
     ): ByteArray
 }
 
-// Semgrep only honours a `nosemgrep` annotation on the finding's own line or the line directly
-// above it, so the suppressions below have to sit between each KDoc block and its declaration.
-// That adjacency is what ktlint's no-consecutive-comments rule forbids, and an annotation moved
-// somewhere semgrep will not read it is worse than useless, so the rule is waived here instead.
-@Suppress("TooManyFunctions", "LongParameterList", "ktlint:standard:no-consecutive-comments")
+@Suppress("TooManyFunctions", "LongParameterList")
 internal interface TypesafeVotingDb {
     suspend fun close()
 
-    /**
-     * Creates a round and binds it to [networkId].
-     *
-     * [roundId] must be 64 lowercase hex characters encoding a canonical Pallas field element.
-     */
     suspend fun initRound(
         roundId: String,
         snapshotHeight: Long,
         eaPK: ByteArray,
         ncRoot: ByteArray,
         nullifierIMTRoot: ByteArray,
-        networkId: Int,
         sessionJson: String?
     )
 
-    /**
-     * Returns the round's lifecycle state.
-     *
-     * [JniRoundState.hotkeyAddress] and [JniRoundState.delegatedWeight] are always null; use
-     * [TypesafeVotingBackend.deriveHotkeyRawAddress] and the bundle weights from [setupBundles]
-     * respectively.
-     */
     suspend fun getRoundState(roundId: String): JniRoundState?
 
     suspend fun listRounds(): List<JniRoundSummary>
@@ -108,45 +111,32 @@ internal interface TypesafeVotingDb {
         keepCount: Int
     ): Long
 
-    /**
-     * Chunks [notes] into voting bundles. Rejects an empty note set.
-     */
     suspend fun setupBundles(
         roundId: String,
         notes: List<VotingNoteInfo>
     ): JniBundleSetupResult
 
     /**
-     * Generates a fresh voting hotkey for the round.
+     * Mints or reconstructs a voting hotkey.
      *
-     * The hotkey is app-owned random material, not a derivation of the wallet seed, so every call
-     * returns a different one. **The caller must persist the returned
-     * [JniVotingHotkey.storedSecret] in platform secure storage before delegating to it.** It
-     * cannot be re-derived from the seed phrase, restoring the wallet from its seed phrase does
-     * not restore it, and losing it forfeits the voting power already delegated to the hotkey.
+     * An empty [storedSecret] mints a fresh, app-owned random hotkey; a previously persisted
+     * [JniVotingHotkey.storedSecret] deterministically reconstructs the same hotkey. This call
+     * is not scoped to a round.
      */
-    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
-    suspend fun generateHotkey(
-        roundId: String,
-        networkId: Int
-    ): JniVotingHotkey
+    suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey
 
     /**
      * Builds a governance PCZT for hardware-wallet flows.
      *
-     * This explicit form trusts [fvkBytes] as caller-derived Keystone input; it does not validate
-     * a wallet seed against it. Software-wallet callers that have the wallet seed should use
-     * [buildGovernancePcztFromSeed] to retain that invariant.
-     *
-     * [hotkeyStoredSecret] is the persisted secret from [generateHotkey]; the raw hotkey address
-     * alone is no longer accepted.
+     * This explicit form trusts [fvkBytes] and [hotkeySecret] as caller-derived Keystone input.
+     * It does not validate a wallet seed against [fvkBytes]. Software-wallet callers that have the
+     * wallet seed should use [buildGovernancePcztFromSeed] to retain that invariant.
      */
     suspend fun buildGovernancePczt(
         roundId: String,
         bundleIndex: Int,
         fvkBytes: ByteArray,
-        hotkeyStoredSecret: ByteArray,
-        networkId: Int,
+        hotkeySecret: ByteArray,
         accountIndex: Int,
         notes: List<VotingNoteInfo>,
         seedFingerprint: ByteArray,
@@ -157,8 +147,8 @@ internal interface TypesafeVotingDb {
      * Builds a governance PCZT for software-wallet flows.
      *
      * This path derives the Orchard FVK from [walletSeed] and rejects calls where it does not match
-     * [ufvk]. [hotkeyStoredSecret] is the persisted secret from [generateHotkey]; the hotkey is
-     * app-owned random material and is not derived from [walletSeed].
+     * [ufvk]. It also reconstructs the hotkey from [hotkeySecret] using the fixed hotkey
+     * account index expected by the vote-signing path.
      */
     suspend fun buildGovernancePcztFromSeed(
         roundId: String,
@@ -168,7 +158,7 @@ internal interface TypesafeVotingDb {
         accountIndex: Int,
         notes: List<VotingNoteInfo>,
         walletSeed: ByteArray,
-        hotkeyStoredSecret: ByteArray,
+        hotkeySecret: ByteArray,
         seedFingerprint: ByteArray,
         roundName: String
     ): GovernancePcztResult
@@ -184,24 +174,22 @@ internal interface TypesafeVotingDb {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult
 
-    /**
-     * Proves the delegation for a bundle.
-     *
-     * The delegation keys are assembled natively from [fvkBytes], [hotkeyStoredSecret],
-     * [seedFingerprint], [accountIndex] and [roundName], and validated against the stored round.
-     */
     suspend fun buildAndProveDelegation(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        networkId: Int,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
-        hotkeyStoredSecret: ByteArray,
+        hotkeySecret: ByteArray,
         seedFingerprint: ByteArray,
         accountIndex: Int,
         roundName: String,
@@ -209,17 +197,27 @@ internal interface TypesafeVotingDb {
     ): DelegationProofResult
 
     /**
-     * Assembles the delegation submission from a caller-supplied SpendAuth signature.
+     * Reconstructs the delegation signing keys from wallet state at [walletDbPath] and returns
+     * a spend-authorization-signed delegation submission.
      *
-     * This is the single path for both software and hardware signers: the voting backend no
-     * longer derives account keys or signs on the caller's behalf, so every signer hands back a
-     * 64-byte [spendAuthSig] over the 32-byte ZIP-244 [sighash].
+     * [hotkeySecret] and [roundName] must match those originally used to build this bundle's
+     * governance PCZT.
      */
     suspend fun getDelegationSubmission(
         roundId: String,
         bundleIndex: Int,
-        spendAuthSig: ByteArray,
-        sighash: ByteArray
+        walletDbPath: String,
+        accountUuid: String,
+        hotkeySecret: ByteArray,
+        roundName: String,
+        senderSeed: ByteArray
+    ): DelegationSubmissionResult
+
+    suspend fun getDelegationSubmissionWithKeystoneSig(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray
     ): DelegationSubmissionResult
 
     suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray)
@@ -249,67 +247,48 @@ internal interface TypesafeVotingDb {
     /**
      * Builds, signs and stores the vote commitment for a proposal in one call.
      *
-     * This replaces the former build/sign/build-payloads sequence; the helper-share payloads now
-     * arrive on [JniVoteCommitResult.sharePayloads]. [hotkeyStoredSecret] is the persisted secret
-     * from [TypesafeVotingDb.generateHotkey].
+     * The helper-share payloads arrive on [JniVoteCommitResult.sharePayloads]. [hotkeySecret] is
+     * the persisted secret from [TypesafeVotingDb.generateHotkey].
      */
-    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
-    suspend fun commitVote(
+    suspend fun buildVoteCommitment(
         roundId: String,
         bundleIndex: Int,
-        hotkeyStoredSecret: ByteArray,
-        networkId: Int,
+        hotkeySecret: ByteArray,
         proposalId: Int,
         choice: Int,
         numOptions: Int,
-        vcTreePosition: Long,
         witness: JniVanWitness,
         singleShare: Boolean = false,
         proofProgress: ((Double) -> Unit)? = null
     ): JniVoteCommitResult
-
-    /**
-     * Returns the chain-ready fields needed to resend a cast-vote transaction before it confirms.
-     *
-     * After [recordVcPosition], use [getCommitmentBundle] instead: it also yields fresh
-     * helper-share payloads.
-     */
-    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
-    suspend fun voteSubmission(
-        roundId: String,
-        bundleIndex: Int,
-        proposalId: Int
-    ): JniVoteSubmission
-
-    /**
-     * Records the confirmed position of the vote commitment in the vote commitment tree.
-     *
-     * [getCommitmentBundle] reports null until this has been called.
-     */
-    suspend fun recordVcPosition(
-        roundId: String,
-        bundleIndex: Int,
-        proposalId: Int,
-        vcTreePosition: Long
-    )
 
     suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String)
 
     suspend fun getDelegationTxHash(roundId: String, bundleIndex: Int): VotingTxHashLookup
 
     /**
-     * Records [txHash] as the cast-vote transaction for this vote.
+     * Records [txHash] as the cast-vote transaction for this vote and marks it submitted.
      *
      * A vote is "submitted" by having a recorded transaction hash; there is no separate flag.
      * Recording the same hash twice is idempotent, but recording a *different* hash for a vote
      * that already has one fails, so the wallet keeps polling the transaction it first submitted.
      */
-    suspend fun markVoteSubmitted(
+    suspend fun storeVoteTxHash(
         roundId: String,
         bundleIndex: Int,
         proposalId: Int,
         txHash: String
     )
+
+    /**
+     * Vestigial: [storeVoteTxHash] already records the tx hash and marks the vote submitted in
+     * one atomic, idempotency-checked call, so this is a no-op re-assertion of the
+     * already-recorded hash on every reachable caller. Kept only because a live external caller
+     * still calls this after [storeVoteTxHash] on both the fresh- and cached-bundle submission
+     * paths; new code should rely on [storeVoteTxHash] alone. Throws if no tx hash has been
+     * recorded yet for this vote — call [storeVoteTxHash] first.
+     */
+    suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int)
 
     suspend fun getVoteTxHash(
         roundId: String,
@@ -320,9 +299,8 @@ internal interface TypesafeVotingDb {
     /**
      * Reconstructs the stored vote commitment, with fresh helper-share payloads.
      *
-     * Reports null until the vote reaches the confirmed phase — its transaction hash recorded via
-     * [markVoteSubmitted] *and* its tree position via [recordVcPosition] — and for a vote that was
-     * never stored.
+     * Reports null until the vote reaches the confirmed phase — its tree position recorded via
+     * [recordVcPosition] — and for a vote that was never stored.
      */
     suspend fun getCommitmentBundle(
         roundId: String,
@@ -330,13 +308,35 @@ internal interface TypesafeVotingDb {
         proposalId: Int
     ): CommitmentBundleRecord?
 
+    /**
+     * Records the confirmed vote-commitment-tree position for an already-committed vote, once
+     * its cast-vote transaction has been mined.
+     */
+    suspend fun recordVcPosition(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int,
+        vcTreePosition: Long
+    )
+
+    /**
+     * Recovers the signed `vote::commit` result for an already-committed vote, together with
+     * its confirmed vote-commitment-tree position recorded by [recordVcPosition].
+     */
+    suspend fun recoverCommittedVote(
+        roundId: String,
+        bundleIndex: Int,
+        proposalId: Int
+    ): CommittedVoteRecord
+
     suspend fun clearRecoveryState(roundId: String)
 
     /**
-     * Records that a helper share was delegated.
+     * Records that share [shareIndex] was sent to [sentToUrls].
      *
-     * The share nullifier is derived natively from the vote's own recovery state rather than
-     * supplied by the caller.
+     * The native side derives and persists the authoritative nullifier from the vote's own
+     * recovery state; [nullifier] is only shape-validated when non-empty and is never itself
+     * stored. An empty [nullifier] is the normal case for callers that do not have it yet.
      */
     suspend fun recordShareDelegation(
         roundId: String,
@@ -344,6 +344,7 @@ internal interface TypesafeVotingDb {
         proposalId: Int,
         shareIndex: Int,
         sentToUrls: List<String>,
+        nullifier: ByteArray,
         submitAt: Long
     )
 
@@ -367,6 +368,42 @@ internal interface TypesafeVotingDb {
         proposalId: Int,
         shareIndex: Int,
         newUrls: List<String>
+    )
+
+    /**
+     * The canonical, per-bundle delegation phase for every bundle with recorded progress in
+     * [roundId] — see [cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase]'s doc.
+     */
+    suspend fun delegationPhases(roundId: String): List<JniDelegationPhase>
+
+    /**
+     * Clears unsigned delegation setup fields (PCZT/rk/sighash) for every bundle in [roundId]
+     * that has neither a submitted delegation tx nor a persisted [storeKeystoneSignature] entry
+     * — see the crate's `clear_unsigned_delegation_setup_fields` for the exact predicate — so a
+     * subsequent construct call starts clean. Does not delete round-level state.
+     *
+     * Known gap: this does **not** clear the `proofs` table row for those bundles, only the
+     * `bundles` table's setup columns — the underlying crate has no public API for that (see
+     * MOB-1678 investigation notes). A bundle reset+rebuilt this way keeps its old (now
+     * stale-alpha) proof row until a fresh proof overwrites it via
+     * `buildAndProveDelegation`/`storeDelegationProofFixture`; callers must not treat proof-row
+     * presence alone as proof-freshness for a bundle that has gone through a reset.
+     */
+    suspend fun resetVotingSessionState(roundId: String)
+
+    /**
+     * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+     * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+     * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+     * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not arbitrary
+     * caller-supplied values — this call does not itself re-verify the signature.
+     */
+    suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
     )
 }
 
@@ -499,6 +536,7 @@ internal data class DelegationSubmissionResult(
     val rk: ByteArray,
     val spendAuthSig: ByteArray,
     val sighash: ByteArray,
+    val tx1Effects: ByteArray,
     val nfSigned: ByteArray,
     val cmxNew: ByteArray,
     val govComm: ByteArray,
@@ -512,6 +550,7 @@ internal data class DelegationSubmissionResult(
             rk.contentEquals(other.rk) &&
             spendAuthSig.contentEquals(other.spendAuthSig) &&
             sighash.contentEquals(other.sighash) &&
+            tx1Effects.contentEquals(other.tx1Effects) &&
             nfSigned.contentEquals(other.nfSigned) &&
             cmxNew.contentEquals(other.cmxNew) &&
             govComm.contentEquals(other.govComm) &&
@@ -524,6 +563,7 @@ internal data class DelegationSubmissionResult(
         result = 31 * result + rk.contentHashCode()
         result = 31 * result + spendAuthSig.contentHashCode()
         result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + tx1Effects.contentHashCode()
         result = 31 * result + nfSigned.contentHashCode()
         result = 31 * result + cmxNew.contentHashCode()
         result = 31 * result + govComm.contentHashCode()
@@ -542,7 +582,12 @@ internal sealed interface VotingTxHashLookup {
 }
 
 internal data class CommitmentBundleRecord(
-    val commitment: JniVoteCommitResult,
+    val commitment: JniVoteCommitmentResult,
+    val vcTreePosition: Long
+)
+
+internal data class CommittedVoteRecord(
+    val commit: JniVoteCommitResult,
     val vcTreePosition: Long
 )
 

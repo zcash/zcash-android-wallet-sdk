@@ -1,3 +1,4 @@
+use super::helpers::*;
 use super::*;
 use std::{
     ops::Deref,
@@ -22,10 +23,13 @@ pub(super) struct VotingDbHandle {
     // serialized for shared managed handles.
     pub(super) tree_sync: VoteTreeSync,
     access_mutex: Mutex<()>,
+    // The voting network rides the handle so downstream JNI entrypoints do not
+    // need a redundant network_id parameter once a handle is open.
+    pub(super) network: voting::types::Network,
 }
 
 impl VotingDbHandle {
-    fn open(path: &str, wallet_id: &str) -> anyhow::Result<Self> {
+    fn open(path: &str, wallet_id: &str, network: voting::types::Network) -> anyhow::Result<Self> {
         let db = VotingDb::open(path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
         db.set_wallet_id(wallet_id);
 
@@ -33,6 +37,7 @@ impl VotingDbHandle {
             db,
             tree_sync: VoteTreeSync::new(),
             access_mutex: Mutex::new(()),
+            network,
         })
     }
 
@@ -78,9 +83,13 @@ pub(super) fn db_from_handle(handle: jlong) -> anyhow::Result<Arc<VotingDbHandle
         .ok_or_else(|| anyhow!("Voting DB handle is closed or unknown: {handle}"))
 }
 
-fn open_managed_db(path: &str, wallet_id: &str) -> anyhow::Result<Arc<VotingDbHandle>> {
+fn open_managed_db(
+    path: &str,
+    wallet_id: &str,
+    network: voting::types::Network,
+) -> anyhow::Result<Arc<VotingDbHandle>> {
     if path == ":memory:" {
-        return Ok(Arc::new(VotingDbHandle::open(path, wallet_id)?));
+        return Ok(Arc::new(VotingDbHandle::open(path, wallet_id, network)?));
     }
 
     let key = DbKey {
@@ -93,10 +102,15 @@ fn open_managed_db(path: &str, wallet_id: &str) -> anyhow::Result<Arc<VotingDbHa
     dbs.retain(|_, db| db.strong_count() > 0);
 
     if let Some(db) = dbs.get(&key).and_then(Weak::upgrade) {
+        if db.network != network {
+            return Err(anyhow!(
+                "voting DB at {path} for wallet {wallet_id} is already open for a different network"
+            ));
+        }
         return Ok(db);
     }
 
-    let db = Arc::new(VotingDbHandle::open(path, wallet_id)?);
+    let db = Arc::new(VotingDbHandle::open(path, wallet_id, network)?);
     dbs.insert(key, Arc::downgrade(&db));
     Ok(db)
 }
@@ -109,6 +123,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
     _: JClass<'local>,
     db_path: JString<'local>,
     wallet_id: JString<'local>,
+    network_id: jint,
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
         let path = java_string_to_rust(env, &db_path)?;
@@ -116,8 +131,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
         if wallet_id.is_empty() {
             return Err(anyhow!("walletId must not be empty"));
         }
+        let network = voting_network_from_id(network_id)?;
 
-        let db = open_managed_db(&path, &wallet_id)?;
+        let db = open_managed_db(&path, &wallet_id, network)?;
         let handle = next_handle()?;
         registry()
             .lock()
@@ -161,8 +177,10 @@ mod tests {
     fn managed_db_reuses_access_lock_for_same_path_and_wallet() {
         let db_path = unique_db_path();
         let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
-        let first = open_managed_db(db_path_str, "wallet-1").expect("first DB open");
-        let second = open_managed_db(db_path_str, "wallet-1").expect("second DB open");
+        let first = open_managed_db(db_path_str, "wallet-1", voting::types::Network::Testnet)
+            .expect("first DB open");
+        let second = open_managed_db(db_path_str, "wallet-1", voting::types::Network::Testnet)
+            .expect("second DB open");
 
         assert!(Arc::ptr_eq(&first, &second));
         let guard = first.access_lock().expect("first access lock");

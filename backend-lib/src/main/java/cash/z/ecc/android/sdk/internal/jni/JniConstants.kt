@@ -24,19 +24,16 @@ const val JNI_METADATA_KEY_SK_SIZE = 32
 const val JNI_METADATA_KEY_CHAIN_CODE_SIZE = 32
 
 /**
- * The number of bytes in a voting hotkey's stored secret. It's used e.g. in
- * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.storedSecret].
- *
- * Must match VOTING_HOTKEY_STORED_SECRET_LEN in `zcash_voting`, mirrored as
- * HOTKEY_STORED_SECRET_BYTES in backend-lib/src/main/rust/voting/helpers.rs.
+ * The number of bytes in a voting hotkey's opaque stored secret. It's used e.g. in
+ * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.storedSecret]
  */
 const val JNI_HOTKEY_STORED_SECRET_BYTES_SIZE = 64
 
 /**
- * The number of bytes in a raw Orchard address. It's used e.g. in
- * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.rawOrchardAddress].
+ * The number of bytes in a voting hotkey's raw Orchard address. It's used e.g. in
+ * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.rawAddress]
  */
-const val JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE = 43
+const val JNI_HOTKEY_RAW_ADDRESS_BYTES_SIZE = 43
 
 /**
  * The number of bytes in a protocol field element crossing the voting JNI boundary.
@@ -71,6 +68,13 @@ const val JNI_GOVERNANCE_NULLIFIER_COUNT = 5
  * The number of bytes in an Orchard spend authorization signature.
  */
 const val JNI_SPEND_AUTH_SIG_BYTES_SIZE = 64
+
+/**
+ * The number of bytes in the versioned Ironwood TX1 effecting data a delegation submission
+ * carries to the vote-chain server in place of the local sighash. Must match
+ * zcash_voting::tx1::TX1_EFFECTS_LEN (version byte + one Ironwood action's effecting data).
+ */
+const val JNI_TX1_EFFECTS_BYTES_SIZE = 821
 
 /**
  * Voting JNI network id for testnet. Matches [cash.z.ecc.android.sdk.model.ZcashNetwork.ID_TESTNET].

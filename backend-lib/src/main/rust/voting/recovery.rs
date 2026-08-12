@@ -54,17 +54,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
-/// Records the transaction that carried a cast vote.
-///
-/// This is the only writer of a vote's transaction hash. It replaces the former
-/// `storeVoteTxHashNative`, which wrote the same column unconditionally: since
-/// `zcash_voting` dropped the standalone submitted flag, recording the
-/// transaction *is* what marks a vote submitted, so the two entry points had
-/// become the same operation with different conflict semantics. The surviving
-/// one is conflict-checked, because overwriting the hash of an already-submitted
-/// cast vote would lose the wallet's ability to keep polling that transaction.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_markVoteSubmittedNative<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeVoteTxHashNative<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -78,13 +69,64 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_mar
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        db.mark_vote_submitted(
-            &java_string_to_rust(env, &round_id)?,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            jint_to_u32(proposal_id, "proposal_id")?,
-            &java_string_to_rust(env, &tx_hash)?,
-        )
-        .map_err(|e| anyhow!("mark_vote_submitted: {e}"))?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+        let tx_hash = java_string_to_rust(env, &tx_hash)?;
+        // record_vote_submission is the atomic hash+submitted recorder; see
+        // markVoteSubmittedNative's doc comment for why that method is now redundant.
+        db.record_vote_submission(&round_id, bundle_index, proposal_id, &tx_hash)
+            .map_err(|e| anyhow!("record_vote_submission: {e}"))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+/// Deprecated / vestigial: `storeVoteTxHashNative` (`record_vote_submission`) is now the sole
+/// atomic recorder for "this vote's tx hash is known and it is submitted" — that single call
+/// already does everything this method used to. Every reachable call to this method is now
+/// either a hard error (no tx hash recorded yet — call `storeVoteTxHashNative` first) or a
+/// no-op (the exact same, already-recorded hash gets redundantly re-written to itself), because
+/// `mark_vote_submitted` requires a pre-existing tx_hash and only re-asserts it via the same
+/// idempotency check `record_vote_submission` already performs.
+///
+/// Kept (rather than deleted) only because a live external caller (zodl-android's
+/// `SubmitVotesUseCase`) still calls this after `storeVoteTxHash` on both the fresh- and
+/// cached-vote-bundle submission paths — always in the harmless no-op case, never the error
+/// case, since it is always called after the hash is already stored there. Do not add new
+/// callers; new code should rely on `storeVoteTxHashNative` alone. Removing this method
+/// entirely requires a coordinated change in the app repo first.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_markVoteSubmittedNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+
+        // mark_vote_submitted now takes the tx_hash itself (it is the idempotent,
+        // conflict-checked half of record_vote_submission); recover it from the
+        // hash storeVoteTxHashNative already recorded for this vote.
+        let tx_hash = db
+            .get_vote_tx_hash(&round_id, bundle_index, proposal_id)
+            .map_err(|e| anyhow!("get_vote_tx_hash: {e}"))?
+            .ok_or_else(|| {
+                anyhow!(
+                    "no vote tx_hash recorded for round={round_id}, bundle={bundle_index}, proposal={proposal_id}; call store_vote_tx_hash first"
+                )
+            })?;
+        db.mark_vote_submitted(&round_id, bundle_index, proposal_id, &tx_hash)
+            .map_err(|e| anyhow!("mark_vote_submitted: {e}"))?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
@@ -130,6 +172,7 @@ where
     match result {
         Ok(value) => Ok(value),
         Err(error) if is_query_returned_no_rows(&error) => Ok(None),
+        Err(error) if is_uncommitted_commitment_bundle_position(&error) => Ok(None),
         Err(error) => Err(anyhow!("{label}: {error}")),
     }
 }
@@ -141,46 +184,20 @@ fn is_query_returned_no_rows(error: &impl std::fmt::Display) -> bool {
         .contains("query returned no rows")
 }
 
-/// Records the on-chain vote commitment tree position of a confirmed vote.
-///
-/// This replaces the former `storeCommitmentBundleNative`, which also took the
-/// commitment bundle itself. `zcash_voting` now owns that recovery material: it
-/// is written when the vote is committed and has no public writer, so the caller
-/// has nothing left to supply beyond the confirmed tree position.
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordVcPositionNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    proposal_id: jint,
-    vc_tree_position: jlong,
-) -> jboolean {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        voting::vote::record_vc_position(
-            &db,
-            &java_string_to_rust(env, &round_id)?,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            jint_to_u32(proposal_id, "proposal_id")?,
-            jlong_to_u64(vc_tree_position, "vc_tree_position")?,
-        )
-        .map_err(|e| anyhow!("record_vc_position: {e}"))?;
-        Ok(JNI_TRUE)
-    });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
+/// zcash_voting's `get_commitment_bundle` (`storage/queries.rs`) raises this exact
+/// `VotingError::Internal` message when a vote has been committed
+/// (`commitment_bundle_json` persisted) but its vote-commitment-tree position has not
+/// yet been recorded. That is the normal state between `vote::commit` and the cast-vote
+/// tx confirming on chain (`recordVcPositionNative` is only reachable once the tx
+/// confirms), so `getCommitmentBundleNative`'s nullable public API must map it to null,
+/// not surface it as a thrown exception — a poll-until-non-null loop on the Kotlin side
+/// would otherwise crash on every vote during that window.
+fn is_uncommitted_commitment_bundle_position(error: &impl std::fmt::Display) -> bool {
+    error.to_string().contains(
+        "commitment bundle is stored without vc_tree_position; refusing to assume position 0",
+    )
 }
 
-/// Reconstructs a committed vote and its recorded tree position after a restart.
-///
-/// Returns null until the vote reaches [`VotePhase::Confirmed`], which is the
-/// phase in which its commitment tree position has been recorded, so callers
-/// cannot resubmit helper-share payloads built on a stale position. A vote that
-/// was never stored is likewise reported as null.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getCommitmentBundleNative<
     'local,
@@ -195,40 +212,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let round_id = java_string_to_rust(env, &round_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
-        // `vote::commit` persists the recovery bundle and `vote::record_vc_position`
-        // persists the tree position, so between those two calls the bundle is
-        // stored without a position -- a state in which `get_commitment_bundle`
-        // deliberately fails rather than assume position 0. The canonical phase
-        // recognizes that in-progress state directly, so the caller sees "not
-        // ready yet" instead of an exception.
-        let phase = match db.vote_phase(&round_id, bundle_index, proposal_id) {
-            Ok(phase) => phase,
-            // The sole invalid input `vote_phase` reports is a vote that has
-            // never been stored, which for a recovery read means there is
-            // nothing to reconstruct.
-            Err(VotingError::InvalidInput { .. }) => return Ok(JObject::null().into_raw()),
-            Err(e) => return Err(anyhow!("vote_phase: {e}")),
-        };
-        if phase != VotePhase::Confirmed {
-            return Ok(JObject::null().into_raw());
-        }
-
         let record = optional_recovery_lookup(
-            db.get_commitment_bundle(&round_id, bundle_index, proposal_id),
+            db.get_commitment_bundle(
+                &java_string_to_rust(env, &round_id)?,
+                bundle_index,
+                jint_to_u32(proposal_id, "proposal_id")?,
+            ),
             "get_commitment_bundle",
         )?;
         match record {
-            Some((_, vc_tree_position)) => {
-                // The stored recovery JSON is library-owned and opaque, so the
-                // typed commitment comes back through the crate's own reader
-                // rather than being parsed here.
-                let commit =
-                    voting::vote::recover_commit(&db, &round_id, bundle_index, proposal_id)
-                        .map_err(|e| anyhow!("recover_commit: {e}"))?;
-                make_jni_commitment_bundle_record(env, commit, bundle_index, vc_tree_position)
+            Some((commitment_bundle_json, vc_tree_position)) => {
+                // zcash_voting 1.0.0 persists this JSON in its own VoteRecoveryBundle
+                // format (crate::vote::parse_recovery), not this SDK's old hand-rolled
+                // hex-string format.
+                let bundle = voting::vote::parse_recovery(&commitment_bundle_json)
+                    .map_err(|e| anyhow!("parse_recovery: {}", e))?;
+                make_jni_commitment_bundle_record(env, bundle, bundle_index, vc_tree_position)
             }
             None => Ok(JObject::null().into_raw()),
         }
@@ -256,6 +256,79 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_cle
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordVcPositionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+    vc_tree_position: jlong,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+        let vc_tree_position = jlong_to_u64(vc_tree_position, "vc_tree_position")?;
+
+        let committed =
+            voting::vote::CommittedVote::recover(&db, &round_id, bundle_index, proposal_id)
+                .map_err(|e| anyhow!("CommittedVote::recover: {}", e))?;
+        committed
+            .record_vc_position(&db, vc_tree_position)
+            .map_err(|e| anyhow!("record_vc_position: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recoverCommittedVoteNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    proposal_id: jint,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+
+        let committed =
+            voting::vote::CommittedVote::recover(&db, &round_id, bundle_index, proposal_id)
+                .map_err(|e| anyhow!("CommittedVote::recover: {}", e))?;
+        let signed = committed
+            .signed_commitment(&db)
+            .map_err(|e| anyhow!("signed_commitment: {}", e))?;
+        let recoverable = voting::recovery::recoverable_commitment_bundle(
+            &db,
+            &round_id,
+            bundle_index,
+            proposal_id,
+        )
+        .map_err(|e| anyhow!("recoverable_commitment_bundle: {}", e))?
+        .ok_or_else(|| {
+            anyhow!(
+                "no recoverable vote commitment tree position for round={round_id}, bundle={bundle_index}, proposal={proposal_id}"
+            )
+        })?;
+
+        make_jni_committed_vote_record(env, signed, bundle_index, recoverable.vc_tree_position)
+    });
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordShareDelegationNative<
     'local,
 >(
@@ -267,24 +340,36 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_rec
     proposal_id: jint,
     share_index: jint,
     sent_to_urls: JObjectArray<'local>,
+    nullifier: JByteArray<'local>,
     submit_at: jlong,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
+        let share_index =
+            require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?;
         let sent_to_urls = java_string_array(env, &sent_to_urls, "sentToUrls")?;
-        // The nullifier is derived from the vote's persisted recovery state
-        // rather than supplied by the caller, so a caller cannot record a
-        // nullifier that disagrees with the share it belongs to. That is why the
-        // former `nullifier` parameter is gone.
+        let submit_at = jlong_to_u64(submit_at, "submit_at")?;
+
+        // share::record derives and persists the authoritative nullifier from the
+        // vote's own recovery state; the caller-supplied nullifier here is only
+        // shape-validated (when present) and is never itself stored.
+        let nullifier = java_bytes(env, &nullifier, "nullifier")?;
+        if !nullifier.is_empty() {
+            require_len(nullifier, "nullifier", SHARE_NULLIFIER_BYTES)?;
+        }
+
         voting::share::record(
             &db,
-            &java_string_to_rust(env, &round_id)?,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            jint_to_u32(proposal_id, "proposal_id")?,
-            require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?,
+            &round_id,
+            bundle_index,
+            proposal_id,
+            share_index,
             &sent_to_urls,
-            jlong_to_u64(submit_at, "submit_at")?,
+            submit_at,
         )
         .map_err(|e| anyhow!("share::record: {e}"))?;
         Ok(JNI_TRUE)
@@ -421,125 +506,59 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
             &[0xAA; PROTOCOL_FIELD_BYTES],
         )
         .map_err(|e| anyhow!("store_vote fixture: {e}"))?;
-        store_vote_recovery_bundle_fixture(
-            &conn,
-            &round_id,
-            &wallet_id,
+
+        let recovery = voting::vote::VoteRecoveryBundle {
+            vote_round_id: round_id.clone(),
             bundle_index,
             proposal_id,
-            choice,
-        )?;
-        Ok(())
-    });
-    unwrap_exc_or(&mut env, res, ())
-}
-
-/// Persists the recovery bundle a real `vote::commit` would have written.
-///
-/// `share::record` derives the share nullifier from the vote's own recovery
-/// bundle instead of taking one from the caller, so a vote row on its own is no
-/// longer enough to record a helper share. Producing a genuine bundle means
-/// running the ZKP #2 prover, which an instrumented test cannot afford, so this
-/// stages the same shape `zcash_voting`'s own suite stages: the library-owned
-/// JSON written straight onto the vote row. Only `vote_commitment` and the
-/// per-share blind actually feed the nullifier, and both are canonical Pallas
-/// encodings here.
-///
-/// `vc_tree_position` deliberately stays NULL. That leaves the vote in
-/// `VotePhase::Committed` rather than `Confirmed`, which is what keeps
-/// `get_commitment_bundle` reporting "not ready yet" for a vote whose on-chain
-/// position has not been recorded.
-#[cfg(feature = "android-test-fixtures")]
-fn store_vote_recovery_bundle_fixture(
-    conn: &rusqlite::Connection,
-    round_id: &str,
-    wallet_id: &str,
-    bundle_index: u32,
-    proposal_id: u32,
-    choice: u32,
-) -> anyhow::Result<()> {
-    let bundle = vote_recovery_bundle_fixture(round_id, bundle_index, proposal_id, choice);
-    let json = voting::vote::serialize_recovery(&bundle)
-        .map_err(|e| anyhow!("serialize_recovery fixture: {e}"))?;
-    let rows = conn
-        .execute(
-            "UPDATE votes SET commitment_bundle_json = :json
+            vote_decision: choice,
+            anchor_height: 100,
+            vc_tree_position: 456,
+            single_share: false,
+            num_options: 3,
+            van_nullifier: [0x31; PROTOCOL_FIELD_BYTES],
+            vote_authority_note_new: [0x32; PROTOCOL_FIELD_BYTES],
+            vote_commitment: [0x01; PROTOCOL_FIELD_BYTES],
+            proof: vec![0x34; 8],
+            shares_hash: [0x35; PROTOCOL_FIELD_BYTES],
+            r_vpk: [0x36; PROTOCOL_FIELD_BYTES],
+            alpha_v: [0x37; PROTOCOL_FIELD_BYTES],
+            vote_auth_sig: [0x38; SPEND_AUTH_SIG_BYTES],
+            encrypted_shares: (0..VOTE_SHARE_COUNT)
+                .map(|share_index| voting::types::EncryptedShare {
+                    c1: vec![0x21; PROTOCOL_FIELD_BYTES],
+                    c2: vec![0x22; PROTOCOL_FIELD_BYTES],
+                    share_index: share_index as u32,
+                    plaintext_value: 5,
+                    randomness: vec![0x23; PROTOCOL_FIELD_BYTES],
+                })
+                .collect(),
+            share_blinds: vec![[0x02; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
+            share_comms: vec![[0x51; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
+        };
+        let recovery_json = voting::vote::serialize_recovery(&recovery)
+            .map_err(|e| anyhow!("serialize vote recovery fixture: {e}"))?;
+        conn.execute(
+            "UPDATE votes
+             SET commitment_bundle_json = :recovery_json,
+                 vc_tree_position = :vc_tree_position
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index
                AND proposal_id = :proposal_id",
             rusqlite::named_params! {
-                ":json": json,
+                ":recovery_json": recovery_json,
+                ":vc_tree_position": 456_i64,
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
-                ":bundle_index": bundle_index as i64,
-                ":proposal_id": proposal_id as i64,
+                ":bundle_index": i64::from(bundle_index),
+                ":proposal_id": i64::from(proposal_id),
             },
         )
-        .map_err(|e| anyhow!("store vote recovery bundle fixture: {e}"))?;
-    if rows != 1 {
-        return Err(anyhow!(
-            "store vote recovery bundle fixture updated {rows} rows, expected 1"
-        ));
-    }
-    Ok(())
-}
-
-/// Builds a syntactically valid vote recovery bundle for the fixture above.
-///
-/// Every helper slot gets a share so that any `share_index` the suite exercises
-/// resolves, and each carries a distinct blind so distinct slots yield distinct
-/// nullifiers.
-#[cfg(feature = "android-test-fixtures")]
-fn vote_recovery_bundle_fixture(
-    round_id: &str,
-    bundle_index: u32,
-    proposal_id: u32,
-    choice: u32,
-) -> voting::vote::VoteRecoveryBundle {
-    use voting::types::EncryptedShare;
-
-    // A one-byte little-endian value is always below the Pallas modulus, so
-    // every field element here is a canonical encoding.
-    fn field_bytes(value: u8) -> [u8; PROTOCOL_FIELD_BYTES] {
-        let mut bytes = [0u8; PROTOCOL_FIELD_BYTES];
-        bytes[0] = value;
-        bytes
-    }
-
-    voting::vote::VoteRecoveryBundle {
-        vote_round_id: round_id.to_string(),
-        bundle_index,
-        proposal_id,
-        vote_decision: choice,
-        anchor_height: 1,
-        vc_tree_position: 0,
-        single_share: false,
-        num_options: voting::types::MAX_VOTE_OPTIONS,
-        van_nullifier: field_bytes(0x10),
-        vote_authority_note_new: field_bytes(0x11),
-        vote_commitment: field_bytes(0x12),
-        proof: vec![0x13; 96],
-        shares_hash: field_bytes(0x14),
-        r_vpk: field_bytes(0x15),
-        alpha_v: field_bytes(0x16),
-        vote_auth_sig: [0x17; 64],
-        encrypted_shares: (0..VOTE_SHARE_COUNT)
-            .map(|index| EncryptedShare {
-                c1: vec![0x21; PROTOCOL_FIELD_BYTES],
-                c2: vec![0x22; PROTOCOL_FIELD_BYTES],
-                share_index: index as u32,
-                plaintext_value: index as u64,
-                randomness: vec![0x23; PROTOCOL_FIELD_BYTES],
-            })
-            .collect(),
-        share_blinds: (0..VOTE_SHARE_COUNT)
-            .map(|index| field_bytes(index as u8 + 1))
-            .collect(),
-        share_comms: (0..VOTE_SHARE_COUNT)
-            .map(|index| field_bytes(index as u8 + 0x51))
-            .collect(),
-    }
+        .map_err(|e| anyhow!("store vote recovery fixture: {e}"))?;
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
 }
 
 fn java_string_array(
@@ -579,9 +598,20 @@ mod tests {
         assert!(error.contains("database is locked"));
     }
 
-    // The former `commitment_store_key_must_match_payload` test is gone. It
-    // asserted that a caller-supplied commitment payload agreed with the storage
-    // key it was being written under. `zcash_voting` now owns that payload
-    // entirely -- it is written by `vote::commit` and has no public writer -- so
-    // there is no caller-supplied payload left to disagree with the key.
+    /// A committed-but-unconfirmed vote (commitment persisted, vc_tree_position not yet
+    /// recorded) is the normal state between `vote::commit` and the cast-vote tx confirming.
+    /// `getCommitmentBundleNative`'s nullable poll must see this as "not yet available", not
+    /// as a fatal error, or a poll-until-non-null loop crashes on every vote.
+    #[test]
+    fn optional_recovery_lookup_maps_uncommitted_vc_tree_position_to_none() {
+        let result: anyhow::Result<Option<String>> = optional_recovery_lookup(
+            Err(
+                "Internal error: commitment bundle is stored without vc_tree_position; \
+                 refusing to assume position 0",
+            ),
+            "get_commitment_bundle",
+        );
+
+        assert!(result.unwrap().is_none());
+    }
 }

@@ -121,11 +121,29 @@ xz2 = { version = "0.1", features = ["static"] }
 # (issue #2056); that is what the git patch existed to avoid. The published 2.0.0-rc.3
 # pins the Ironwood family directly, so each Zcash crate resolves exactly once without one.
 #
-# Enabling it puts the share-reveal circuit and the Poseidon `share_nullifier_hash` back into
-# the shipped library, via the `voting-circuits` crate it depends on. That is the cost of
-# shielded voting on this branch, accepted deliberately; the orchard note above records why
-# turning off orchard's `unstable-voting-circuits` feature does not avoid it.
-zcash_voting = { version = "2.0.0-rc.3" }
+# The transitive `voting-circuits` dependency contains the share-reveal circuit
+# and the Poseidon-based `share_nullifier_hash` implementation:
+# https://github.com/valargroup/voting-circuits/blob/v0.8.0/voting-circuits/src/share_reveal/circuit.rs
+#
+# To re-enable: uncomment these three, add `unstable-voting-circuits` back to the
+# orchard dependency above, and build with `--cfg zcash_voting`. The 2.0 sources this
+# tree is written against are a published crates.io release, so no `[patch.crates-io]`
+# entry is needed. `incrementalmerkletree` above stays uncommented either way -- the
+# migration engine uses it too.
+#
+# 2.0.0-rc.5 (adopted 2026-08-11, see #2161) is the first published release with the
+# `tx1_effects` field delegate-vote submissions need — the vote-chain server rejects the
+# legacy `sighash`-only shape with "invalid message field: tx1 effects must be 821 bytes,
+# got 0". Earlier rc.4 only had this fix via an unpublished git pin (see the removed
+# `[patch.crates-io]` entry below); rc.5 ships it on crates.io directly.
+zcash_voting = { version = "2.0.0-rc.5" }
+
+# The delegation-submission signing recipe (voting/delegation.rs) derives the account
+# SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
+# orchard already carry transitively; pin to the versions already resolved for them
+# (see Cargo.lock) so this stays the same crate instance, not a second copy.
+pasta_curves = { version = "0.5" }
+ff = { version = "0.13" }
 
 # Slipstream sync engine. Its JNI binding is folded into this crate as the `slipstream` module
 # (src/main/rust/slipstream/), gated by the off-by-default `slipstream` feature above, so the
@@ -193,9 +211,9 @@ crate-type = ["staticlib", "cdylib"]
 # published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
 #
-# `zcash_voting` is deliberately absent here: 2.0.0-rc.3 resolves from crates.io already
-# pinned to the Ironwood librustzcash family, so it needs no patch to avoid the duplicate
-# Zcash crates of issue #2056.
+# `zcash_voting` is also deliberately absent (removed 2026-08-11, see #2161): now that
+# 2.0.0-rc.5 ships the `tx1_effects` fix on crates.io directly (see the dependency entry
+# above), the unpublished git pin this patch used to carry is no longer needed.
 
 # DO NOT ALTER THIS COMMENT
 #
