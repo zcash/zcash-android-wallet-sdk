@@ -10,6 +10,16 @@
 //! to a voting protocol constant and stays with the feature.
 
 use anyhow::anyhow;
+use jni::{JNIEnv, objects::JByteArray};
+
+pub(crate) fn java_bytes(
+    env: &mut JNIEnv<'_>,
+    array: &JByteArray<'_>,
+    field: &str,
+) -> anyhow::Result<Vec<u8>> {
+    env.convert_byte_array(array)
+        .map_err(|e| anyhow!("{field}: failed to read byte array: {e}"))
+}
 
 pub(crate) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyhow::Result<Vec<u8>> {
     if bytes.len() == expected {
