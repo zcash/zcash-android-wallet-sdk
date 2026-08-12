@@ -669,7 +669,6 @@ data class JniDelegationSubmissionResult(
     val rk: ByteArray,
     val spendAuthSig: ByteArray,
     val sighash: ByteArray,
-    val tx1Effects: ByteArray,
     val nfSigned: ByteArray,
     val cmxNew: ByteArray,
     val govComm: ByteArray,
@@ -681,7 +680,6 @@ data class JniDelegationSubmissionResult(
         rk: ByteArray,
         spendAuthSig: ByteArray,
         sighash: ByteArray,
-        tx1Effects: ByteArray,
         nfSigned: ByteArray,
         cmxNew: ByteArray,
         govComm: ByteArray,
@@ -692,7 +690,6 @@ data class JniDelegationSubmissionResult(
         rk = rk,
         spendAuthSig = spendAuthSig,
         sighash = sighash,
-        tx1Effects = tx1Effects,
         nfSigned = nfSigned,
         cmxNew = cmxNew,
         govComm = govComm,
@@ -707,7 +704,6 @@ data class JniDelegationSubmissionResult(
             rk.contentEquals(other.rk) &&
             spendAuthSig.contentEquals(other.spendAuthSig) &&
             sighash.contentEquals(other.sighash) &&
-            tx1Effects.contentEquals(other.tx1Effects) &&
             nfSigned.contentEquals(other.nfSigned) &&
             cmxNew.contentEquals(other.cmxNew) &&
             govComm.contentEquals(other.govComm) &&
@@ -720,7 +716,6 @@ data class JniDelegationSubmissionResult(
         result = 31 * result + rk.contentHashCode()
         result = 31 * result + spendAuthSig.contentHashCode()
         result = 31 * result + sighash.contentHashCode()
-        result = 31 * result + tx1Effects.contentHashCode()
         result = 31 * result + nfSigned.contentHashCode()
         result = 31 * result + cmxNew.contentHashCode()
         result = 31 * result + govComm.contentHashCode()
@@ -729,17 +724,6 @@ data class JniDelegationSubmissionResult(
         return result
     }
 }
-
-/**
- * The canonical, per-bundle delegation phase (`prepared`, `pczt_built`, `proved`, `submitted`,
- * `confirmed` — matches `zcash_voting::phases::DelegationPhase::as_str`), derived on read from
- * persisted artifacts rather than the coarse round-level phase on [JniRoundState].
- */
-@Keep
-data class JniDelegationPhase(
-    val bundleIndex: Int,
-    val phase: String
-)
 
 private fun List<ByteArray>.contentDeepEquals(other: List<ByteArray>): Boolean =
     size == other.size && zip(other).all { (left, right) -> left.contentEquals(right) }

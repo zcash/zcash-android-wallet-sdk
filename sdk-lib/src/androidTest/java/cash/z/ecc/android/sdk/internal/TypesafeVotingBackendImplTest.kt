@@ -4,7 +4,6 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_DELEGATION_PUBLIC_INPUT_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_GOVERNANCE_NULLIFIER_COUNT
 import cash.z.ecc.android.sdk.internal.jni.JNI_PROTOCOL_FIELD_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_SPEND_AUTH_SIG_BYTES_SIZE
-import cash.z.ecc.android.sdk.internal.jni.JNI_TX1_EFFECTS_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_VAN_WITNESS_PATH_DEPTH
 import cash.z.ecc.android.sdk.internal.jni.JNI_VOTE_SHARE_COUNT
 import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
@@ -328,9 +327,6 @@ class TypesafeVotingBackendImplTest {
                     roundId = "round-2",
                     bundleIndex = 3,
                     pirServerUrl = "https://pir.example",
-                    pirDepth = TEST_PIR_DEPTH,
-                    pirTier0Layers = TEST_PIR_TIER0_LAYERS,
-                    pirTier1Layers = TEST_PIR_TIER1_LAYERS,
                     notes = notes
                 )
             assertEquals(11L, precompute.cachedCount)
@@ -345,9 +341,6 @@ class TypesafeVotingBackendImplTest {
                     roundId = "round-3",
                     bundleIndex = 4,
                     pirServerUrl = "https://pir.example",
-                    pirDepth = TEST_PIR_DEPTH,
-                    pirTier0Layers = TEST_PIR_TIER0_LAYERS,
-                    pirTier1Layers = TEST_PIR_TIER1_LAYERS,
                     notes = notes,
                     fvkBytes = fvkBytes,
                     hotkeySecret = hotkeySecret,
@@ -721,7 +714,6 @@ class TypesafeVotingBackendImplTest {
         rk: ByteArray = field(7),
         spendAuthSig: ByteArray = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE) { 8 },
         sighash: ByteArray = field(9),
-        tx1Effects: ByteArray = ByteArray(JNI_TX1_EFFECTS_BYTES_SIZE) { 10 },
         nfSigned: ByteArray = field(4),
         cmxNew: ByteArray = field(5),
         govComm: ByteArray = field(6),
@@ -736,7 +728,6 @@ class TypesafeVotingBackendImplTest {
         rk = rk,
         spendAuthSig = spendAuthSig,
         sighash = sighash,
-        tx1Effects = tx1Effects,
         nfSigned = nfSigned,
         cmxNew = cmxNew,
         govComm = govComm,
@@ -1309,9 +1300,6 @@ class TypesafeVotingBackendImplTest {
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
-            pirDepth: Int,
-            pirTier0Layers: Int,
-            pirTier1Layers: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult {
             precomputeRoundId = roundId
@@ -1325,9 +1313,6 @@ class TypesafeVotingBackendImplTest {
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
-            pirDepth: Int,
-            pirTier0Layers: Int,
-            pirTier1Layers: Int,
             notes: List<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -1606,9 +1591,6 @@ class TypesafeVotingBackendImplTest {
 
     private companion object {
         private const val PROOF_BYTES = 3
-        private const val TEST_PIR_DEPTH = 1
-        private const val TEST_PIR_TIER0_LAYERS = 1
-        private const val TEST_PIR_TIER1_LAYERS = 1
         private const val GOVERNANCE_PCZT_BYTES_FIXTURE = 41
         private const val GOVERNANCE_PCZT_RK_FIXTURE = 43
         private const val GOVERNANCE_PCZT_SIGHASH_FIXTURE = 44

@@ -2311,22 +2311,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-rustls"
-version = "0.27.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
-dependencies = [
- "http",
- "hyper",
- "hyper-util",
- "rustls",
- "tokio",
- "tokio-rustls",
- "tower-service",
- "webpki-roots",
-]
-
-[[package]]
 name = "hyper-timeout"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2388,20 +2372,6 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
-
-[[package]]
-name = "imt-tree"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aad3e3ab5a46f4a08d00f5525b86cd0d5204cba64ba68f46e20a590e1808aec"
-dependencies = [
- "anyhow",
- "ff",
- "halo2_gadgets",
- "hex",
- "pasta_curves",
- "rayon",
-]
 
 [[package]]
 name = "incrementalmerkletree"
@@ -3510,38 +3480,6 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pir-client"
-version = "0.4.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25d28b9974a13bdde2f90c614e3e399ec260165554fd1077b07290c73b075cc3"
-dependencies = [
- "anyhow",
- "ff",
- "futures",
- "hex",
- "imt-tree",
- "log",
- "pasta_curves",
- "pir-types",
- "serde_json",
- "tokio",
- "valar-ypir",
-]
-
-[[package]]
-name = "pir-types"
-version = "0.3.0-rc.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81a363975b44d002bfa04c2003bdcd1b4564cd54bbd99bc0862140bc86865580"
-dependencies = [
- "anyhow",
- "ff",
- "imt-tree",
- "pasta_curves",
- "serde",
-]
 
 [[package]]
 name = "pkcs1"
@@ -6625,38 +6563,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "valar-spiral-rs"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "208d4b69c6a9b7b0c7d856133009a514e10236cdc698ad0b6b87f2e3c4e6d9cb"
-dependencies = [
- "fastrand",
- "getrandom 0.2.17",
- "rand 0.8.7",
- "rand_chacha 0.3.1",
- "serde_json",
- "sha2 0.10.9",
- "subtle",
-]
-
-[[package]]
-name = "valar-ypir"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8c3852d9476a0e3efd6c3bfbfc54d3a21a68d8818c4779824ace78aec84a042"
-dependencies = [
- "cc",
- "fastrand",
- "log",
- "rand 0.8.7",
- "rand_chacha 0.3.1",
- "serde",
- "serde_json",
- "sha1",
- "valar-spiral-rs",
-]
-
-[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6690,58 +6596,6 @@ name = "void"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
-
-[[package]]
-name = "vote-commitment-tree"
-version = "0.4.0-rc.2"
-source = "git+https://github.com/valargroup/zcash_voting.git?rev=60f468a42ade1b021439b2d0bdd238044703ea3f#60f468a42ade1b021439b2d0bdd238044703ea3f"
-dependencies = [
- "anyhow",
- "ff",
- "halo2_gadgets",
- "imt-tree",
- "incrementalmerkletree",
- "lazy_static",
- "libc",
- "pasta_curves",
- "shardtree",
-]
-
-[[package]]
-name = "vote-commitment-tree-client"
-version = "0.6.0-rc.2"
-source = "git+https://github.com/valargroup/zcash_voting.git?rev=60f468a42ade1b021439b2d0bdd238044703ea3f#60f468a42ade1b021439b2d0bdd238044703ea3f"
-dependencies = [
- "base64",
- "ff",
- "hex",
- "pasta_curves",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "vote-commitment-tree",
-]
-
-[[package]]
-name = "voting-circuits"
-version = "0.9.0-rc.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f116ea00a3fd0be51027a4d809953b88338020ac8f40ec9f5ec087b21a7a5c8"
-dependencies = [
- "blake2b_simd",
- "ff",
- "group",
- "halo2_gadgets",
- "halo2_poseidon",
- "halo2_proofs",
- "incrementalmerkletree",
- "itertools 0.14.0",
- "lazy_static",
- "orchard",
- "pasta_curves",
- "rand 0.8.7",
- "sinsemilla",
-]
 
 [[package]]
 name = "wagyu-zcash-parameters"
@@ -7417,7 +7271,6 @@ dependencies = [
  "bytes",
  "dlopen2",
  "eip681",
- "ff",
  "fs-mistrust",
  "hex",
  "http",
@@ -7429,7 +7282,6 @@ dependencies = [
  "nonempty",
  "orchard",
  "paranoid-android",
- "pasta_curves",
  "pczt",
  "prost 0.14.4",
  "rand 0.8.7",
@@ -7461,7 +7313,6 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_transparent",
- "zcash_voting",
  "zip32",
  "zodl-slipstream",
 ]
@@ -7804,61 +7655,6 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_spec",
- "zip32",
-]
-
-[[package]]
-name = "zcash_voting"
-version = "2.0.0-rc.4"
-source = "git+https://github.com/valargroup/zcash_voting.git?rev=60f468a42ade1b021439b2d0bdd238044703ea3f#60f468a42ade1b021439b2d0bdd238044703ea3f"
-dependencies = [
- "anyhow",
- "base64",
- "blake2b_simd",
- "bytes",
- "ed25519-dalek",
- "ff",
- "group",
- "halo2_gadgets",
- "halo2_proofs",
- "hex",
- "http",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "imt-tree",
- "incrementalmerkletree",
- "nonempty",
- "orchard",
- "pasta_curves",
- "pczt",
- "pir-client",
- "pir-types",
- "prost 0.14.4",
- "rand 0.8.7",
- "rusqlite",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sinsemilla",
- "subtle",
- "thiserror 2.0.19",
- "tokio",
- "tonic",
- "uuid",
- "valar-spiral-rs",
- "valar-ypir",
- "vote-commitment-tree",
- "vote-commitment-tree-client",
- "voting-circuits",
- "zcash_client_backend",
- "zcash_client_sqlite",
- "zcash_keys",
- "zcash_primitives",
- "zcash_protocol",
- "zeroize",
  "zip32",
 ]
 

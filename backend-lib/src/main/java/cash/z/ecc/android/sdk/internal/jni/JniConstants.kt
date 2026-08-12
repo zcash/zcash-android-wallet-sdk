@@ -70,13 +70,6 @@ const val JNI_GOVERNANCE_NULLIFIER_COUNT = 5
 const val JNI_SPEND_AUTH_SIG_BYTES_SIZE = 64
 
 /**
- * The number of bytes in the versioned Ironwood TX1 effecting data a delegation submission
- * carries to the vote-chain server in place of the local sighash. Must match
- * zcash_voting::tx1::TX1_EFFECTS_LEN (version byte + one Ironwood action's effecting data).
- */
-const val JNI_TX1_EFFECTS_BYTES_SIZE = 821
-
-/**
  * Voting JNI network id for testnet. Matches [cash.z.ecc.android.sdk.model.ZcashNetwork.ID_TESTNET].
  */
 const val JNI_VOTING_NETWORK_ID_TESTNET = 0

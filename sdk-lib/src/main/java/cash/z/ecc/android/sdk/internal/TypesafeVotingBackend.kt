@@ -173,9 +173,6 @@ internal interface TypesafeVotingDb {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult
 
@@ -183,9 +180,6 @@ internal interface TypesafeVotingDb {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -455,7 +449,6 @@ internal data class DelegationSubmissionResult(
     val rk: ByteArray,
     val spendAuthSig: ByteArray,
     val sighash: ByteArray,
-    val tx1Effects: ByteArray,
     val nfSigned: ByteArray,
     val cmxNew: ByteArray,
     val govComm: ByteArray,
@@ -469,7 +462,6 @@ internal data class DelegationSubmissionResult(
             rk.contentEquals(other.rk) &&
             spendAuthSig.contentEquals(other.spendAuthSig) &&
             sighash.contentEquals(other.sighash) &&
-            tx1Effects.contentEquals(other.tx1Effects) &&
             nfSigned.contentEquals(other.nfSigned) &&
             cmxNew.contentEquals(other.cmxNew) &&
             govComm.contentEquals(other.govComm) &&
@@ -482,7 +474,6 @@ internal data class DelegationSubmissionResult(
         result = 31 * result + rk.contentHashCode()
         result = 31 * result + spendAuthSig.contentHashCode()
         result = 31 * result + sighash.contentHashCode()
-        result = 31 * result + tx1Effects.contentHashCode()
         result = 31 * result + nfSigned.contentHashCode()
         result = 31 * result + cmxNew.contentHashCode()
         result = 31 * result + govComm.contentHashCode()

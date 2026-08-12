@@ -12,7 +12,6 @@ import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_RAW_ADDRESS_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_PROTOCOL_FIELD_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_SPEND_AUTH_SIG_BYTES_SIZE
-import cash.z.ecc.android.sdk.internal.jni.JNI_TX1_EFFECTS_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_VAN_WITNESS_PATH_DEPTH
 import cash.z.ecc.android.sdk.internal.jni.JNI_VOTE_SHARE_COUNT
 import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
@@ -352,9 +351,6 @@ internal interface VotingDbBackend {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult
 
@@ -362,9 +358,6 @@ internal interface VotingDbBackend {
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<JniNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -607,18 +600,12 @@ private class RustVotingDbBackend(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
             roundId,
             bundleIndex,
             pirServerUrl,
-            pirDepth,
-            pirTier0Layers,
-            pirTier1Layers,
             notes
         )
 
@@ -626,9 +613,6 @@ private class RustVotingDbBackend(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<JniNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -641,9 +625,6 @@ private class RustVotingDbBackend(
             roundId,
             bundleIndex,
             pirServerUrl,
-            pirDepth,
-            pirTier0Layers,
-            pirTier1Layers,
             notes,
             fvkBytes,
             hotkeySecret,
@@ -944,9 +925,6 @@ internal class TypesafeVotingDbImpl(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult =
         votingDb
@@ -954,9 +932,6 @@ internal class TypesafeVotingDbImpl(
                 roundId,
                 bundleIndex,
                 pirServerUrl,
-                pirDepth,
-                pirTier0Layers,
-                pirTier1Layers,
                 notes.toJniNoteInfos()
             ).toDelegationPirPrecomputeResult()
 
@@ -964,9 +939,6 @@ internal class TypesafeVotingDbImpl(
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -980,9 +952,6 @@ internal class TypesafeVotingDbImpl(
                 roundId,
                 bundleIndex,
                 pirServerUrl,
-                pirDepth,
-                pirTier0Layers,
-                pirTier1Layers,
                 notes.toJniNoteInfos(),
                 fvkBytes,
                 hotkeySecret,
@@ -1246,7 +1215,6 @@ internal fun JniDelegationSubmissionResult.toDelegationSubmissionResult(): Deleg
     rk.requireByteArraySize("rk", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     spendAuthSig.requireByteArraySize("spendAuthSig", JNI_SPEND_AUTH_SIG_BYTES_SIZE)
     sighash.requireByteArraySize("sighash", JNI_PROTOCOL_FIELD_BYTES_SIZE)
-    tx1Effects.requireByteArraySize("tx1Effects", JNI_TX1_EFFECTS_BYTES_SIZE)
     nfSigned.requireByteArraySize("nfSigned", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     cmxNew.requireByteArraySize("cmxNew", JNI_PROTOCOL_FIELD_BYTES_SIZE)
     govComm.requireByteArraySize("govComm", JNI_PROTOCOL_FIELD_BYTES_SIZE)
@@ -1261,7 +1229,6 @@ internal fun JniDelegationSubmissionResult.toDelegationSubmissionResult(): Deleg
         rk = rk,
         spendAuthSig = spendAuthSig,
         sighash = sighash,
-        tx1Effects = tx1Effects,
         nfSigned = nfSigned,
         cmxNew = cmxNew,
         govComm = govComm,

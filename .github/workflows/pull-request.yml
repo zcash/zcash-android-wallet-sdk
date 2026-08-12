@@ -361,16 +361,8 @@ jobs:
           rust-cache: true
           slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
           slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
-      # 60 rather than the usual 30: this branch re-enables shielded voting, which
-      # turns on orchard's `unstable-voting-circuits` and pulls the halo2 voting
-      # circuits into the native build. `make test-unit` builds the crate for all
-      # four ABIs, so that lands four times over. The step also cannot start warm:
-      # the Rust cache key hashes backend-lib/Cargo.toml and build.gradle.kts, both
-      # modified here, and the prefix-matched fallback cache was built without
-      # `--cfg zcash_voting`, so every crate rebuilds. Measured at 30m+ against
-      # ~28m for the same job on a voting-disabled branch.
       - name: Build and test
-        timeout-minutes: 60
+        timeout-minutes: 30
         run: |
           make test-unit
       - name: Collect Artifacts
