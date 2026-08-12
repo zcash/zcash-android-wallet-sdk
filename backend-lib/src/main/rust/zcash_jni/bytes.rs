@@ -48,3 +48,18 @@ pub(crate) fn require_count<T>(
         ))
     }
 }
+
+pub(crate) fn require_min_len(
+    bytes: Vec<u8>,
+    field: &str,
+    minimum: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if bytes.len() >= minimum {
+        Ok(bytes)
+    } else {
+        Err(anyhow!(
+            "{field} must be at least {minimum} bytes, got {}",
+            bytes.len()
+        ))
+    }
+}
