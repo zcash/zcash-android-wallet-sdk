@@ -299,9 +299,8 @@ internal interface TypesafeVotingDb {
     /**
      * Reconstructs the stored vote commitment, with fresh helper-share payloads.
      *
-     * Reports null until the vote reaches the confirmed phase — its transaction hash recorded via
-     * [storeVoteTxHash] and its tree position via [recordVcPosition] — and for a vote that was
-     * never stored.
+     * Reports null until the vote reaches the confirmed phase — its tree position recorded via
+     * [recordVcPosition] — and for a vote that was never stored.
      */
     suspend fun getCommitmentBundle(
         roundId: String,
