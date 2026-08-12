@@ -2,8 +2,6 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.VotingDbSession
 import cash.z.ecc.android.sdk.VotingSdk
-import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
-import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
@@ -15,12 +13,9 @@ import cash.z.ecc.android.sdk.model.voting.VotingDelegationPhase
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationProofResult
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationSubmissionResult
-import cash.z.ecc.android.sdk.model.voting.VotingEncryptedShare
 import cash.z.ecc.android.sdk.model.voting.VotingGovernancePczt
 import cash.z.ecc.android.sdk.model.voting.VotingHotkey
 import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
-import cash.z.ecc.android.sdk.model.voting.VotingNoteScope
-import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
 import cash.z.ecc.android.sdk.model.voting.VotingShareDelegationRecord
