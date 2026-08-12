@@ -198,14 +198,6 @@ pub(super) fn java_fixed_bytes<const N: usize>(
     fixed_bytes(java_bytes(env, array, field)?, field)
 }
 
-pub(super) fn fixed_bytes<const N: usize>(bytes: Vec<u8>, field: &str) -> anyhow::Result<[u8; N]> {
-    let len = bytes.len();
-
-    bytes
-        .try_into()
-        .map_err(|_| anyhow!("{field} must be exactly {N} bytes, got {len}"))
-}
-
 pub(super) fn require_share_index(share_index: u32, field: &str) -> anyhow::Result<u32> {
     if share_index < VOTE_SHARE_COUNT as u32 {
         Ok(share_index)

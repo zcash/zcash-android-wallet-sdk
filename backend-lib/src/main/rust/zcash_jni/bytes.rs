@@ -63,3 +63,11 @@ pub(crate) fn require_min_len(
         ))
     }
 }
+
+pub(crate) fn fixed_bytes<const N: usize>(bytes: Vec<u8>, field: &str) -> anyhow::Result<[u8; N]> {
+    let len = bytes.len();
+
+    bytes
+        .try_into()
+        .map_err(|_| anyhow!("{field} must be exactly {N} bytes, got {len}"))
+}
