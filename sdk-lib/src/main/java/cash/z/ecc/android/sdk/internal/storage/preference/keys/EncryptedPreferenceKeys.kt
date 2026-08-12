@@ -36,4 +36,21 @@ internal object EncryptedPreferenceKeys {
             key = PreferenceKey("migration_broadcast_in_flight_until"),
             defaultValue = ""
         )
+
+    /**
+     * Epoch-seconds stamp: when [isSyncBlockedNow] first saw a transfer ready to broadcast without
+     * interruption. Unlike the other two migration keys, the readiness this bounds cannot expire on
+     * its own — a transfer stays `STEP_BROADCAST`-ready until a driver actually broadcasts it, and
+     * the plan's own staleness is measured against the SCANNED tip, which cannot advance while the
+     * sync this blocks is paused. The stamp turns that unbounded state into a capped one: cleared
+     * whenever readiness goes away, re-armed by every live
+     * [OrchardMigrationSdkImpl.executeNextPendingTransfer] attempt, and expired after
+     * [OrchardMigrationSdkImpl.READY_TO_BROADCAST_BLOCK_CAP_MULTIPLIER] privacy buffers, so only a
+     * dead migration driver ever reaches the cap.
+     */
+    val MIGRATION_SYNC_BLOCK_READY_SINCE =
+        StringPreferenceDefault(
+            key = PreferenceKey("migration_sync_block_ready_since"),
+            defaultValue = ""
+        )
 }

@@ -918,6 +918,7 @@ internal class OrchardMigrationSdkImpl(
         options: NetworkPrivacyOptions,
         useEstimatedTip: Boolean,
     ): TransferAttemptOutcome {
+        reStampSyncBlockReadySince()
         val preparation =
             logged("executeNextPendingTransfer.prepare") {
                 prepareNextPendingTransfer(options, useEstimatedTip)
@@ -1189,6 +1190,8 @@ internal class OrchardMigrationSdkImpl(
                 }
             }
         val nowEpochSeconds = Clock.System.now().epochSeconds
+        val readyToBroadcastWithinCap =
+            boundedReadyToBroadcast(preferenceProvider, readyToBroadcast, nowEpochSeconds)
         val resumeAtEpochSeconds =
             preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_RESUME_AT.key)?.toLongOrNull()
         val bufferActive = resumeAtEpochSeconds != null && resumeAtEpochSeconds > nowEpochSeconds
@@ -1196,7 +1199,71 @@ internal class OrchardMigrationSdkImpl(
             preferenceProvider.getString(EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key)?.toLongOrNull()
                 ?: 0L
         val broadcastInFlight = isBroadcastInFlight(nowEpochSeconds, inFlightUntilEpochSeconds)
-        return readyToBroadcast || bufferActive || broadcastInFlight
+        return readyToBroadcastWithinCap || bufferActive || broadcastInFlight
+    }
+
+    /**
+     * Caps how long a `STEP_BROADCAST` readiness alone may keep sync blocked, using the
+     * [EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE] stamp.
+     *
+     * The other two legs of [isSyncBlockedNow] self-expire; this one cannot. A transfer stays ready
+     * to broadcast until some driver broadcasts it, and the plan's own stale-plan expiry is
+     * evaluated against the SCANNED tip — which only advances while sync runs, i.e. exactly what
+     * this block stops. A driver that never runs again (a killed background worker, as on the
+     * aggressive OEM schedulers behind MOB-1667) therefore pauses sync forever, and a permanently
+     * paused sync never refreshes the tip.
+     *
+     * [MIGRATION_SYNC_BLOCK_READY_SINCE][EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE]
+     * is cleared as soon as readiness goes away and re-armed by every live
+     * [executeNextPendingTransfer] attempt, so a working driver keeps the block indefinitely and
+     * only a dead one lets the cap elapse.
+     */
+    private suspend fun boundedReadyToBroadcast(
+        preferenceProvider: PreferenceProvider,
+        readyToBroadcast: Boolean,
+        nowEpochSeconds: Long,
+    ): Boolean {
+        val key = EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key
+        val stamp = preferenceProvider.getString(key)
+        val readySinceEpochSeconds = stamp?.toLongOrNull()
+        return when {
+            !readyToBroadcast -> {
+                /*
+                 * Written only when there is something to clear: this poll runs every
+                 * SYNC_BLOCK_TICK, and a write wakes every preference observer.
+                 */
+                if (!stamp.isNullOrEmpty()) preferenceProvider.putString(key, "")
+                false
+            }
+
+            readySinceEpochSeconds == null -> {
+                preferenceProvider.putString(key, nowEpochSeconds.toString())
+                true
+            }
+
+            else -> {
+                isReadyToBroadcastBlockWithinCap(
+                    nowEpochSeconds = nowEpochSeconds,
+                    readySinceEpochSeconds = readySinceEpochSeconds,
+                    capSeconds =
+                        privacySyncBufferDuration().inWholeSeconds * READY_TO_BROADCAST_BLOCK_CAP_MULTIPLIER,
+                )
+            }
+        }
+    }
+
+    /**
+     * Re-arms [EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE] at the start of every
+     * transfer attempt, so [boundedReadyToBroadcast]'s cap measures "how long has a ready transfer
+     * gone untouched by any driver", not "how long has it been ready". A driver that keeps
+     * attempting keeps sync blocked for as long as it needs.
+     */
+    private suspend fun reStampSyncBlockReadySince() {
+        val nowEpochSeconds = Clock.System.now().epochSeconds
+        preferenceProviderHolder().putString(
+            EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key,
+            nowEpochSeconds.toString(),
+        )
     }
 
     private suspend fun isReadyToBroadcast(
@@ -1326,6 +1393,16 @@ internal class OrchardMigrationSdkImpl(
         // preferences immediately before calling broadcast(); cleared (written as "0") right after
         // recordTransferResult(). A stale mark from a crash self-expires within this window.
         const val BROADCAST_IN_FLIGHT_WINDOW_SECONDS = 120L
+
+        /**
+         * How many privacy sync buffers a bare `STEP_BROADCAST` readiness may keep sync blocked
+         * before [boundedReadyToBroadcast] gives up on the driver (30 min on mainnet, 9 on
+         * testnet). Three buffers because the live driver's longest legitimate wait around a forced
+         * broadcast is one buffer, so a working driver never approaches the cap — while a dead one
+         * (MOB-1667: a background worker the OS never runs again) would otherwise block sync
+         * forever, and with sync stopped the plan's scanned-tip-based expiry can never fire either.
+         */
+        const val READY_TO_BROADCAST_BLOCK_CAP_MULTIPLIER = 3L
 
         // Separate from Files.TOR_SUBDIR (the main Synchronizer's shared Tor directory) — a
         // distinct on-disk Tor client/circuit state for migration broadcasts, per NetworkPrivacyOptions.useTor
@@ -1607,6 +1684,22 @@ internal fun isBroadcastInFlight(
     nowEpochSeconds: Long,
     inFlightUntilEpochSeconds: Long,
 ): Boolean = inFlightUntilEpochSeconds > nowEpochSeconds
+
+/**
+ * Returns `true` while a transfer that has been continuously ready to broadcast since
+ * [readySinceEpochSeconds] may still block sync, i.e. while less than [capSeconds] has elapsed.
+ *
+ * The cap is [OrchardMigrationSdkImpl.READY_TO_BROADCAST_BLOCK_CAP_MULTIPLIER] privacy sync
+ * buffers; see [OrchardMigrationSdkImpl.boundedReadyToBroadcast] for why this leg needs a bound at
+ * all when the other two expire by themselves. A stamp in the future (a clock that moved backwards)
+ * reads as not-yet-elapsed, which keeps the block rather than dropping it — the conservative
+ * direction. Top-level and `internal` so it is unit-testable as a pure function.
+ */
+internal fun isReadyToBroadcastBlockWithinCap(
+    nowEpochSeconds: Long,
+    readySinceEpochSeconds: Long,
+    capSeconds: Long,
+): Boolean = nowEpochSeconds - readySinceEpochSeconds < capSeconds
 
 /**
  * Task 1 (spec §2a) entry-guard predicate: `true` iff a broadcast is still marked in-flight AND the
