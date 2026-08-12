@@ -23,3 +23,7 @@ pub(crate) fn jlong_to_u32(value: jlong, field: &str) -> anyhow::Result<u32> {
 pub(crate) fn jint_to_usize(value: jint, field: &str) -> anyhow::Result<usize> {
     usize::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
 }
+
+pub(crate) fn u32_to_jint(value: u32, field: &str) -> anyhow::Result<jint> {
+    jint::try_from(value).map_err(|_| anyhow!("{field} exceeds signed Int range: {value}"))
+}
