@@ -302,6 +302,10 @@ interface VotingDbSession {
      * Kept only for existing callers — do not add new call sites, rely on [storeVoteTxHash]
      * alone instead.
      */
+    @Deprecated(
+        message = "Redundant; storeVoteTxHash already records the hash and marks submitted",
+        level = DeprecationLevel.WARNING
+    )
     suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int)
 
     suspend fun getVoteTxHash(roundId: String, bundleIndex: Int, proposalId: Int): VotingTxHashLookup

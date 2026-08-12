@@ -348,6 +348,10 @@ internal class VotingDbSessionImpl(
     override suspend fun storeVoteTxHash(roundId: String, bundleIndex: Int, proposalId: Int, txHash: String) =
         db.storeVoteTxHash(roundId, bundleIndex, proposalId, txHash)
 
+    @Deprecated(
+        message = "Redundant; storeVoteTxHash already records the hash and marks submitted",
+        level = DeprecationLevel.WARNING
+    )
     override suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int) =
         db.markVoteSubmitted(roundId, bundleIndex, proposalId)
 
