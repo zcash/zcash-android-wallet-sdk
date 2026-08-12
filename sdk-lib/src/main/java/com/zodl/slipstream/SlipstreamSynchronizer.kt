@@ -118,7 +118,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -267,7 +266,7 @@ class SlipstreamSynchronizer internal constructor(
 
     /**
      * The deferred-preparation gate every engine- or database-backed member awaits (see
-     * [awaitReady]/[awaitPrepared]). Declared before [status] because that combine reads it eagerly.
+     * [awaitReady]/[awaitPrepared]).
      */
     private val prepareState =
         MutableStateFlow(
@@ -303,14 +302,12 @@ class SlipstreamSynchronizer internal constructor(
     private val burstActive = AtomicBoolean(false)
 
     /**
-     * The `paused -> SYNCED` mask applies only once preparation is [PrepareState.Ready]: [pause]
-     * sets [migrationPaused] regardless of readiness, so an unmasked combine would report a failed
-     * preparation (which forces `DISCONNECTED`) as SYNCED for as long as the pause lasts.
+     * The engine's own status, unmasked. A migration [pause] used to force `SYNCED` here, because
+     * it also stopped the poll loop and the last observed status would otherwise have been frozen
+     * mid-sync for the whole pause. [pause] now keeps polling, so the engine status stays live and
+     * truthful throughout.
      */
-    override val status: Flow<Synchronizer.Status> =
-        combine(engine.status, migrationPaused, prepareState) { status, paused, prepare ->
-            if (paused && prepare is PrepareState.Ready) Synchronizer.Status.SYNCED else status
-        }
+    override val status: Flow<Synchronizer.Status> = engine.status
     override val progress: Flow<PercentDecimal> = engine.progress
     override val areFundsSpendable: Flow<Boolean> = engine.areFundsSpendable
     override val networkHeight = engine.networkHeight
@@ -493,10 +490,18 @@ class SlipstreamSynchronizer internal constructor(
     init {
         engine.onTick =
             { snap ->
-                resubmissionTicker.onTick(
-                    isSynced = engine.status.value == Synchronizer.Status.SYNCED,
-                    chainTip = snap.chainTip
-                )
+                /*
+                 * The one network-active consumer of the tick cadence, and therefore the only part
+                 * of the poll loop a migration [pause] has to suppress - resubmitting a transaction
+                 * is exactly the traffic the pause decorrelates from a migration broadcast. The
+                 * reads the tick itself performs are local JNI calls and keep running.
+                 */
+                if (!migrationPaused.value) {
+                    resubmissionTicker.onTick(
+                        isSynced = engine.status.value == Synchronizer.Status.SYNCED,
+                        chainTip = snap.chainTip
+                    )
+                }
             }
         val inputs = prepareInputs
         if (inputs == null) {
@@ -669,10 +674,9 @@ class SlipstreamSynchronizer internal constructor(
      * 5 s `busy_timeout`, and [backend] reads serialize on the single-threaded `zc-io` dispatcher
      * regardless.
      *
-     * The final [SlipstreamEngine.startPolling] is skipped while [migrationPaused] holds, mirroring
-     * [onForeground]: a migration privacy pause that landed mid-preparation would otherwise get a
-     * stray polling tick, since [pause]'s own queued `stopPolling` block only runs once
-     * [PrepareState.Ready] is published.
+     * The final [SlipstreamEngine.startPolling] is unconditional, including under a migration
+     * [pause]: polling only performs local JNI reads, and a pause that suppressed them left the
+     * balances and status frozen at whatever the last tick saw.
      */
     private suspend fun prepare(inputs: PrepareInputs) {
         val fallbackCheckpoint = inputs.fallbackCheckpointHeight()
@@ -743,7 +747,7 @@ class SlipstreamSynchronizer internal constructor(
          * section 3.5's `start(ufvk != null)` is a no-op when an account is already present.
          */
         engine.start(inputs.ufvk, provisioning.startBirthday.value)
-        if (!migrationPaused.value) engine.startPolling()
+        engine.startPolling()
     }
 
     /** The `when(intent)` block of the original `newLocked`, verbatim but behind [PrepareInputs]' lambdas. */
@@ -1402,20 +1406,37 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    /**
+     * Closes the migration privacy gate without touching the poll loop. The loop only reads the
+     * engine's local state over JNI (`snapshot`/`drainEvents`/`walletSummary`), so it produces no
+     * network traffic to decorrelate from a migration broadcast; what it does produce is the
+     * balances, progress and status the host renders. Stopping it froze all of those for as long as
+     * the pause lasted, which - with an unbounded sync block, see
+     * [cash.z.ecc.android.sdk.OrchardMigrationSdk.isSyncBlocked] - could be forever (MOB-1667).
+     *
+     * What the pause does gate is [syncBurst] and the resubmission ticker (see `init`); the engine's
+     * own network session was never gated here at all.
+     */
     override fun pause() {
         if (closed.get()) return
         migrationPaused.update { true }
-        launchGuarded("pause") {
-            if (!awaitPrepared()) return@launchGuarded
-            engine.stopPolling()
-        }
     }
 
+    /**
+     * Reopens the gate and restarts an engine that is stopped, mirroring [onForeground]'s
+     * [SlipstreamEngine.isRunning] guard: a pause that spanned a background/foreground cycle leaves
+     * the engine stopped by [onBackground], and polling a stopped engine forever is what the
+     * unguarded restart used to do. A backgrounded wallet is left stopped - the next [onForeground]
+     * restarts it.
+     */
     override fun resume() {
         if (closed.get()) return
         migrationPaused.update { false }
         launchGuarded("resume") {
             if (!awaitPrepared()) return@launchGuarded
+            if (inForeground.get() && !engine.isRunning) {
+                engine.start(ufvk = null, birthday = startBirthday.value)
+            }
             engine.startPolling()
         }
     }
@@ -1505,10 +1526,10 @@ class SlipstreamSynchronizer internal constructor(
      * [SlipstreamEngine.start] unconditionally aborts any in-flight pass and reruns its bounded
      * quiescence drain, so restarting an already-running engine on every foreground would churn
      * useful work instead of resuming it. [SlipstreamEngine.isRunning] guards against that - skip
-     * the native restart when the engine is already live. [SlipstreamEngine.startPolling] stays
-     * unconditional; it is already an idempotent cancel-and-relaunch, but is skipped while paused
-     * so a foreground event does not undo an in-flight migration sync-block. A no-op once [close]
-     * has already run - post-close lifecycle calls are no-ops.
+     * the native restart when the engine is already live. [SlipstreamEngine.startPolling] is
+     * unconditional - it is an idempotent cancel-and-relaunch, and a migration [pause] no longer
+     * suppresses polling at all. A no-op once [close] has already run - post-close lifecycle calls
+     * are no-ops.
      */
     override fun onForeground() {
         if (closed.get()) return
@@ -1521,9 +1542,7 @@ class SlipstreamSynchronizer internal constructor(
             if (!engine.isRunning) {
                 engine.start(ufvk = null, birthday = startBirthday.value)
             }
-            if (!migrationPaused.value) {
-                engine.startPolling()
-            }
+            engine.startPolling()
         }
     }
 

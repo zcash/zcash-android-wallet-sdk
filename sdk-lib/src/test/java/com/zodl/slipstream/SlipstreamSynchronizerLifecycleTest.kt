@@ -61,6 +61,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito.after
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.inOrder
@@ -376,19 +377,51 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    /**
+     * MOB-1667: polling is local JNI reads only, so a migration pause must leave it running — the
+     * host keeps seeing live balances, heights and status for however long the pause lasts.
+     */
     @Test
-    fun pause_stops_polling_without_tearing_the_engine_down() {
+    fun pause_keeps_polling_and_leaves_the_engine_alone() {
         val engine = mock(SlipstreamEngine::class.java)
         val key = newKey()
         val synchronizer = buildSynchronizer(engine = engine, key = key)
         try {
+            clearInvocations(engine) // drop the init() startPolling
             synchronizer.pause()
 
             runBlocking {
-                verify(engine, timeout(TIMEOUT_MS)).stopPolling()
-                verify(engine, after(SETTLE_MS).never()).stop()
-                verify(engine, after(SETTLE_MS).never()).free()
-                verify(engine, after(SETTLE_MS).never()).shutdown()
+                verify(engine, after(SETTLE_MS).never()).stopPolling()
+                verify(engine, never()).stop()
+                verify(engine, never()).free()
+                verify(engine, never()).shutdown()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * The tick's one network-active consumer is the part a pause does suppress — resubmitting a
+     * transaction is exactly the traffic a migration broadcast must stay decorrelated from.
+     */
+    @Test
+    fun pause_suppresses_the_resubmission_tick_and_resume_restores_it() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val ticker = mock(ResubmissionTicker::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key, resubmissionTicker = ticker)
+        try {
+            val onTick = captureOnTick(engine)
+
+            runBlocking {
+                synchronizer.pause()
+                onTick(snapshot(state = 1))
+                verify(ticker, never()).onTick(isSynced = true, chainTip = 0L)
+
+                synchronizer.resume()
+                onTick(snapshot(state = 1))
+                verify(ticker).onTick(isSynced = true, chainTip = 0L)
             }
         } finally {
             InstanceGuard.release(key)
@@ -401,6 +434,7 @@ class SlipstreamSynchronizerLifecycleTest {
         val key = newKey()
         val synchronizer = buildSynchronizer(engine = engine, key = key)
         try {
+            `when`(engine.isRunning).thenReturn(true)
             synchronizer.pause()
             clearInvocations(engine)
 
@@ -412,20 +446,76 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    /**
+     * A pause that spans a background/foreground cycle leaves the engine stopped by
+     * [SlipstreamSynchronizer.onBackground]; resuming must restart it rather than poll a dead
+     * session forever.
+     */
     @Test
-    fun status_reports_synced_while_paused_then_reverts_after_resume() {
+    fun resume_restarts_a_stopped_engine_when_foregrounded() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            `when`(engine.isRunning).thenReturn(true)
+            clearInvocations(engine) // drop the init() startPolling
+            synchronizer.onForeground()
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
+            synchronizer.pause()
+            `when`(engine.isRunning).thenReturn(false)
+            clearInvocations(engine)
+
+            synchronizer.resume()
+
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).start(null, STARTING_BIRTHDAY_VALUE)
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /** Backgrounded, the engine stays stopped — the next foreground event is what restarts it. */
+    @Test
+    fun resume_while_backgrounded_leaves_a_stopped_engine_stopped() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(engine = engine, key = key)
+        try {
+            `when`(engine.isRunning).thenReturn(false)
+            synchronizer.pause()
+            clearInvocations(engine)
+
+            synchronizer.resume()
+
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(engine, never()).start(null, STARTING_BIRTHDAY_VALUE)
+            }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * MOB-1667: the forced `paused -> SYNCED` mask existed only because a pause froze the poll
+     * loop. Polling now continues, so the engine's own status is reported throughout — a wallet
+     * that is genuinely syncing must not claim to be synced.
+     */
+    @Test
+    fun status_is_not_masked_to_synced_while_paused() {
         val engine = mock(SlipstreamEngine::class.java)
         val engineStatus = MutableStateFlow(Synchronizer.Status.SYNCING)
         val key = newKey()
-        // Override the default SYNCED stub so we can prove the wrap, not the stub.
         val synchronizer = buildSynchronizer(engine = engine, key = key, engineStatusOverride = engineStatus)
         try {
             runBlocking {
                 assertEquals(Synchronizer.Status.SYNCING, synchronizer.status.first())
                 synchronizer.pause()
-                assertEquals(Synchronizer.Status.SYNCED, synchronizer.status.first())
-                synchronizer.resume()
                 assertEquals(Synchronizer.Status.SYNCING, synchronizer.status.first())
+                engineStatus.value = Synchronizer.Status.SYNCED
+                assertEquals(Synchronizer.Status.SYNCED, synchronizer.status.first())
             }
         } finally {
             InstanceGuard.release(key)
@@ -433,7 +523,7 @@ class SlipstreamSynchronizerLifecycleTest {
     }
 
     @Test
-    fun on_foreground_while_paused_does_not_restart_polling() {
+    fun on_foreground_while_paused_still_polls() {
         val engine = mock(SlipstreamEngine::class.java)
         val key = newKey()
         val synchronizer = buildSynchronizer(engine = engine, key = key)
@@ -444,7 +534,7 @@ class SlipstreamSynchronizerLifecycleTest {
 
             synchronizer.onForeground()
 
-            runBlocking { verify(engine, after(SETTLE_MS).never()).startPolling() }
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
         } finally {
             InstanceGuard.release(key)
         }
@@ -1099,8 +1189,13 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    /**
+     * MOB-1667: a pause that lands mid-preparation must not cost the host its observation of the
+     * engine — the tail starts polling like any other preparation, and only the network-active tick
+     * consumer stays suppressed.
+     */
     @Test
-    fun preparation_finishing_under_a_migration_pause_does_not_start_polling() {
+    fun preparation_finishing_under_a_migration_pause_still_starts_polling() {
         val engine = mock(SlipstreamEngine::class.java)
         val backend = mock(Backend::class.java)
         val key = newKey()
@@ -1119,11 +1214,8 @@ class SlipstreamSynchronizerLifecycleTest {
 
             runBlocking {
                 verify(engine, timeout(TIMEOUT_MS)).start(UFVK, ANCHOR_HEIGHT)
-                /*
-                 * The queued pause() block runs once preparation publishes Ready.
-                 */
-                verify(engine, timeout(TIMEOUT_MS)).stopPolling()
-                verify(engine, after(SETTLE_MS).never()).startPolling()
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(engine, after(SETTLE_MS).never()).stopPolling()
             }
         } finally {
             InstanceGuard.release(key)
@@ -1504,6 +1596,18 @@ class SlipstreamSynchronizerLifecycleTest {
             uivk = null
         )
 
+    /**
+     * The `onTick` callback the synchronizer's `init` installs on the engine. A mock records the
+     * setter call but its getter answers `null`, so the lambda has to be captured from the call
+     * itself rather than read back.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun captureOnTick(engine: SlipstreamEngine): suspend (SlipstreamSnapshot) -> Unit {
+        val captor = ArgumentCaptor.forClass(Any::class.java)
+        verify(engine).onTick = captor.capture() as? (suspend (SlipstreamSnapshot) -> Unit)
+        return captor.value as suspend (SlipstreamSnapshot) -> Unit
+    }
+
     @Suppress("LongParameterList")
     private fun snapshot(
         state: Int,
@@ -1539,6 +1643,7 @@ class SlipstreamSynchronizerLifecycleTest {
         walletClient: CombinedWalletClient = mock(CombinedWalletClient::class.java),
         transactionsController: TransactionsController = mock(TransactionsController::class.java),
         key: SlipstreamKey = newKey(),
+        resubmissionTicker: ResubmissionTicker = mock(ResubmissionTicker::class.java),
         startBirthday: BlockHeight = BlockHeight.new(STARTING_BIRTHDAY_VALUE),
         engineStatusOverride: MutableStateFlow<Synchronizer.Status>? = null,
         lastSnapshotOverride: MutableStateFlow<SlipstreamSnapshot?>? = null,
@@ -1574,7 +1679,7 @@ class SlipstreamSynchronizerLifecycleTest {
             transactionsController = transactionsController,
             spendService = mock(SlipstreamSpendService::class.java),
             broadcasterImpl = mock(SlipstreamBroadcaster::class.java),
-            resubmissionTicker = mock(ResubmissionTicker::class.java),
+            resubmissionTicker = resubmissionTicker,
             startBirthday = startBirthday,
             prepareInputs = prepareInputs
         )
