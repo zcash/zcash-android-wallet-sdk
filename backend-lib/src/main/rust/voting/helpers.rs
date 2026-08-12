@@ -1493,27 +1493,6 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
     Ok(obj.into_raw())
 }
 
-fn make_jni_fixed_byte_array_vec<'local>(
-    env: &mut JNIEnv<'local>,
-    values: Vec<Vec<u8>>,
-    field: &str,
-    expected_count: usize,
-    expected_size: usize,
-) -> anyhow::Result<JObjectArray<'local>> {
-    if values.len() != expected_count {
-        return Err(anyhow!(
-            "{field} must contain {expected_count} entries, got {}",
-            values.len()
-        ));
-    }
-
-    let values = require_each_len(values, field, expected_size)?;
-
-    Ok(rust_vec_to_java(env, values, "[B", |env, bytes| {
-        Ok(JObject::from(env.byte_array_from_slice(&bytes)?))
-    })?)
-}
-
 /// Runs the voting note chunker and returns total count, total eligible weight,
 /// and each bundle's quantized voting weight.
 pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32, u64, Vec<u64>)> {
