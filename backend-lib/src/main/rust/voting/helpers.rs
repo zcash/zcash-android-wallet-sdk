@@ -201,28 +201,6 @@ pub(super) fn java_bytes32(
     require_32(java_bytes(env, array, field)?, field)
 }
 
-fn java_byte_array_list_field(
-    env: &mut JNIEnv<'_>,
-    obj: &JObject<'_>,
-    name: &str,
-) -> anyhow::Result<Vec<Vec<u8>>> {
-    let list = env.get_field(obj, name, "Ljava/util/List;")?.l()?;
-    let count = env.call_method(&list, "size", "()I", &[])?.i()?;
-    if count < 0 {
-        return Err(anyhow!("{name}.size() returned negative count {count}"));
-    }
-
-    (0..count)
-        .map(|index| {
-            let element = env
-                .call_method(&list, "get", "(I)Ljava/lang/Object;", &[JValue::Int(index)])?
-                .l()?;
-            let bytes = JByteArray::from(element);
-            java_bytes(env, &bytes, &format!("{name}[{index}]"))
-        })
-        .collect()
-}
-
 pub(super) fn network_from_id(id: jint) -> anyhow::Result<Network> {
     match id {
         NETWORK_ID_TESTNET => Ok(Network::TestNetwork),
