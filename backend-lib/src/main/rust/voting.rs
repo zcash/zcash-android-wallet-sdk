@@ -33,6 +33,13 @@ use crate::utils::{
     rust_vec_to_java,
 };
 
+// Re-exported so that the `use super::*;` every voting submodule already has
+// keeps reaching the shared width-checked conversions as they move out of
+// `helpers` and into `crate::zcash_jni::convert`. Without this each move would
+// have to touch every call site, which would bury the one-line change that
+// actually needs reviewing.
+pub(crate) use crate::zcash_jni::convert::*;
+
 mod db;
 mod delegation;
 mod helpers;

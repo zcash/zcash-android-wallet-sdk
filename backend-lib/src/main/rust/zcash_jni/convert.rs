@@ -4,3 +4,10 @@
 //! number in the target type, or an error naming the offending field. See the
 //! module doc on [`super`] for why this is not interchangeable with an `as`
 //! cast.
+
+use anyhow::anyhow;
+use jni::sys::jint;
+
+pub(crate) fn jint_to_u32(value: jint, field: &str) -> anyhow::Result<u32> {
+    u32::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
+}

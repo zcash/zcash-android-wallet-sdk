@@ -162,10 +162,6 @@ struct JniVoteCommitmentResultPayload {
     alpha_v: Vec<u8>,
 }
 
-pub(super) fn jint_to_u32(value: jint, field: &str) -> anyhow::Result<u32> {
-    u32::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
-}
-
 pub(super) fn jlong_to_u64(value: jlong, field: &str) -> anyhow::Result<u64> {
     u64::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
 }
