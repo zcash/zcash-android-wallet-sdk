@@ -172,14 +172,6 @@ pub(super) fn require_32(
         .map_err(|_| anyhow!("{field} must be exactly {PROTOCOL_FIELD_BYTES} bytes"))
 }
 
-pub(super) fn java_fixed_bytes<const N: usize>(
-    env: &mut JNIEnv<'_>,
-    array: &JByteArray<'_>,
-    field: &str,
-) -> anyhow::Result<[u8; N]> {
-    fixed_bytes(java_bytes(env, array, field)?, field)
-}
-
 pub(super) fn require_share_index(share_index: u32, field: &str) -> anyhow::Result<u32> {
     if share_index < VOTE_SHARE_COUNT as u32 {
         Ok(share_index)

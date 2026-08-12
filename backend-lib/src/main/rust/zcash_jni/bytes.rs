@@ -30,6 +30,14 @@ pub(crate) fn java_bytes_exact(
     require_len(java_bytes(env, array, field)?, field, expected)
 }
 
+pub(crate) fn java_fixed_bytes<const N: usize>(
+    env: &mut JNIEnv<'_>,
+    array: &JByteArray<'_>,
+    field: &str,
+) -> anyhow::Result<[u8; N]> {
+    fixed_bytes(java_bytes(env, array, field)?, field)
+}
+
 pub(crate) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyhow::Result<Vec<u8>> {
     if bytes.len() == expected {
         Ok(bytes)
