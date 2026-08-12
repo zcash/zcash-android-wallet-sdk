@@ -38,7 +38,7 @@ use crate::utils::{
 // `helpers` and into `crate::zcash_jni::convert`. Without this each move would
 // have to touch every call site, which would bury the one-line change that
 // actually needs reviewing.
-pub(crate) use crate::zcash_jni::convert::*;
+pub(crate) use crate::zcash_jni::{bytes::*, convert::*};
 
 mod db;
 mod delegation;

@@ -162,17 +162,6 @@ struct JniVoteCommitmentResultPayload {
     alpha_v: Vec<u8>,
 }
 
-pub(super) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyhow::Result<Vec<u8>> {
-    if bytes.len() == expected {
-        Ok(bytes)
-    } else {
-        Err(anyhow!(
-            "{field} must be exactly {expected} bytes, got {}",
-            bytes.len()
-        ))
-    }
-}
-
 fn require_each_len(
     values: Vec<Vec<u8>>,
     field: &str,
