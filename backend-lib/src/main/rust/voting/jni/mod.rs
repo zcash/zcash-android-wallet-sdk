@@ -23,8 +23,10 @@
 // in the migration compiles with no unused-import warnings.
 
 pub(crate) mod note;
+pub(crate) mod witness;
 
 pub(crate) use note::*;
+pub(crate) use witness::*;
 
 pub(crate) const JNI_ROUND_SUMMARY: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniRoundSummary";
