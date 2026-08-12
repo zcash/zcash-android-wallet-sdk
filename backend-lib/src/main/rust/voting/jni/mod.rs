@@ -22,6 +22,10 @@
 // Submodules are declared as their first function arrives, so that every commit
 // in the migration compiles with no unused-import warnings.
 
+pub(crate) mod note;
+
+pub(crate) use note::*;
+
 pub(crate) const JNI_ROUND_SUMMARY: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniRoundSummary";
 pub(crate) const JNI_VOTE_RECORD: &str =
