@@ -8,6 +8,12 @@
 use anyhow::anyhow;
 use jni::sys::{jint, jlong};
 
+/// The network identifiers Kotlin passes across the boundary. These are the JNI
+/// wire encoding, shared by every feature, not a per-feature value: `lib.rs`
+/// independently hardcoded the same 0 and 1 before this module existed.
+pub(crate) const NETWORK_ID_TESTNET: jint = 0;
+pub(crate) const NETWORK_ID_MAINNET: jint = 1;
+
 pub(crate) fn jint_to_u32(value: jint, field: &str) -> anyhow::Result<u32> {
     u32::try_from(value).map_err(|_| anyhow!("{field} must be non-negative, got {value}"))
 }

@@ -128,8 +128,6 @@ pub(super) const VOTE_SHARE_COUNT: usize = 16;
 pub(super) const DELEGATION_PUBLIC_INPUT_COUNT: usize = 14;
 pub(super) const GOVERNANCE_NULLIFIER_COUNT: usize = 5;
 pub(super) const ACCOUNT_UUID_BYTES: usize = 16;
-pub(super) const NETWORK_ID_TESTNET: jint = 0;
-pub(super) const NETWORK_ID_MAINNET: jint = 1;
 
 struct JniRoundSummaryPayload {
     round_id: String,
