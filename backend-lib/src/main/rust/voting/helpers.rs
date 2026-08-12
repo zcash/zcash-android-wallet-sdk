@@ -201,15 +201,6 @@ pub(super) fn java_bytes32(
     require_32(java_bytes(env, array, field)?, field)
 }
 
-fn java_byte_array_field(
-    env: &mut JNIEnv<'_>,
-    obj: &JObject<'_>,
-    name: &str,
-) -> anyhow::Result<Vec<u8>> {
-    let field = JByteArray::from(env.get_field(obj, name, "[B")?.l()?);
-    java_bytes(env, &field, name)
-}
-
 fn java_string_field(
     env: &mut JNIEnv<'_>,
     obj: &JObject<'_>,

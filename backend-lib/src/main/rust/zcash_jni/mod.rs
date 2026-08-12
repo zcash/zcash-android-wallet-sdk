@@ -36,3 +36,4 @@
 
 pub(crate) mod bytes;
 pub(crate) mod convert;
+pub(crate) mod fields;
