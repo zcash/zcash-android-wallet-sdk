@@ -246,6 +246,51 @@ mod tests {
         }
     }
 
+    // ---- network_from_id ---------------------------------------------------
+
+    #[test]
+    fn network_from_id_maps_the_two_wire_values() {
+        assert_eq!(
+            network_from_id(NETWORK_ID_TESTNET).unwrap(),
+            Network::TestNetwork
+        );
+        assert_eq!(
+            network_from_id(NETWORK_ID_MAINNET).unwrap(),
+            Network::MainNetwork
+        );
+    }
+
+    /// Everything outside {0, 1} is rejected, including the legacy "custom
+    /// network" id 2 that older callers used.
+    #[test]
+    fn network_from_id_rejects_everything_else() {
+        for id in [-1, 2, 3, jint::MIN, jint::MAX] {
+            assert!(network_from_id(id).is_err(), "id {id} was accepted");
+        }
+    }
+
+    /// The call sites this replaces read `parse_network(network_id as u32)`.
+    /// That cast reinterprets a negative jint as a large u32, which the old
+    /// match then rejected -- so the accept/reject partition is unchanged and
+    /// the adoption is behaviour-preserving. What changes is only the reported
+    /// value: the signed input now appears as itself rather than as its
+    /// two's-complement reinterpretation.
+    #[test]
+    fn network_from_id_agrees_with_the_cast_it_replaces() {
+        for id in [-1, 0, 1, 2, jint::MIN, jint::MAX] {
+            let accepted_now = network_from_id(id).is_ok();
+            let accepted_before = matches!(id as u32, 0 | 1);
+            assert_eq!(accepted_now, accepted_before, "id {id} changed partition");
+        }
+        // And the diagnostic actually improved at the negative end.
+        let err = network_from_id(-1).unwrap_err().to_string();
+        assert!(err.contains("-1"), "unexpected message: {err}");
+        assert!(
+            !err.contains("4294967295"),
+            "reported the cast value: {err}"
+        );
+    }
+
     /// The rejected value itself is reported, which is what makes a bad
     /// argument diagnosable from a stack trace alone.
     #[test]
