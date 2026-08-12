@@ -21,6 +21,15 @@ pub(crate) fn java_bytes(
         .map_err(|e| anyhow!("{field}: failed to read byte array: {e}"))
 }
 
+pub(crate) fn java_bytes_exact(
+    env: &mut JNIEnv<'_>,
+    array: &JByteArray<'_>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<Vec<u8>> {
+    require_len(java_bytes(env, array, field)?, field, expected)
+}
+
 pub(crate) fn require_len(bytes: Vec<u8>, field: &str, expected: usize) -> anyhow::Result<Vec<u8>> {
     if bytes.len() == expected {
         Ok(bytes)

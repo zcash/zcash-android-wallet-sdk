@@ -172,15 +172,6 @@ pub(super) fn require_32(
         .map_err(|_| anyhow!("{field} must be exactly {PROTOCOL_FIELD_BYTES} bytes"))
 }
 
-pub(super) fn java_bytes_exact(
-    env: &mut JNIEnv<'_>,
-    array: &JByteArray<'_>,
-    field: &str,
-    expected: usize,
-) -> anyhow::Result<Vec<u8>> {
-    require_len(java_bytes(env, array, field)?, field, expected)
-}
-
 pub(super) fn java_fixed_bytes<const N: usize>(
     env: &mut JNIEnv<'_>,
     array: &JByteArray<'_>,
