@@ -201,15 +201,6 @@ pub(super) fn java_bytes32(
     require_32(java_bytes(env, array, field)?, field)
 }
 
-fn java_string_field(
-    env: &mut JNIEnv<'_>,
-    obj: &JObject<'_>,
-    name: &str,
-) -> anyhow::Result<String> {
-    let field = JString::from(env.get_field(obj, name, "Ljava/lang/String;")?.l()?);
-    java_string_to_rust(env, &field)
-}
-
 fn java_byte_array_list_field(
     env: &mut JNIEnv<'_>,
     obj: &JObject<'_>,

@@ -8,10 +8,20 @@
 
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JObject},
+    objects::{JByteArray, JObject, JString},
 };
 
 use super::bytes::java_bytes;
+use crate::utils::java_string_to_rust;
+
+pub(crate) fn java_string_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<String> {
+    let field = JString::from(env.get_field(obj, name, "Ljava/lang/String;")?.l()?);
+    java_string_to_rust(env, &field)
+}
 
 pub(crate) fn java_byte_array_field(
     env: &mut JNIEnv<'_>,
