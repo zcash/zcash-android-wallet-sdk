@@ -11,6 +11,16 @@
 
 use anyhow::anyhow;
 use jni::{JNIEnv, objects::JByteArray};
+use secrecy::SecretVec;
+
+pub(crate) fn java_secret_bytes_at_least(
+    env: &mut JNIEnv<'_>,
+    array: &JByteArray<'_>,
+    field: &str,
+    minimum: usize,
+) -> anyhow::Result<SecretVec<u8>> {
+    require_min_len(java_bytes(env, array, field)?, field, minimum).map(SecretVec::new)
+}
 
 pub(crate) fn java_bytes(
     env: &mut JNIEnv<'_>,

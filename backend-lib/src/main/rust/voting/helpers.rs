@@ -193,15 +193,6 @@ pub(super) fn round_phase_to_u32(phase: RoundPhase) -> u32 {
     }
 }
 
-pub(super) fn java_secret_bytes_at_least(
-    env: &mut JNIEnv<'_>,
-    array: &JByteArray<'_>,
-    field: &str,
-    minimum: usize,
-) -> anyhow::Result<SecretVec<u8>> {
-    require_min_len(java_bytes(env, array, field)?, field, minimum).map(SecretVec::new)
-}
-
 /// Like [`java_secret_bytes_at_least`], but for call sites where the caller-supplied bytes
 /// feed the exact same ZIP-32 `UnifiedSpendingKey::from_seed` derivation
 /// `VotingHotkey::from_stored_secret` uses internally, so a length that from_stored_secret
