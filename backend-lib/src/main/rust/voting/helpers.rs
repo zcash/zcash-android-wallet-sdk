@@ -162,21 +162,6 @@ struct JniVoteCommitmentResultPayload {
     alpha_v: Vec<u8>,
 }
 
-pub(super) fn require_count<T>(
-    values: Vec<T>,
-    field: &str,
-    expected: usize,
-) -> anyhow::Result<Vec<T>> {
-    if values.len() == expected {
-        Ok(values)
-    } else {
-        Err(anyhow!(
-            "{field} must contain {expected} entries, got {}",
-            values.len()
-        ))
-    }
-}
-
 pub(super) fn require_min_len(
     bytes: Vec<u8>,
     field: &str,

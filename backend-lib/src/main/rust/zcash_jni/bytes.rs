@@ -33,3 +33,18 @@ pub(crate) fn require_each_len(
         .map(|(index, value)| require_len(value, &format!("{field}[{index}]"), expected))
         .collect()
 }
+
+pub(crate) fn require_count<T>(
+    values: Vec<T>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<Vec<T>> {
+    if values.len() == expected {
+        Ok(values)
+    } else {
+        Err(anyhow!(
+            "{field} must contain {expected} entries, got {}",
+            values.len()
+        ))
+    }
+}
