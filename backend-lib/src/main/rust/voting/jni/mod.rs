@@ -23,9 +23,11 @@
 // in the migration compiles with no unused-import warnings.
 
 pub(crate) mod note;
+pub(crate) mod share;
 pub(crate) mod witness;
 
 pub(crate) use note::*;
+pub(crate) use share::*;
 pub(crate) use witness::*;
 
 pub(crate) const JNI_ROUND_SUMMARY: &str =
