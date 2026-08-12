@@ -333,7 +333,7 @@ fn open(
     db_data: JString,
     network_id: jint,
 ) -> anyhow::Result<(Network, Wallet, Connection)> {
-    let network = crate::parse_network(network_id as u32)?;
+    let network = crate::zcash_jni::convert::network_from_id(network_id)?;
     let db_path = crate::path_from_jni(env, db_data)?;
     let (wallet, store_conn) = open_at(&db_path, network)?;
     Ok((network, wallet, store_conn))
@@ -3196,7 +3196,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     network_id: jint,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
-        let network = crate::parse_network(network_id as u32)?;
+        let network = crate::zcash_jni::convert::network_from_id(network_id)?;
         let db = crate::wallet_db(env, network, db_data)?;
         let account_ids = match db.get_account_ids() {
             Ok(ids) => ids,
