@@ -236,6 +236,10 @@ fn read_invalidation(
     }
 }
 
+// Only the invalidation-persistence tests below call this: production records and reads an
+// invalidation row but never clears one. Gated so it does not read as dead code in the library
+// build, without dropping the coverage of the clear path.
+#[cfg(test)]
 fn clear_invalidation(conn: &Connection, account: &[u8]) -> anyhow::Result<()> {
     // If the table doesn't exist there's nothing to clear — not an error.
     let table_exists: bool = conn
@@ -279,6 +283,11 @@ fn clear_invalidation(conn: &Connection, account: &[u8]) -> anyhow::Result<()> {
 /// `plan_for`), rather than swallowing errors internally: the caller (`slipstream/mod.rs`) is
 /// responsible for treating an `Err` as "no retention floor" — logging and falling back to `None` —
 /// since a wallet DB read glitch here must never block sync from starting.
+///
+/// `slipstream/mod.rs` is its only caller and that module is behind the off-by-default
+/// `slipstream` feature, so this is gated to match: without the feature there is nothing to call
+/// it and it would otherwise report as dead code.
+#[cfg(feature = "slipstream")]
 pub(crate) fn min_pending_anchor_boundary(
     db_path: &std::path::Path,
     network: Network,
