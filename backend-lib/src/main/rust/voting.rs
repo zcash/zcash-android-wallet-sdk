@@ -1,11 +1,11 @@
 //! JNI bindings for the zcash_voting crate.
 
-use anyhow::anyhow;
-use jni::{
+use ::jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
 };
+use anyhow::anyhow;
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
 use std::{
@@ -33,9 +33,21 @@ use crate::utils::{
     rust_vec_to_java,
 };
 
+// Re-exported so that the `use super::*;` every voting submodule already has
+// keeps reaching the shared width-checked conversions as they move out of
+// `helpers` and into `crate::zcash_jni::convert`. Without this each move would
+// have to touch every call site, which would bury the one-line change that
+// actually needs reviewing.
+pub(crate) use crate::zcash_jni::{array::*, bytes::*, convert::*, fields::*};
+
+// `self::` is load-bearing: a bare `use jni::...` here resolves to the external
+// `jni` crate, not to this module's own `jni` submodule.
+pub(crate) use self::jni::*;
+
 mod db;
 mod delegation;
 mod helpers;
+mod jni;
 mod notes;
 mod progress;
 mod recovery;
