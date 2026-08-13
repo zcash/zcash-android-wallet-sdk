@@ -109,7 +109,6 @@ internal interface TypesafeVotingDb {
         notes: List<VotingNoteInfo>
     ): JniBundleSetupResult
 
-    // nosemgrep: kotlin-typesafe-returns-jni-model -- voting internals consume this JNI carrier.
     suspend fun generateHotkey(
         roundId: String,
         seed: ByteArray
