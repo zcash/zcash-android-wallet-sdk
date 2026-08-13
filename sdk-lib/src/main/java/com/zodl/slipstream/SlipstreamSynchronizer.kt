@@ -1426,17 +1426,21 @@ class SlipstreamSynchronizer internal constructor(
      * Reopens the gate and restarts an engine that is stopped, mirroring [onForeground]'s
      * [SlipstreamEngine.isRunning] guard: a pause that spanned a background/foreground cycle leaves
      * the engine stopped by [onBackground], and polling a stopped engine forever is what the
-     * unguarded restart used to do. A backgrounded wallet is left stopped - the next [onForeground]
-     * restarts it.
+     * unguarded restart used to do.
+     *
+     * A backgrounded wallet keeps BOTH the engine and the poll loop stopped - only the pause flag is
+     * cleared, mirroring [restoreAfterBurst]. Nothing here is lifecycle-driven: the host toggles the
+     * pause off whatever gates the migration, so a resume can land at any time while backgrounded,
+     * and restarting the 2 s poll loop against an engine [onBackground] stopped would burn battery
+     * to read a dead session. The next [onForeground] restarts both.
      */
     override fun resume() {
         if (closed.get()) return
         migrationPaused.update { false }
         launchGuarded("resume") {
             if (!awaitPrepared()) return@launchGuarded
-            if (inForeground.get() && !engine.isRunning) {
-                engine.start(ufvk = null, birthday = startBirthday.value)
-            }
+            if (!inForeground.get()) return@launchGuarded
+            if (!engine.isRunning) engine.start(ufvk = null, birthday = startBirthday.value)
             engine.startPolling()
         }
     }

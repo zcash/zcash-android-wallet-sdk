@@ -435,6 +435,9 @@ class SlipstreamSynchronizerLifecycleTest {
         val synchronizer = buildSynchronizer(engine = engine, key = key)
         try {
             `when`(engine.isRunning).thenReturn(true)
+            clearInvocations(engine)
+            synchronizer.onForeground()
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
             synchronizer.pause()
             clearInvocations(engine)
 
@@ -476,7 +479,11 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
-    /** Backgrounded, the engine stays stopped — the next foreground event is what restarts it. */
+    /**
+     * Backgrounded, both the engine and the poll loop stay stopped — the next foreground event is
+     * what restarts them. Polling a session [SlipstreamSynchronizer.onBackground] stopped would
+     * spend battery on a dead engine.
+     */
     @Test
     fun resume_while_backgrounded_leaves_a_stopped_engine_stopped() {
         val engine = mock(SlipstreamEngine::class.java)
@@ -490,7 +497,7 @@ class SlipstreamSynchronizerLifecycleTest {
             synchronizer.resume()
 
             runBlocking {
-                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(engine, after(SETTLE_MS).never()).startPolling()
                 verify(engine, never()).start(null, STARTING_BIRTHDAY_VALUE)
             }
         } finally {

@@ -1257,6 +1257,11 @@ internal class OrchardMigrationSdkImpl(
      * transfer attempt, so [boundedReadyToBroadcast]'s cap measures "how long has a ready transfer
      * gone untouched by any driver", not "how long has it been ready". A driver that keeps
      * attempting keeps sync blocked for as long as it needs.
+     *
+     * So the cap deliberately bounds only a driver that STOPPED RUNNING (a killed worker, an
+     * abandoned foreground flow) - never a live-but-perpetually-failing one, which re-arms the stamp
+     * on every attempt and keeps the block alive by design. Each individual attempt is still bounded
+     * by the in-flight and privacy-buffer legs of [boundedReadyToBroadcast].
      */
     private suspend fun reStampSyncBlockReadySince() {
         val nowEpochSeconds = Clock.System.now().epochSeconds
