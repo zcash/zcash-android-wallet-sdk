@@ -9,6 +9,7 @@ import com.zodl.slipstream.model.SlipstreamPoolBalance
 import com.zodl.slipstream.model.SlipstreamWalletSummary
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class EngineMappingTest {
@@ -146,6 +147,30 @@ class EngineMappingTest {
 
         assertEquals(99L, balance.ironwood.available.value)
     }
+
+    @Test
+    fun a_fresh_tip_is_effective_regardless_of_the_stale_tick_count() {
+        assertTrue(effectiveTipFresh(tipFresh = true, consecutiveStaleTicks = 0))
+        assertTrue(effectiveTipFresh(tipFresh = true, consecutiveStaleTicks = STALE_MASK_FAIL_OPEN_TICKS))
+    }
+
+    /**
+     * MOB-1667: the mask must fail open once it has been applied to live observations for
+     * [STALE_MASK_FAIL_OPEN_TICKS] consecutive ticks (15 minutes at the 2 s poll interval) - a
+     * `tipFresh` that never latches otherwise pins spendable at zero forever.
+     */
+    @Test
+    fun a_stale_tip_stops_masking_only_once_the_fail_open_threshold_is_reached() {
+        assertFalse(effectiveTipFresh(tipFresh = false, consecutiveStaleTicks = 0))
+        assertFalse(effectiveTipFresh(tipFresh = false, consecutiveStaleTicks = STALE_MASK_FAIL_OPEN_TICKS - 1))
+        assertTrue(effectiveTipFresh(tipFresh = false, consecutiveStaleTicks = STALE_MASK_FAIL_OPEN_TICKS))
+        assertTrue(effectiveTipFresh(tipFresh = false, consecutiveStaleTicks = STALE_MASK_FAIL_OPEN_TICKS + 1))
+    }
+
+    /** 450 ticks at [SlipstreamEngine.POLL_INTERVAL_MS] is the intended 15 minutes. */
+    @Test
+    fun the_fail_open_threshold_is_fifteen_minutes_of_ticks() =
+        assertEquals(15 * 60 * 1_000L, STALE_MASK_FAIL_OPEN_TICKS * SlipstreamEngine.POLL_INTERVAL_MS)
 
     private fun accountBalance(
         uuid: ByteArray,

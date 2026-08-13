@@ -9,9 +9,33 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.0.2] - 2026-08-10
 
 ### Fixed
+- A newly created transaction now becomes visible in `Synchronizer.allTransactions` on the next
+  engine tick (~2 s) instead of only after its network broadcast round-trip resolves: the
+  Slipstream broadcaster pokes the engine's transaction-change signal at store time in both
+  `createProposedTransactions` and `createTransactionFromPczt`, in addition to the existing
+  submit-time poke. Under a degraded network the submit-time-only poke left a sent transaction
+  invisible in the Activity list for the whole multi-endpoint submit window (MOB-1584).
 - Migration Keystone batch signing no longer stalls for seconds when building the first note-split
   PCZT of a run: spendable-note selection is now cached for the lifetime of one migration call
   instead of being re-queried from the wallet database on every note the plan spends (MOB-1669).
+- Spendable balance no longer stays pinned at zero indefinitely (with a correct total balance and a
+  `SYNCED` status) after an Orchard→Ironwood migration (MOB-1667). Three defects chained into that
+  state, and all three are fixed:
+  - the `readyToBroadcast` leg of the migration sync block had no time bound, unlike the other two
+    legs. Its escape - the plan's stale-plan expiry - is evaluated against the scanned tip, which
+    only advances while sync runs, so a migration driver that never ran again (a background worker
+    killed by an aggressive OEM scheduler) paused sync forever. It is now capped at three privacy
+    sync buffers of continuous readiness, re-armed by every live transfer attempt;
+  - `Synchronizer.pause()` stopped the engine's poll loop, which performs only local reads and
+    never gated the network session it was supposed to decorrelate; the pause therefore froze the
+    balances, heights and status the host renders - and forced `status` to `SYNCED` while they were
+    frozen. Pausing now suppresses `syncBurst` and transaction resubmission only, keeps polling, and
+    reports the engine's real status. `resume()` restarts an engine a preceding `onBackground()`
+    stopped instead of polling a dead session;
+  - the stale-tip spendable mask now fails open after 15 minutes of consecutive stale ticks. It
+    could otherwise never lift, because the engine's `tipFresh` flag latches only when a full
+    network prologue completes. Showing spendable against an unverified tip cannot lose funds - a
+    spend built on a stale tip fails at propose or broadcast.
 
 ## [3.0.1] - 2026-08-08
 

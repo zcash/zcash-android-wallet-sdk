@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.internal.SdkDispatchers
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommittedVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
@@ -327,6 +328,14 @@ class VotingRustBackend private constructor() {
             withHandle { handle -> getRoundStateNative(handle, roundId) }
 
         @Throws(RuntimeException::class)
+        suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase> =
+            withHandle { handle -> delegationPhasesNative(handle, roundId) }
+
+        @Throws(RuntimeException::class)
+        suspend fun resetVotingSessionState(roundId: String) =
+            withHandle { handle -> resetVotingSessionStateNative(handle, roundId) }
+
+        @Throws(RuntimeException::class)
         suspend fun listRounds(): Array<JniRoundSummary> =
             withHandle { handle -> listRoundsNative(handle) }
 
@@ -463,6 +472,9 @@ class VotingRustBackend private constructor() {
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult =
             withHandle { handle ->
@@ -471,6 +483,9 @@ class VotingRustBackend private constructor() {
                     roundId,
                     bundleIndex,
                     pirServerUrl,
+                    pirDepth,
+                    pirTier0Layers,
+                    pirTier1Layers,
                     notes.toTypedArray()
                 ) ?: error("precomputeDelegationPir returned null")
             }
@@ -480,6 +495,9 @@ class VotingRustBackend private constructor() {
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
             notes: List<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -494,6 +512,9 @@ class VotingRustBackend private constructor() {
                     roundId,
                     bundleIndex,
                     pirServerUrl,
+                    pirDepth,
+                    pirTier0Layers,
+                    pirTier1Layers,
                     notes.toTypedArray(),
                     fvkBytes,
                     hotkeySecret,
@@ -1014,6 +1035,14 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun delegationPhasesNative(dbHandle: Long, roundId: String): Array<JniDelegationPhase>
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun resetVotingSessionStateNative(dbHandle: Long, roundId: String)
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun listRoundsNative(dbHandle: Long): Array<JniRoundSummary>
 
         @JvmStatic
@@ -1133,6 +1162,9 @@ class VotingRustBackend private constructor() {
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
             notes: Array<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult?
 
@@ -1143,6 +1175,9 @@ class VotingRustBackend private constructor() {
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
             notes: Array<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
