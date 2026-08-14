@@ -30,6 +30,12 @@ import java.io.File
  * this implementation DOES poke [SlipstreamEngine.notifyTxChange] on every `submit` - a gap the
  * Swift adapter has that this one deliberately does not copy, since the engine is the only
  * `allTransactions` signal on Android (there is no separate event stream to fall back on).
+ *
+ * The same poke fires store-first at the end of both create methods (MOB-1584): a stored
+ * transaction must become visible in `allTransactions` on the next engine tick, not only after
+ * its network broadcast round-trip resolves - under a degraded network the submit-time-only poke
+ * left a created transaction invisible for the whole multi-endpoint submit window (up to its 30 s
+ * global timeout), which testers reported as the Activity list showing a send minutes late.
  */
 internal class SlipstreamBroadcaster(
     private val backend: Backend,
@@ -46,7 +52,9 @@ internal class SlipstreamBroadcaster(
     ): List<CreatedTransaction> {
         SaplingParams.ensureDownloaded(saplingParamsDir)
         val txIds = backend.createProposedTransactions(proposal.toUnsafe(), usk.copyBytes())
-        return txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId)) }
+        val created = txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId)) }
+        engine.notifyTxChange()
+        return created
     }
 
     override suspend fun createTransactionFromPczt(
@@ -54,7 +62,9 @@ internal class SlipstreamBroadcaster(
         pcztWithSignatures: Pczt
     ): List<CreatedTransaction> {
         val txId = backend.extractAndStoreTxFromPczt(pcztWithProofs.toByteArray(), pcztWithSignatures.toByteArray())
-        return listOf(storeAsAwaitingSubmission(FirstClassByteArray(txId)))
+        val created = listOf(storeAsAwaitingSubmission(FirstClassByteArray(txId)))
+        engine.notifyTxChange()
+        return created
     }
 
     override suspend fun submit(

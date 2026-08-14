@@ -1336,14 +1336,14 @@ interface CloseableSynchronizer :
     Synchronizer,
     Closeable {
     /**
-     * Pauses block-scanning without tearing the synchronizer down: the engine's poll loop stops
-     * (no new network sync — used to decorrelate wallet sync from a migration broadcast) but the
-     * instance and all its StateFlows (status, balances, heights) stay alive and readable. While
-     * paused, [status] reports [Synchronizer.Status.SYNCED]. Idempotent.
+     * Closes the migration privacy gate without tearing the synchronizer down — used to decorrelate
+     * host-initiated sync traffic from a migration broadcast. [syncBurst] refuses to run and no
+     * transaction is resubmitted while paused; the instance, its poll loop and all its StateFlows
+     * (status, balances, heights) stay alive, live and truthful. Idempotent.
      */
     fun pause()
 
-    /** Resumes block-scanning after [pause]. Idempotent. */
+    /** Reopens the gate after [pause], restarting a stopped engine when foregrounded. Idempotent. */
     fun resume()
 }
 

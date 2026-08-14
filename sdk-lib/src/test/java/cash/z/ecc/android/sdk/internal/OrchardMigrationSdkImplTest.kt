@@ -52,6 +52,7 @@ import org.mockito.Mockito.`when`
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
@@ -72,6 +73,15 @@ class OrchardMigrationSdkImplTest {
 
         /** How long each fake send holds the broadcast mutex in the serialization test. */
         val BROADCAST_HOLD = 200.milliseconds
+
+        /**
+         * How far in the past a seeded `MIGRATION_SYNC_BLOCK_READY_SINCE` stamp is placed to count
+         * as expired: comfortably past the testnet cap of three 3-minute privacy buffers (540 s).
+         */
+        const val EXPIRED_READY_SINCE_AGE_SECONDS = 600L
+
+        /** Slack allowed when asserting that a freshly written epoch-seconds stamp is "now". */
+        const val STAMP_TOLERANCE_SECONDS = 60L
     }
 
     @Test
@@ -672,6 +682,230 @@ class OrchardMigrationSdkImplTest {
                 )
 
             assertTrue(sdk.isSyncBlocked().first())
+        }
+
+    // ── MOB-1667: the readyToBroadcast leg of isSyncBlocked is time-bounded ──
+
+    /**
+     * Boundary cases of the pure predicate behind the cap: the window is half-open, so an elapsed
+     * time strictly below the cap still blocks and an exactly-elapsed one no longer does. A stamp
+     * in the future (clock moved backwards) keeps the block.
+     */
+    @Test
+    fun `readyToBroadcast block cap expires exactly at the cap and never before`() {
+        assertTrue(
+            isReadyToBroadcastBlockWithinCap(
+                nowEpochSeconds = 1_000L,
+                readySinceEpochSeconds = 1_000L,
+                capSeconds = 540L
+            )
+        )
+        assertTrue(
+            isReadyToBroadcastBlockWithinCap(
+                nowEpochSeconds = 1_539L,
+                readySinceEpochSeconds = 1_000L,
+                capSeconds = 540L
+            )
+        )
+        assertFalse(
+            isReadyToBroadcastBlockWithinCap(
+                nowEpochSeconds = 1_540L,
+                readySinceEpochSeconds = 1_000L,
+                capSeconds = 540L
+            )
+        )
+        assertTrue(
+            isReadyToBroadcastBlockWithinCap(
+                nowEpochSeconds = 1_000L,
+                readySinceEpochSeconds = 2_000L,
+                capSeconds = 540L
+            )
+        )
+    }
+
+    /** The first evaluation of a broadcast-ready plan blocks sync AND records when it first did. */
+    @Test
+    fun isSyncBlocked_arms_the_ready_since_stamp_on_the_first_broadcast_ready_evaluation() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val prefs = FakePreferenceProvider()
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(2L, 5L)) // STEP_BROADCAST
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(prefs),
+                )
+
+            assertTrue(sdk.isSyncBlocked().first())
+
+            val stamp = prefs.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key)?.toLongOrNull()
+            assertNotNull(stamp)
+            assertTrue(
+                stamp >= Clock.System.now().epochSeconds - STAMP_TOLERANCE_SECONDS,
+                "the stamp must record the moment readiness was first seen"
+            )
+        }
+
+    /**
+     * MOB-1667's deadlock: a migration driver that never runs again leaves the plan permanently
+     * `STEP_BROADCAST`-ready, and the plan's own expiry is evaluated against the scanned tip, which
+     * cannot advance while this very block keeps sync paused. Past the cap, sync must resume.
+     */
+    @Test
+    fun isSyncBlocked_emits_false_once_the_ready_since_stamp_is_older_than_the_cap() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val expiredStamp = (Clock.System.now().epochSeconds - EXPIRED_READY_SINCE_AGE_SECONDS).toString()
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(2L, 5L)) // STEP_BROADCAST
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder =
+                        FakePreferenceHolder(
+                            FakePreferenceProvider(
+                                mapOf(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key to expiredStamp)
+                            )
+                        ),
+                )
+
+            assertFalse(sdk.isSyncBlocked().first())
+        }
+
+    /** The cap bounds only its own leg — an in-flight broadcast still blocks sync unconditionally. */
+    @Test
+    fun isSyncBlocked_stays_true_past_the_cap_while_a_broadcast_is_in_flight() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val now = Clock.System.now().epochSeconds
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(2L, 5L)) // STEP_BROADCAST
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder =
+                        FakePreferenceHolder(
+                            FakePreferenceProvider(
+                                mapOf(
+                                    EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key to
+                                        (now - EXPIRED_READY_SINCE_AGE_SECONDS).toString(),
+                                    EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key to
+                                        (now + 60).toString(),
+                                )
+                            )
+                        ),
+                )
+
+            assertTrue(sdk.isSyncBlocked().first())
+        }
+
+    /** Readiness going away clears the stamp, so a later readiness starts its own fresh window. */
+    @Test
+    fun isSyncBlocked_clears_the_ready_since_stamp_when_the_step_is_no_longer_broadcast() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val nowEpochSeconds = Clock.System.now().epochSeconds
+            val prefs =
+                FakePreferenceProvider(
+                    mapOf(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key to nowEpochSeconds.toString())
+                )
+            val fakeBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(0L, -1L)) // STEP_WAITING
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = fakeBackend,
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(prefs),
+                )
+
+            assertFalse(sdk.isSyncBlocked().first())
+
+            assertNull(prefs.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key)?.toLongOrNull())
+        }
+
+    /**
+     * A live driver re-arms the window on every attempt, so the cap measures how long a ready
+     * transfer has gone untouched — not how long it has been ready.
+     */
+    @Test
+    fun executeNextPendingTransfer_re_stamps_the_ready_since_window() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val expiredStamp = (Clock.System.now().epochSeconds - EXPIRED_READY_SINCE_AGE_SECONDS).toString()
+            val prefs =
+                FakePreferenceProvider(
+                    mapOf(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key to expiredStamp)
+                )
+            val sdk =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = FakeTypesafeMigrationBackend(),
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(prefs),
+                )
+
+            val outcome =
+                sdk.executeNextPendingTransfer(
+                    options = NetworkPrivacyOptions(useTor = false),
+                    useEstimatedTip = false,
+                )
+
+            assertEquals(TransferAttemptOutcome.NothingDue, outcome)
+            val stamp = prefs.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key)?.toLongOrNull()
+            assertNotNull(stamp)
+            assertTrue(
+                stamp >= Clock.System.now().epochSeconds - STAMP_TOLERANCE_SECONDS,
+                "every attempt must re-arm the window, even one that finds nothing due"
+            )
+        }
+
+    /**
+     * The window is persisted, not per-instance: a fresh [OrchardMigrationSdkImpl] (one is
+     * constructed per call site — see that class's doc) must keep counting from the stamp the
+     * previous one armed rather than restarting the cap on every construction.
+     */
+    @Test
+    fun the_ready_since_stamp_survives_a_fresh_sdk_instance() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val prefs = FakePreferenceProvider()
+
+            fun newSdk() =
+                OrchardMigrationSdkImpl(
+                    context = fakeAndroidContext(),
+                    network = ZcashNetwork.Testnet,
+                    alias = "OrchardMigrationSdkImplTest",
+                    account = account,
+                    migrationBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(2L, 5L)),
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    preferenceProviderHolder = FakePreferenceHolder(prefs),
+                )
+
+            assertTrue(newSdk().isSyncBlocked().first())
+            val armed = prefs.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key)
+
+            assertTrue(newSdk().isSyncBlocked().first())
+
+            assertEquals(armed, prefs.getString(EncryptedPreferenceKeys.MIGRATION_SYNC_BLOCK_READY_SINCE.key))
         }
 
     // ── mark_superseded write-through (Task 7): nextStep's Replan branch ─────
