@@ -332,6 +332,7 @@ class TypesafeVotingBackendImplTest {
                     pirDepth = TEST_PIR_DEPTH,
                     pirTier0Layers = TEST_PIR_TIER0_LAYERS,
                     pirTier1Layers = TEST_PIR_TIER1_LAYERS,
+                    pirPolyLen = TEST_PIR_POLY_LEN,
                     notes = notes
                 )
             assertEquals(11L, precompute.cachedCount)
@@ -349,6 +350,7 @@ class TypesafeVotingBackendImplTest {
                     pirDepth = TEST_PIR_DEPTH,
                     pirTier0Layers = TEST_PIR_TIER0_LAYERS,
                     pirTier1Layers = TEST_PIR_TIER1_LAYERS,
+                    pirPolyLen = TEST_PIR_POLY_LEN,
                     notes = notes,
                     fvkBytes = fvkBytes,
                     hotkeySecret = hotkeySecret,
@@ -1510,6 +1512,7 @@ class TypesafeVotingBackendImplTest {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult {
             precomputeRoundId = roundId
@@ -1526,6 +1529,7 @@ class TypesafeVotingBackendImplTest {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -1826,6 +1830,7 @@ class TypesafeVotingBackendImplTest {
         private const val TEST_PIR_DEPTH = 1
         private const val TEST_PIR_TIER0_LAYERS = 1
         private const val TEST_PIR_TIER1_LAYERS = 1
+        private const val TEST_PIR_POLY_LEN = 2048
         private const val GOVERNANCE_PCZT_BYTES_FIXTURE = 41
         private const val GOVERNANCE_PCZT_RK_FIXTURE = 43
         private const val GOVERNANCE_PCZT_SIGHASH_FIXTURE = 44

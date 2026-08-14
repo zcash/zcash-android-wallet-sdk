@@ -61,6 +61,7 @@ class VotingRustBackendTest {
         private const val TEST_PIR_DEPTH = 1
         private const val TEST_PIR_TIER0_LAYERS = 1
         private const val TEST_PIR_TIER1_LAYERS = 1
+        private const val TEST_PIR_POLY_LEN = 2048
         private const val NOTE_VALUE = 13_000_000L
         private const val PCZT_NOTE_VALUE = 15_000_000L
         private const val LARGE_BUNDLE_WEIGHT = 62_500_000L
@@ -1018,6 +1019,7 @@ class VotingRustBackendTest {
                         pirDepth = TEST_PIR_DEPTH,
                         pirTier0Layers = TEST_PIR_TIER0_LAYERS,
                         pirTier1Layers = TEST_PIR_TIER1_LAYERS,
+                        pirPolyLen = TEST_PIR_POLY_LEN,
                         notes = notes
                     )
                 }
@@ -1029,6 +1031,7 @@ class VotingRustBackendTest {
                         pirDepth = TEST_PIR_DEPTH,
                         pirTier0Layers = TEST_PIR_TIER0_LAYERS,
                         pirTier1Layers = TEST_PIR_TIER1_LAYERS,
+                        pirPolyLen = TEST_PIR_POLY_LEN,
                         notes = notes,
                         fvkBytes = SHORT_FIELD,
                         hotkeySecret = HOTKEY_SEED,

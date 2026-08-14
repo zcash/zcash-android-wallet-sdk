@@ -492,6 +492,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult =
             withHandle { handle ->
@@ -503,6 +504,7 @@ class VotingRustBackend private constructor() {
                     pirDepth,
                     pirTier0Layers,
                     pirTier1Layers,
+                    pirPolyLen,
                     notes.toTypedArray()
                 ) ?: error("precomputeDelegationPir returned null")
             }
@@ -515,6 +517,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -532,6 +535,7 @@ class VotingRustBackend private constructor() {
                     pirDepth,
                     pirTier0Layers,
                     pirTier1Layers,
+                    pirPolyLen,
                     notes.toTypedArray(),
                     fvkBytes,
                     hotkeySecret,
@@ -1211,6 +1215,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: Array<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult?
 
@@ -1224,6 +1229,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: Array<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
