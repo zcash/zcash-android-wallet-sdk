@@ -259,7 +259,8 @@ class JniVotingModelsTest {
                 treePosition = 6,
                 allEncShares = listOf(JniWireEncryptedShare(byteArrayOf(4), byteArrayOf(5), 0)),
                 shareComms = listOf(byteArrayOf(7)),
-                primaryBlind = byteArrayOf(101)
+                primaryBlind = byteArrayOf(101),
+                voteRoundId = "aa".repeat(32)
             ).toString()
 
         assertEquals("JniSharePayload(redacted)", text)
@@ -278,13 +279,14 @@ class JniVotingModelsTest {
                 Long::class.javaPrimitiveType,
                 Array<JniWireEncryptedShare>::class.java,
                 Array<ByteArray>::class.java,
-                ByteArray::class.java
+                ByteArray::class.java,
+                String::class.java
             )
 
         assertEquals(
             "([BIILcash/z/ecc/android/sdk/internal/model/voting/" +
                 "JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/" +
-                "JniWireEncryptedShare;[[B[B)V",
+                "JniWireEncryptedShare;[[B[BLjava/lang/String;)V",
             constructor.jniDescriptor()
         )
     }

@@ -61,9 +61,9 @@ const JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG: &str = "([B[B[BII[B[Lcash/z/ecc/andro
 const JNI_COMMITMENT_BUNDLE_RECORD_CTOR_SIG: &str =
     "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitmentResult;J)V";
 // Must match JniSharePayload(ByteArray, Int, Int, JniWireEncryptedShare,
-// Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray) in
+// Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray, String) in
 // JniVotingModels.kt. Guarded by JniVotingModelsTest.
-const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[[B[B)V";
+const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[[B[BLjava/lang/String;)V";
 // Must match JniShareDelegationRecord(String, Int, Int, Int, Array<String>,
 // ByteArray, Boolean, Long, Long) in JniVotingModels.kt. Guarded by
 // JniVotingModelsTest.
@@ -1351,6 +1351,7 @@ fn make_jni_share_payload<'local>(
         )?;
         let all_enc_shares = JObject::from(all_enc_shares);
         let share_comms = JObject::from(share_comms);
+        let vote_round_id: JObject<'_> = env.new_string(&payload.vote_round_id)?.into();
 
         Ok(env.new_object(
             &class,
@@ -1364,6 +1365,7 @@ fn make_jni_share_payload<'local>(
                 JValue::Object(&all_enc_shares),
                 JValue::Object(&share_comms),
                 JValue::Object(&primary_blind),
+                JValue::Object(&vote_round_id),
             ],
         )?)
     })

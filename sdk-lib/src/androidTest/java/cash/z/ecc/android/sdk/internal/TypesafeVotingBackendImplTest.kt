@@ -1029,7 +1029,8 @@ class TypesafeVotingBackendImplTest {
         treePosition: Long = 0,
         allEncShares: List<JniWireEncryptedShare> = wireShares(),
         shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 16),
-        primaryBlind: ByteArray = field(19)
+        primaryBlind: ByteArray = field(19),
+        voteRoundId: String = "aa".repeat(32)
     ) = JniSharePayload(
         sharesHash = sharesHash,
         proposalId = proposalId,
@@ -1038,7 +1039,8 @@ class TypesafeVotingBackendImplTest {
         treePosition = treePosition,
         allEncShares = allEncShares,
         shareComms = shareComms,
-        primaryBlind = primaryBlind
+        primaryBlind = primaryBlind,
+        voteRoundId = voteRoundId
     )
 
     private fun jniShareDelegationRecord(
@@ -1264,7 +1266,8 @@ class TypesafeVotingBackendImplTest {
                                     )
                                 },
                             shareComms = List(JNI_VOTE_SHARE_COUNT) { ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) },
-                            primaryBlind = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE)
+                            primaryBlind = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                            voteRoundId = "aa".repeat(32)
                         )
                     }
             ),
