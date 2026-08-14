@@ -15,23 +15,14 @@ plugins {
 
 mavenPublishing {
     coordinates(
-        artifactId = "zcash-android-sdk-incubator"
+        artifactId = "zcash-android-sdk-slipstream"
     )
 }
 
-// Selects which sync engine WalletCoordinator drives. Exactly one of the two source directories
-// supplies `engineSynchronizerFactory`, so the engine choice is resolved at SDK build time and no
-// runtime flag survives into the published artifact.
-val isSlipstreamEnabled = project.property("IS_SLIPSTREAM_ENABLED").toString().toBoolean()
-
 android {
-    namespace = "cash.z.ecc.android.sdk.incubator"
+    namespace = "com.zodl.slipstream"
 
     useLibrary("android.test.runner")
-
-    sourceSets.getByName("main") {
-        java.srcDir(if (isSlipstreamEnabled) "src/engineSlipstream/java" else "src/engineDefault/java")
-    }
 
     defaultConfig {
         consumerProguardFiles("proguard-consumer.txt")
@@ -58,6 +49,18 @@ android {
     }
 }
 
+/**
+ * slipstream-lib was extracted out of sdk-lib and still uses its `internal` declarations.
+ * Registering sdk-lib as a Kotlin friend module preserves that access across the module
+ * boundary at compile time without widening sdk-lib's public API for external consumers.
+ * The compiler matches friend paths by directory prefix, so sdk-lib's build directory covers
+ * the per-variant intermediates for every variant and compilation (main, unit test, androidTest).
+ */
+val sdkLibBuildDir = project(":sdk-lib").layout.buildDirectory
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    friendPaths.from(sdkLibBuildDir)
+}
+
 tasks.dokkaHtml.configure {
     dokkaSourceSets {
         configureEach {
@@ -69,22 +72,14 @@ tasks.dokkaHtml.configure {
 }
 
 dependencies {
-    // Deliberately the string notation: the `projects.slipstreamLib` typesafe accessor does not
-    // exist when the module is not included, which would break configuration of flag-off builds.
-    if (isSlipstreamEnabled) {
-        implementation(project(":slipstream-lib"))
-    }
-
+    // The Slipstream engine talks to the Rust JNI surface directly, and sdk-lib exposes backend-lib
+    // as an `implementation` dependency only, so Backend/RustBackend/TorClient do not arrive
+    // transitively and backend-lib has to be declared here as well.
     implementation(projects.sdkLib)
-    implementation(libs.bip39)
+    implementation(projects.backendLib)
 
     implementation(libs.androidx.annotation)
-
-    implementation(libs.kotlinx.datetime)
-
-    // Architecture Components: Lifecycle
-    // implementation(libs.androidx.lifecycle.runtime)
-    // implementation(libs.androidx.lifecycle.common)
+    implementation(libs.androidx.core)
 
     // Kotlin
     implementation(libs.kotlin.stdlib)
@@ -95,13 +90,12 @@ dependencies {
     testImplementation(libs.kotlin.reflect)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.bundles.junit)
+    testImplementation(libs.mockito.junit)
 
+    androidTestImplementation(libs.androidx.multidex)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.kotlin.test)
     androidTestImplementation(libs.kotlinx.coroutines.test)
-
-    // sample mnemonic plugin
-    androidTestImplementation(libs.zcashwalletplgn)
 }

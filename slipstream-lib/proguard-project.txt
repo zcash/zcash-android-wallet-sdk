@@ -1,0 +1,18 @@
+# This improves obfuscation and moves non-public classes to their own namespace.
+# Repackaging into the slipstream internal namespace ensures no conflicts with other modules
+-repackageclasses 'com.zodl.slipstream.internal'
+
+# This makes it easier to autocomplete methods in an IDE using this obfuscated library.
+-keepparameternames
+
+# The ProGuard manual recommends keeping these attributes for libraries.
+-keepattributes EnclosingMethod,InnerClasses,Signature,Exceptions,*Annotation*
+
+# Ensure that stacktraces are reversible.
+-renamesourcefileattribute SourceFile
+-keepattributes SourceFile,LineNumberTable
+
+# Keep the public interface of the library.
+-keep public class com.zodl.slipstream.* { public protected *; }
+-keep public class com.zodl.slipstream.db.* { public protected *; }
+-keep public class com.zodl.slipstream.model.* { public protected *; }
