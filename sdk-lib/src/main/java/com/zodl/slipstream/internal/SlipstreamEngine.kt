@@ -49,6 +49,13 @@ internal class SlipstreamEngine(
     private var running = false
 
     /**
+     * Consecutive ticks whose snapshot reported a stale tip; feeds [effectiveTipFresh]'s fail-open.
+     * Counted in ticks rather than wall-clock time on purpose - it must measure how long the mask
+     * has been applied to LIVE observations, and no tick means no observation to mask.
+     */
+    private var staleTipTicks = 0
+
+    /**
      * Mirrors the iOS twin's `isRunning` member (`SlipstreamSynchronizer.swift`): true from a
      * successful [start] until the next [stop], including the internal retry [dispatchState] issues
      * on error-episode recovery. Lets a caller (`SlipstreamSynchronizer.onForeground`) tell an
@@ -198,9 +205,14 @@ internal class SlipstreamEngine(
                 allowZeroConfShielding = ALLOW_ZERO_CONF
             )
         summary?.let {
-            walletBalances.value = it.toAccountBalances(isRecovering = snap.isRecovering, tipFresh = snap.tipFresh)
+            walletBalances.value =
+                it.toAccountBalances(
+                    isRecovering = snap.isRecovering,
+                    tipFresh = effectiveTipFresh(snap.tipFresh, staleTipTicks)
+                )
             fullyScannedHeight.value = it.fullyScannedHeight.takeIf { height -> height > 0 }?.let(BlockHeight::new)
         }
+        staleTipTicks = if (snap.tipFresh) 0 else staleTipTicks + 1
 
         if (snap.chainTip > 0) networkHeight.value = BlockHeight.new(snap.chainTip)
         progress.value = permilleToPercentDecimal(snap.progressPermille)
