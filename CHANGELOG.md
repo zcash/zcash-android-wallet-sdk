@@ -6,6 +6,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Resubmission no longer permanently drops a pending submit plan for a wallet-created transaction
+  missing from the derived history view: the wallet store is consulted before pruning - the plan
+  is kept while the transaction exists and is unexpired (or expiry-disabled), and kept when the
+  store read is inconclusive (MOB-1717).
+- A transaction whose raw bytes cannot be read during resubmission is skipped and retried next
+  sync cycle instead of aborting the sync pass with `TransactionNotFoundException` (MOB-1717).
+- Slipstream's post-create transaction readback reads the `transactions` base table instead of
+  `v_transactions`, so sending/shielding no longer fails when the history view has not projected
+  the newly created transaction (MOB-1717).
+
 ## [3.0.2] - 2026-08-13
 
 ### Fixed

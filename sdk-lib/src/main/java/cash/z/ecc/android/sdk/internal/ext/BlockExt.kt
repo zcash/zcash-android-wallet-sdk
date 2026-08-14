@@ -2,6 +2,7 @@
 
 package cash.z.ecc.android.sdk.internal.ext
 
+import cash.z.ecc.android.sdk.ext.fromHex
 import java.util.Locale
 
 internal fun ByteArray.toHexReversed(): String {
@@ -12,3 +13,5 @@ internal fun ByteArray.toHexReversed(): String {
     }
     return sb.toString()
 }
+
+internal fun String.fromHexReversed(): ByteArray = fromHex().reversedArray()
