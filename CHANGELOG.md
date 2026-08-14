@@ -128,6 +128,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commitment, a nullifier — compiles cleanly while feeding one `orchard` generation's output into
   another's circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply
   rebuilt, and removing it is what allows it back on.
+
+## [3.0.2] - 2026-08-13
+
+### Fixed
 - A newly created transaction now becomes visible in `Synchronizer.allTransactions` on the next
   engine tick (~2 s) instead of only after its network broadcast round-trip resolves: the
   Slipstream broadcaster pokes the engine's transaction-change signal at store time in both
