@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
+import cash.z.ecc.android.sdk.internal.ext.fromHexReversed
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
@@ -75,14 +76,21 @@ internal class PendingSubmitPlanStore(
             }
         }
 
+    /**
+     * @param retainMissing Consulted for a stored plan whose transaction id was not among the loaded
+     * [transactionId]s. Returning `true` keeps the plan; the default `false` preserves the previous
+     * prune-everything-missing behavior. Runs under this store's mutex and MUST NOT call back into
+     * [PendingSubmitPlanStore] (deadlock).
+     */
     suspend fun <T> loadTransactionsAndRetainSubmitPlans(
         loadTransactions: suspend () -> List<T>,
-        transactionId: (T) -> FirstClassByteArray
+        transactionId: (T) -> FirstClassByteArray,
+        retainMissing: suspend (FirstClassByteArray) -> Boolean = { false }
     ): List<T> =
         mutex.withLock {
             loadFromPreferencesIfNeeded()
             loadTransactions().also { transactions ->
-                retainLoadedPlansFor(transactions.map(transactionId))
+                retainLoadedPlansFor(transactions.map(transactionId), retainMissing)
             }
         }
 
@@ -124,14 +132,30 @@ internal class PendingSubmitPlanStore(
         )
     }
 
-    private suspend fun retainLoadedPlansFor(txIds: List<FirstClassByteArray>) {
+    private suspend fun retainLoadedPlansFor(
+        txIds: List<FirstClassByteArray>,
+        retainMissing: suspend (FirstClassByteArray) -> Boolean
+    ) {
         val retainedTransactionIds = txIds.map { it.toStableKey() }.toSet()
-        val removed =
-            plansByTransactionId.keys.removeAll { transactionId ->
-                (namespacePrefix.isBlank() || transactionId.startsWith(namespacePrefix)) &&
-                    transactionId !in retainedTransactionIds
+        val keysToRemove = mutableListOf<String>()
+        for (transactionId in plansByTransactionId.keys) {
+            val isNamespaced = namespacePrefix.isBlank() || transactionId.startsWith(namespacePrefix)
+            if (!isNamespaced || transactionId in retainedTransactionIds) {
+                continue
             }
-        if (removed) {
+            val shouldRetain =
+                runCatching {
+                    FirstClassByteArray(transactionId.removePrefix(namespacePrefix).fromHexReversed())
+                }.fold(
+                    onSuccess = { txId -> retainMissing(txId) },
+                    onFailure = { true }
+                )
+            if (!shouldRetain) {
+                keysToRemove.add(transactionId)
+            }
+        }
+        if (keysToRemove.isNotEmpty()) {
+            plansByTransactionId.keys.removeAll(keysToRemove)
             saveToPreferences()
         }
     }
