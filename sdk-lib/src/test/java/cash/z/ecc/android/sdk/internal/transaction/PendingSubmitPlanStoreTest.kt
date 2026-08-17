@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
+import cash.z.ecc.android.sdk.internal.ext.fromHexReversed
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
@@ -11,6 +12,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import kotlin.random.Random
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
@@ -105,6 +108,109 @@ class PendingSubmitPlanStoreTest {
             )
             assertNull(secondStore.getSubmitPlan(prunedTransaction.txId))
         }
+
+    @Test
+    fun default_retain_missing_prunes_missing_plan() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val prunedTransaction = createdTransaction(1)
+            val store = PendingSubmitPlanStore(preferenceProvider)
+            store.storeSubmitPlan(prunedTransaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
+
+            store.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions = { emptyList<FirstClassByteArray>() },
+                transactionId = { it }
+            )
+
+            assertNull(store.getSubmitPlan(prunedTransaction.txId))
+        }
+
+    @Test
+    fun retain_missing_returning_true_retains_plan_for_missing_transaction() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val retainedTransaction = createdTransaction(1)
+            val store = PendingSubmitPlanStore(preferenceProvider)
+            store.storeSubmitPlan(retainedTransaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
+
+            store.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions = { emptyList<FirstClassByteArray>() },
+                transactionId = { it },
+                retainMissing = { true }
+            )
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint("a.z.cash")))),
+                store.getSubmitPlan(retainedTransaction.txId)
+            )
+        }
+
+    @Test
+    fun retain_missing_callback_receives_original_txid_bytes_after_rehydration() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val txId = FirstClassByteArray(byteArrayOf(0x01, 0x02, 0x03, 0xAB.toByte(), 0x00))
+            val transaction =
+                CreatedTransaction(
+                    txId = txId,
+                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                    expiryHeight = null
+                )
+            val firstStore = PendingSubmitPlanStore(preferenceProvider)
+            firstStore.storeSubmitPlan(transaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
+
+            val secondStore = PendingSubmitPlanStore(preferenceProvider)
+            var receivedTxId: FirstClassByteArray? = null
+            secondStore.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions = { emptyList<FirstClassByteArray>() },
+                transactionId = { it },
+                retainMissing = { candidateTxId ->
+                    receivedTxId = candidateTxId
+                    true
+                }
+            )
+
+            assertContentEquals(txId.byteArray, receivedTxId?.byteArray)
+        }
+
+    @Test
+    fun namespaced_store_only_consults_retain_missing_for_its_own_keys() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val ownTransaction = createdTransaction(1)
+            val otherNamespaceTransaction = createdTransaction(2)
+            val ownStore = PendingSubmitPlanStore(preferenceProvider, namespace = "own")
+            val otherStore = PendingSubmitPlanStore(preferenceProvider, namespace = "other")
+
+            ownStore.storeSubmitPlan(ownTransaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
+            otherStore.storeSubmitPlan(otherNamespaceTransaction, TransactionSubmitPlan(listOf(endpoint("b.z.cash"))))
+
+            val consultedTxIds = mutableListOf<FirstClassByteArray>()
+            val reloadedOwnStore = PendingSubmitPlanStore(preferenceProvider, namespace = "own")
+            reloadedOwnStore.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions = { emptyList<FirstClassByteArray>() },
+                transactionId = { it },
+                retainMissing = { txId ->
+                    consultedTxIds += txId
+                    true
+                }
+            )
+
+            assertEquals(listOf(ownTransaction.txId), consultedTxIds)
+
+            val otherStoreReloaded = PendingSubmitPlanStore(preferenceProvider, namespace = "other")
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint("b.z.cash")))),
+                otherStoreReloaded.getSubmitPlan(otherNamespaceTransaction.txId)
+            )
+        }
+
+    @Test
+    fun to_hex_reversed_and_from_hex_reversed_round_trip() {
+        val bytes = Random(42).nextBytes(37)
+
+        assertContentEquals(bytes, bytes.toHexReversed().fromHexReversed())
+    }
 
     private class FakePreferenceProvider : PreferenceProvider {
         private val values = mutableMapOf<String, String?>()

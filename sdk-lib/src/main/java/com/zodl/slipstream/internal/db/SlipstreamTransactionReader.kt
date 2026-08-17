@@ -54,7 +54,11 @@ internal class SlipstreamTransactionReader(
             }
         }
 
-    /** T8's "T6 SQL: SELECT raw FROM transactions WHERE txid = ?" - post-`create` raw-bytes read-back. */
+    /**
+     * T8's post-`create` raw-bytes read-back (T6). Reads the `transactions` base table directly
+     * rather than the `v_transactions` history view, because a wallet-created transaction may not
+     * yet be projected into that view (MOB-1717).
+     */
     suspend fun readRawTransaction(txId: FirstClassByteArray): FirstClassByteArray =
         withContext(Dispatchers.IO) {
             val row = SlipstreamNative.getTransactionRaw(dbFile.absolutePath, txId.byteArray)
