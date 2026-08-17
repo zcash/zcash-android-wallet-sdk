@@ -164,15 +164,7 @@ fn build_governance_pczt_for_bundle(
     )
     .map_err(|e| anyhow!("DelegationKeys::with_voting_hotkey: {}", e))?;
 
-    // build_governance_pczt now validates the branch id against the round's
-    // own snapshot_height (see lwd::branch_id_for_height), so it must be
-    // resolved per round instead of the old hardcoded Nu6 constant.
-    let round_state = db
-        .get_round_state(round_id)
-        .map_err(|e| anyhow!("get_round_state: {}", e))?;
-    let consensus_branch_id =
-        voting::delegate::branch_id_for_height(db.network, round_state.snapshot_height)
-            .map_err(|e| anyhow!("branch_id_for_height: {}", e))?;
+    let consensus_branch_id = consensus_branch_id_for_round(db, round_id, db.network)?;
 
     let pczt = db
         .build_governance_pczt(
@@ -856,6 +848,40 @@ fn require_round_phase_not_after(
     Ok(())
 }
 
+/// Resolves the consensus branch id `build_governance_pczt` must be given for `round_id`.
+///
+/// Both inputs to the resolution come from the round itself: `zcash_voting` stores the network
+/// alongside the snapshot height when the round is initialized, and `get_round_state` returns
+/// both. Deriving the branch from `handle_network` instead would take a value the database
+/// already knows authoritatively from JNI caller input (`openVotingDbNative`'s `network_id`),
+/// which is what this function exists to avoid.
+///
+/// `handle_network` is still *checked* against the round, because a disagreement means the
+/// caller opened this database for the wrong network, so every key derived from that network
+/// (the voting hotkey, hence `DelegationKeys::network`) is wrong for this round. Upstream
+/// rejects that mismatch as well (`validate_network_matches_round`, consulted from
+/// `build_governance_pczt`), so today this only turns a downstream error into a local one; it is
+/// checked here so the invariant does not depend on a guarantee that lives in another crate.
+fn consensus_branch_id_for_round(
+    db: &VotingDb,
+    round_id: &str,
+    handle_network: voting::types::Network,
+) -> anyhow::Result<u32> {
+    let state = db
+        .get_round_state(round_id)
+        .map_err(|e| anyhow!("get_round_state: {}", e))?;
+    if state.network != handle_network {
+        return Err(anyhow!(
+            "voting DB was opened for network {:?}, but round {round_id} is stored for network {:?}",
+            handle_network,
+            state.network
+        ));
+    }
+
+    voting::delegate::branch_id_for_height(state.network, state.snapshot_height)
+        .map_err(|e| anyhow!("branch_id_for_height: {}", e))
+}
+
 fn verify_delegation_submission_sig(data: &DelegationSubmissionData) -> anyhow::Result<()> {
     let rk = fixed_bytes::<PROTOCOL_FIELD_BYTES>(data.rk.clone(), "rk")?;
     let sighash = fixed_bytes::<PROTOCOL_FIELD_BYTES>(data.sighash.clone(), "sighash")?;
@@ -1014,6 +1040,44 @@ mod tests {
         let mut bad_sighash = data.clone();
         bad_sighash.sighash[0] ^= 1;
         assert!(verify_delegation_submission_sig(&bad_sighash).is_err());
+    }
+
+    /// The branch must come from the network the ROUND was stored with, not from the network the
+    /// JNI caller opened the handle with. The two are distinguishable here: the test round's
+    /// snapshot height is inside Regtest's Ironwood range but far below any mainnet upgrade, so
+    /// resolving it against the wrong network yields a different branch id.
+    #[test]
+    fn consensus_branch_id_for_round_resolves_against_the_rounds_stored_network() {
+        let (db, round_id) = test_db_with_round();
+        let regtest = voting::types::Network::Regtest;
+
+        let branch_id = consensus_branch_id_for_round(&db, &round_id, regtest)
+            .expect("branch id for the round's own network");
+
+        let expected =
+            voting::delegate::branch_id_for_height(regtest, round_params().snapshot_height)
+                .expect("regtest branch id");
+        assert_eq!(branch_id, expected);
+
+        let if_caller_network_were_used = voting::delegate::branch_id_for_height(
+            voting::types::Network::Mainnet,
+            round_params().snapshot_height,
+        )
+        .expect("mainnet branch id");
+        assert_ne!(branch_id, if_caller_network_were_used);
+    }
+
+    #[test]
+    fn consensus_branch_id_for_round_rejects_a_handle_opened_for_another_network() {
+        let (db, round_id) = test_db_with_round();
+
+        let err = consensus_branch_id_for_round(&db, &round_id, voting::types::Network::Mainnet)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("is stored for network"),
+            "unexpected error: {err}"
+        );
     }
 
     fn test_hotkey() -> VotingHotkey {
