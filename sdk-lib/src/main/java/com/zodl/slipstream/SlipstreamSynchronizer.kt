@@ -1151,36 +1151,6 @@ class SlipstreamSynchronizer internal constructor(
         return spendService.getTransparentBalance(tAddr)
     }
 
-    override suspend fun refreshUtxos(
-        account: Account,
-        since: BlockHeight
-    ): Int? {
-        awaitReady()
-        return runCatchingCancellable {
-            var count = 0
-            val tAddresses = backend.listTransparentReceivers(account.accountUuid.value)
-            walletClient
-                .fetchUtxos(
-                    tAddresses = tAddresses,
-                    startHeight = BlockHeightUnsafe(since.value),
-                    serviceMode = ServiceMode.Direct
-                ).collect { response ->
-                    if (response is Response.Success) {
-                        val utxo = response.result
-                        backend.putUtxo(
-                            txId = utxo.txid,
-                            index = utxo.index,
-                            script = utxo.script,
-                            value = utxo.valueZat,
-                            height = utxo.height
-                        )
-                        count++
-                    }
-                }
-            count
-        }.getOrNull()
-    }
-
     /**
      * The `engine.start(ufvk = null, ...)` restart below is keyless (`FFI_JNI_CONTRACT.md` section
      * 3.5) - legal only because provisioning guarantees an account row already exists by the time

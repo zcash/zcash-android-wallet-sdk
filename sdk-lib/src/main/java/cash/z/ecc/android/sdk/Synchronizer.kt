@@ -588,20 +588,8 @@ interface Synchronizer {
     suspend fun validateAddress(address: String): AddressType
 
     /**
-     * Download all UTXOs for the given account addresses and store any new ones in the database.
-     *
-     * @param account The Account, for which all addresses blocks will be downloaded.
-     * @param since The BlockHeight, from which blocks will be downloaded.
-     *
-     * @return the number of utxos that were downloaded and added to the UTXO table.
-     */
-    suspend fun refreshUtxos(
-        account: Account,
-        since: BlockHeight = network.saplingActivationHeight
-    ): Int?
-
-    /**
-     * Returns the balance that the wallet knows about. This should be called after [refreshUtxos].
+     * Returns the balance that the wallet knows about. UTXOs are refreshed automatically during
+     * sync; see [fetchUtxosByAddress] for on-demand per-address retrieval.
      */
     suspend fun getTransparentBalance(tAddr: String): Zatoshi
 

@@ -71,6 +71,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   318 parameters. A testnet wallet that committed a migration before this change
   has its transfers anchored to the old grid; those runs must be restarted.
 
+### Removed
+- `Synchronizer.refreshUtxos(account, since)` is removed. It fetched all of an account's
+  transparent receivers over a direct (non-Tor) connection, linking the caller's IP address
+  to the wallet's t-addresses regardless of the Tor setting. UTXOs are refreshed
+  automatically during sync; use `Synchronizer.fetchUtxosByAddress`, which uses an isolated
+  Tor circuit, or `Synchronizer.checkSingleUseTransparentAddress` instead.
+
 ### Fixed
 - The legacy `Synchronizer.createProposedTransactions` and `Synchronizer.createTransactionFromPczt`
   helpers now register transactions in `PendingSubmitPlanStore`. Before this change the legacy

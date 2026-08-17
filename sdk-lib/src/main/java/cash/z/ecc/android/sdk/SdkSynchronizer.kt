@@ -1177,9 +1177,19 @@ class SdkSynchronizer private constructor(
         )
     }
 
-    override suspend fun refreshUtxos(
+    /**
+     * Downloads all UTXOs for the given account's addresses over a legacy direct (non-Tor)
+     * connection and stores any new ones in the database. Not part of the [Synchronizer] API;
+     * the remaining direct-connection paths are tracked by MOB-1652.
+     *
+     * @param account The Account, for which all addresses blocks will be downloaded.
+     * @param since The BlockHeight, from which blocks will be downloaded.
+     *
+     * @return the number of utxos that were downloaded and added to the UTXO table.
+     */
+    suspend fun refreshUtxos(
         account: Account,
-        since: BlockHeight
+        since: BlockHeight = network.saplingActivationHeight
     ): Int = processor.refreshUtxos(account, since)
 
     override suspend fun getTransparentBalance(tAddr: String): Zatoshi = processor.getUtxoCacheBalance(tAddr)
