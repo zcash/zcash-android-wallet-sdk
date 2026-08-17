@@ -1,11 +1,6 @@
 # Expected secrets
 # FIREBASE_TEST_LAB_SERVICE_ACCOUNT - Email address of Firebase Test Lab service account
 # FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER - Workload identity provider to generate temporary service account key
-# SLIPSTREAM_APP_ID - App ID of the GitHub App granting read access to the private zodl-inc/slipstream repo
-# SLIPSTREAM_APP_PRIVATE_KEY - PEM private key for that App
-#   Without these two, every job that compiles Rust fails in `:backend-lib:cargoBuild*`: cargo cannot
-#   resolve the `slipstream-core` git dependency. They are unavailable to pull requests from forks,
-#   which therefore cannot pass those jobs.
 
 # Expected variables
 # FIREBASE_TEST_LAB_PROJECT - Firebase Test Lab project name
@@ -200,8 +195,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Android Lint
         timeout-minutes: 45
         env:
@@ -247,8 +240,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Test
         timeout-minutes: 15
         run: |
@@ -277,8 +268,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Clippy
         timeout-minutes: 15
         run: |
@@ -289,10 +278,6 @@ jobs:
   #
   # There is no rustfmt.toml, so this is stock rustfmt defaults for the edition in
   # backend-lib/Cargo.toml. Run `cargo fmt --all` in backend-lib/ to fix a failure.
-  #
-  # `cargo fmt --all` resolves the workspace before it formats anything, so on this
-  # branch it needs the slipstream credentials to reach the private `slipstream-core`
-  # git dependency, exactly as the compiling Rust jobs do.
   static_analysis_rustfmt:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
@@ -310,9 +295,6 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
-        with:
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Rustfmt
         timeout-minutes: 5
         run: |
@@ -340,6 +322,37 @@ jobs:
         run: |
           ./scripts/update-proposal-proto.sh --check
 
+  # Guards the IS_SLIPSTREAM_ENABLED=false configuration against rot. Nothing else in
+  # this workflow ever configures the build with the flag off, so a change that only
+  # compiles against the engineSlipstream source directory (or that reaches for the
+  # `projects.slipstreamLib` typesafe accessor outside the conditional) would otherwise
+  # land unnoticed. Kotlin compilation only, so it stays far cheaper than the assemble
+  # jobs, though backend-lib still cross-compiles the one ABI its javaPreCompileDebug
+  # depends on.
+  check_slipstream_disabled:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
+      - name: Setup
+        id: setup
+        timeout-minutes: 30
+        uses: ./.github/actions/setup
+        with:
+          rust-cache: true
+      - name: Compile with Slipstream disabled
+        timeout-minutes: 30
+        run: |
+          ./gradlew :sdk-incubator-lib:compileDebugKotlin :sdk-lib:compileDebugKotlin -PIS_SLIPSTREAM_ENABLED=false
+
   test_android_modules_unit:
     needs: [validate_gradle_wrapper]
     runs-on: ubuntu-latest
@@ -359,8 +372,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # 60 rather than the usual 30: this branch re-enables shielded voting, which
       # turns on orchard's `unstable-voting-circuits` and pulls the halo2 voting
       # circuits into the native build. `make test-unit` builds the crate for all
@@ -433,8 +444,6 @@ jobs:
   #       uses: ./.github/actions/setup
   #       with:
   #         rust-cache: true
-  #         slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-  #         slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
   #     - name: Build
   #       timeout-minutes: 30
   #       run: |
@@ -507,8 +516,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # The hosted runner's Android SDK does not include the emulator package,
       # which a Gradle Managed Device requires. AGP auto-installs the system
       # image but not the emulator, so without this the pixel2MinSetup task
@@ -578,8 +585,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
         env:

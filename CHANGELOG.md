@@ -12,6 +12,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helper-share payloads that go stale once the tree position is recorded.
 - Shielded voting: `recordVcPosition(roundId, bundleIndex, proposalId, vcTreePosition)` records
   the confirmed position of the vote commitment in the vote commitment tree.
+- New artifact `cash.z.ecc.android:zcash-android-sdk-slipstream`. The Slipstream sync engine, which
+  used to live inside `zcash-android-sdk` under the `com.zodl.slipstream` package, is now its own
+  Gradle module (`:slipstream-lib`) and its own published library. Consumers of
+  `zcash-android-sdk-incubator` get it transitively at runtime scope and need no explicit
+  dependency; the package names are unchanged, so direct `com.zodl.slipstream` call sites keep
+  compiling once the artifact is on the classpath. The engine module compiles against
+  `zcash-android-sdk`'s `internal` declarations through a Kotlin friend-module relationship, so the
+  two artifacts are version-locked siblings and must always be used at matching versions.
+- New Gradle property `IS_SLIPSTREAM_ENABLED` (default `true`) decides at SDK build time whether a
+  build carries Slipstream at all. With it set to `false`, `:slipstream-lib` is not configured, the
+  `slipstream` Cargo feature is off — so `libzcashwalletsdk.so` carries no
+  `Java_com_zodl_slipstream_*` exports — nothing Slipstream is published, and `WalletCoordinator`
+  drives the classic `Synchronizer`.
 
 ### Changed
 - Updated the `zcash_voting` dependency to `2.0.0-rc.3` (bringing
@@ -115,6 +128,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `JNI_HOTKEY_STORED_SECRET_BYTES_SIZE` and `JNI_ORCHARD_RAW_ADDRESS_BYTES_SIZE`). The underlying
   `zcash_voting` entry points are either gone or no longer public; the `### Changed` entries above
   say what replaces each one.
+- **Breaking for `zcash-android-sdk-incubator` consumers:** `WalletCoordinator`'s
+  `isSlipstreamEnabled` constructor parameter is gone. Which sync engine backs the coordinator is
+  now decided when the SDK is built, by `IS_SLIPSTREAM_ENABLED`, rather than by the calling
+  application at runtime. Applications that passed `isSlipstreamEnabled = true` should drop the
+  argument and consume an SDK build that has the flag on (the default); applications that passed
+  `false`, or relied on the parameter's `false` default, need an SDK build with the flag off.
 
 ### Fixed
 - The native library no longer links two copies of the Zcash crate graph (#2056). `zcash_voting`
