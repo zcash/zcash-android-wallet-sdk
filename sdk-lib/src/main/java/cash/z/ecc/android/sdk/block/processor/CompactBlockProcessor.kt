@@ -1207,7 +1207,9 @@ class CompactBlockProcessor internal constructor(
          *   (2) with that description.
          * - An upgraded lightwalletd whose backing node is pre-NU6.3:
          *   `status.Errorf(codes.InvalidArgument, "GetSubtreeRoots: bad shielded protocol specifier error: ...")`,
-         *   which surfaces as INVALID_ARGUMENT (3).
+         *   which surfaces as INVALID_ARGUMENT (3) and is matched on the `"bad shielded protocol specifier"`
+         *   substring, not the more generic `"shielded protocol"`, so an INVALID_ARGUMENT failure for an
+         *   unrelated reason isn't mistaken for an unrecognized pool.
          * - UNIMPLEMENTED (12) is matched defensively for other indexers (e.g. Zaino) that haven't implemented
          *   the pool at all.
          *
@@ -1221,7 +1223,7 @@ class CompactBlockProcessor internal constructor(
                 }
 
                 GRPC_CODE_INVALID_ARGUMENT -> {
-                    description?.contains("shielded protocol", ignoreCase = true) == true
+                    description?.contains("bad shielded protocol specifier", ignoreCase = true) == true
                 }
 
                 GRPC_CODE_UNIMPLEMENTED -> {
