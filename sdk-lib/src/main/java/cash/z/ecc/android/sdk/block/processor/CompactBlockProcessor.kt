@@ -27,7 +27,6 @@ import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.Mismatche
 import cash.z.ecc.android.sdk.exception.CompactBlockProcessorException.MismatchedNetwork
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.LightWalletException
-import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.ext.ZcashSdk.MAX_BACKOFF_INTERVAL
 import cash.z.ecc.android.sdk.ext.ZcashSdk.POLL_INTERVAL
 import cash.z.ecc.android.sdk.ext.ZcashSdk.POLL_INTERVAL_SHORT
@@ -47,6 +46,7 @@ import cash.z.ecc.android.sdk.internal.metrics.TraceScope
 import cash.z.ecc.android.sdk.internal.metrics.withTraceScope
 import cash.z.ecc.android.sdk.internal.model.BlockBatch
 import cash.z.ecc.android.sdk.internal.model.DbTransactionOverview
+import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.OutputStatusFilter
 import cash.z.ecc.android.sdk.internal.model.RecoveryProgress
@@ -2751,15 +2751,17 @@ class CompactBlockProcessor internal constructor(
         } ?: lowerBoundHeight
 
     /**
-     * This function resubmits the unmined sent transactions that are still within the expiry window. It can produce
-     * [TransactionEncoderException.TransactionNotFoundException] in case the transaction in not found in the database,
-     * but networking issues are not reported, it is retried in the next sync cycle instead.
+     * This function resubmits the unmined sent transactions that are still within the expiry window. A transaction
+     * whose raw bytes cannot be read from the wallet store is skipped and retried in the next sync cycle instead of
+     * aborting this pass; networking issues are likewise not reported and are retried in the next sync cycle.
+     *
+     * Candidate discovery stays view-driven: a wallet-created transaction that hasn't yet been projected into the
+     * derived history view is not synthesized as a resubmission candidate here. Its submit plan is merely kept
+     * around (see [findTransactionsEligibleForResubmission]) until the transaction becomes view-visible or the app
+     * retries via [cash.z.ecc.android.sdk.Broadcaster].
      *
      * @param blockHeight The block height to which transactions should be compared (usually the current chain tip)
-     *
-     * @throws TransactionEncoderException.TransactionNotFoundException in case the encoded transaction is not found
      */
-    @Throws(TransactionEncoderException.TransactionNotFoundException::class)
     private suspend fun resubmitUnminedTransactions(blockHeight: BlockHeight?) {
         // Run the check only in case we have already obtained the current chain tip
         if (blockHeight == null) {
@@ -2770,61 +2772,70 @@ class CompactBlockProcessor internal constructor(
         Twig.debug { "Trx resubmission: ${list.size}, ${list.joinToString(separator = ", ") { it.txIdString() }}" }
 
         if (list.isNotEmpty()) {
-            list.forEach { transaction ->
-                val submitPlan = pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
-                if (submitPlan == PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan) {
-                    Twig.debug {
-                        "Trx resubmission: Skipping ${transaction.txIdString()} until a submit plan is registered"
-                    }
-                    return@forEach
-                }
-
-                val trxForResubmission =
-                    repository.findEncodedTransactionByTxId(transaction.rawId)
-                        ?: throw TransactionEncoderException.TransactionNotFoundException(transaction.rawId)
-
-                Twig.debug { "Trx resubmission: Found: ${trxForResubmission.txIdString()}" }
-
-                retryUpToAndContinue(TRANSACTION_RESUBMIT_RETRIES) {
-                    val response =
-                        when (submitPlan) {
-                            null -> {
-                                txManager.submit(trxForResubmission)
-                            }
-
-                            is PendingSubmitPlanStore.StoredSubmitPlan.Ready -> {
-                                submitPlanExecutor.submit(
-                                    trxForResubmission.toCreatedTransaction(),
-                                    submitPlan.submitPlan
-                                )
-                            }
-
-                            PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan -> {
-                                TransactionSubmitResult.NotAttempted(transaction.rawId)
-                            }
-                        }
-
-                    when (response) {
-                        is TransactionSubmitResult.Success -> {
-                            Twig.info { "Trx resubmission success: ${response.txIdString()}" }
-                        }
-
-                        is TransactionSubmitResult.Failure -> {
-                            Twig.error { "Trx resubmission failure: ${response.description}" }
-                            throw LightWalletException.TransactionSubmitException(
-                                response.code,
-                                response.description,
-                            )
-                        }
-
-                        is TransactionSubmitResult.NotAttempted -> {
-                            Twig.warn { "Trx resubmission not attempted: ${response.txIdString()}" }
-                        }
-                    }
-                }
-            }
+            list.forEach { transaction -> resubmitTransaction(transaction) }
         } else {
             Twig.debug { "Trx resubmission: No trx for resubmission found" }
+        }
+    }
+
+    private suspend fun resubmitTransaction(transaction: DbTransactionOverview) {
+        val submitPlan = pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
+        if (submitPlan == PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan) {
+            Twig.debug {
+                "Trx resubmission: Skipping ${transaction.txIdString()} until a submit plan is registered"
+            }
+            return
+        }
+
+        val trxForResubmission =
+            runCatching { repository.findEncodedTransactionByTxId(transaction.rawId) }
+                .getOrNull()
+                ?: run {
+                    Twig.warn {
+                        "Trx resubmission: Unable to read ${transaction.txIdString()} from the wallet " +
+                            "store; it will be retried next sync cycle"
+                    }
+                    return
+                }
+
+        Twig.debug { "Trx resubmission: Found: ${trxForResubmission.txIdString()}" }
+
+        retryUpToAndContinue(TRANSACTION_RESUBMIT_RETRIES) {
+            val response =
+                when (submitPlan) {
+                    null -> {
+                        txManager.submit(trxForResubmission)
+                    }
+
+                    is PendingSubmitPlanStore.StoredSubmitPlan.Ready -> {
+                        submitPlanExecutor.submit(
+                            trxForResubmission.toCreatedTransaction(),
+                            submitPlan.submitPlan
+                        )
+                    }
+
+                    PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan -> {
+                        TransactionSubmitResult.NotAttempted(transaction.rawId)
+                    }
+                }
+
+            when (response) {
+                is TransactionSubmitResult.Success -> {
+                    Twig.info { "Trx resubmission success: ${response.txIdString()}" }
+                }
+
+                is TransactionSubmitResult.Failure -> {
+                    Twig.error { "Trx resubmission failure: ${response.description}" }
+                    throw LightWalletException.TransactionSubmitException(
+                        response.code,
+                        response.description,
+                    )
+                }
+
+                is TransactionSubmitResult.NotAttempted -> {
+                    Twig.warn { "Trx resubmission not attempted: ${response.txIdString()}" }
+                }
+            }
         }
     }
 
@@ -2835,8 +2846,41 @@ class CompactBlockProcessor internal constructor(
             loadTransactions = {
                 repository.findUnminedTransactionsWithinExpiry(blockHeight)
             },
-            transactionId = { it.rawId }
+            transactionId = { it.rawId },
+            retainMissing = { txId -> shouldRetainViewInvisiblePlan(txId, blockHeight) }
         )
+
+    /**
+     * Decides whether a submit plan should survive pruning for a transaction id that the derived history view
+     * did not return as a resubmission candidate. This does not synthesize the transaction as a candidate for
+     * resubmission here; it only protects the plan from being discarded before the transaction becomes
+     * view-visible, mirroring the case of a wallet-created transaction that hasn't been projected into the view
+     * yet (see [resubmitUnminedTransactions]).
+     */
+    private suspend fun shouldRetainViewInvisiblePlan(
+        txId: FirstClassByteArray,
+        blockHeight: BlockHeight
+    ): Boolean {
+        val txIdString = txId.byteArray.toHexReversed()
+        return runCatching { repository.findEncodedTransactionByTxId(txId) }
+            .onFailure {
+                Twig.warn { "Trx resubmission pruning: Wallet store read failed for $txIdString, keeping plan" }
+            }.fold(
+                onSuccess = { encodedTransaction -> encodedTransaction.shouldRetainPlan(txIdString, blockHeight) },
+                onFailure = { true }
+            )
+    }
+
+    private fun EncodedTransaction?.shouldRetainPlan(
+        txIdString: String,
+        blockHeight: BlockHeight
+    ): Boolean {
+        if (this == null) {
+            Twig.debug { "Trx resubmission pruning: $txIdString not found in wallet store, pruning plan" }
+        }
+        val expiryHeight = this?.expiryHeight
+        return this != null && (expiryHeight == null || expiryHeight.value == 0L || expiryHeight > blockHeight)
+    }
 
     suspend fun getUtxoCacheBalance(address: String): Zatoshi = backend.getDownloadedUtxoBalance(address)
 

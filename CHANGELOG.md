@@ -27,11 +27,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives the classic `Synchronizer`.
 
 ### Changed
-- Updated the `zcash_voting` dependency to `2.0.0-rc.3` (bringing
-  `vote-commitment-tree 0.4.0-rc.1` and `vote-commitment-tree-client 0.6.0-rc.1`),
-  aligning the voting crates with the `zcash_client_backend 0.24.0-rc.7` release
-  candidates. The bump is release and compatibility work only; the voting API is
-  unchanged from 2.0.0-rc.1.
+- Updated the `zcash_voting` dependency to `2.0.0-rc.5` 
 - **Shielded voting works again, on a source-incompatible API.** 2.8.0-rc.1 shipped with the
   voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
   built into the native library again and that deprecation is removed, so `VotingRustBackend` and
@@ -147,6 +143,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commitment, a nullifier — compiles cleanly while feeding one `orchard` generation's output into
   another's circuit. That hazard is why voting was switched off in 2.8.0-rc.1 rather than simply
   rebuilt, and removing it is what allows it back on.
+- Resubmission no longer permanently drops a pending submit plan for a wallet-created transaction
+  missing from the derived history view: the wallet store is consulted before pruning - the plan
+  is kept while the transaction exists and is unexpired (or expiry-disabled), and kept when the
+  store read is inconclusive (MOB-1717).
+- A transaction whose raw bytes cannot be read during resubmission is skipped and retried next
+  sync cycle instead of aborting the sync pass with `TransactionNotFoundException` (MOB-1717).
+- Slipstream's post-create transaction readback reads the `transactions` base table instead of
+  `v_transactions`, so sending/shielding no longer fails when the history view has not projected
+  the newly created transaction (MOB-1717).
 
 ## [3.0.2] - 2026-08-13
 
