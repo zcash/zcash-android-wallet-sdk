@@ -216,6 +216,7 @@ internal class VotingDbSessionImpl(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>
     ): VotingDelegationPirPrecomputeResult =
         db
@@ -226,6 +227,7 @@ internal class VotingDbSessionImpl(
                 pirDepth,
                 pirTier0Layers,
                 pirTier1Layers,
+                pirPolyLen,
                 notes.map { it.toInternal() }
             ).toPublic()
 
@@ -236,6 +238,7 @@ internal class VotingDbSessionImpl(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -252,6 +255,7 @@ internal class VotingDbSessionImpl(
                 pirDepth,
                 pirTier0Layers,
                 pirTier1Layers,
+                pirPolyLen,
                 notes.map { it.toInternal() },
                 fvkBytes,
                 hotkeySecret,

@@ -177,6 +177,7 @@ internal interface TypesafeVotingDb {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult
 
@@ -187,6 +188,7 @@ internal interface TypesafeVotingDb {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,

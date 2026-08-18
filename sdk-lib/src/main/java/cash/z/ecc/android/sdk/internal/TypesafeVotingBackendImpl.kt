@@ -356,6 +356,7 @@ internal interface VotingDbBackend {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult
 
@@ -366,6 +367,7 @@ internal interface VotingDbBackend {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -629,6 +631,7 @@ private class RustVotingDbBackend(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
@@ -638,6 +641,7 @@ private class RustVotingDbBackend(
             pirDepth,
             pirTier0Layers,
             pirTier1Layers,
+            pirPolyLen,
             notes
         )
 
@@ -648,6 +652,7 @@ private class RustVotingDbBackend(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -663,6 +668,7 @@ private class RustVotingDbBackend(
             pirDepth,
             pirTier0Layers,
             pirTier1Layers,
+            pirPolyLen,
             notes,
             fvkBytes,
             hotkeySecret,
@@ -980,6 +986,7 @@ internal class TypesafeVotingDbImpl(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult =
         votingDb
@@ -990,6 +997,7 @@ internal class TypesafeVotingDbImpl(
                 pirDepth,
                 pirTier0Layers,
                 pirTier1Layers,
+                pirPolyLen,
                 notes.toJniNoteInfos()
             ).toDelegationPirPrecomputeResult()
 
@@ -1000,6 +1008,7 @@ internal class TypesafeVotingDbImpl(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -1016,6 +1025,7 @@ internal class TypesafeVotingDbImpl(
                 pirDepth,
                 pirTier0Layers,
                 pirTier1Layers,
+                pirPolyLen,
                 notes.toJniNoteInfos(),
                 fvkBytes,
                 hotkeySecret,

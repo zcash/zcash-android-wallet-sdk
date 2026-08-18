@@ -136,7 +136,13 @@ xz2 = { version = "0.1", features = ["static"] }
 # legacy `sighash`-only shape with "invalid message field: tx1 effects must be 821 bytes,
 # got 0". Earlier rc.4 only had this fix via an unpublished git pin (see the removed
 # `[patch.crates-io]` entry below); rc.5 ships it on crates.io directly.
-zcash_voting = { version = "2.0.0-rc.5" }
+#
+# 3.0.0-rc.3 (adopted for MOB-1678, see #2406) tracks Valargroup's v1.3.0 vote-chain
+# generation: the PIR dataset moves to poly_len 4096 and round attestations become
+# auth-v2-signed. It stays pinned exactly (not a `^`/default caret range) to match the
+# same rev iOS (swift-sdk PR #1972) and Vizor build against; it still resolves against
+# this crate's Ironwood family, so no `[patch.crates-io]` entry is needed here either.
+zcash_voting = { version = "=3.0.0-rc.3" }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and

@@ -293,11 +293,13 @@ fn pir_layout_from_jni(
     pir_depth: jint,
     tier0_layers: jint,
     tier1_layers: jint,
+    poly_len: jint,
 ) -> anyhow::Result<voting::config::PirLayout> {
     Ok(voting::config::PirLayout {
         pir_depth: jint_to_u32(pir_depth, "pir_depth")?,
         tier0_layers: jint_to_u32(tier0_layers, "tier0_layers")?,
         tier1_layers: jint_to_u32(tier1_layers, "tier1_layers")?,
+        poly_len: jint_to_u32(poly_len, "poly_len")?,
     })
 }
 
@@ -342,6 +344,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     pir_depth: jint,
     pir_tier0_layers: jint,
     pir_tier1_layers: jint,
+    pir_poly_len: jint,
     notes: JObjectArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -353,7 +356,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let round_id = java_string_to_rust(env, &round_id)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
-        let pir_layout = pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers)?;
+        let pir_layout =
+            pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
         let pir_client = connect_pir_client(&pir_url, pir_layout)?;
         let result = db
             .precompute_delegation_pir(
@@ -383,6 +387,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     pir_depth: jint,
     pir_tier0_layers: jint,
     pir_tier1_layers: jint,
+    pir_poly_len: jint,
     notes: JObjectArray<'local>,
     fvk_bytes: JByteArray<'local>,
     hotkey_secret: JByteArray<'local>,
@@ -427,7 +432,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         .map_err(|e| anyhow!("DelegationKeys::with_voting_hotkey: {}", e))?;
 
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
-        let pir_layout = pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers)?;
+        let pir_layout =
+            pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
         let pir_client = connect_pir_client(&pir_url, pir_layout)?;
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = DelegationProgressReporterBridge(reporter.as_ref());

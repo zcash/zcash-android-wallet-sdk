@@ -77,7 +77,8 @@ internal fun JniSharePayload.toPublic(): VotingSharePayload =
         treePosition = treePosition,
         allEncShares = allEncShares.map { it.toPublic() },
         shareComms = shareComms,
-        primaryBlind = primaryBlind
+        primaryBlind = primaryBlind,
+        voteRoundId = voteRoundId
     )
 
 internal fun JniVoteRecord.toPublic(): VotingVoteRecord =

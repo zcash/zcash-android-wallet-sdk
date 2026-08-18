@@ -49,7 +49,8 @@ class VotingModelsTest {
                 allEncShares =
                     listOf(VotingEncryptedShare(c1 = byteArrayOf(4), c2 = byteArrayOf(5), shareIndex = 0)),
                 shareComms = listOf(byteArrayOf(7)),
-                primaryBlind = byteArrayOf(101)
+                primaryBlind = byteArrayOf(101),
+                voteRoundId = "aa".repeat(32)
             ).toString()
 
         assertEquals("VotingSharePayload(redacted)", text)

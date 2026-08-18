@@ -250,7 +250,9 @@ data class VotingSharePayload(
     val treePosition: Long,
     val allEncShares: List<VotingEncryptedShare>,
     val shareComms: List<ByteArray>,
-    val primaryBlind: ByteArray
+    val primaryBlind: ByteArray,
+    /** Voting round ID as 32 bytes encoded in lowercase hex, as populated by the crate. */
+    val voteRoundId: String
 ) {
     override fun toString(): String = "VotingSharePayload(redacted)"
 
@@ -263,13 +265,15 @@ data class VotingSharePayload(
             encShare == other.encShare &&
             treePosition == other.treePosition &&
             allEncShares == other.allEncShares &&
-            primaryBlind.contentEquals(other.primaryBlind)
+            primaryBlind.contentEquals(other.primaryBlind) &&
+            voteRoundId == other.voteRoundId
     }
 
     override fun hashCode(): Int {
         var result = sharesHash.contentHashCode()
         result = 31 * result + proposalId
         result = 31 * result + voteDecision
+        result = 31 * result + voteRoundId.hashCode()
         return result
     }
 }

@@ -492,6 +492,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult =
             withHandle { handle ->
@@ -503,6 +504,7 @@ class VotingRustBackend private constructor() {
                     pirDepth,
                     pirTier0Layers,
                     pirTier1Layers,
+                    pirPolyLen,
                     notes.toTypedArray()
                 ) ?: error("precomputeDelegationPir returned null")
             }
@@ -515,6 +517,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -532,6 +535,7 @@ class VotingRustBackend private constructor() {
                     pirDepth,
                     pirTier0Layers,
                     pirTier1Layers,
+                    pirPolyLen,
                     notes.toTypedArray(),
                     fvkBytes,
                     hotkeySecret,
@@ -926,14 +930,23 @@ class VotingRustBackend private constructor() {
             storeDelegationProofFixtureNative(handle, roundId, bundleIndex, proof)
         }
 
+        /**
+         * Persists a synthetic vote with recovery state for instrumentation tests.
+         *
+         * [recordVcPosition] controls whether the fixture also records a vote-commitment-tree
+         * position, which zcash_voting 3.0 treats as an on-chain confirmation:
+         * `clearRecoveryState` preserves confirmed votes and only wipes votes without a
+         * recorded position, so pass `false` to build a retryable vote the clear drops.
+         */
         @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
         internal suspend fun storeVoteFixtureForTesting(
             roundId: String,
             bundleIndex: Int,
             proposalId: Int,
-            choice: Int
+            choice: Int,
+            recordVcPosition: Boolean = true
         ) = withHandle { handle ->
-            storeVoteFixtureNative(handle, roundId, bundleIndex, proposalId, choice)
+            storeVoteFixtureNative(handle, roundId, bundleIndex, proposalId, choice, recordVcPosition)
         }
 
         private suspend fun <T> withHandle(block: (Long) -> T): T {
@@ -1211,6 +1224,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: Array<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult?
 
@@ -1224,6 +1238,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: Array<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -1475,7 +1490,8 @@ class VotingRustBackend private constructor() {
             roundId: String,
             bundleIndex: Int,
             proposalId: Int,
-            choice: Int
+            choice: Int,
+            recordVcPosition: Boolean
         )
     }
 }
