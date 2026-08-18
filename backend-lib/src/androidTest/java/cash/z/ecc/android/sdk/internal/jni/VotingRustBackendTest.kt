@@ -12,6 +12,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
+import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -25,10 +26,14 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 @OptIn(ExperimentalStdlibApi::class)
-// Re-enabled on the chp worktree: cfg(zcash_voting) is now threaded through
-// backend-lib/build.gradle.kts's cargo exec block and the zcash_voting dependency is
-// uncommented in Cargo.toml (pinned to valargroup/zcash_voting@7d39d02b, v1.0.0).
 @Suppress("LargeClass", "MagicNumber", "DEPRECATION_ERROR")
+@Ignore(
+    "zcash_voting is disabled on maint/v3.0.x (the Cargo dependency is commented out, see " +
+        "backend-lib/Cargo.toml) so the native library exports none of the symbols these tests " +
+        "bind to and every one of them would fail with UnsatisfiedLinkError. The Kotlin/Rust " +
+        "voting API surface here is otherwise unchanged and kept compiling so it's ready to " +
+        "run again the moment voting is re-enabled."
+)
 class VotingRustBackendTest {
     companion object {
         private const val FIELD_BYTES = 32
