@@ -486,6 +486,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
     bundle_index: jint,
     proposal_id: jint,
     choice: jint,
+    record_vc_position: jboolean,
 ) {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
@@ -538,6 +539,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         };
         let recovery_json = voting::vote::serialize_recovery(&recovery)
             .map_err(|e| anyhow!("serialize vote recovery fixture: {e}"))?;
+        // `vc_tree_position` marks the vote as a recorded on-chain confirmation. As of
+        // zcash_voting 3.0, `clear_recovery_state` preserves confirmed votes and only
+        // wipes rows whose position is NULL, so tests need fixtures on both sides of
+        // that boundary: pass `record_vc_position = false` to build a retryable
+        // (unconfirmed) vote that the clear is expected to drop.
         conn.execute(
             "UPDATE votes
              SET commitment_bundle_json = :recovery_json,
@@ -548,7 +554,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
                AND proposal_id = :proposal_id",
             rusqlite::named_params! {
                 ":recovery_json": recovery_json,
-                ":vc_tree_position": 456_i64,
+                ":vc_tree_position": (record_vc_position == JNI_TRUE).then_some(456_i64),
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
                 ":bundle_index": i64::from(bundle_index),

@@ -57,6 +57,8 @@ class VotingRustBackendTest {
         private const val SECOND_ROUND_ID = "round-2"
         private const val PCZT_ROUND_ID =
             "0101010101010101010101010101010101010101010101010101010101010101"
+        private const val CONFIRMED_PROPOSAL_ID = 2
+        private const val CONFIRMED_VOTE_TX_HASH = "confirmed-vote-tx"
         private const val ROUND_NAME = "Test Round"
         private const val TEST_PIR_DEPTH = 1
         private const val TEST_PIR_TIER0_LAYERS = 1
@@ -1273,14 +1275,34 @@ class VotingRustBackendTest {
                     roundId = PCZT_ROUND_ID,
                     bundleIndex = 1,
                     proposalId = 1,
+                    choice = 0,
+                    recordVcPosition = false
+                )
+                db.storeVoteFixtureForTesting(
+                    roundId = PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = CONFIRMED_PROPOSAL_ID,
                     choice = 0
                 )
 
                 db.assertStoredTxHashesRoundTrip()
-                assertNotNull(db.getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+                db.storeVoteTxHash(
+                    PCZT_ROUND_ID,
+                    bundleIndex = 1,
+                    proposalId = CONFIRMED_PROPOSAL_ID,
+                    txHash = CONFIRMED_VOTE_TX_HASH
+                )
+                assertNull(db.getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
+                assertNotNull(
+                    db.getCommitmentBundle(
+                        PCZT_ROUND_ID,
+                        bundleIndex = 1,
+                        proposalId = CONFIRMED_PROPOSAL_ID
+                    )
+                )
                 db.assertShareDelegationRecoveryStateRoundTrips()
                 db.clearRecoveryState(PCZT_ROUND_ID)
-                db.assertRecoveryStateCleared()
+                db.assertClearDroppedRetryableStateAndKeptConfirmedVote()
             } finally {
                 db.close()
             }
@@ -1540,11 +1562,23 @@ class VotingRustBackendTest {
         assertEquals(1, getUnconfirmedDelegations(PCZT_ROUND_ID).size)
     }
 
-    private suspend fun VotingRustBackend.VotingDb.assertRecoveryStateCleared() {
+    /**
+     * As of zcash_voting 3.0, `clear_recovery_state` wipes retryable state (votes without a
+     * recorded vote-commitment-tree position, share delegations, delegation tx hashes) while
+     * preserving votes whose position is recorded — those count as on-chain confirmations.
+     */
+    private suspend fun VotingRustBackend.VotingDb.assertClearDroppedRetryableStateAndKeptConfirmedVote() {
         assertNull(getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
         assertNull(getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
         assertNull(getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
         assertEquals(emptyList(), getShareDelegations(PCZT_ROUND_ID).asList())
+        assertEquals(
+            CONFIRMED_VOTE_TX_HASH,
+            getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = CONFIRMED_PROPOSAL_ID)
+        )
+        assertNotNull(
+            getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = CONFIRMED_PROPOSAL_ID)
+        )
     }
 
     private suspend fun newWalletDbWithAccount(): WalletDbFixture {
