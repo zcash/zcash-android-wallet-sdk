@@ -115,6 +115,9 @@ xz2 = { version = "0.1", features = ["static"] }
 # `zcash_voting` provides client-side primitives for shielded voting. The Android JNI
 # boundary is `src/main/rust/voting.rs`.
 #
+# Kept enabled here after the maint/v3.0.x cascade merge (see PR #2183, which disabled
+# voting only on that maintenance line, not on main).
+#
 # 2.0.0-rc.3 resolves from crates.io, with no `[patch.crates-io]` entry. Earlier releases
 # (0.11, 1.0) pinned the pre-Ironwood librustzcash family, which cargo resolved alongside
 # this crate's Ironwood family and duplicated eight Zcash crates in the native library
