@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-08-20
+
 ### Added
 - `TransactionOverview.spentNoteCount`, the number of the account's own notes the
   transaction spent.

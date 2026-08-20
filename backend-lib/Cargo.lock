@@ -6740,7 +6740,7 @@ dependencies = [
 
 [[package]]
 name = "zcash-android-wallet-sdk"
-version = "2.7.0-rc.4"
+version = "2.7.0"
 dependencies = [
  "anyhow",
  "bitflags",
