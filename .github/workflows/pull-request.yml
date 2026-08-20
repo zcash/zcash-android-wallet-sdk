@@ -324,8 +324,9 @@ jobs:
 
   # Licence gate for the native library: every crate in backend-lib's dependency graph must
   # carry a licence from the permissive-only allow-list in backend-lib/deny.toml, and every git
-  # source must be one that file names. The action ships its own pinned cargo-deny binary and
-  # only resolves the lockfile, so it needs neither the Rust toolchain setup nor the Gradle caches.
+  # source must be one that file names. cargo-deny only resolves the lockfile (`cargo metadata`),
+  # so the job installs a pinned, checksummed release binary and lets rustup pick the toolchain
+  # from rust-toolchain.toml; it needs neither the Gradle caches nor an Android build.
   check_native_licenses:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
@@ -339,12 +340,25 @@ jobs:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
           persist-credentials: false
+      - name: Install cargo-deny
+        timeout-minutes: 3
+        env:
+          CARGO_DENY_VERSION: "0.20.2"
+          CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+        run: |
+          set -euo pipefail
+          archive="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL --retry 3 -o "${archive}.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${archive}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  ${archive}.tar.gz" | sha256sum --check --strict
+          tar -xzf "${archive}.tar.gz" "${archive}/cargo-deny"
+          install -m 0755 "${archive}/cargo-deny" "${HOME}/.cargo/bin/cargo-deny"
+          rm -rf "${archive}" "${archive}.tar.gz"
+          cargo deny --version
       - name: cargo deny
-        timeout-minutes: 10
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          manifest-path: backend-lib/Cargo.toml
-          command: check licenses sources
+        timeout-minutes: 15
+        run: |
+          make deny-rust
 
   test_android_modules_unit:
     needs: [validate_gradle_wrapper]
