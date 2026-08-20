@@ -77,6 +77,9 @@ internal class SaplingParamTool(
 
         private val checkFilesMutex = Mutex()
 
+        // Guards fetchParams() so concurrent callers can't race on the shared temporary file path
+        private val fetchParamsMutex = Mutex()
+
         /**
          * Initialization of needed properties. This is necessary entry point for other operations from {@code
          * SaplingParamTool}. This type of implementation also simplifies its testing.
@@ -255,71 +258,73 @@ internal class SaplingParamTool(
         TransactionEncoderException.FetchParamsException::class
     )
     internal suspend fun fetchParams(paramsToFetch: SaplingParameters) {
-        val url = URL("$CLOUD_PARAM_DIR_URL${paramsToFetch.fileName}")
-        Twig.debug { "Sapling params fetch URL: $url" }
-        val temporaryFile =
-            File(
-                paramsToFetch.destinationDirectory,
-                "$TEMPORARY_FILE_NAME_PREFIX${paramsToFetch.fileName}"
-            )
+        fetchParamsMutex.withLock {
+            val url = URL("$CLOUD_PARAM_DIR_URL${paramsToFetch.fileName}")
+            Twig.debug { "Sapling params fetch URL: $url" }
+            val temporaryFile =
+                File(
+                    paramsToFetch.destinationDirectory,
+                    "$TEMPORARY_FILE_NAME_PREFIX${paramsToFetch.fileName}"
+                )
 
-        withContext(Dispatchers.IO) {
-            runCatching {
-                Channels.newChannel(url.openStream()).use { readableByteChannel ->
-                    temporaryFile.outputStream().use { fileOutputStream ->
-                        fileOutputStream.channel.use { fileChannel ->
-                            // Transfers bytes from stream to file from position 0 to end position or to max
-                            // file size limit. This eliminates the risk of downloading potentially large files
-                            // from a malicious server. We need to make a check of the file hash then.
-                            fileChannel.transferFrom(readableByteChannel, 0, paramsToFetch.fileMaxSizeBytes)
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    Channels.newChannel(url.openStream()).use { readableByteChannel ->
+                        temporaryFile.outputStream().use { fileOutputStream ->
+                            fileOutputStream.channel.use { fileChannel ->
+                                // Transfers bytes from stream to file from position 0 to end position or to max
+                                // file size limit. This eliminates the risk of downloading potentially large files
+                                // from a malicious server. We need to make a check of the file hash then.
+                                fileChannel.transferFrom(readableByteChannel, 0, paramsToFetch.fileMaxSizeBytes)
+                            }
                         }
                     }
-                }
-            }.onFailure { exception ->
-                // IllegalArgumentException - If the preconditions on the parameters do not hold
-                // NonReadableChannelException - If the source channel was not opened for reading
-                // NonWritableChannelException - If this channel was not opened for writing
-                // ClosedChannelException - If either this channel or the source channel is closed
-                // AsynchronousCloseException - If another thread closes either channel while the transfer is
-                // in progress
-                // ClosedByInterruptException - If another thread interrupts the current thread while the
-                // transfer is in progress, thereby closing both channels and setting the current thread's
-                // interrupt status
-                // IOException - If some other I/O error occurs
-                finalizeAndReportError(
-                    temporaryFile,
-                    exception =
-                        TransactionEncoderException.FetchParamsException(
-                            paramsToFetch,
-                            "Error while fetching ${paramsToFetch.fileName}, caused by $exception."
+                }.onFailure { exception ->
+                    // IllegalArgumentException - If the preconditions on the parameters do not hold
+                    // NonReadableChannelException - If the source channel was not opened for reading
+                    // NonWritableChannelException - If this channel was not opened for writing
+                    // ClosedChannelException - If either this channel or the source channel is closed
+                    // AsynchronousCloseException - If another thread closes either channel while the transfer is
+                    // in progress
+                    // ClosedByInterruptException - If another thread interrupts the current thread while the
+                    // transfer is in progress, thereby closing both channels and setting the current thread's
+                    // interrupt status
+                    // IOException - If some other I/O error occurs
+                    finalizeAndReportError(
+                        temporaryFile,
+                        exception =
+                            TransactionEncoderException.FetchParamsException(
+                                paramsToFetch,
+                                "Error while fetching ${paramsToFetch.fileName}, caused by $exception."
+                            )
+                    )
+                }.onSuccess {
+                    Twig.debug {
+                        "Fetch and write of the temporary ${temporaryFile.name} succeeded. Validating and moving " +
+                            "it to the final destination."
+                    }
+                    if (!isFileHashValid(temporaryFile, paramsToFetch.fileHash)) {
+                        finalizeAndReportError(
+                            temporaryFile,
+                            exception =
+                                TransactionEncoderException.ValidateParamsException(
+                                    paramsToFetch,
+                                    "Failed while validating fetched param file: ${paramsToFetch.fileName}."
+                                )
                         )
-                )
-            }.onSuccess {
-                Twig.debug {
-                    "Fetch and write of the temporary ${temporaryFile.name} succeeded. Validating and moving it to " +
-                        "the final destination."
-                }
-                if (!isFileHashValid(temporaryFile, paramsToFetch.fileHash)) {
-                    finalizeAndReportError(
-                        temporaryFile,
-                        exception =
-                            TransactionEncoderException.ValidateParamsException(
-                                paramsToFetch,
-                                "Failed while validating fetched param file: ${paramsToFetch.fileName}."
-                            )
-                    )
-                }
-                val resultFile = File(paramsToFetch.destinationDirectory, paramsToFetch.fileName)
-                if (!renameParametersFile(temporaryFile, resultFile)) {
-                    finalizeAndReportError(
-                        temporaryFile,
-                        resultFile,
-                        exception =
-                            TransactionEncoderException.ValidateParamsException(
-                                paramsToFetch,
-                                "Failed while renaming result param file: ${paramsToFetch.fileName}."
-                            )
-                    )
+                    }
+                    val resultFile = File(paramsToFetch.destinationDirectory, paramsToFetch.fileName)
+                    if (!renameParametersFile(temporaryFile, resultFile)) {
+                        finalizeAndReportError(
+                            temporaryFile,
+                            resultFile,
+                            exception =
+                                TransactionEncoderException.ValidateParamsException(
+                                    paramsToFetch,
+                                    "Failed while renaming result param file: ${paramsToFetch.fileName}."
+                                )
+                        )
+                    }
                 }
             }
         }
