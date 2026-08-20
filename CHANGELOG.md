@@ -6,6 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Updated the librustzcash crates to their final releases: `zcash_client_backend 0.24.0`,
+  `zcash_client_sqlite 0.22.0`, `zcash_pool_migration 0.1.0`, `zcash_primitives 0.30.1` and
+  `zip321 0.9.0`, and the Slipstream sync engine to `zodl-slipstream 0.2.0`. A wallet database
+  is now migrated by the finalized `zcash_client_sqlite` schema rather than a release
+  candidate's.
+
 ### Fixed
 - Resubmission no longer permanently drops a pending submit plan for a wallet-created transaction
   missing from the derived history view: the wallet store is consulted before pruning - the plan
