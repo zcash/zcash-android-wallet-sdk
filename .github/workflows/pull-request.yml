@@ -322,6 +322,30 @@ jobs:
         run: |
           ./scripts/update-proposal-proto.sh --check
 
+  # Licence gate for the native library: every crate in backend-lib's dependency graph must
+  # carry a licence from the permissive-only allow-list in backend-lib/deny.toml, and every git
+  # source must be one that file names. The action ships its own pinned cargo-deny binary and
+  # only resolves the lockfile, so it needs neither the Rust toolchain setup nor the Gradle caches.
+  check_native_licenses:
+    needs: validate_gradle_wrapper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        timeout-minutes: 1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          # No job here pushes or otherwise re-uses the checkout credential, so keep it
+          # out of .git/config where it would be picked up by artifact uploads.
+          persist-credentials: false
+      - name: cargo deny
+        timeout-minutes: 10
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: backend-lib/Cargo.toml
+          command: check licenses sources
+
   test_android_modules_unit:
     needs: [validate_gradle_wrapper]
     runs-on: ubuntu-latest
