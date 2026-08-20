@@ -16,9 +16,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_com
     blind: JByteArray<'local>,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        // zcash_voting 1.0.0 (merged-library patch) moved this from
-        // `share_tracking::compute_share_nullifier` to `share::compute_nullifier`; same
-        // (vote_commitment, share_index, primary_blind) -> Result<[u8; 32], VotingError> shape.
         let nullifier = voting::share::compute_nullifier(
             &java_fixed_bytes::<VOTE_COMMITMENT_BYTES>(env, &vote_commitment, "voteCommitment")?,
             jint_to_u32(share_index, "share_index")?,

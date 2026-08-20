@@ -11,6 +11,7 @@ import cash.z.ecc.android.sdk.internal.jni.VotingProofProgressCallback
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommittedVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
@@ -331,6 +332,7 @@ class TypesafeVotingBackendImplTest {
                     pirDepth = TEST_PIR_DEPTH,
                     pirTier0Layers = TEST_PIR_TIER0_LAYERS,
                     pirTier1Layers = TEST_PIR_TIER1_LAYERS,
+                    pirPolyLen = TEST_PIR_POLY_LEN,
                     notes = notes
                 )
             assertEquals(11L, precompute.cachedCount)
@@ -348,6 +350,7 @@ class TypesafeVotingBackendImplTest {
                     pirDepth = TEST_PIR_DEPTH,
                     pirTier0Layers = TEST_PIR_TIER0_LAYERS,
                     pirTier1Layers = TEST_PIR_TIER1_LAYERS,
+                    pirPolyLen = TEST_PIR_POLY_LEN,
                     notes = notes,
                     fvkBytes = fvkBytes,
                     hotkeySecret = hotkeySecret,
@@ -434,6 +437,7 @@ class TypesafeVotingBackendImplTest {
                 )
             val commitment =
                 jniVoteCommitResult(
+                    bundleIndex = 3,
                     voteCommitment = field(35),
                     proposalId = 2,
                     voteRoundId = "round-vote"
@@ -494,6 +498,76 @@ class TypesafeVotingBackendImplTest {
             assertEquals(false, backend.buildVoteSingleShare)
             assertNotNull(backend.buildVoteProgress).onProgress(0.5)
             assertEquals(0.5, progressValue)
+        }
+
+    @Test
+    fun delegationPhases_returns_backend_result_as_list() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            backend.delegationPhasesResult =
+                arrayOf(
+                    JniDelegationPhase(bundleIndex = 0, phase = "proved"),
+                    JniDelegationPhase(bundleIndex = 1, phase = "prepared")
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val result = db.delegationPhases("round-1")
+
+            assertEquals(2, result.size)
+            assertEquals("proved", result[0].phase)
+            assertEquals(1, result[1].bundleIndex)
+        }
+
+    @Test
+    fun resetVotingSessionState_forwards_round_id() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            db.resetVotingSessionState("round-1")
+
+            assertEquals(listOf("round-1"), backend.resetVotingSessionStateCalls)
+        }
+
+    @Test
+    fun storeKeystoneSignature_forwards_all_arguments() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+            val keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE) { 1 }
+            val keystoneSighash = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) { 2 }
+            val rk = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) { 3 }
+
+            db.storeKeystoneSignature(
+                roundId = "round-1",
+                bundleIndex = 4,
+                keystoneSig = keystoneSig,
+                keystoneSighash = keystoneSighash,
+                rk = rk
+            )
+
+            assertEquals(1, backend.storeKeystoneSignatureCalls.size)
+            val call = backend.storeKeystoneSignatureCalls.single()
+            assertEquals("round-1", call.roundId)
+            assertEquals(4, call.bundleIndex)
+            assertContentEquals(keystoneSig, call.keystoneSig)
+            assertContentEquals(keystoneSighash, call.keystoneSighash)
+            assertContentEquals(rk, call.rk)
         }
 
     @Test
@@ -663,6 +737,60 @@ class TypesafeVotingBackendImplTest {
         }
 
     @Test
+    fun recordShareDelegation_accepts_empty_nullifier() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            // The native side derives the authoritative nullifier itself; an empty caller-supplied
+            // nullifier is the documented normal case for callers that do not have it yet.
+            db.recordShareDelegation(
+                roundId = "round-recovery",
+                bundleIndex = 1,
+                proposalId = 2,
+                shareIndex = 3,
+                sentToUrls = listOf("https://helper.example"),
+                nullifier = ByteArray(0),
+                submitAt = 123
+            )
+
+            assertEquals("round-recovery", backend.recordShareRoundId)
+            assertContentEquals(ByteArray(0), backend.recordShareNullifier)
+        }
+
+    @Test
+    fun recordShareDelegation_rejects_non_empty_wrong_size_nullifier() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult()
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.recordShareDelegation(
+                        roundId = "round-recovery",
+                        bundleIndex = 1,
+                        proposalId = 2,
+                        shareIndex = 3,
+                        sentToUrls = listOf("https://helper.example"),
+                        nullifier = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE - 1),
+                        submitAt = 123
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("nullifier"))
+        }
+
+    @Test
     fun vote_commitment_wrapper_rejects_invalid_commitment_result() =
         runTest {
             val backend =
@@ -688,6 +816,66 @@ class TypesafeVotingBackendImplTest {
                 }
 
             assertTrue(error.message.orEmpty().contains("encShares"))
+        }
+
+    @Test
+    fun commit_vote_rejects_a_result_for_a_different_bundle() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    commitmentResult = jniVoteCommitResult(bundleIndex = 1)
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.buildVoteCommitment(
+                        roundId = "round-vote",
+                        bundleIndex = 2,
+                        hotkeySecret = byteArrayOf(1, 2, 3),
+                        proposalId = 2,
+                        choice = 1,
+                        numOptions = 3,
+                        witness = jniVanWitness()
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("bundleIndex"))
+        }
+
+    @Test
+    fun commit_vote_rejects_a_result_with_share_payload_count_that_does_not_match_single_share_mode() =
+        runTest {
+            val backend =
+                RecordingVotingDbBackend(
+                    proofResult = jniDelegationProofResult(),
+                    submissionResult = jniDelegationSubmissionResult(),
+                    keystoneSubmissionResult = jniDelegationSubmissionResult(),
+                    // Default fixture has JNI_VOTE_SHARE_COUNT payloads, which requireValid()
+                    // alone accepts even in singleShare mode -- only the mode-aware check added
+                    // here catches the mismatch.
+                    commitmentResult = jniVoteCommitResult(bundleIndex = 1)
+                )
+            val db = TypesafeVotingDbImpl(backend)
+
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    db.buildVoteCommitment(
+                        roundId = "round-vote",
+                        bundleIndex = 1,
+                        hotkeySecret = byteArrayOf(1, 2, 3),
+                        proposalId = 2,
+                        choice = 1,
+                        numOptions = 3,
+                        witness = jniVanWitness(),
+                        singleShare = true
+                    )
+                }
+
+            assertTrue(error.message.orEmpty().contains("sharePayloads"))
         }
 
     private fun jniDelegationProofResult(
@@ -841,7 +1029,8 @@ class TypesafeVotingBackendImplTest {
         treePosition: Long = 0,
         allEncShares: List<JniWireEncryptedShare> = wireShares(),
         shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 16),
-        primaryBlind: ByteArray = field(19)
+        primaryBlind: ByteArray = field(19),
+        voteRoundId: String = "aa".repeat(32)
     ) = JniSharePayload(
         sharesHash = sharesHash,
         proposalId = proposalId,
@@ -850,7 +1039,8 @@ class TypesafeVotingBackendImplTest {
         treePosition = treePosition,
         allEncShares = allEncShares,
         shareComms = shareComms,
-        primaryBlind = primaryBlind
+        primaryBlind = primaryBlind,
+        voteRoundId = voteRoundId
     )
 
     private fun jniShareDelegationRecord(
@@ -1076,7 +1266,8 @@ class TypesafeVotingBackendImplTest {
                                     )
                                 },
                             shareComms = List(JNI_VOTE_SHARE_COUNT) { ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE) },
-                            primaryBlind = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE)
+                            primaryBlind = ByteArray(JNI_PROTOCOL_FIELD_BYTES_SIZE),
+                            voteRoundId = "aa".repeat(32)
                         )
                     }
             ),
@@ -1213,6 +1404,18 @@ class TypesafeVotingBackendImplTest {
         var addSentProposalId: Int? = null
         var addSentShareIndex: Int? = null
         var addSentNewUrls: List<String>? = null
+        var delegationPhasesResult: Array<JniDelegationPhase> = emptyArray()
+        var resetVotingSessionStateCalls = mutableListOf<String>()
+
+        data class StoreKeystoneSignatureCall(
+            val roundId: String,
+            val bundleIndex: Int,
+            val keystoneSig: ByteArray,
+            val keystoneSighash: ByteArray,
+            val rk: ByteArray
+        )
+
+        var storeKeystoneSignatureCalls = mutableListOf<StoreKeystoneSignatureCall>()
 
         override suspend fun close() = unused()
 
@@ -1312,6 +1515,7 @@ class TypesafeVotingBackendImplTest {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult {
             precomputeRoundId = roundId
@@ -1328,6 +1532,7 @@ class TypesafeVotingBackendImplTest {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -1601,6 +1806,25 @@ class TypesafeVotingBackendImplTest {
             addSentNewUrls = newUrls
         }
 
+        override suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase> =
+            delegationPhasesResult
+
+        override suspend fun resetVotingSessionState(roundId: String) {
+            resetVotingSessionStateCalls.add(roundId)
+        }
+
+        override suspend fun storeKeystoneSignature(
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray,
+            rk: ByteArray
+        ) {
+            storeKeystoneSignatureCalls.add(
+                StoreKeystoneSignatureCall(roundId, bundleIndex, keystoneSig, keystoneSighash, rk)
+            )
+        }
+
         private fun unused(): Nothing = error("unused")
     }
 
@@ -1609,6 +1833,7 @@ class TypesafeVotingBackendImplTest {
         private const val TEST_PIR_DEPTH = 1
         private const val TEST_PIR_TIER0_LAYERS = 1
         private const val TEST_PIR_TIER1_LAYERS = 1
+        private const val TEST_PIR_POLY_LEN = 2048
         private const val GOVERNANCE_PCZT_BYTES_FIXTURE = 41
         private const val GOVERNANCE_PCZT_RK_FIXTURE = 43
         private const val GOVERNANCE_PCZT_SIGHASH_FIXTURE = 44

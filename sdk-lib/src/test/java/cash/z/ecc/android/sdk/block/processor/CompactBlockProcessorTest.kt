@@ -28,6 +28,7 @@ import kotlinx.coroutines.runBlocking
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import kotlin.reflect.full.callSuspend
 import kotlin.reflect.full.declaredMemberFunctions
@@ -35,6 +36,7 @@ import kotlin.reflect.jvm.isAccessible
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CompactBlockProcessorTest {
@@ -184,6 +186,252 @@ class CompactBlockProcessorTest {
         }
     }
 
+    @Test
+    fun resubmission_pruning_keeps_view_invisible_unexpired_wallet_store_transaction() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+
+            pendingSubmitPlanStore.storeSubmitPlan(
+                CreatedTransaction(
+                    txId = transaction.rawId,
+                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                    expiryHeight = transaction.expiryHeight
+                ),
+                TransactionSubmitPlan(listOf(endpoint))
+            )
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(emptyList())
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId)).thenReturn(
+                encodedTransaction(transaction.rawId, expiryHeight = BlockHeight(1000))
+            )
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
+                pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
+            )
+            verifyNoInteractions(txManager)
+        }
+    }
+
+    @Test
+    fun resubmission_pruning_removes_view_invisible_expired_wallet_store_transaction() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+
+            pendingSubmitPlanStore.storeSubmitPlan(
+                CreatedTransaction(
+                    txId = transaction.rawId,
+                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                    expiryHeight = transaction.expiryHeight
+                ),
+                TransactionSubmitPlan(listOf(endpoint))
+            )
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(emptyList())
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId)).thenReturn(
+                encodedTransaction(transaction.rawId, expiryHeight = BlockHeight(50))
+            )
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertNull(pendingSubmitPlanStore.getSubmitPlan(transaction.rawId))
+        }
+    }
+
+    @Test
+    fun resubmission_pruning_keeps_plan_when_wallet_store_read_fails() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+
+            pendingSubmitPlanStore.storeSubmitPlan(
+                CreatedTransaction(
+                    txId = transaction.rawId,
+                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                    expiryHeight = transaction.expiryHeight
+                ),
+                TransactionSubmitPlan(listOf(endpoint))
+            )
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(emptyList())
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId)).thenThrow(
+                RuntimeException("wallet store unavailable")
+            )
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
+                pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
+            )
+        }
+    }
+
+    @Test
+    fun resubmission_pruning_removes_plan_for_transaction_absent_from_wallet_store() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+
+            pendingSubmitPlanStore.storeSubmitPlan(
+                CreatedTransaction(
+                    txId = transaction.rawId,
+                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                    expiryHeight = transaction.expiryHeight
+                ),
+                TransactionSubmitPlan(listOf(endpoint))
+            )
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(emptyList())
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId)).thenReturn(null)
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertNull(pendingSubmitPlanStore.getSubmitPlan(transaction.rawId))
+        }
+    }
+
+    @Test
+    fun resubmission_pruning_keeps_plan_when_expiry_is_disabled() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+
+            pendingSubmitPlanStore.storeSubmitPlan(
+                CreatedTransaction(
+                    txId = transaction.rawId,
+                    raw = FirstClassByteArray(byteArrayOf(0x01)),
+                    expiryHeight = transaction.expiryHeight
+                ),
+                TransactionSubmitPlan(listOf(endpoint))
+            )
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(emptyList())
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId)).thenReturn(
+                encodedTransaction(transaction.rawId, expiryHeight = null)
+            )
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint))),
+                pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
+            )
+        }
+    }
+
+    @Test
+    fun resubmission_skips_transaction_whose_bytes_cannot_be_read() {
+        runBlocking {
+            val unreadableTransaction = transactionOverview(1)
+            val resubmittableTransaction = transactionOverview(2)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val resubmittableEncodedTransaction = encodedTransaction(resubmittableTransaction.rawId)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(
+                listOf(unreadableTransaction, resubmittableTransaction)
+            )
+            `when`(repository.findEncodedTransactionByTxId(unreadableTransaction.rawId)).thenReturn(null)
+            `when`(repository.findEncodedTransactionByTxId(resubmittableTransaction.rawId)).thenReturn(
+                resubmittableEncodedTransaction
+            )
+            `when`(txManager.submit(resubmittableEncodedTransaction)).thenReturn(
+                TransactionSubmitResult.Success(resubmittableTransaction.rawId)
+            )
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            verify(txManager).submit(resubmittableEncodedTransaction)
+        }
+    }
+
+    @Test
+    fun resubmission_skips_transaction_when_wallet_store_read_throws() {
+        runBlocking {
+            val unreadableTransaction = transactionOverview(1)
+            val resubmittableTransaction = transactionOverview(2)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val resubmittableEncodedTransaction = encodedTransaction(resubmittableTransaction.rawId)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val processor =
+                processor(
+                    repository = repository,
+                    txManager = txManager,
+                    pendingSubmitPlanStore = pendingSubmitPlanStore
+                )
+
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(
+                listOf(unreadableTransaction, resubmittableTransaction)
+            )
+            `when`(repository.findEncodedTransactionByTxId(unreadableTransaction.rawId)).thenThrow(
+                RuntimeException("wallet store unavailable")
+            )
+            `when`(repository.findEncodedTransactionByTxId(resubmittableTransaction.rawId)).thenReturn(
+                resubmittableEncodedTransaction
+            )
+            `when`(txManager.submit(resubmittableEncodedTransaction)).thenReturn(
+                TransactionSubmitResult.Success(resubmittableTransaction.rawId)
+            )
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            verify(txManager).submit(resubmittableEncodedTransaction)
+        }
+    }
+
     private suspend fun CompactBlockProcessor.resubmitUnminedTransactionsForTest(blockHeight: BlockHeight) {
         val function =
             CompactBlockProcessor::class
@@ -259,11 +507,13 @@ class CompactBlockProcessorTest {
                 zip318Kind = Zip318Kind.NOT_CLASSIFIED
             )
 
-        private fun encodedTransaction(txId: FirstClassByteArray) =
-            EncodedTransaction(
-                txId = txId,
-                raw = FirstClassByteArray(byteArrayOf(0x01, 0x02)),
-                expiryHeight = BlockHeight(1000)
-            )
+        private fun encodedTransaction(
+            txId: FirstClassByteArray,
+            expiryHeight: BlockHeight? = BlockHeight(1000)
+        ) = EncodedTransaction(
+            txId = txId,
+            raw = FirstClassByteArray(byteArrayOf(0x01, 0x02)),
+            expiryHeight = expiryHeight
+        )
     }
 }

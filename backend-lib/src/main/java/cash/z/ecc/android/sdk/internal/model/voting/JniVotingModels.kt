@@ -14,6 +14,8 @@ data class JniNoteInfo(
     val scope: Int,
     val ufvk: String
 ) {
+    override fun toString(): String = "JniNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is JniNoteInfo) return false
@@ -375,7 +377,9 @@ data class JniSharePayload(
     val treePosition: Long,
     val allEncShares: List<JniWireEncryptedShare>,
     val shareComms: List<ByteArray>,
-    val primaryBlind: ByteArray
+    val primaryBlind: ByteArray,
+    /** Voting round ID as 32 bytes encoded in lowercase hex, as populated by the crate. */
+    val voteRoundId: String
 ) {
     internal constructor(
         sharesHash: ByteArray,
@@ -385,7 +389,8 @@ data class JniSharePayload(
         treePosition: Long,
         allEncShares: Array<JniWireEncryptedShare>,
         shareComms: Array<ByteArray>,
-        primaryBlind: ByteArray
+        primaryBlind: ByteArray,
+        voteRoundId: String
     ) : this(
         sharesHash = sharesHash,
         proposalId = proposalId,
@@ -394,8 +399,11 @@ data class JniSharePayload(
         treePosition = treePosition,
         allEncShares = allEncShares.toList(),
         shareComms = shareComms.toList(),
-        primaryBlind = primaryBlind
+        primaryBlind = primaryBlind,
+        voteRoundId = voteRoundId
     )
+
+    override fun toString(): String = "JniSharePayload(redacted)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -407,7 +415,8 @@ data class JniSharePayload(
             treePosition == other.treePosition &&
             allEncShares == other.allEncShares &&
             shareComms.contentDeepEquals(other.shareComms) &&
-            primaryBlind.contentEquals(other.primaryBlind)
+            primaryBlind.contentEquals(other.primaryBlind) &&
+            voteRoundId == other.voteRoundId
     }
 
     override fun hashCode(): Int {
@@ -419,6 +428,7 @@ data class JniSharePayload(
         result = 31 * result + allEncShares.hashCode()
         result = 31 * result + shareComms.contentDeepHashCode()
         result = 31 * result + primaryBlind.contentHashCode()
+        result = 31 * result + voteRoundId.hashCode()
         return result
     }
 }
@@ -456,6 +466,8 @@ data class JniShareDelegationRecord(
         submitAt = submitAt,
         createdAt = createdAt
     )
+
+    override fun toString(): String = "JniShareDelegationRecord(redacted)"
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -663,6 +675,12 @@ data class JniDelegationProofResult(
     }
 }
 
+/**
+ * @property sighash The PCZT sighash. Verification-only (local `spend_auth_sig`/Keystone
+ * signature verification against [rk]) — do **not** submit this to the vote-chain server.
+ * @property tx1Effects The versioned effects blob the vote-chain server requires on submission;
+ * the sole field that goes over the wire for the delegation transaction.
+ */
 @Keep
 data class JniDelegationSubmissionResult(
     val proof: ByteArray,

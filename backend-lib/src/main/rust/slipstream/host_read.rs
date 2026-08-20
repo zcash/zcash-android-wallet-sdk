@@ -650,12 +650,18 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_getTransactionRaw<'l
         let txid_bytes = env.convert_byte_array(&txid)?;
         let conn = read_query::open_read_only(&db_path)?;
 
-        // `v_transactions` is the public, versioned query surface (like every other read in this
-        // module) — never the wallet-internal `transactions` base table. The view has one row per
-        // involved account; `raw`/`expiry_height` are identical across them, so take the first.
+        // Sanctioned exception to this module's usual view-only reads: every other export here
+        // goes through `v_transactions`/`v_tx_outputs`, but created-transaction readback must not
+        // depend on the derived history view, because `v_transactions` is rooted in
+        // received-output relations and may not yet contain a wallet-created transaction that
+        // hasn't been mined or matched an output (MOB-1703 on iOS, MOB-1717 here). Reading
+        // `transactions` directly is safe because we only ever ask for a single txid we ourselves
+        // just created. `COALESCE` keeps the Kotlin `expiryHeight == 0L -> null` mapping intact
+        // for a NULL `expiry_height`, and `raw IS NOT NULL` preserves the "null row = not stored"
+        // contract.
         let found: Option<(Vec<u8>, i64)> = conn
             .query_row(
-                "SELECT raw, expiry_height FROM v_transactions WHERE txid = ? LIMIT 1",
+                "SELECT raw, COALESCE(expiry_height, 0) FROM transactions WHERE txid = ? AND raw IS NOT NULL LIMIT 1",
                 rusqlite::params![txid_bytes],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )

@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
@@ -176,6 +177,7 @@ internal interface TypesafeVotingDb {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult
 
@@ -186,6 +188,7 @@ internal interface TypesafeVotingDb {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -243,6 +246,12 @@ internal interface TypesafeVotingDb {
         anchorHeight: Long
     ): JniVanWitness
 
+    /**
+     * Builds, signs and stores the vote commitment for a proposal in one call.
+     *
+     * The helper-share payloads arrive on [JniVoteCommitResult.sharePayloads]. [hotkeySecret] is
+     * the persisted secret from [TypesafeVotingDb.generateHotkey].
+     */
     suspend fun buildVoteCommitment(
         roundId: String,
         bundleIndex: Int,
@@ -259,6 +268,13 @@ internal interface TypesafeVotingDb {
 
     suspend fun getDelegationTxHash(roundId: String, bundleIndex: Int): VotingTxHashLookup
 
+    /**
+     * Records [txHash] as the cast-vote transaction for this vote and marks it submitted.
+     *
+     * A vote is "submitted" by having a recorded transaction hash; there is no separate flag.
+     * Recording the same hash twice is idempotent, but recording a *different* hash for a vote
+     * that already has one fails, so the wallet keeps polling the transaction it first submitted.
+     */
     suspend fun storeVoteTxHash(
         roundId: String,
         bundleIndex: Int,
@@ -266,6 +282,14 @@ internal interface TypesafeVotingDb {
         txHash: String
     )
 
+    /**
+     * Vestigial: [storeVoteTxHash] already records the tx hash and marks the vote submitted in
+     * one atomic, idempotency-checked call, so this is a no-op re-assertion of the
+     * already-recorded hash on every reachable caller. Kept only because a live external caller
+     * still calls this after [storeVoteTxHash] on both the fresh- and cached-bundle submission
+     * paths; new code should rely on [storeVoteTxHash] alone. Throws if no tx hash has been
+     * recorded yet for this vote — call [storeVoteTxHash] first.
+     */
     suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int)
 
     suspend fun getVoteTxHash(
@@ -274,6 +298,12 @@ internal interface TypesafeVotingDb {
         proposalId: Int
     ): VotingTxHashLookup
 
+    /**
+     * Reconstructs the stored vote commitment, with fresh helper-share payloads.
+     *
+     * Reports null until the vote reaches the confirmed phase — its tree position recorded via
+     * [recordVcPosition] — and for a vote that was never stored.
+     */
     suspend fun getCommitmentBundle(
         roundId: String,
         bundleIndex: Int,
@@ -303,6 +333,13 @@ internal interface TypesafeVotingDb {
 
     suspend fun clearRecoveryState(roundId: String)
 
+    /**
+     * Records that share [shareIndex] was sent to [sentToUrls].
+     *
+     * The native side derives and persists the authoritative nullifier from the vote's own
+     * recovery state; [nullifier] is only shape-validated when non-empty and is never itself
+     * stored. An empty [nullifier] is the normal case for callers that do not have it yet.
+     */
     suspend fun recordShareDelegation(
         roundId: String,
         bundleIndex: Int,
@@ -334,8 +371,52 @@ internal interface TypesafeVotingDb {
         shareIndex: Int,
         newUrls: List<String>
     )
+
+    /**
+     * The canonical, per-bundle delegation phase for every bundle with recorded progress in
+     * [roundId] — see [cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase]'s doc.
+     */
+    suspend fun delegationPhases(roundId: String): List<JniDelegationPhase>
+
+    /**
+     * Clears unsigned delegation setup fields (PCZT/rk/sighash) for every bundle in [roundId]
+     * that has neither a submitted delegation tx nor a persisted [storeKeystoneSignature] entry
+     * — see the crate's `clear_unsigned_delegation_setup_fields` for the exact predicate — so a
+     * subsequent construct call starts clean. Does not delete round-level state.
+     *
+     * Known gap: this does **not** clear the `proofs` table row for those bundles, only the
+     * `bundles` table's setup columns — the underlying crate has no public API for that (see
+     * MOB-1678 investigation notes). A bundle reset+rebuilt this way keeps its old (now
+     * stale-alpha) proof row until a fresh proof overwrites it via
+     * `buildAndProveDelegation`/`storeDelegationProofFixture`; callers must not treat proof-row
+     * presence alone as proof-freshness for a bundle that has gone through a reset.
+     */
+    suspend fun resetVotingSessionState(roundId: String)
+
+    /**
+     * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+     * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+     * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+     * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not arbitrary
+     * caller-supplied values — this call does not itself re-verify the signature.
+     */
+    suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    )
 }
 
+/**
+ * The typesafe view of a spendable note the voting backend may draw voting weight from.
+ *
+ * [toString] is redacted: [rseed] and [rho] reconstruct the note's spending randomness,
+ * [nullifier] links the note to its spend, and [ufvk] is a full viewing key that discloses
+ * the entire account's transaction history. The generated `data class` rendering would print
+ * all four into any log line that interpolates a note.
+ */
 internal data class VotingNoteInfo(
     val commitment: ByteArray,
     val nullifier: ByteArray,
@@ -347,6 +428,8 @@ internal data class VotingNoteInfo(
     val scope: VotingNoteScope,
     val ufvk: String
 ) {
+    override fun toString(): String = "VotingNoteInfo(redacted)"
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is VotingNoteInfo) return false

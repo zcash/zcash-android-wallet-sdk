@@ -59,24 +59,34 @@ private const val PROOF_PROGRESS_REENTRY_ERROR =
 private const val SCHEDULED_SHARE_SUBMIT_AT_ENTROPY_BYTES = 32
 
 /**
- * Bindings to the native shielded-voting backend.
+ * Raw JNI bindings to the native shielded-voting backend.
  *
- * Every method here binds to a JNI symbol that the native library does not export on this
- * branch: the Rust voting module is gated behind `cfg(zcash_voting)` and the `zcash_voting`
- * dependency is commented out of `backend-lib/Cargo.toml`. Calling any of them throws
- * [UnsatisfiedLinkError].
+ * The only permitted caller is `sdk-lib`'s `TypesafeVotingBackendImpl` — every other consumer,
+ * including the app, must go through the public `cash.z.ecc.android.sdk.VotingSdk` API instead.
+ * That boundary is enforced two ways: this `@Deprecated(ERROR)` (which forces any legitimate
+ * caller to carry an explicit, grep-able `@Suppress("DEPRECATION_ERROR")`), and — once the app
+ * finishes migrating off direct `VotingRustBackend` usage — dropping this module's JNI artifact
+ * from the app's compile classpath entirely, per the CHP feature-module extraction design
+ * (`docs/superpowers/specs/2026-08-10-chp-feature-module-extraction-design.md`).
  *
- * This is a compile error rather than a deprecation warning so that the failure lands
- * at build time instead of at runtime in a wallet. Kotlin `internal` cannot express
- * this: `sdk-lib` is a separate Gradle module and would lose access along with
- * consumers.
+ * Kotlin `internal` cannot express this restriction on its own: `sdk-lib` is a separate Gradle
+ * module from `backend-lib` and would lose access along with every other consumer, which is why
+ * this class stays a public class carrying an error-level deprecation instead.
+ *
+ * Whether the native library actually exports these JNI symbols in a given build depends on
+ * `backend-lib/build.gradle.kts`'s `RUSTFLAGS` (the `--cfg zcash_voting` gate) and
+ * `backend-lib/Cargo.toml`'s `zcash_voting`/`unstable-voting-circuits` entries — independent of
+ * this annotation. If they disagree with a caller's expectation, calls here throw
+ * [UnsatisfiedLinkError] rather than failing gracefully; `VotingSdk` callers should use its
+ * `isAvailable()` probe rather than assuming this class is safe to call just because the
+ * `@Suppress` compiles.
  */
 @Keep
 @Suppress("TooManyFunctions", "LongParameterList")
 @Deprecated(
     message =
-        "Shielded voting is unavailable in this release: the native library exports none of " +
-            "these symbols, so every call throws UnsatisfiedLinkError. Do not call this class.",
+        "Direct access to VotingRustBackend is restricted to sdk-lib's TypesafeVotingBackendImpl " +
+            "— use cash.z.ecc.android.sdk.VotingSdk instead. See this class's doc comment.",
     level = DeprecationLevel.ERROR
 )
 class VotingRustBackend private constructor() {
@@ -303,6 +313,13 @@ class VotingRustBackend private constructor() {
             }
         }
 
+        /**
+         * Creates a round in this voting db, which is already bound to the network passed to
+         * [openVotingDb].
+         *
+         * [roundId] must be 64 lowercase hex characters encoding a canonical Pallas field
+         * element; the native side rejects anything else.
+         */
         @Throws(RuntimeException::class)
         suspend fun initRound(
             roundId: String,
@@ -475,6 +492,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult =
             withHandle { handle ->
@@ -486,6 +504,7 @@ class VotingRustBackend private constructor() {
                     pirDepth,
                     pirTier0Layers,
                     pirTier1Layers,
+                    pirPolyLen,
                     notes.toTypedArray()
                 ) ?: error("precomputeDelegationPir returned null")
             }
@@ -498,6 +517,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: List<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -515,6 +535,7 @@ class VotingRustBackend private constructor() {
                     pirDepth,
                     pirTier0Layers,
                     pirTier1Layers,
+                    pirPolyLen,
                     notes.toTypedArray(),
                     fvkBytes,
                     hotkeySecret,
@@ -572,6 +593,35 @@ class VotingRustBackend private constructor() {
                     keystoneSighash
                 ) ?: error("getDelegationSubmissionWithKeystoneSig returned null")
             }
+
+        /**
+         * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+         * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+         * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+         * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not
+         * arbitrary caller-supplied values — this call does not itself re-verify the signature.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun storeKeystoneSignature(
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray,
+            rk: ByteArray
+        ) = withHandle { handle ->
+            check(
+                storeKeystoneSignatureNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    keystoneSig,
+                    keystoneSighash,
+                    rk
+                )
+            ) {
+                "storeKeystoneSignature failed for roundId=$roundId bundleIndex=$bundleIndex"
+            }
+        }
 
         @Throws(RuntimeException::class)
         suspend fun storeTreeState(
@@ -880,14 +930,23 @@ class VotingRustBackend private constructor() {
             storeDelegationProofFixtureNative(handle, roundId, bundleIndex, proof)
         }
 
+        /**
+         * Persists a synthetic vote with recovery state for instrumentation tests.
+         *
+         * [recordVcPosition] controls whether the fixture also records a vote-commitment-tree
+         * position, which zcash_voting 3.0 treats as an on-chain confirmation:
+         * `clearRecoveryState` preserves confirmed votes and only wipes votes without a
+         * recorded position, so pass `false` to build a retryable vote the clear drops.
+         */
         @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
         internal suspend fun storeVoteFixtureForTesting(
             roundId: String,
             bundleIndex: Int,
             proposalId: Int,
-            choice: Int
+            choice: Int,
+            recordVcPosition: Boolean = true
         ) = withHandle { handle ->
-            storeVoteFixtureNative(handle, roundId, bundleIndex, proposalId, choice)
+            storeVoteFixtureNative(handle, roundId, bundleIndex, proposalId, choice, recordVcPosition)
         }
 
         private suspend fun <T> withHandle(block: (Long) -> T): T {
@@ -1165,6 +1224,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: Array<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult?
 
@@ -1178,6 +1238,7 @@ class VotingRustBackend private constructor() {
             pirDepth: Int,
             pirTier0Layers: Int,
             pirTier1Layers: Int,
+            pirPolyLen: Int,
             notes: Array<JniNoteInfo>,
             fvkBytes: ByteArray,
             hotkeySecret: ByteArray,
@@ -1209,6 +1270,17 @@ class VotingRustBackend private constructor() {
             keystoneSig: ByteArray,
             keystoneSighash: ByteArray
         ): JniDelegationSubmissionResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun storeKeystoneSignatureNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            keystoneSig: ByteArray,
+            keystoneSighash: ByteArray,
+            rk: ByteArray
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -1418,7 +1490,8 @@ class VotingRustBackend private constructor() {
             roundId: String,
             bundleIndex: Int,
             proposalId: Int,
-            choice: Int
+            choice: Int,
+            recordVcPosition: Boolean
         )
     }
 }

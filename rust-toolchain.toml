@@ -1,6 +1,6 @@
 [toolchain]
-# Must be in sync with .github/actions/setup/action.yml rust-version
-# default.
+# The single source of truth for the toolchain: CI's setup action reads this
+# channel rather than pinning a version of its own.
 channel = "1.92.0"
 targets = [
     "armv7-linux-androideabi",

@@ -61,9 +61,9 @@ const JNI_VOTE_COMMITMENT_RESULT_CTOR_SIG: &str = "([B[B[BII[B[Lcash/z/ecc/andro
 const JNI_COMMITMENT_BUNDLE_RECORD_CTOR_SIG: &str =
     "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitmentResult;J)V";
 // Must match JniSharePayload(ByteArray, Int, Int, JniWireEncryptedShare,
-// Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray) in
+// Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray, String) in
 // JniVotingModels.kt. Guarded by JniVotingModelsTest.
-const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[[B[B)V";
+const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[[B[BLjava/lang/String;)V";
 // Must match JniShareDelegationRecord(String, Int, Int, Int, Array<String>,
 // ByteArray, Boolean, Long, Long) in JniVotingModels.kt. Guarded by
 // JniVotingModelsTest.
@@ -315,6 +315,19 @@ pub(super) fn java_secret_bytes_at_least(
     minimum: usize,
 ) -> anyhow::Result<SecretVec<u8>> {
     require_min_len(java_bytes(env, array, field)?, field, minimum).map(SecretVec::new)
+}
+
+/// Like [`java_secret_bytes_at_least`], but for call sites where the caller-supplied bytes
+/// feed the exact same ZIP-32 `UnifiedSpendingKey::from_seed` derivation
+/// `VotingHotkey::from_stored_secret` uses internally, so a length that from_stored_secret
+/// would reject should be rejected here too rather than accepted and only failing later.
+pub(super) fn java_secret_bytes_exact(
+    env: &mut JNIEnv<'_>,
+    array: &JByteArray<'_>,
+    field: &str,
+    expected: usize,
+) -> anyhow::Result<SecretVec<u8>> {
+    require_len(java_bytes(env, array, field)?, field, expected).map(SecretVec::new)
 }
 
 pub(super) fn java_bytes32(
@@ -1338,6 +1351,7 @@ fn make_jni_share_payload<'local>(
         )?;
         let all_enc_shares = JObject::from(all_enc_shares);
         let share_comms = JObject::from(share_comms);
+        let vote_round_id: JObject<'_> = env.new_string(&payload.vote_round_id)?.into();
 
         Ok(env.new_object(
             &class,
@@ -1351,6 +1365,7 @@ fn make_jni_share_payload<'local>(
                 JValue::Object(&all_enc_shares),
                 JValue::Object(&share_comms),
                 JValue::Object(&primary_blind),
+                JValue::Object(&vote_round_id),
             ],
         )?)
     })

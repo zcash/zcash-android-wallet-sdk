@@ -5,13 +5,15 @@ use super::*;
 /// Validate that a cached lightwalletd TreeState is anchored to the voting
 /// round it will be used for.
 ///
-/// Witness generation trusts the cached Orchard frontier as the historical
-/// checkpoint input. The generated Merkle path can verify against that
-/// frontier's own root, so also enforce that the frontier is exactly the round
+/// Witness generation trusts the cached Ironwood frontier as the historical
+/// checkpoint input (voting notes are Ironwood/V3 notes, not Orchard/V2 — see
+/// `validate_tree_state_bytes_for_round`, this function's only caller, for where the
+/// Ironwood root is actually extracted). The generated Merkle path can verify against
+/// that frontier's own root, so also enforce that the frontier is exactly the round
 /// snapshot: same block height and same note commitment tree root.
 fn validate_cached_tree_state_for_round(
     tree_state: &zcash_client_backend::proto::service::TreeState,
-    orchard_root: &[u8],
+    nc_root: &[u8],
     params: &voting::types::VotingRoundParams,
 ) -> anyhow::Result<()> {
     if tree_state.height != params.snapshot_height {
@@ -22,9 +24,9 @@ fn validate_cached_tree_state_for_round(
         ));
     }
 
-    if orchard_root != params.nc_root.as_slice() {
+    if nc_root != params.nc_root.as_slice() {
         return Err(anyhow!(
-            "cached TreeState orchard root does not match round nc_root"
+            "cached TreeState note commitment root does not match round nc_root"
         ));
     }
 
@@ -304,12 +306,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let network = db.network;
-        let stored_secret = java_bytes(env, &stored_secret, "storedSecret")?;
-        let hotkey = if stored_secret.is_empty() {
+        // Wrap in SecretVec like every other hotkey-secret call site in this module
+        // (buildGovernancePcztNative, buildAndProveDelegationNative, buildVoteCommitmentNative,
+        // deriveHotkeyRawAddressNative): this was the one JNI entry point that read the
+        // caller-supplied secret as a bare Vec<u8>, which neither zeroizes on drop nor guards
+        // against an incidental `{:?}` from printing the material.
+        let stored_secret = SecretVec::new(java_bytes(env, &stored_secret, "storedSecret")?);
+        let hotkey = if stored_secret.expose_secret().is_empty() {
             voting::hotkey::generate_random_voting_hotkey(network)
                 .map_err(|e| anyhow!("generate_random_voting_hotkey: {}", e))?
         } else {
-            voting::types::VotingHotkey::from_stored_secret(&stored_secret, network)
+            voting::types::VotingHotkey::from_stored_secret(stored_secret.expose_secret(), network)
                 .map_err(|e| anyhow!("VotingHotkey::from_stored_secret: {}", e))?
         };
         make_jni_voting_hotkey(env, hotkey)
