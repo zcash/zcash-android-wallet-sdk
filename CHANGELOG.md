@@ -9,6 +9,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.0] - 2026-08-20
 
 ### Added
+- Ironwood (NU6.3) shielded pool support: the SDK exposes the Ironwood pool (balance,
+  subtree roots, sync) alongside Sapling and Orchard, creates Ironwood proofs when
+  proving a PCZT, and redacts the Ironwood bundle from the PCZT handed to an external
+  signer — each action's spend witness and the SDK's internal per-output metadata — as
+  it already did for Orchard and Sapling. Hardware wallets can sign the resulting v6
+  transactions: the wallet-controlled zero-value Orchard spends that pad them carry the
+  ZIP 32 derivation metadata a signer needs to identify them.
+- `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that moves
+  the account's entire Orchard balance across the NU6.3 turnstile into the Ironwood
+  pool. **This migration is not private:** it produces a single transaction whose value
+  is the account's entire Orchard balance, so any chain observer can read that balance
+  off the chain. The SDK deliberately does not split the crossing into less-identifying
+  denominations; wallets should surface this in the confirmation UI rather than
+  presenting the migration as a routine self-send.
 - `TransactionOverview.spentNoteCount`, the number of the account's own notes the
   transaction spent.
 - `TransactionOverview.poolCrossingValue`, the value that crossed shielded pools when
@@ -26,223 +40,122 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PREPARATION` and `TRANSFER` are the wallet's own migration. Transactions already
   in the wallet's history are not classified retroactively on upgrade: they read
   `NOT_CLASSIFIED` until rescanned.
-- The four properties above are new `TransactionOverview` constructor parameters, so
-  positional construction will not compile until all of them are supplied; named
-  construction needs no edit.
+- `Synchronizer.broadcaster`, a `Broadcaster` that separates transaction creation from
+  submission: its `createProposedTransactions` and `createTransactionFromPczt` store
+  the transactions they create and return them as `CreatedTransaction`s without
+  sending them, and `submit` sends one to a chosen `LightWalletEndpoint`. A stored
+  transaction is not resubmitted automatically until it has been submitted at least
+  once through this API, after which automatic retry uses the endpoints it was
+  submitted to rather than the synchronizer's default endpoint. A `Synchronizer`
+  implementation that does not override the property throws
+  `UnsupportedOperationException` from every `Broadcaster` method.
+- `CreatedTransaction`, carrying the `txId`, `raw` bytes and `expiryHeight` of a
+  transaction the broadcaster has stored but not submitted.
+- `Synchronizer.fullyScannedHeight`, the height through which the wallet has
+  trial-decrypted every block above its birthday.
+- `Synchronizer.getTreeState`, the commitment tree state at a given height as a
+  protobuf `ByteArray`, so a consumer can generate witnesses or verify inclusion
+  proofs against an Orchard note commitment tree snapshot without reaching for the
+  lightwalletd transport. It is a live lightwalletd request that ignores local scan
+  state: check `fullyScannedHeight` before combining the result with local wallet
+  data at that height.
+- `CompactBlockProcessorException.MismatchedConsensusBranch`, `MismatchedNetwork` and
+  `MismatchedSaplingActivationHeight` now expose their constructor arguments as public
+  `val`s (`clientBranchId`/`serverBranchId`, `clientNetwork`/`serverNetwork`,
+  `clientHeight`/`serverHeight`), so a wallet can render a localized, structured
+  explanation of an incompatible server instead of parsing `message`. Consensus branch
+  IDs are opaque unordered constants: which side is stale cannot be inferred from them.
 
 ### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
-  `zcash_client_sqlite 0.22.0-rc.7`.
-
-### Fixed
-- An account created from a checkpoint now receives the Ironwood commitment tree
-  state that checkpoint carries. The SDK read only the Sapling and Orchard trees out
-  of a checkpoint's tree state and dropped the Ironwood one, so such an account was
-  created with no Ironwood tree state at its birthday height. The field is optional
-  and no mainnet checkpoint currently ships one, so this reached test networks first.
-- `Synchronizer.createTransactionFromPczt` now records the transaction's Ironwood
-  outputs, picked up from the librustzcash update. Every Ironwood output was
-  previously dropped when the transaction was stored: for a post-NU6.3 PCZT that
-  delivers its payment through the Ironwood pool, the external recipient's address
-  and decrypted memo were never persisted and are not recoverable afterwards, and
-  the wallet's own Ironwood outputs stayed invisible until the transaction was mined
-  and scanned.
-
-## [2.7.0-rc.4] - 2026-07-29
-
-### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
-  `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
-  (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
-  boundaries rather than 16).
-- A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
-  that covers the payment and its fee, falling back to ordinary multi-note funding
-  when no such note exists. Canonical-denomination payments that previously lost
-  the canonical shape to multi-note funding now take it whenever a single covering
-  note exists.
-
-### Fixed
-All of the following were picked up from the librustzcash update:
-
-- A wallet whose database was upgraded by a build using
-  `zcash_client_sqlite 0.22.0-rc.1` (the 2.6.6 internal build) no longer fails
-  every scan. Such a wallet's `orchard_ironwood_migrations` table never acquired
-  the `anchor_bucket_interval` column, added to the table-creation migration in
-  place afterwards, and the column reference then failed on every scan — no block
-  could be written and no transaction ever acquired a mined height, whether or not
-  a pool migration was in progress. A new database migration adds the missing
-  column. The backfilled value is exact on the production network; on a test
-  network, a pool migration planned under a custom anchor grid is reported as
-  `AnchorIntervalMismatch` and must be re-planned.
-- A ZIP 318 crossing anchored to a bucket boundary whose block contains no note
-  commitments in any pool no longer fails with `ProposalError::AnchorNotFound`:
-  scanning now creates a checkpoint at every anchor-retention grid height, and
-  proposal creation additionally falls back to an ordinary crossing when no anchor
-  is computable at the boundary rather than proposing a build that would fail.
-- Note selection now draws the oldest eligible notes first, in note commitment
-  tree (chain) order. Notes were previously drawn in scan-discovery order, which
-  for a restored wallet prefers its most recently discovered — typically newest —
-  notes.
-- A payment to one of the wallet's own transparent addresses is now reported with
-  the transparent receiver address itself as the output's recipient, rather than
-  the receiving account's unified address; for outputs the wallet created, the
-  recipient address recorded at transaction construction time takes precedence
-  over the receiving address.
-
-## [2.7.0-rc.3] - 2026-07-29
-
-### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.5` and
-  `zcash_client_sqlite 0.22.0-rc.5`.
+- Migrated to `zcash_client_backend 0.24.0` and `zcash_client_sqlite 0.22.0`.
+- Adding the Ironwood pool changes several public types:
+  - `AccountBalance` gains a required `ironwood: WalletBalance` property, in third
+    position, before `unshielded`. Positional construction will not compile.
+  - `CompactBlockUnsafe` gains a required `ironwoodOutputsCount: UInt` parameter before
+    `compactBlockBytes`, and `CompactBlockUnsafe.CompactBlockOutputsCounts` a required
+    `ironwoodActionsCount: UInt` in last position.
+  - `TreeStateUnsafe.fromParts` gains a required `ironwoodTree: String?` parameter in
+    last position; pass `null` for a tree state that carries no Ironwood tree.
+  - `TransactionPool` and `ShieldedProtocolEnum` each gain an `IRONWOOD` case, so
+    exhaustive `when` expressions over them stop compiling until the new case is
+    handled.
+  - `Synchronizer` gains an abstract `proposeOrchardToIronwoodMigration`, which any
+    implementer or test fake must now provide.
+- `TransactionOverview` gains `spentNoteCount`, `poolCrossingValue`, `isTrusted` and
+  `zip318Kind` as constructor parameters, so positional construction will not compile
+  until all four are supplied; named construction needs no edit.
+- `Synchronizer` also gains abstract `fullyScannedHeight` and `getTreeState`;
+  `broadcaster` has a default and needs no edit.
+- `String.fromHex` now rejects odd-length and non-hex input with
+  `IllegalArgumentException` instead of silently coercing it: a malformed string
+  previously produced bytes built from `Character.digit`'s `-1` result.
 - A payment that crosses the Orchard turnstile in a canonical ZIP 318 denomination (a
   `{1, 2, 5} * 10^k` amount between 0.01 and 10,000 ZEC), and that the wallet can fund
-  from a single Orchard note, is now proposed as a canonical crossing: anchored on the
-  ZIP 318 bucket grid, given the ZIP 318 rolling expiry height, and built with one
-  unpadded Ironwood action instead of two. Such a transaction pays one fewer ZIP 317
-  marginal-fee action, but its inputs may require up to two bucket intervals of
-  additional confirmations before it can be proposed. When the wallet cannot fund the
-  payment that way, an ordinary transaction is proposed as before.
+  from the single oldest Orchard note covering the payment and its fee, is now proposed
+  as a canonical crossing: anchored on the ZIP 318 bucket grid, given the ZIP 318
+  rolling expiry height, and built with one unpadded Ironwood action instead of two.
+  Such a transaction pays one fewer ZIP 317 marginal-fee action, but its inputs may
+  require up to two bucket intervals of additional confirmations before it can be
+  proposed. When the wallet cannot fund the payment that way, or no anchor is computable
+  at the bucket boundary, an ordinary transaction is proposed as before.
+- The lightwallet protocol definitions are now vendored from
+  [zcash/lightwallet-protocol](https://github.com/zcash/lightwallet-protocol) at
+  v0.5.0 rather than maintained by hand, which changes the generated
+  `cash.z.wallet.sdk.internal.rpc` types. The SDK itself uses none of the following,
+  but consumers touching the generated gRPC types directly will:
+  - `CompactTx.hash` is renamed to `CompactTx.txid`, so `getHash()`/`setHash()` become
+    `getTxid()`/`setTxid()`.
+  - `CompactBlock.protoVersion` is removed; field 1 is now reserved.
+  - The `Exclude` message is replaced by `GetMempoolTxRequest`, changing the
+    `GetMempoolTx` RPC signature.
+
+  Additive in the same update: a `PoolType` enum, `BlockRange.poolTypes`, the
+  `CompactTxIn` and `TxOut` messages with `CompactTx.vin`/`vout`, four new `LightdInfo`
+  fields, and a `GetTaddressTransactions` RPC. `GetBlockNullifiers` and
+  `GetBlockRangeNullifiers` are now deprecated upstream in favour of `GetBlockRange`
+  with `poolTypes`.
+- Updated checkpoints for mainnet and testnet.
 
 ### Fixed
-All of the following were picked up from the librustzcash update:
+- An account created from a checkpoint now receives the Ironwood commitment tree state
+  that checkpoint carries. The SDK read only the Sapling and Orchard trees out of a
+  checkpoint's tree state, so such an account was created with no Ironwood tree state
+  at its birthday height. The field is optional and no mainnet checkpoint currently
+  ships one, so this reached test networks first.
 
-- An Ironwood note received on an account's internal address is now classified as
-  change once the wallet learns that the same account funded the transaction, as
-  Sapling and Orchard notes already were. An Ironwood change note recorded before its
-  transaction's spends could be linked to the wallet previously kept the wrong
-  classification permanently: transaction history counted it as a received (and sent)
-  note rather than change, presenting the account's own change as a recipient of the
-  transaction. Balances were not affected. Notes recorded with the wrong
-  classification are repaired by a database migration on upgrade; no rescan is
-  required.
-- An address that had received only Ironwood notes was treated as never having been
-  used: the transparent address gap-limit search could hand the same address out
-  again, and the receiving account was not reported as involved in the transaction
-  that paid it. Since NU6.3 every payment to an Orchard receiver is delivered in the
-  Ironwood bundle, so this affected ordinary received payments. A database migration
-  corrects the affected records on upgrade.
-- The funding account recorded for a transparent output now takes value spent from
-  the Ironwood pool into account. An output whose creating transaction was funded
-  entirely from Ironwood was attributed to no account, and one funded from several
-  pools could be attributed to an account other than the largest contributor.
-  Post-NU6.3 wallets hold their shielded value in Ironwood, so this affected ordinary
-  spends.
-- Transaction status queries issued during sync are now generated from explicit,
-  durable observation intent: a sent transaction is queried by txid when the wallet
-  cannot observe one of its shielded spends or outputs — including a transaction
-  funded entirely by transparent inputs whose shielded outputs all belong to another
-  wallet — and the intent lies dormant while the transaction is mined, becoming
-  active again after a chain rewind. Redundant status queries previously synthesized
-  for transactions the wallet can observe by scanning are no longer produced.
+The remainder were picked up from the librustzcash update:
+
+- `Synchronizer.createTransactionFromPczt` now records the transaction's Ironwood
+  outputs. Every Ironwood output was previously dropped when the transaction was
+  stored: for a post-NU6.3 PCZT that delivers its payment through the Ironwood pool,
+  the external recipient's address and decrypted memo were never persisted and are not
+  recoverable afterwards, and the wallet's own Ironwood outputs stayed invisible until
+  the transaction was mined and scanned.
+- `Synchronizer.deleteAccount` no longer fails when a wallet transaction had sent funds
+  to an address belonging to the account being deleted (for example, after an internal
+  transfer to one of the account's own addresses).
+- Account balances now report value in immature transparent coinbase outputs as pending
+  spendability rather than as spendable. Such value was previously counted as spendable
+  even though it could not be selected for shielding until the output reached coinbase
+  maturity.
+- Note selection now draws the oldest eligible notes first, in note commitment tree
+  (chain) order. Notes were previously drawn in scan-discovery order, which for a
+  restored wallet prefers its most recently discovered — typically newest — notes.
+- A payment to one of the wallet's own transparent addresses is now reported with the
+  transparent receiver address itself as the output's recipient, rather than the
+  receiving account's unified address; for outputs the wallet created, the recipient
+  address recorded at transaction construction time takes precedence over the receiving
+  address.
+- A sent transaction one of whose shielded spends or outputs the wallet cannot observe
+  by scanning — including one funded entirely by transparent inputs whose shielded
+  outputs all belong to another wallet — is now queried by txid until it is mined, and
+  again after a chain rewind. The redundant status queries previously synthesized for
+  transactions the wallet can observe by scanning are no longer produced.
 - Tor network operations — Tor-backed lightwalletd connections and the exchange-rate
-  fetch behind `Synchronizer.exchangeRateUsd` — are now bounded in time. A server
-  that accepted a connection and then never responded previously left the request
-  pending indefinitely, and could thereby stall the exchange-rate fetch, which
-  aggregates several exchanges.
-
-## [2.7.0-rc.2] - 2026-07-26
-
-### Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.4` and
-  `zcash_client_sqlite 0.22.0-rc.4`.
-- `addProofsToPczt` now reuses a cached Orchard proving key (via `zcash_primitives`'
-  `cached_orchard_proving_key`) instead of rebuilding it for every proof, so proving a PCZT with
-  both Orchard and Ironwood bundles no longer constructs the key twice.
-
-### Fixed
-- Hardware-wallet signing of post-NU6.3 (v6) transactions: the wallet-controlled zero-value
-  Orchard spends that pad such transactions now carry ZIP 32 derivation metadata (via
-  `zcash_client_backend 0.24.0-rc.4`), so signers can identify and sign them. Previously these
-  actions were unsignable and v6 sends failed at finalization with
-  `Pczt(Extraction(Orchard(Extract(MissingSpendAuthSig))))` even though the device approved the
-  transaction.
-- `addProofsToPczt` now creates Ironwood proofs. It previously only handled Orchard and Sapling,
-  so any PCZT with Ironwood Actions (e.g. a Keystone-signed spend from the Ironwood pool) failed
-  at extraction with `Pczt(Extraction(Ironwood(Extract(MissingProof))))`.
-- Hardware-wallet (Keystone) PCZT signing now sends the full (non-compacted) signer view in the
-  minimal PCZT encoding (v1 for v5 transactions). The compact view/v2-encoding wire contract is
-  not supported by deployed firmware's ordinary signing flow, and caused finalization failures
-  with `MissingSpendAuthSig`.
-- The PCZT signer view now redacts the Ironwood bundle as it already did Orchard and
-  Sapling: each action's spend witness and the SDK's internal per-output metadata are
-  removed before the PCZT is sent to the external signer. A spend from the Ironwood
-  pool previously shipped its Merkle witnesses (which locate the wallet's notes in
-  the global commitment tree) and wallet output metadata to the signing device, which
-  needs neither.
-
-## [2.7.0-rc.1] - 2026-07-25
-
-### Added
-- Ironwood (NU6.3) shielded pool support: the SDK now exposes the Ironwood pool
-  (balance, subtree roots, sync) alongside Sapling and Orchard.
-- `Synchronizer.proposeOrchardToIronwoodMigration`, which builds a proposal that
-  moves the account's entire Orchard balance across the NU6.3 turnstile into the
-  Ironwood pool.
-- `CompactBlockProcessorException.MismatchedConsensusBranch`, `MismatchedNetwork`
-  and `MismatchedSaplingActivationHeight` now expose their constructor arguments
-  as public `val`s (`clientBranchId`/`serverBranchId`,
-  `clientNetwork`/`serverNetwork`, `clientHeight`/`serverHeight`). Previously the
-  mismatched values were reachable only by parsing the exception's `message`, so
-  consumers had to either scrape English prose or surface it verbatim. Wallets
-  can now render a localized, structured explanation of why a server is
-  incompatible. Note that consensus branch IDs are opaque unordered constants:
-  neither the SDK nor a consumer can infer from them alone which side is stale.
-
-  **This migration is not private.** It produces a single transaction whose value
-  is the account's entire Orchard balance, so any chain observer can read that
-  balance off the chain. The SDK deliberately does not split the crossing into
-  less-identifying denominations. Wallets should surface this in the confirmation
-  UI rather than presenting the migration as a routine self-send.
-
-### Breaking changes
-
-Adding the Ironwood pool changes several public types. Downstream consumers will
-need source changes:
-
-- `AccountBalance` gains a required `ironwood: WalletBalance` property, in third
-  position, before `unshielded`. Positional construction will not compile.
-- `CompactBlockUnsafe` gains a required `ironwoodOutputsCount: UInt` constructor
-  parameter, before `compactBlockBytes`.
-- `TransactionPool` and `ShieldedProtocolEnum` each gain an `IRONWOOD` case, so
-  exhaustive `when` expressions over them stop compiling until the new case is
-  handled.
-- `Synchronizer` gains an abstract `proposeOrchardToIronwoodMigration`, which any
-  implementer or test fake must now provide.
-
-The lightwallet protocol definitions are now vendored from
-[zcash/lightwallet-protocol](https://github.com/zcash/lightwallet-protocol) at
-v0.5.0 rather than maintained by hand, which changes the generated
-`cash.z.wallet.sdk.internal.rpc` types. The SDK itself uses none of the
-following, but consumers touching the generated gRPC types directly will:
-
-- `CompactTx.hash` is renamed to `CompactTx.txid`, so `getHash()`/`setHash()`
-  become `getTxid()`/`setTxid()`.
-- `CompactBlock.protoVersion` is removed; field 1 is now reserved.
-- The `Exclude` message is replaced by `GetMempoolTxRequest`, changing the
-  `GetMempoolTx` RPC signature.
-
-Additive in the same update: a `PoolType` enum, `BlockRange.poolTypes`, the
-`CompactTxIn` and `TxOut` messages with `CompactTx.vin`/`vout`, four new
-`LightdInfo` fields, and a `GetTaddressTransactions` RPC. `GetBlockNullifiers`
-and `GetBlockRangeNullifiers` are now deprecated upstream in favour of
-`GetBlockRange` with `poolTypes`.
-
-### Changed
-- Migrated to the `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` API
-  line, adapting the backend to the send-max and builder API changes.
-- Updated the librustzcash crates to their published releases,
-  `zcash_client_backend 0.24.0-rc.2` and `zcash_client_sqlite 0.22.0-rc.2`.
-
-### Fixed
-Both of the following were picked up from the librustzcash update:
-
-- `Synchronizer.deleteAccount` no longer fails when a wallet transaction had sent
-  funds to an address belonging to the account being deleted (for example, after an
-  internal transfer to one of the account's own addresses).
-- Account balances now report value in immature transparent coinbase outputs as
-  pending spendability rather than as spendable. Such value was previously counted as
-  spendable even though it could not be selected for shielding until the output
-  reached coinbase maturity.
+  fetch behind `Synchronizer.exchangeRateUsd` — are now bounded in time. A server that
+  accepted a connection and then never responded previously left the request pending
+  indefinitely, and could thereby stall the exchange-rate fetch, which aggregates
+  several exchanges.
 
 ## [2.5.2] - 2026-06-03
 
