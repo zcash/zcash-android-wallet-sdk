@@ -571,11 +571,9 @@ class RustBackend private constructor(
 
         /**
          * `Off` in production release builds (guarded below by [isNotLoggingInProduction]); `Debug`
-         * everywhere else, so the Slipstream engine's `info!`-level events - which now flow through
-         * this same subscriber, since backend-lib's `initOnLoad` installs the process-global
-         * `tracing` subscriber first and `slipstream-jni`'s own install is a no-op against it -
-         * aren't silenced by default on debug builds. `Debug`'s level filter includes `info!` and
-         * above, so no separate `Info` case is needed on [RustLogging].
+         * everywhere else. `initOnLoad` installs the process-global `tracing` subscriber, and
+         * `Debug`'s level filter includes `info!` and above, so no separate `Info` case is needed
+         * on [RustLogging].
          */
         private val rustLogging: RustLogging =
             if (BuildConfig.BUILD_TYPE.contains("release")) RustLogging.Off else RustLogging.Debug

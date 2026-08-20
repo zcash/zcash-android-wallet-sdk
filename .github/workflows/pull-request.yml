@@ -1,11 +1,6 @@
 # Expected secrets
 # FIREBASE_TEST_LAB_SERVICE_ACCOUNT - Email address of Firebase Test Lab service account
 # FIREBASE_TEST_LAB_WORKLOAD_IDENTITY_PROVIDER - Workload identity provider to generate temporary service account key
-# SLIPSTREAM_APP_ID - App ID of the GitHub App granting read access to the private zodl-inc/slipstream repo
-# SLIPSTREAM_APP_PRIVATE_KEY - PEM private key for that App
-#   Without these two, every job that compiles Rust fails in `:backend-lib:cargoBuild*`: cargo cannot
-#   resolve the `slipstream-core` git dependency. They are unavailable to pull requests from forks,
-#   which therefore cannot pass those jobs.
 
 # Expected variables
 # FIREBASE_TEST_LAB_PROJECT - Firebase Test Lab project name
@@ -200,8 +195,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Android Lint
         timeout-minutes: 45
         env:
@@ -247,8 +240,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Test
         timeout-minutes: 15
         run: |
@@ -277,8 +268,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Clippy
         timeout-minutes: 15
         run: |
@@ -289,10 +278,6 @@ jobs:
   #
   # There is no rustfmt.toml, so this is stock rustfmt defaults for the edition in
   # backend-lib/Cargo.toml. Run `cargo fmt --all` in backend-lib/ to fix a failure.
-  #
-  # `cargo fmt --all` resolves the workspace before it formats anything, so on this
-  # branch it needs the slipstream credentials to reach the private `slipstream-core`
-  # git dependency, exactly as the compiling Rust jobs do.
   static_analysis_rustfmt:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
@@ -310,9 +295,6 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
-        with:
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       - name: Rustfmt
         timeout-minutes: 5
         run: |
@@ -359,8 +341,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # 60 rather than the usual 30: this branch re-enables shielded voting, which
       # turns on orchard's `unstable-voting-circuits` and pulls the halo2 voting
       # circuits into the native build. `make test-unit` builds the crate for all
@@ -433,8 +413,6 @@ jobs:
   #       uses: ./.github/actions/setup
   #       with:
   #         rust-cache: true
-  #         slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-  #         slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
   #     - name: Build
   #       timeout-minutes: 30
   #       run: |
@@ -507,8 +485,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # The hosted runner's Android SDK does not include the emulator package,
       # which a Gradle Managed Device requires. AGP auto-installs the system
       # image but not the emulator, so without this the pixel2MinSetup task
@@ -578,8 +554,6 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
-          slipstream-app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-          slipstream-app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
         env:

@@ -1,4 +1,4 @@
-@file:Suppress("DestructuringDeclarationWithTooManyEntries", "LongParameterList")
+@file:Suppress("DestructuringDeclarationWithTooManyEntries")
 
 package cash.z.ecc.android.sdk
 
@@ -8,8 +8,6 @@ import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.PersistableWallet
-import cash.z.ecc.android.sdk.model.ZcashNetwork
-import com.zodl.slipstream.SlipstreamSynchronizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
@@ -39,14 +37,9 @@ import java.util.UUID
 /**
  * @param persistableWallet flow of the user's stored wallet.  Null indicates that no wallet has been stored.
  * @param isTorEnabled flow indicating whether tor has been enabled for Synchronizer features supporting tor connection
- * @param isSyncBlocked flow indicating whether some external condition requires sync polling to be paused (e.g. a
- * pending Orchard migration transfer needs sync and broadcast decoupled in time for privacy). While true the live
- * Synchronizer is kept alive but its polling is paused via [CloseableSynchronizer.pause]; it resumes when false.
  * @param accountName A human-readable name for the account, that will be used while instantiating [Synchronizer.new]
  * @param keySource A string identifier or other metadata describing the source of the seed, that will be used while
  * instantiating [Synchronizer.new]
- * @param isSlipstreamEnabled selects which sync engine backs [synchronizer]: [SlipstreamSynchronizer.new] when true,
- * [Synchronizer.new] when false. Both are constructed with the same argument values.
  *
  * One area where this class needs to change before it can be moved out of the incubator is that we need to be able to
  * start synchronization without necessarily decrypting the wallet.
@@ -59,10 +52,8 @@ class WalletCoordinator(
     val persistableWallet: Flow<PersistableWallet?>,
     val isTorEnabled: Flow<Boolean?>,
     val isExchangeRateEnabled: Flow<Boolean?>,
-    val isSyncBlocked: Flow<Boolean>,
     val accountName: String,
     val keySource: String?,
-    val isSlipstreamEnabled: Boolean = false,
 ) {
     private val applicationContext = context.applicationContext
 
@@ -113,56 +104,26 @@ class WalletCoordinator(
                 } else {
                     callbackFlow<InternalSynchronizerStatus.Available> {
                         val closeableSynchronizer =
-                            if (isSlipstreamEnabled) {
-                                SlipstreamSynchronizer.new(
-                                    context = context,
-                                    zcashNetwork = persistableWallet.network,
-                                    lightWalletEndpoint = persistableWallet.endpoint,
-                                    birthday = persistableWallet.birthday,
-                                    setup =
-                                        AccountCreateSetup(
-                                            accountName = accountName,
-                                            keySource = keySource,
-                                            seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
-                                        ),
-                                    walletInitMode = persistableWallet.walletInitMode,
-                                    isTorEnabled = isTorEnabled == true,
-                                    isExchangeRateEnabled = isExchangeRateEnabled == true
-                                )
-                            } else {
-                                Synchronizer.new(
-                                    context = context,
-                                    zcashNetwork = persistableWallet.network,
-                                    lightWalletEndpoint = persistableWallet.endpoint,
-                                    birthday = persistableWallet.birthday,
-                                    setup =
-                                        AccountCreateSetup(
-                                            accountName = accountName,
-                                            keySource = keySource,
-                                            seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
-                                        ),
-                                    walletInitMode = persistableWallet.walletInitMode,
-                                    isTorEnabled = isTorEnabled == true,
-                                    isExchangeRateEnabled = isExchangeRateEnabled == true
-                                )
-                            }
+                            Synchronizer.new(
+                                context = context,
+                                zcashNetwork = persistableWallet.network,
+                                lightWalletEndpoint = persistableWallet.endpoint,
+                                birthday = persistableWallet.birthday,
+                                setup =
+                                    AccountCreateSetup(
+                                        accountName = accountName,
+                                        keySource = keySource,
+                                        seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
+                                    ),
+                                walletInitMode = persistableWallet.walletInitMode,
+                                isTorEnabled = isTorEnabled == true,
+                                isExchangeRateEnabled = isExchangeRateEnabled == true
+                            )
 
                         trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
 
-                        // Keep this Synchronizer alive across migration sync-blocks: instead of tearing
-                        // it down (which nulled the app's balance/snapshot into a stuck loading state),
-                        // pause its polling for decorrelation and resume when the block clears. Scoped to
-                        // this callbackFlow so it is torn down with the synchronizer (wallet change/lockout).
-                        val pauseJob =
-                            launch {
-                                isSyncBlocked.distinctUntilChanged().collect { blocked ->
-                                    if (blocked) closeableSynchronizer.pause() else closeableSynchronizer.resume()
-                                }
-                            }
-
                         awaitClose {
                             Twig.info { "Closing flow and stopping synchronizer" }
-                            pauseJob.cancel()
                             closeableSynchronizer.close()
                         }
                     }
@@ -241,12 +202,11 @@ class WalletCoordinator(
                         .filter { it.id == lockoutId }
                         .onFirst {
                             synchronizerMutex.withLock {
-                                val didDeleteSdk =
+                                val didDelete =
                                     Synchronizer.erase(
                                         appContext = applicationContext,
                                         network = zcashNetwork
                                     )
-                                val didDelete = eraseSlipstreamData(zcashNetwork) && didDeleteSdk
                                 Twig.info { "SDK erase result: $didDelete" }
                             }
                         }
@@ -268,12 +228,11 @@ class WalletCoordinator(
                 val zcashNetwork = persistableWallet.first()?.network
                 if (null != zcashNetwork) {
                     synchronizerMutex.withLock {
-                        val didDeleteSdk =
+                        val didDelete =
                             Synchronizer.erase(
                                 appContext = applicationContext,
                                 network = zcashNetwork
                             )
-                        val didDelete = eraseSlipstreamData(zcashNetwork) && didDeleteSdk
                         Twig.info { "SDK erase result: $didDelete" }
                         trySend(didDelete)
                     }
@@ -283,28 +242,6 @@ class WalletCoordinator(
                 // Nothing to close here
             }
         }
-
-    /**
-     * Deletes Slipstream's own `data.sqlite3` alongside the upstream SDK databases, since the two
-     * engines persist to separate files and [Synchronizer.erase] only knows about the latter.
-     * A no-op reporting success when Slipstream is not the active engine.
-     *
-     * [SlipstreamSynchronizer.erase] throws when a synchronizer for the same key is still active;
-     * that is a caller error rather than a reason to kill [walletScope]'s coroutine and leave the
-     * flow's collector waiting forever, so it is logged and reported as a failed delete.
-     */
-    private suspend fun eraseSlipstreamData(zcashNetwork: ZcashNetwork): Boolean {
-        if (!isSlipstreamEnabled) return true
-        return runCatching {
-            SlipstreamSynchronizer.erase(
-                appContext = applicationContext,
-                network = zcashNetwork
-            )
-        }.getOrElse {
-            Twig.error(it) { "Slipstream erase failed" }
-            false
-        }
-    }
 
     // Allows for extension functions
     companion object

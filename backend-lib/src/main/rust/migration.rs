@@ -142,8 +142,8 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     // thread during a signAndStore retry racing the synchronizer). The canonical producer of
     // that state is a SECOND SQLite library instance on the same file (framework SQLiteDatabase
     // next to the bundled one — POSIX close() drops the whole process's fcntl locks, letting the
-    // WAL/-shm index be truncated under the engine's mapping; see Milan's slipstream host-read
-    // incident, FFI_JNI_CONTRACT.md). This build graph has exactly one libsqlite3-sys node and
+    // WAL/-shm index be truncated under the engine's mapping — that is a deterministic SIGBUS on
+    // Android). This build graph has exactly one libsqlite3-sys node and
     // no framework access to this file (verify: `cargo tree -i libsqlite3-sys` = one node), so
     // this pragma is defense-in-depth for these short-lived per-call connections, not the
     // primary guarantee. Plain read()/write() I/O is immune,
@@ -258,73 +258,6 @@ fn clear_invalidation(conn: &Connection, account: &[u8]) -> anyhow::Result<()> {
     )
     .map_err(|e| anyhow!("Error clearing invalidation: {}", e))?;
     Ok(())
-}
-
-/// The lowest `anchor_boundary` height still needed by any account's migration transactions that
-/// have not yet reached `Broadcast`/`Mined` — i.e. still need proving or broadcasting — across
-/// every account in the wallet at `db_path`.
-///
-/// This function iterates every account via `open_at`/`Backend`/typed `MigrationState` to compute
-/// the minimum `anchor_boundary` across all non-terminal, non-broadcast/mined transactions. It is
-/// called directly by `slipstream/mod.rs`'s `start_session` (via `min_pending_migration_anchor_boundary`,
-/// which now delegates here instead of using raw SQL) to determine the anchor-retention floor for
-/// checkpoint pruning — see `slipstream/mod.rs`'s doc comment for the full anchor-protection rationale
-/// and ZIP 374 reference.
-///
-/// Preparation transactions are excluded (`anchor_boundary() == None`): they anchor to a freshly
-/// current tip at prove time (see `natural_anchor_height`'s doc comment), not a boundary drawn in
-/// advance, so they never need retroactive protection.
-///
-/// Returns `Ok(None)` if there's no in-progress migration in any account, or every transaction
-/// needing a boundary has already broadcast/mined.
-///
-/// Deliberately kept as a plain `anyhow::Result` (matching every other function in this file, e.g.
-/// `plan_for`), rather than swallowing errors internally: the caller (`slipstream/mod.rs`) is
-/// responsible for treating an `Err` as "no retention floor" — logging and falling back to `None` —
-/// since a wallet DB read glitch here must never block sync from starting.
-///
-/// `slipstream/mod.rs` is its only caller and that module is behind the off-by-default
-/// `slipstream` feature, so this is gated to match: without the feature there is nothing to call
-/// it and it would otherwise report as dead code.
-#[cfg(feature = "slipstream")]
-pub(crate) fn min_pending_anchor_boundary(
-    db_path: &std::path::Path,
-    network: Network,
-) -> anyhow::Result<Option<u32>> {
-    let (wallet, mut store_conn) = open_at(db_path, network)?;
-    let account_ids = wallet
-        .get_account_ids()
-        .map_err(|e| anyhow!("Error listing account ids: {}", e))?;
-
-    let mut min_height: Option<BlockHeight> = None;
-    for account in account_ids {
-        let backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
-        let Some(state) = backend.get_migration().map_err(|e| {
-            anyhow!(
-                "Error reading migration state for account {:?}: {:?}",
-                account,
-                e
-            )
-        })?
-        else {
-            continue;
-        };
-        if state.is_terminal() {
-            continue;
-        }
-        for tx in state.transactions() {
-            if matches!(
-                tx.state(),
-                MigrationTxState::Broadcast { .. } | MigrationTxState::Mined { .. }
-            ) {
-                continue;
-            }
-            if let Some(boundary) = tx.anchor_boundary() {
-                min_height = Some(min_height.map_or(boundary, |existing| existing.min(boundary)));
-            }
-        }
-    }
-    Ok(min_height.map(u32::from))
 }
 
 fn open(
@@ -806,7 +739,7 @@ fn encode_migration_schedule<'a>(
     //
     // `funding_notes()` values are the *spent* note values (crossing + note_fee_buffer, i.e. what
     // funds the transfer's own fee) — NOT what actually lands in the destination pool. The app
-    // shows this as the user-facing transfer amount (Slack #ext-zodl-valargroup 2026-07-21: "only
+    // shows this as the user-facing transfer amount (product decision, 2026-07-21: "only
     // round values on this [confirm] screen", matching the shielding-transaction convention of
     // displaying the received amount, fee visible only in the transaction detail), so subtract the
     // constant fee buffer back out to recover the round `{1,2,5}×10ⁿ` crossing value per note.
@@ -2096,8 +2029,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// Why this exists: the sync engine writes tree checkpoints per scan sub-batch, not per block,
 /// so an anchor-grid multiple that falls INSIDE a multi-block chunk gets no checkpoint even with
 /// anchor retention configured (observed live 2026-07-28: grid height 4212168 skipped by a
-/// 4212165..4212170 chunk of empty blocks). The real fix — the engine cutting sub-batches on the
-/// retention grid — belongs to slipstream-core; this backfill exactly recovers the common
+/// 4212165..4212170 chunk of empty blocks). The real fix — the scanner cutting sub-batches on the
+/// retention grid — belongs in the sync engine itself; this backfill exactly recovers the common
 /// empty-gap case in the meantime, and a NON-empty gap (commitments landed inside the chunk)
 /// still reports `false` so callers can reject/re-propose rather than prove a wrong anchor.
 fn backfill_boundary_checkpoint_for_pool(
@@ -2835,15 +2768,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// EMPTY array when no block has been scanned yet.
 ///
 /// CRITICAL — dual-SQLite-instance hazard: the wallet `data.sqlite3` is engine-owned and written
-/// through the bundled SQLite the slipstream/backend engines link. It MUST NOT be opened through a
-/// SECOND SQLite library instance in the same process (Android-framework `SQLiteDatabase`): SQLite
-/// same-process lock coordination only holds within one library instance, so a framework
-/// connection's `close()` drops the engine's fcntl/WAL locks and truncates the `-shm` index under
-/// the engine's live mmap → deterministic SIGBUS (Milan's `08-engine-sigbus-android.md`; the
-/// production host reads moved to bundled rusqlite for exactly this reason — see
-/// `slipstream::read_query`). This reader therefore uses a read-only rusqlite connection (the same
-/// bundled library the engine uses), never `ReadOnlySupportSqliteOpenHelper`/framework SQLite,
-/// which the estimator previously used and which reintroduced the hazard.
+/// through the bundled SQLite this crate links. It MUST NOT be opened through a SECOND SQLite
+/// library instance in the same process (Android-framework `SQLiteDatabase`): SQLite same-process
+/// lock coordination only holds within one library instance, so a framework connection's
+/// `close()` drops the engine's fcntl/WAL locks and truncates the `-shm` index under the engine's
+/// live mmap → deterministic SIGBUS; production host reads moved to bundled rusqlite for exactly
+/// this reason. This reader therefore uses a read-only rusqlite connection (the same bundled
+/// library the engine uses), never `ReadOnlySupportSqliteOpenHelper`/framework SQLite, which the
+/// estimator previously used and which reintroduced the hazard.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_blockRateSamplesNative<
     'local,
