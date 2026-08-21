@@ -731,7 +731,7 @@ interface OrchardMigrationSdk {
      *
      * [includeResidual] — when the spendable balance leaves a leftover too small to form a whole
      * migratable note but too large to be dust (see the Rust bridge's `residual_after_migration()`
-     * threshold, ~0.001 ZEC), that leftover is excluded from the schedule by default: migrating it
+     * threshold, ~0.0001 ZEC), that leftover is excluded from the schedule by default: migrating it
      * requires one extra, non-round-number transfer, which is more identifiable on-chain than the
      * power-of-ten crossings (a privacy/completeness trade-off — see ProposalA.md's "sub-1-ZEC"
      * open point). Pass `true` only once the app exposes this as an explicit user choice; **for
@@ -1019,7 +1019,7 @@ interface OrchardMigrationSdk {
     /**
      * The zatoshi value below which a remaining post-migration Orchard balance counts as dust
      * (as opposed to a residual too large to ignore) — e.g. for the Migration Complete screen's
-     * "is the leftover balance negligible" gate. 100,000 zatoshi (0.001 ZEC) as of this writing.
+     * "is the leftover balance negligible" gate. 10,000 zatoshi (0.0001 ZEC) as of this writing.
      * A fixed protocol-level constant (`MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`), not
      * derived from any wallet/account state — callers should still call this rather than hardcode
      * the value, so the app and the Rust engine can't drift apart on what counts as dust.

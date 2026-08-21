@@ -108,9 +108,9 @@ const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
 
 /// The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
 /// rather than a residual worth migrating in its own (non-round-number, more identifiable)
-/// transfer. 100,000 zatoshi = 0.001 ZEC. A fixed protocol-level constant, not derived from wallet
+/// transfer. 10,000 zatoshi = 0.0001 ZEC. A fixed protocol-level constant, not derived from wallet
 /// or account state, so it needs no database access to read.
-pub const MIGRATION_DUST_THRESHOLD_ZATOSHI: u64 = 100_000;
+pub const MIGRATION_DUST_THRESHOLD_ZATOSHI: u64 = 10_000;
 
 pub(crate) type Wallet = zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, OsRng>;
 
