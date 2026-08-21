@@ -45,6 +45,20 @@ use crate::migration::Wallet;
 
 type SpendableNote = (OrchardNote, Position, u64);
 
+/// The `key_source` value (case-insensitive) `AccountDataSource.importKeystoneAccount`
+/// (zashi-android `ui-lib/.../datasource/AccountDataSource.kt`, `KEYSTONE_KEYSOURCE` constant)
+/// stamps on a Keystone-imported account — the ONLY signal this crate has to tell a
+/// hardware-QR-signed account from zodl's own in-process one; see [`Backend::is_keystone`].
+///
+/// There is no compiler-enforced link between this constant and the app-side one: if the app ever
+/// renames/retypes `KEYSTONE_KEYSOURCE`, or a new Keystone-import path stamps a differently-spelled
+/// value, `is_keystone()` silently returns `false` for a real Keystone account and
+/// `migration.rs::run_sizing_for` silently falls through to the 200-note zodl sizing instead of
+/// the 96-action-per-round signer cap — reproducing the exact multi-round-signing bug MOB-1760
+/// exists to fix, with no compile error or test failure to surface it. If this string ever needs
+/// to change, grep BOTH repos for `KEYSTONE_KEYSOURCE` first.
+const KEYSTONE_KEY_SOURCE: &str = "keystone";
+
 /// The migration adapter's `Backend`/`MigrationCrypto`/`PoolMigrationRead`/`PoolMigrationWrite`
 /// error type. Everything is folded into `anyhow::Error` (matching the rest of this JNI glue's
 /// idiom) rather than the parameterized error type `WalletMigration` uses, since this adapter is
@@ -61,6 +75,12 @@ pub struct Backend<'a, W> {
     /// key rather than going to look for one on every call). `None` for an account whose unified
     /// key carries no Orchard component.
     orchard_fvk: Option<FullViewingKey>,
+    /// Whether the account's `key_source` matches [`KEYSTONE_KEY_SOURCE`] — see that constant's
+    /// doc for the cross-repo string-matching risk. Only Keystone signing has a per-round
+    /// QR-scanning cost; zodl's own accounts sign everything in one pass regardless of action
+    /// count, so sizing a run for them by a signing-round budget would only shrink runs for no
+    /// benefit — see `is_keystone`'s use in `migration.rs::run_sizing_for`.
+    is_keystone: bool,
     /// The store carries the network parameters and a clock because, as of
     /// `zcash_client_sqlite 0.22.0-rc.7`, `PoolMigrationWrite::store_proved_transaction` finalizes
     /// a proved migration transaction into the wallet's own transaction tables: it recovers the
@@ -100,13 +120,25 @@ where
             .map_err(|e| anyhow::anyhow!("account lookup failed: {e}"))?
             .ok_or_else(|| anyhow::anyhow!("unknown account"))?;
         let orchard_fvk = account_row.ufvk().and_then(|ufvk| ufvk.orchard()).cloned();
+        let is_keystone = account_row
+            .source()
+            .key_source()
+            .is_some_and(|s| s.eq_ignore_ascii_case(KEYSTONE_KEY_SOURCE));
         Ok(Self {
             wallet,
             account,
             orchard_fvk,
+            is_keystone,
             store,
             spendable: std::cell::RefCell::new(None),
         })
+    }
+
+    /// Whether this account is signed via Keystone (see the `is_keystone` field's doc) — the
+    /// signal `migration.rs::compute_plan`/`estimateMigrationRunCountNative` use to decide
+    /// whether a run must fit one QR-scanned signing round.
+    pub fn is_keystone(&self) -> bool {
+        self.is_keystone
     }
 
     /// Cancels this account's migration via the real store-level primitive
