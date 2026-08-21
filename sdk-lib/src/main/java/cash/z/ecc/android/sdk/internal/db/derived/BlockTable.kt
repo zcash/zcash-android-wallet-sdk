@@ -69,5 +69,9 @@ internal object BlockTableDefinition {
 
     const val COLUMN_INTEGER_SAPLING_OUTPUT_COUNT = "sapling_output_count" // $NON-NLS
 
-    const val COLUMN_INTEGER_ORCHARD_OUTPUT_COUNT = "orchard_output_count" // $NON-NLS
+    const val COLUMN_INTEGER_ORCHARD_ACTION_COUNT = "orchard_action_count" // $NON-NLS
+
+    const val COLUMN_INTEGER_IRONWOOD_COMMITMENT_TREE_SIZE = "ironwood_commitment_tree_size" // $NON-NLS
+
+    const val COLUMN_INTEGER_IRONWOOD_ACTION_COUNT = "ironwood_action_count" // $NON-NLS
 }

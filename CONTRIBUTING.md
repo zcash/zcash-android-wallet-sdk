@@ -80,7 +80,7 @@ already running an older version without shipping them unrelated trunk work.
 | `main` | permanent | Development trunk. New feature work lands here. |
 | `maint/vX.Y.x` | permanent | One per supported release line. Fixes to released versions land here. |
 | `release/vX.Y.Z` | one release | Cut from the previous release tag. The base of the release PR, and what gets tagged. |
-| `review/vX.Y.Z` | one release | Release preparation: version bumps, CHANGELOG promotion, final review. |
+| `candidate/vX.Y.Z` | one release | Release preparation: version bumps, CHANGELOG promotion, final review. |
 
 ### Basing a bug fix
 
@@ -113,21 +113,24 @@ main          ───●───────────────●──
 
 ### Cutting a release
 
-`./scripts/start-release.sh <remote> <version>` performs steps 1 through 4:
+`./scripts/prepare-release.sh --issue <N> <remote> <version>` performs steps 1
+through 4:
 it works out which release this one follows, creates and pushes the release
-branch, creates the review branch, bumps the version and promotes the
-CHANGELOG. Pass `--dry-run` first to see what it will do. The steps below are
-what it automates, and what to do by hand if a release needs to deviate.
+and candidate branches, bumps the version, promotes the CHANGELOG, and opens a
+draft pull request. Pass `--dry-run` first to see what it will do. The steps
+below are what it automates, and what to do by hand if a release needs to
+deviate.
 
 1. Create `release/vX.Y.Z` **from the previous release tag** and push it to
    upstream. It starts out identical to the last release.
-2. Create `review/vX.Y.Z` from the maintenance branch that contains all of the
+2. Create `candidate/vX.Y.Z` from the maintenance branch that contains all of the
    changes to be released.
-3. Open a pull request **on the public repository** from `review/vX.Y.Z` into
-   `release/vX.Y.Z`.
-4. Make the release preparation commits on `review/vX.Y.Z` — version bumps,
-   CHANGELOG promotion, and anything else the release needs. The review branch,
-   not the release branch, is where this work happens.
+3. Open a pull request **on the public repository** from `candidate/vX.Y.Z` into
+   `release/vX.Y.Z`. The script opens it as a draft and links the issue supplied
+   with `--issue`.
+4. Make the release preparation commits on `candidate/vX.Y.Z` — version bumps,
+   CHANGELOG promotion, and anything else the release needs. The candidate
+   branch, not the release branch, is where this work happens.
 5. Merge the pull request, then tag the result `vX.Y.Z`.
 
 Basing the release branch on the previous release tag is what makes the pull
@@ -139,9 +142,9 @@ tag vX.Y.W  (previous release)
       │
       └──▶  release/vX.Y.Z  ●──────────────────────────────●  tag vX.Y.Z
                                                            ▲
-                                                           │  PR: review ──▶ release
+                                                           │  PR: candidate ──▶ release
                                                            │
-        review/vX.Y.Z   ●────●────●────────────────────────┘
+     candidate/vX.Y.Z   ●────●────●────────────────────────┘
                         ▲     version bumps, CHANGELOG promotion
                         │
                         │  branch from maint

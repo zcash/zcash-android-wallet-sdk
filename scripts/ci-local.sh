@@ -8,12 +8,13 @@
 # burning CI minutes.
 #
 # Stages (fast -> slow):
-#   1. detekt       -> static_analysis_detekt
-#   2. ktlint       -> static_analysis_ktlint
-#   3. unit tests   -> test_android_modules_unit
-#   4. android lint -> static_analysis_android_lint
-#   5. demo app     -> demo_app_release_build
-#   6. androidTest  -> (approximation of) test_android_modules_wtf
+#   1. shell tests  -> release tooling tests
+#   2. detekt       -> static_analysis_detekt
+#   3. ktlint       -> static_analysis_ktlint
+#   4. unit tests   -> test_android_modules_unit
+#   5. android lint -> static_analysis_android_lint
+#   6. demo app     -> demo_app_release_build
+#   7. androidTest  -> (approximation of) test_android_modules_wtf
 #
 # Stage 6 uses a Gradle Managed Device (pixel2Target, SDK 36). It downloads an
 # AVD on first run (~1.5 GB) and is the slowest stage.
@@ -23,6 +24,7 @@
 #   ./scripts/ci-local.sh fast        # stages 1-2 only (lint + style)
 #   ./scripts/ci-local.sh quick       # stages 1-3 (lint + style + unit tests)
 #   ./scripts/ci-local.sh full        # all stages including androidTest (default)
+#   ./scripts/ci-local.sh shell       # run release tooling tests
 #   ./scripts/ci-local.sh detekt      # run one named stage
 #
 # Requirements:
@@ -39,33 +41,38 @@ cd "${REPO_ROOT}"
 
 GRADLE="./gradlew"
 
+stage_shell() {
+    echo "==> [1/7] shell tests (release tooling tests)"
+    ./scripts/tests/run-tests.sh
+}
+
 stage_detekt() {
-    echo "==> [1/6] detekt (static_analysis_detekt)"
+    echo "==> [2/7] detekt (static_analysis_detekt)"
     "${GRADLE}" detektAll
 }
 
 stage_ktlint() {
-    echo "==> [2/6] ktlint (static_analysis_ktlint)"
+    echo "==> [3/7] ktlint (static_analysis_ktlint)"
     "${GRADLE}" ktlint
 }
 
 stage_unit() {
-    echo "==> [3/6] unit tests (test_android_modules_unit)"
+    echo "==> [4/7] unit tests (test_android_modules_unit)"
     "${GRADLE}" test
 }
 
 stage_lint() {
-    echo "==> [4/6] android lint (static_analysis_android_lint)"
+    echo "==> [5/7] android lint (static_analysis_android_lint)"
     "${GRADLE}" :sdk-lib:lintRelease :demo-app:lintZcashmainnetRelease
 }
 
 stage_demoapp() {
-    echo "==> [5/6] demo app release build (demo_app_release_build)"
+    echo "==> [6/7] demo app release build (demo_app_release_build)"
     "${GRADLE}" assembleRelease
 }
 
 stage_androidtest() {
-    echo "==> [6/6] android instrumentation tests (test_android_modules_wtf approximation)"
+    echo "==> [7/7] android instrumentation tests (test_android_modules_wtf approximation)"
     echo "    Note: CI uses testDebugWithEmulatorWtf (cloud). Local approximation runs the"
     echo "    same tests on a Gradle managed Pixel 2 (SDK 36) virtual device."
     "${GRADLE}" \
@@ -76,6 +83,7 @@ stage_androidtest() {
 }
 
 run_all() {
+    stage_shell
     stage_detekt
     stage_ktlint
     stage_unit
@@ -85,6 +93,7 @@ run_all() {
 }
 
 run_fast() {
+    stage_shell
     stage_detekt
     stage_ktlint
 }
@@ -98,6 +107,7 @@ case "${1:-full}" in
     fast)         run_fast ;;
     quick)        run_quick ;;
     full)         run_all ;;
+    shell)        stage_shell ;;
     detekt)       stage_detekt ;;
     ktlint)       stage_ktlint ;;
     unit)         stage_unit ;;

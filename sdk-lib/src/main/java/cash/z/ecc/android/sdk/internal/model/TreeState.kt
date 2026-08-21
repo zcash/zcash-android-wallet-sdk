@@ -13,14 +13,17 @@ class TreeState(
             )
         }
 
+        @Suppress("LongParameterList")
         fun fromParts(
             height: Long,
             hash: String,
             time: Int,
             saplingTree: String,
-            orchardTree: String
+            orchardTree: String,
+            ironwoodTree: String?
         ): TreeState {
-            val unsafeTreeState = TreeStateUnsafe.fromParts(height, hash, time, saplingTree, orchardTree)
+            val unsafeTreeState =
+                TreeStateUnsafe.fromParts(height, hash, time, saplingTree, orchardTree, ironwoodTree)
             return TreeState.new(unsafeTreeState)
         }
     }

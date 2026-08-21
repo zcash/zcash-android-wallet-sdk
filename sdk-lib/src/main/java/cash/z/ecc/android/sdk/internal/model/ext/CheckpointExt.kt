@@ -24,6 +24,9 @@ internal val Checkpoint.Companion.KEY_SAPLING_TREE
 internal val Checkpoint.Companion.KEY_ORCHARD_TREE
     get() = "orchardTree"
 
+internal val Checkpoint.Companion.KEY_IRONWOOD_TREE
+    get() = "ironwoodTree"
+
 internal fun Checkpoint.Companion.from(
     zcashNetwork: ZcashNetwork,
     jsonString: String
@@ -56,7 +59,18 @@ private fun Checkpoint.Companion.from(
                     "000000" // NON-NLS
                 }
 
-            return Checkpoint(height, hash, epochSeconds, saplingTree, orchardTree)
+            // Optional, unlike orchardTree: mainnet checkpoints do not carry an
+            // Ironwood tree state yet, so requiring it post-NU6.3 would reject
+            // every mainnet checkpoint currently shipped.
+            val ironwoodTree =
+                try {
+                    jsonObject.getString(Checkpoint.KEY_IRONWOOD_TREE)
+                } catch (e: JSONException) {
+                    Twig.verbose(e) { "This checkpoint does not contain an Ironwood tree state" }
+                    null
+                }
+
+            return Checkpoint(height, hash, epochSeconds, saplingTree, orchardTree, ironwoodTree)
         }
 
         else -> {

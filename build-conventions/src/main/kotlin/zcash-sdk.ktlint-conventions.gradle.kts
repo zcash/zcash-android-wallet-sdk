@@ -14,7 +14,10 @@ dependencies {
 
 tasks {
     val editorConfigFile = rootProject.file("tools/.editorconfig")
-    val ktlintArgs = listOf("**/src/**/*.kt", "!**/build/**.kt", "--editorconfig=$editorConfigFile")
+    val ktlintArgs =
+        listOf("**/src/**/*.kt", "!**/build/**.kt") +
+            AGENT_DIRECTORY_EXCLUDES.map { "!$it" } +
+            listOf("--editorconfig=$editorConfigFile")
 
     register("ktlint", org.gradle.api.tasks.JavaExec::class) {
         description = "Check code style with ktlint"
