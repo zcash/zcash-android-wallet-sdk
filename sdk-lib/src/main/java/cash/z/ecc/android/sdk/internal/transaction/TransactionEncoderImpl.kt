@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.ext.masked
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
+import cash.z.ecc.android.sdk.internal.ext.toProposalException
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
@@ -39,9 +40,14 @@ internal class TransactionEncoderImpl(
      *
      * @return the proposal or an exception
      *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * requested payment together with its fee
      * @throws TransactionEncoderException.ProposalFromUriException
      */
-    @Throws(TransactionEncoderException.ProposalFromUriException::class)
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromUriException::class
+    )
     override suspend fun proposeTransferFromUri(
         account: Account,
         uri: String
@@ -60,11 +66,14 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal from URI String." }
         }.getOrElse {
-            throw TransactionEncoderException.ProposalFromUriException(it)
+            throw it.toProposalException(TransactionEncoderException::ProposalFromUriException)
         }
     }
 
-    @Throws(TransactionEncoderException.ProposalFromParametersException::class)
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
     override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal {
         Twig.debug { "creating proposal to migrate the Orchard balance into Ironwood" }
 
@@ -75,11 +84,14 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating the migration proposal." }
         }.getOrElse {
-            throw TransactionEncoderException.ProposalFromParametersException(it)
+            throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
         }
     }
 
-    @Throws(TransactionEncoderException.ProposalFromParametersException::class)
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
     override suspend fun proposeTransfer(
         account: Account,
         recipient: String,
@@ -103,11 +115,14 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal." }
         }.getOrElse {
-            throw TransactionEncoderException.ProposalFromParametersException(it)
+            throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
         }
     }
 
-    @Throws(TransactionEncoderException.ProposalShieldingException::class)
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalShieldingException::class
+    )
     override suspend fun proposeShielding(
         account: Account,
         shieldingThreshold: Zatoshi,
@@ -117,14 +132,11 @@ internal class TransactionEncoderImpl(
         runCatching {
             backend.proposeShielding(account, shieldingThreshold.value, memo, transparentReceiver)
         }.onFailure {
-            // TODO [#680]: if this error matches: Insufficient balance (have 0, need 1000 including fee)
-            //  then consider custom error that says no UTXOs existed to shield
-            // TODO [#680]: https://github.com/zcash/zcash-android-wallet-sdk/issues/680
             Twig.error(it) { "proposeShielding failed" }
         }.onSuccess { result ->
             Twig.info { "Result of proposeShielding: ${result?.toPrettyString()}" }
         }.getOrElse {
-            throw TransactionEncoderException.ProposalShieldingException(it)
+            throw it.toProposalException(TransactionEncoderException::ProposalShieldingException)
         }
 
     @Throws(
