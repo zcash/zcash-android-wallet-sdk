@@ -107,6 +107,7 @@ use crate::utils::{
 };
 
 mod eip681;
+mod payment_uri;
 mod migration;
 mod migration_engine;
 mod migration_keystone;
