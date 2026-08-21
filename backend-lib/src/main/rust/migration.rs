@@ -43,6 +43,7 @@ use jni::{
 use prost::Message;
 use rand::rngs::OsRng;
 use rusqlite::Connection;
+use std::num::NonZeroUsize;
 use std::ptr;
 
 use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
@@ -63,12 +64,13 @@ use zcash_pool_migration::{
     engine::{
         self, MigrationCrypto, MigrationPlan, MigrationState, MigrationTransaction,
         MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead,
-        PoolMigrationWrite, ProveError,
+        PoolMigrationWrite, ProveError, RunSizing,
     },
-    preparation::{PrepInput, PreparationPlan},
+    preparation::{PrepInput, PreparationPlan, default_portfolio},
     satisfiability::{
         AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, advance_migration,
     },
+    signing_rounds::RunSigningCapacity,
     state::{AdvanceStep, NextAction, StepKind},
 };
 
@@ -111,6 +113,63 @@ const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
 /// transfer. 100,000 zatoshi = 0.001 ZEC. A fixed protocol-level constant, not derived from wallet
 /// or account state, so it needs no database access to read.
 pub const MIGRATION_DUST_THRESHOLD_ZATOSHI: u64 = 100_000;
+
+/// The per-run prepared-note cap for zodl's own in-process signer, well above the crate's
+/// [`MIGRATION_MAX_PREPARED_NOTES_PER_RUN`](zcash_pool_migration::denomination::MIGRATION_MAX_PREPARED_NOTES_PER_RUN)
+/// default of 50. That default exists to bound a run's transaction/proving cost for a signer that
+/// must sign it within a per-round action budget (Keystone); zodl's own signer has no such round
+/// to bound, so a larger cap just means fewer runs (and so fewer background sync/broadcast
+/// campaigns) for the same wallet, at the cost of a longer single planning/proving pass.
+const ZODL_MAX_PREPARED_NOTES_PER_RUN: NonZeroUsize = match NonZeroUsize::new(200) {
+    Some(v) => v,
+    None => panic!("nonzero"),
+};
+
+/// The single knob that decides how a migration run is sized, shared by every caller that plans
+/// or previews one (`compute_plan`, `estimateMigrationRunCountNative`) so the two can never drift
+/// apart — see those callers' own docs for why a mismatch between the previewed run count and the
+/// actually-planned run is a real, silent-failure-mode bug, not just a cosmetic inconsistency.
+///
+/// Keystone signs one round per manual QR scan (minutes of user time), so a Keystone run is sized
+/// to fit one round (96 actions) rather than a fixed note count — a run's action count follows the
+/// wallet's fragmentation, so a note cap alone cannot promise that (see
+/// `zcash_pool_migration::signing_rounds` module doc). zodl's own in-process signer has no such
+/// per-round cost, so it keeps a note-cap sizing instead — just a much larger cap than the crate's
+/// Keystone-oriented 50-note default (see [`ZODL_MAX_PREPARED_NOTES_PER_RUN`]).
+fn run_sizing_for(is_keystone: bool) -> RunSizing {
+    if is_keystone {
+        RunSizing::Signer(RunSigningCapacity::KEYSTONE)
+    } else {
+        RunSizing::Notes(ZODL_MAX_PREPARED_NOTES_PER_RUN)
+    }
+}
+
+#[cfg(test)]
+mod run_sizing_for_tests {
+    use super::*;
+
+    // No wallet fixture needed — this pins the exact mapping `compute_plan` and
+    // `estimateMigrationRunCountNative` both delegate to, so a future edit that swaps
+    // `RunSigningCapacity::KEYSTONE` for a different capacity, or reuses `RunSizing::Notes` for a
+    // Keystone account, fails here immediately instead of silently compiling and passing the rest
+    // of the suite (see the MOB-1760 code-review finding this test was added to close).
+
+    #[test]
+    fn keystone_accounts_use_signer_capacity() {
+        assert_eq!(
+            run_sizing_for(true),
+            RunSizing::Signer(RunSigningCapacity::KEYSTONE)
+        );
+    }
+
+    #[test]
+    fn non_keystone_accounts_use_the_zodl_note_cap() {
+        assert_eq!(
+            run_sizing_for(false),
+            RunSizing::Notes(ZODL_MAX_PREPARED_NOTES_PER_RUN)
+        );
+    }
+}
 
 pub(crate) type Wallet = zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, OsRng>;
 
@@ -374,6 +433,8 @@ fn natural_anchor_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
 /// JNI-free — see `open_at`'s doc comment. Every `MIGRATION_DIAG` log line this crate has needed
 /// so far to diagnose a live bug (anchor/witness resolution, schedule spread, note-split
 /// detection) came from here or `migration_finalize`, both callable directly from `cargo test`.
+///
+/// Run sizing branches on `Backend::is_keystone` (see [`run_sizing_for`]'s doc for why).
 fn compute_plan(
     network: &Network,
     wallet: &Wallet,
@@ -382,8 +443,14 @@ fn compute_plan(
 ) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
     let backend = Backend::new(wallet, account, store_conn, *wallet.params())?;
     let mut rng = OsRng;
-    let migration_plan = engine::plan_migration(network, &backend, &mut rng)
-        .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
+    let migration_plan = engine::plan_migration_sized_with(
+        &default_portfolio(),
+        run_sizing_for(backend.is_keystone()),
+        network,
+        &backend,
+        &mut rng,
+    )
+    .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
     let prep = migration_plan.preparation();
     tracing::debug!(
         "MIGRATION_DIAG plan: preparation has {} layer(s), {} prep transaction(s) total, {} \
@@ -1864,8 +1931,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
-/// How many successive migration runs (see `engine::estimate_migration_runs`'s doc) the account's
-/// current Orchard balance would need, given the engine's per-run note cap. Purely a stateless
+/// How many successive migration runs (see `engine::estimate_migration_runs_sized_with`'s doc) the
+/// account's current Orchard balance would need, sized by [`run_sizing_for`] exactly as
+/// `compute_plan` sizes the run it actually plans. Purely a stateless
 /// preview — it has no memory of prior calls or rounds already committed, so callers must call this
 /// fresh every time they need it rather than caching the result across a multi-round campaign (see
 /// zashi-android's `docs/superpowers/specs/2026-07-22-keystone-multi-round-migration-continuation-design.md`).
@@ -1884,8 +1952,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
         let mut rng = OsRng;
-        let estimate = engine::estimate_migration_runs(&network, &backend, &mut rng)
-            .map_err(|e| anyhow!("Error estimating migration runs: {:?}", e))?;
+        let estimate = engine::estimate_migration_runs_sized_with(
+            &default_portfolio(),
+            run_sizing_for(backend.is_keystone()),
+            &network,
+            &backend,
+            &mut rng,
+        )
+        .map_err(|e| anyhow!("Error estimating migration runs: {:?}", e))?;
         Ok(estimate.run_count() as jint)
     });
     unwrap_exc_or(&mut env, res, 0)
@@ -4287,8 +4361,15 @@ mod live_wallet_edge_case_tests {
     /// Creates a second, synthetic, permanently-unfunded account in `wallet` — not derived from
     /// the real test seed, and never scanned for funds — purely to have a second `AccountUuid` in
     /// the same wallet DB. `seed_byte` just needs to differ per call so two synthetic accounts in
-    /// one test don't collide with each other.
-    fn create_synthetic_account(wallet: &mut Wallet, seed_byte: u8, name: &str) -> AccountUuid {
+    /// one test don't collide with each other. `key_source` is stamped on the account row exactly
+    /// as `AccountDataSource.importKeystoneAccount` (zashi-android `ui-lib`) does for a real
+    /// Keystone import — pass `Some("keystone")` to make `Backend::is_keystone()` read `true`.
+    fn create_synthetic_account(
+        wallet: &mut Wallet,
+        seed_byte: u8,
+        name: &str,
+        key_source: Option<&str>,
+    ) -> AccountUuid {
         let tip = wallet
             .chain_height()
             .expect("chain height")
@@ -4297,7 +4378,7 @@ mod live_wallet_edge_case_tests {
             AccountBirthday::from_parts(ChainState::empty(tip, BlockHash([0; 32])), None);
         let seed = SecretVec::new(vec![seed_byte; 32]);
         let (account, _usk) = wallet
-            .create_account(name, &seed, &birthday, None)
+            .create_account(name, &seed, &birthday, key_source)
             .expect("create synthetic account");
         account
     }
@@ -4339,7 +4420,7 @@ mod live_wallet_edge_case_tests {
         let network = Network::TestNetwork;
         let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
         let account_a = first_account(&wallet);
-        let account_b = create_synthetic_account(&mut wallet, 0x42, "edge-case-account-b");
+        let account_b = create_synthetic_account(&mut wallet, 0x42, "edge-case-account-b", None);
         assert_ne!(account_a, account_b);
 
         // Plan + commit an (unsigned) migration for account A only — account B is never touched.
@@ -4846,16 +4927,60 @@ mod live_wallet_edge_case_tests {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
         let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
-        let account_b = create_synthetic_account(&mut wallet, 0x43, "edge-case-empty-account");
+        let account_b =
+            create_synthetic_account(&mut wallet, 0x43, "edge-case-empty-account", None);
 
-        let backend = Backend::new(&wallet, account_b, &mut store_conn, network)
-            .expect("account exists for migration store");
-        let mut rng = OsRng;
-        let result = engine::plan_migration(&network, &backend, &mut rng);
+        // Through `compute_plan`, not a raw `engine::plan_migration` call: every real planning
+        // call site is `is_keystone`-aware (`run_sizing_for`), and this was the last place in the
+        // file still bypassing it — harmless here only because a zero-note account hits
+        // NothingToMigrate before any sizing knob matters, but a bad precedent for anyone copying
+        // this test's shape against a funded account later.
+        let result = compute_plan(&network, &wallet, account_b, &mut store_conn);
+        let err = result.expect_err("an account with zero spendable Orchard notes must error");
         assert!(
-            matches!(result, Err(engine::MigrationError::NothingToMigrate)),
-            "an account with zero spendable Orchard notes must fail cleanly with \
-             NothingToMigrate, not panic or return a bogus plan: got {result:?}"
+            format!("{err:?}").contains("NothingToMigrate"),
+            "must fail cleanly with NothingToMigrate, not some other error: got {err:?}"
+        );
+    }
+
+    /// `Backend::is_keystone` — the signal `compute_plan`/`estimateMigrationRunCountNative` use to
+    /// pick signer-capacity sizing over the plain note-cap default — must read the account's
+    /// `key_source` exactly as `AccountDataSource.importKeystoneAccount` (zashi-android `ui-lib`)
+    /// stamps it: `"keystone"`, case-insensitively; anything else (including no key_source at
+    /// all, zodl's own accounts) must read `false`.
+    #[test]
+    #[ignore = "requires MIGRATION_TEST_WALLET_DB"]
+    fn backend_is_keystone_reflects_the_accounts_key_source() {
+        let db_path = fresh_test_db_copy(&fixture_db_path());
+        let network = Network::TestNetwork;
+        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let keystone_account =
+            create_synthetic_account(&mut wallet, 0x44, "keystone-account", Some("Keystone"));
+        let zodl_account =
+            create_synthetic_account(&mut wallet, 0x45, "zodl-account", Some("zashi"));
+        let unspecified_account =
+            create_synthetic_account(&mut wallet, 0x46, "unspecified-account", None);
+
+        let keystone_backend = Backend::new(&wallet, keystone_account, &mut store_conn, network)
+            .expect("account exists for migration store");
+        assert!(
+            keystone_backend.is_keystone(),
+            "key_source \"Keystone\" (mixed case) must read as a Keystone account"
+        );
+
+        let zodl_backend = Backend::new(&wallet, zodl_account, &mut store_conn, network)
+            .expect("account exists for migration store");
+        assert!(
+            !zodl_backend.is_keystone(),
+            "key_source \"zashi\" must not read as a Keystone account"
+        );
+
+        let unspecified_backend =
+            Backend::new(&wallet, unspecified_account, &mut store_conn, network)
+                .expect("account exists for migration store");
+        assert!(
+            !unspecified_backend.is_keystone(),
+            "an account with no key_source must not read as a Keystone account"
         );
     }
 }
