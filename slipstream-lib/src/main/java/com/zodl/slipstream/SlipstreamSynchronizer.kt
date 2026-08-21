@@ -1006,7 +1006,12 @@ class SlipstreamSynchronizer internal constructor(
     ): Pczt {
         awaitReady()
         return runCatchingCancellable { spendService.createPcztFromProposal(accountUuid, proposal) }
-            .getOrElse { throw PcztException.CreatePcztFromProposalException(it.message, it) }
+            .getOrElse {
+                throw when (it) {
+                    is PcztException.MultiStepProposalUnsupportedException -> it
+                    else -> PcztException.CreatePcztFromProposalException(it.message, it)
+                }
+            }
     }
 
     override suspend fun redactPcztForSigner(pczt: Pczt): Pczt {

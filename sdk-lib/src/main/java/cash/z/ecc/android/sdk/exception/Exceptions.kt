@@ -520,6 +520,20 @@ sealed class PcztException(
             "Failed to extract and store transaction from PCZT with message: ${description ?: "-"}",
             cause
         )
+
+    /**
+     * Signals that the given proposal needs more than one transaction to be fulfilled, which the PCZT
+     * (external signer) flow cannot express. Only TEX (ZIP-320) payments currently produce multi-step
+     * proposals, so this is what a caller sees when it tries to pay a TEX address with an account whose
+     * key material lives in an external signer.
+     */
+    class MultiStepProposalUnsupportedException(
+        cause: Throwable? = null
+    ) : PcztException(
+            "PCZT generation does not support multi-step proposals. Only TEX (ZIP-320) payments currently produce " +
+                "multi-step proposals, so this proposal cannot be fulfilled by an external PCZT signer.",
+            cause
+        )
 }
 
 /**
@@ -586,6 +600,20 @@ sealed class TransactionEncoderException(
         val rootCause: Throwable
     ) : TransactionEncoderException(
             "The attempt to create a new proposal for shielding operation from the given parameters failed due to: " +
+                "${rootCause.message}",
+            rootCause
+        )
+
+    /**
+     * Signals that a proposal could not be created because the account does not hold enough spendable
+     * funds to cover the requested amount together with the required fee. Replaces the generic
+     * [ProposalFromParametersException]/[ProposalFromUriException]/[ProposalShieldingException] for
+     * this specific failure, so that callers can react to it by type instead of by error message.
+     */
+    data class InsufficientFundsException(
+        val rootCause: Throwable
+    ) : TransactionEncoderException(
+            "The proposal could not be created because the wallet lacks sufficient spendable funds: " +
                 "${rootCause.message}",
             rootCause
         )

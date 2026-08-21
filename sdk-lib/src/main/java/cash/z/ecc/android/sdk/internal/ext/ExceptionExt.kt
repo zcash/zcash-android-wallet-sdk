@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal.ext
 
+import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.internal.Twig
 
 @Suppress("SwallowedException", "TooGenericExceptionCaught")
@@ -73,3 +74,51 @@ internal fun Throwable.isScanContinuityError(): Boolean {
     }
     return false
 }
+
+// Note: Do NOT change these texts as they match the ones the proposal machinery of
+// librustzcash/zcash_client_backend reports when an account cannot cover a spend. They are the only
+// signal the FFI gives us for this failure (cf. issue #680).
+internal const val INSUFFICIENT_BALANCE = "Insufficient balance" // $NON-NLS
+internal const val ADDITIONAL_CHANGE_OUTPUT_REQUIRED =
+    "The transaction requires an additional change output of" // $NON-NLS
+
+private const val CAUSE_CHAIN_MAX_DEPTH = 10
+
+/**
+ * Check whether this error - or any error within the first [CAUSE_CHAIN_MAX_DEPTH] links of its cause
+ * chain - is the Rust layer reporting that the account lacks the spendable funds a proposal needs.
+ * The walk is bounded and cycle-safe, as a cause chain coming across the FFI is not guaranteed to be
+ * either.
+ *
+ * @return true in case of the check match, false otherwise
+ */
+internal fun Throwable.indicatesInsufficientFunds(): Boolean {
+    val markers = listOf(INSUFFICIENT_BALANCE, ADDITIONAL_CHANGE_OUTPUT_REQUIRED)
+    val visited = mutableSetOf<Throwable>()
+    var current: Throwable? = this
+    var depth = 0
+    while (current != null && depth < CAUSE_CHAIN_MAX_DEPTH && visited.add(current)) {
+        val message = current.message
+        if (message != null && markers.any { message.contains(it, ignoreCase = true) }) {
+            return true
+        }
+        current = current.cause
+        depth++
+    }
+    return false
+}
+
+/**
+ * Maps a failed proposal attempt onto the typed exception that describes it: an insufficient-funds
+ * failure - whatever the propose operation was - becomes
+ * [TransactionEncoderException.InsufficientFundsException]; anything else is handed to the
+ * per-operation [fallback] wrapper.
+ */
+internal fun Throwable.toProposalException(
+    fallback: (Throwable) -> TransactionEncoderException
+): TransactionEncoderException =
+    if (indicatesInsufficientFunds()) {
+        TransactionEncoderException.InsufficientFundsException(this)
+    } else {
+        fallback(this)
+    }

@@ -31,6 +31,7 @@ import cash.z.ecc.android.sdk.internal.db.derived.DbDerivedDataRepository
 import cash.z.ecc.android.sdk.internal.db.derived.DerivedDataDb
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
+import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
@@ -1156,7 +1157,10 @@ class SdkSynchronizer private constructor(
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
         proposal: Proposal
-    ) = txManager.createPcztFromProposal(accountUuid, proposal)
+    ): Pczt {
+        proposal.requireSingleStepForPczt()
+        return txManager.createPcztFromProposal(accountUuid, proposal)
+    }
 
     override suspend fun redactPcztForSigner(pczt: Pczt) = txManager.redactPcztForSigner(pczt)
 

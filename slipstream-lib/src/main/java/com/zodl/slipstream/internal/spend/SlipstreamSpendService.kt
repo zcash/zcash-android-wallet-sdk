@@ -2,7 +2,11 @@
 
 package com.zodl.slipstream.internal.spend
 
+import cash.z.ecc.android.sdk.exception.PcztException
+import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
+import cash.z.ecc.android.sdk.internal.ext.toProposalException
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -15,6 +19,7 @@ import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import com.zodl.slipstream.internal.SlipstreamEngine
+import com.zodl.slipstream.internal.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -45,35 +50,69 @@ internal class SlipstreamSpendService(
     private val ensureSaplingParams: suspend () -> Unit,
     private val readRawTransaction: suspend (FirstClassByteArray) -> FirstClassByteArray
 ) {
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
     suspend fun proposeTransfer(
         account: Account,
         recipient: String,
         amount: Zatoshi,
         memo: String
-    ): Proposal = Proposal.fromUnsafe(backend.proposeTransfer(account.accountUuid.value, recipient, amount.value, memo.toMemoBytesOrNull()))
+    ): Proposal =
+        runCatchingCancellable {
+            Proposal.fromUnsafe(backend.proposeTransfer(account.accountUuid.value, recipient, amount.value, memo.toMemoBytesOrNull()))
+        }.getOrElse {
+            throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+        }
 
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromUriException::class
+    )
     suspend fun proposeFulfillingPaymentUri(
         account: Account,
         uri: String
-    ): Proposal = Proposal.fromUnsafe(backend.proposeTransferFromUri(account.accountUuid.value, uri))
+    ): Proposal =
+        runCatchingCancellable {
+            Proposal.fromUnsafe(backend.proposeTransferFromUri(account.accountUuid.value, uri))
+        }.getOrElse {
+            throw it.toProposalException(TransactionEncoderException::ProposalFromUriException)
+        }
 
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalShieldingException::class
+    )
     suspend fun proposeShielding(
         account: Account,
         shieldingThreshold: Zatoshi,
         memo: String,
         transparentReceiver: String?
     ): Proposal? =
-        backend
-            .proposeShielding(account.accountUuid.value, shieldingThreshold.value, memo.toMemoBytesOrNull(), transparentReceiver)
-            ?.let(Proposal::fromUnsafe)
+        runCatchingCancellable {
+            backend
+                .proposeShielding(account.accountUuid.value, shieldingThreshold.value, memo.toMemoBytesOrNull(), transparentReceiver)
+                ?.let(Proposal::fromUnsafe)
+        }.getOrElse {
+            throw it.toProposalException(TransactionEncoderException::ProposalShieldingException)
+        }
 
     /**
      * Proposes the one-shot Orchard to Ironwood crossing: a single transaction carrying the
      * account's entire Orchard balance, which any chain observer can read off as such. The
      * scheduled, denomination-splitting alternative is [com.zodl.slipstream.MigrationSdk].
      */
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
     suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
-        Proposal.fromUnsafe(backend.proposeOrchardToIronwoodMigration(account.accountUuid.value))
+        runCatchingCancellable {
+            Proposal.fromUnsafe(backend.proposeOrchardToIronwoodMigration(account.accountUuid.value))
+        }.getOrElse {
+            throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+        }
 
     /**
      * Store-first (S-SPEND): `create` already wrote the transactions into `data.db`, so the FIRST
@@ -95,10 +134,14 @@ internal class SlipstreamSpendService(
             engine.notifyTxChange()
         }
 
+    @Throws(PcztException.MultiStepProposalUnsupportedException::class)
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
         proposal: Proposal
-    ): Pczt = Pczt(backend.createPcztFromProposal(accountUuid.value, proposal.toUnsafe()))
+    ): Pczt {
+        proposal.requireSingleStepForPczt()
+        return Pczt(backend.createPcztFromProposal(accountUuid.value, proposal.toUnsafe()))
+    }
 
     suspend fun redactPcztForSigner(pczt: Pczt): Pczt = Pczt(backend.redactPcztForSigner(pczt.toByteArray()))
 

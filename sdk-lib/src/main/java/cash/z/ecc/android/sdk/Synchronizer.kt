@@ -328,6 +328,11 @@ interface Synchronizer {
      * @param memo the optional memo to include as part of the proposal's transactions.
      *
      * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * requested amount together with the required fee
+     * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot be
+     * created for any other reason
      */
     suspend fun proposeTransfer(
         account: Account,
@@ -357,6 +362,8 @@ interface Synchronizer {
      *
      * @return the proposal or an exception
      *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * migration together with the required fee
      * @throws TransactionEncoderException.ProposalFromParametersException if NU6.3 is not
      * active, if any Orchard note is not yet spendable, or if the proposal cannot be created
      */
@@ -369,6 +376,11 @@ interface Synchronizer {
      * @param uri a ZIP-321 compliant payment URI String
      *
      * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * requested payment together with the required fee
+     * @throws TransactionEncoderException.ProposalFromUriException if the proposal cannot be created
+     * for any other reason
      */
     suspend fun proposeFulfillingPaymentUri(
         account: Account,
@@ -390,8 +402,11 @@ interface Synchronizer {
      * @return the proposal, or null if the transparent balance that would be shielded is
      *         zero or below `shieldingThreshold`.
      *
-     * @throws Exception if `transparentReceiver` is null and there are transparent funds
-     *         in more than one of the account's transparent receivers.
+     * @throws TransactionEncoderException.InsufficientFundsException if the transparent funds do not
+     *         cover the required fee
+     * @throws TransactionEncoderException.ProposalShieldingException if the proposal cannot be
+     *         created for any other reason, e.g. if `transparentReceiver` is null and there are
+     *         transparent funds in more than one of the account's transparent receivers.
      */
     suspend fun proposeShielding(
         account: Account,
@@ -427,9 +442,14 @@ interface Synchronizer {
      *
      * @return The partially created transaction in [Pczt] format.
      *
+     * @throws PcztException.MultiStepProposalUnsupportedException if the proposal needs more than one
+     * transaction, which an external PCZT signer cannot fulfill
      * @throws PcztException.CreatePcztFromProposalException as a common indicator of the operation failure
      */
-    @Throws(PcztException.CreatePcztFromProposalException::class)
+    @Throws(
+        PcztException.MultiStepProposalUnsupportedException::class,
+        PcztException.CreatePcztFromProposalException::class
+    )
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
         proposal: Proposal
