@@ -63,4 +63,26 @@ class PaymentUriParserTest {
                 parser.parse("bitcoin:not-an-address")
             }
         }
+
+    @Test
+    @SmallTest
+    fun parsesSolanaTransactionLink() =
+        runTest {
+            val parser = PaymentUriParser.new()
+            val transaction =
+                assertIs<PaymentUriRequest.SolanaTransaction>(
+                    parser.parse("solana:https%3A%2F%2Fexample.com%2Fsolana-pay%3Forder%3D12345")
+                )
+            assertEquals("https://example.com/solana-pay?order=12345", transaction.link.value)
+        }
+
+    @Test
+    @SmallTest
+    fun rejectsUnencodedSolanaTransactionLink() =
+        runTest {
+            val parser = PaymentUriParser.new()
+            assertFailsWith<InvalidPaymentUriException> {
+                parser.parse("solana:https://example.com/solana-pay?order=12345")
+            }
+        }
 }
