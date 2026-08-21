@@ -9,9 +9,42 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Updated the librustzcash crates to their final releases: `zcash_client_backend 0.24.0`,
   `zcash_client_sqlite 0.22.0`, `zcash_pool_migration 0.1.0`, `zcash_primitives 0.30.1` and
-  `zip321 0.9.0`, and the Slipstream sync engine to `zodl-slipstream 0.2.0`. A wallet database
-  is now migrated by the finalized `zcash_client_sqlite` schema rather than a release
-  candidate's.
+  `zip321 0.9.0`. A wallet database is now migrated by the finalized `zcash_client_sqlite`
+  schema rather than a release candidate's.
+- `Synchronizer.broadcaster` no longer has a default implementation: any implementer or test
+  fake must now provide it. `SdkSynchronizer` (what `Synchronizer.new` returns) already does, so
+  callers are unaffected.
+- `Synchronizer.syncBurst`, `Synchronizer.syncToTip`, `Synchronizer.restartSyncSession` and
+  `enum Synchronizer.SyncBurstResult` are removed. `SdkSynchronizer` never drove them (they
+  returned `SyncBurstResult.UNAVAILABLE` / `false`), so a call site that stops compiling can be
+  deleted without replacement; the engine advances only through `start()` / `onForeground()`.
+- `CloseableSynchronizer.pause()` and `CloseableSynchronizer.resume()` are removed. Calls and
+  overrides stop compiling and should be deleted. **Privacy:** with them goes the only way to hold
+  a live synchronizer's network traffic back without closing it, so the SDK no longer decorrelates
+  sync polling from a migration broadcast on the host's behalf. `OrchardMigrationSdk.isSyncBlocked()`
+  still reports when that separation is wanted, but it is advisory: a wallet that relied on
+  `pause()` for it must now close its synchronizer (or defer constructing one) while the flow is
+  true, and design its UI for the synchronizer being absent during that window.
+- `WalletCoordinator`'s constructor loses the `isSyncBlocked: Flow<Boolean>` and
+  `isSlipstreamEnabled: Boolean` parameters. Positional construction will not compile, and a
+  named `isSyncBlocked =` / `isSlipstreamEnabled =` argument must be removed. The coordinator
+  always constructs `Synchronizer.new` and no longer reacts to a sync block; see the
+  `CloseableSynchronizer.pause()` entry above for what that means for migration privacy.
+
+### Removed
+- The `com.zodl.slipstream` package and the sync engine behind it: `SlipstreamSynchronizer`,
+  `SlipstreamWalletDb`, `SlipstreamSyncException`, `SlipstreamNotReadyException`,
+  `SlipstreamEvent`, `SlipstreamSnapshot`, `SlipstreamRestoreAnchor`, `SlipstreamWalletSummary`,
+  `SlipstreamAccountBalance`, `SlipstreamPoolBalance`, `SlipstreamScanProgress`,
+  `SlipstreamTransactionRow`, `SlipstreamRawTransaction`, `SlipstreamTxOutputRow` and
+  `SlipstreamResubmissionRow`, together with the `Java_com_zodl_slipstream_*` exports of
+  `libzcashwalletsdk.so` and the `com.zodl.slipstream` consumer ProGuard rules. The SDK now ships
+  a single sync engine, `SdkSynchronizer` over `CompactBlockProcessor`.
+- The native library no longer links any AGPL-3.0 code: the `zodl-slipstream` crate is gone from
+  the dependency graph, and every published artifact (the `zcash-android-sdk` AAR and the native
+  libraries inside it) is MIT-licensed throughout. No dependency carries a licence that places
+  obligations on the linking application; the few MPL-2.0 crates that remain are file-scoped and
+  shipped unmodified.
 
 ### Fixed
 - Resubmission no longer permanently drops a pending submit plan for a wallet-created transaction
@@ -20,9 +53,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store read is inconclusive (MOB-1717).
 - A transaction whose raw bytes cannot be read during resubmission is skipped and retried next
   sync cycle instead of aborting the sync pass with `TransactionNotFoundException` (MOB-1717).
-- Slipstream's post-create transaction readback reads the `transactions` base table instead of
-  `v_transactions`, so sending/shielding no longer fails when the history view has not projected
-  the newly created transaction (MOB-1717).
 
 ## [3.0.2] - 2026-08-13
 

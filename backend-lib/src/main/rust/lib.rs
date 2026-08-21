@@ -122,14 +122,6 @@ mod utils;
 #[cfg(zcash_voting)]
 mod voting;
 
-/// The Slipstream sync engine's JNI binding, folded in as a module so its
-/// `Java_com_zodl_slipstream_*` `#[unsafe(no_mangle)]` exports link directly into this cdylib
-/// (no dependency-GC concern, unlike the former re-exported crate). Gated behind the
-/// off-by-default `slipstream` feature, which also pulls in the `slipstream-core` engine
-/// dependency and its `tokio` runtime (see backend-lib/Cargo.toml).
-#[cfg(feature = "slipstream")]
-mod slipstream;
-
 #[cfg(debug_assertions)]
 fn print_debug_state() {
     debug!("WARNING! Debugging enabled! This will likely slow things down 10X!");

@@ -144,7 +144,7 @@ build-release: ## Build every module in release mode
 check: check-properties check-format lint test ## Run all checks
 
 .PHONY: check-all
-check-all: check check-format-rust lint-rust test-rust ## All checks, incl. Rust
+check-all: check check-format-rust lint-rust test-rust deny-rust ## All checks, incl. Rust
 
 .PHONY: check-format
 check-format: ktlint ## Check formatting (Kotlin)
@@ -322,6 +322,10 @@ format-rust: ## Format the Rust crate with rustfmt
 .PHONY: check-format-rust
 check-format-rust: ## Check the Rust formatting
 	cd $(RUST_DIR) && $(CARGO) fmt --all --check
+
+.PHONY: deny-rust
+deny-rust: ## Check the Rust dependency graph against backend-lib/deny.toml (licences, sources)
+	cd $(RUST_DIR) && $(CARGO) deny check licenses sources
 
 .PHONY: clean-rust
 clean-rust: ## Clean the Cargo build artifacts

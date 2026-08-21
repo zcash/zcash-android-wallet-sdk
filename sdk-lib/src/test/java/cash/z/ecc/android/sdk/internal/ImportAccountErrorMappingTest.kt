@@ -1,7 +1,6 @@
-package com.zodl.slipstream
+package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.exception.InitializeException
-import cash.z.ecc.android.sdk.internal.ImportAccountErrors
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

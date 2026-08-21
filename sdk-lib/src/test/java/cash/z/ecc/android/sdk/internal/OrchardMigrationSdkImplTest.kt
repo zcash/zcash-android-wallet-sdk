@@ -631,7 +631,7 @@ class OrchardMigrationSdkImplTest {
      * Regression test for the fix itself: before this fix, `isSyncBlockedNow` used
      * `hasOverdueTransfers()` (no estimated tip) — a blanket "does anything exist overdue
      * anywhere in the plan" scan that stays true for the plan's whole duration on a fast chain
-     * (e.g. testnet), permanently starving `syncRun()`'s `syncToTip()` call. `nextStep()` reporting
+     * (e.g. testnet), permanently starving the worker's sync-to-tip step. `nextStep()` reporting
      * `Waiting` (code 0) — even while some transfer elsewhere in the plan is nominally overdue —
      * must NOT block sync: only an imminent broadcast should.
      */
