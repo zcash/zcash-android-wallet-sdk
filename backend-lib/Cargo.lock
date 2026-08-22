@@ -1503,8 +1503,7 @@ dependencies = [
 [[package]]
 name = "eip681"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f3c9c0416f224ce25ea2b710bf8abd4e5e41e41fe8e75685ae1519d5d5d2276"
+source = "git+https://github.com/zcash/librustzcash.git?rev=3460a6a7be8d3e86b7556b38738e05e95a940f68#3460a6a7be8d3e86b7556b38738e05e95a940f68"
 dependencies = [
  "base64",
  "ens-normalize-rs",
@@ -3400,6 +3399,18 @@ name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
+name = "payment_uri"
+version = "0.1.0"
+source = "git+https://github.com/zcash/librustzcash.git?rev=3460a6a7be8d3e86b7556b38738e05e95a940f68#3460a6a7be8d3e86b7556b38738e05e95a940f68"
+dependencies = [
+ "bech32",
+ "bs58",
+ "eip681",
+ "percent-encoding",
+ "serde_json",
+]
 
 [[package]]
 name = "pbkdf2"
@@ -7534,6 +7545,7 @@ dependencies = [
  "orchard",
  "paranoid-android",
  "pasta_curves",
+ "payment_uri",
  "pczt",
  "prost 0.14.4",
  "rand 0.8.7",
