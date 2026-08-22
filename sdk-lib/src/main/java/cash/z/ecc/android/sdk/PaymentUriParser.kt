@@ -13,7 +13,18 @@ import cash.z.ecc.android.sdk.model.SolanaPayTransferRequest
 import cash.z.ecc.android.sdk.model.UtxoPaymentUriRequest
 import org.json.JSONObject
 
-/** Rust-backed parser for supported cross-chain payment request URIs. */
+/**
+ * Rust-backed parser for supported cross-chain payment request URIs, backed by librustzcash's
+ * `payment_uri` crate. Covers Bitcoin/Litecoin on-chain transfers (the on-chain subset of
+ * [BIP 321](https://github.com/bitcoin/bips/blob/master/bip-0321.mediawiki) / legacy
+ * [BIP 21](https://github.com/bitcoin/bips/blob/master/bip-0021.mediawiki)), EIP-681 Ethereum
+ * requests (native and ERC-20 transfers; other ABI calls decode as
+ * [Eip681PaymentRequest.Unrecognised]), and
+ * [Solana Pay](https://github.com/solana-foundation/solana-pay/blob/master/SPEC.md)
+ * native/SPL-token transfers and interactive transaction-request links. All actual protocol
+ * parsing and validation happens in the Rust crate; this class only decodes its versioned JSON
+ * result into these Kotlin types.
+ */
 class PaymentUriParser private constructor(
     private val paymentUri: PaymentUri
 ) {
