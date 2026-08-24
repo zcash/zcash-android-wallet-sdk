@@ -29,7 +29,12 @@ internal fun JniVotingHotkey.toPublic(): VotingHotkey =
     VotingHotkey(storedSecret = storedSecret, rawAddress = rawAddress, address = address)
 
 internal fun JniBundleSetupResult.toPublic(): VotingBundleSetupResult =
-    VotingBundleSetupResult(bundleCount = bundleCount, eligibleWeight = eligibleWeight, bundleWeights = bundleWeights)
+    VotingBundleSetupResult(
+        bundleCount = bundleCount,
+        eligibleWeight = eligibleWeight,
+        bundleWeights = bundleWeights,
+        droppedCount = droppedCount
+    )
 
 // NOTE: deviates from the brief, which mapped from `JniGovernancePczt`. `TypesafeVotingDb`'s
 // `buildGovernancePczt`/`buildGovernancePcztFromSeed` (pre-existing, not part of this plan)
