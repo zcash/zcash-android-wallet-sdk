@@ -71,6 +71,7 @@
     <string name="balance_transparent">Transparent</string>
     <string name="balance_sapling">Sapling</string>
     <string name="balance_orchard">Orchard</string>
+    <string name="balance_ironwood">Ironwood</string>
     <string name="balance_available_amount_format">Available:
         <xliff:g id="ZEC balance" example="0.3">%1$s</xliff:g>
         (<xliff:g id="USD balance" example="7.2">%2$s</xliff:g> USD)</string>

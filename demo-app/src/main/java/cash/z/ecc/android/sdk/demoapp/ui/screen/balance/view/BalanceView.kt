@@ -141,6 +141,28 @@ private fun BalanceMainContent(
 
         Spacer(Modifier.padding(8.dp))
 
+        Text(stringResource(id = R.string.balance_ironwood))
+        Text(
+            stringResource(
+                id = R.string.balance_available_amount_format,
+                accountBalance.ironwood.available.toZecString(Locale.getDefault()),
+                exchangeRateUsd
+                    ?.multiply(accountBalance.ironwood.available.convertZatoshiToZec())
+                    .toUsdString(Locale.getDefault())
+            )
+        )
+        Text(
+            stringResource(
+                id = R.string.balance_pending_amount_format,
+                accountBalance.ironwood.pending.toZecString(Locale.getDefault()),
+                exchangeRateUsd
+                    ?.multiply(accountBalance.ironwood.pending.convertZatoshiToZec())
+                    .toUsdString(Locale.getDefault())
+            )
+        )
+
+        Spacer(Modifier.padding(8.dp))
+
         Text(stringResource(id = R.string.balance_sapling))
         Text(
             stringResource(
