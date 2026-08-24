@@ -1020,10 +1020,12 @@ interface OrchardMigrationSdk {
     /**
      * The zatoshi value below which a remaining post-migration Orchard balance counts as dust
      * (as opposed to a residual too large to ignore) — e.g. for the Migration Complete screen's
-     * "is the leftover balance negligible" gate. 10,000 zatoshi (0.0001 ZEC) as of this writing.
-     * A fixed protocol-level constant (`MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`), not
-     * derived from any wallet/account state — callers should still call this rather than hardcode
-     * the value, so the app and the Rust engine can't drift apart on what counts as dust.
+     * "is the leftover balance negligible" gate. `2 * MARGINAL_FEE` (10,000 zatoshi / 0.0001 ZEC
+     * as of this writing) per Kris Nuttycombe's migratable-total algorithm — see
+     * `migration_dust_threshold_zatoshi()` in `migration.rs`. Not a bare literal: it tracks
+     * `MARGINAL_FEE`, so it moves automatically if ZIP-317's marginal fee ever changes. Not derived
+     * from any wallet/account state — callers should still call this rather than hardcode the
+     * value, so the app and the Rust engine can't drift apart on what counts as dust.
      */
     suspend fun migrationDustThresholdZatoshi(): Long
 

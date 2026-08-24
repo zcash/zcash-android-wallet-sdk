@@ -480,12 +480,12 @@ class MigrationRustBackend private constructor() {
 
     /**
      * The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
-     * rather than a residual worth migrating in its own transfer — see
-     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` in `migration.rs`. A fixed protocol-level constant, not
-     * derived from any wallet/account state — [SdkDispatchers.CPU_BOUND] (2026-08-07 blocking-
-     * without-reason audit), not [SdkDispatchers.DATABASE_IO]: this never touches a database, so
-     * routing it through the SDK's single shared DB-IO thread bought nothing but contention with
-     * genuine migration DB reads/writes.
+     * rather than a residual worth migrating in its own transfer — `2 * MARGINAL_FEE`, see
+     * `migration_dust_threshold_zatoshi()` in `migration.rs`. Not derived from any wallet/account
+     * state — [SdkDispatchers.CPU_BOUND] (2026-08-07 blocking-without-reason audit), not
+     * [SdkDispatchers.DATABASE_IO]: this never touches a database, so routing it through the SDK's
+     * single shared DB-IO thread bought nothing but contention with genuine migration DB reads/
+     * writes.
      */
     @Throws(RuntimeException::class)
     suspend fun migrationDustThresholdZatoshi(): Long =

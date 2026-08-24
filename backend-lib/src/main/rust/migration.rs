@@ -109,9 +109,17 @@ const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
 
 /// The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
 /// rather than a residual worth migrating in its own (non-round-number, more identifiable)
-/// transfer. 10,000 zatoshi = 0.0001 ZEC. A fixed protocol-level constant, not derived from wallet
-/// or account state, so it needs no database access to read.
-pub const MIGRATION_DUST_THRESHOLD_ZATOSHI: u64 = 10_000;
+/// transfer. Defined as `2 * MARGINAL_FEE` per Kris Nuttycombe's migratable-total algorithm (team
+/// Slack, 2026-08): currently 10,000 zatoshi (0.0001 ZEC), but this now tracks `MARGINAL_FEE`
+/// rather than being a bare literal, so it moves automatically if ZIP-317's marginal fee ever
+/// changes. Not derived from wallet or account state, so it needs no database access to read.
+///
+/// A plain fn, not a `const`, only because [`Zatoshis::into_u64`] (which `u64::from(MARGINAL_FEE)`
+/// goes through) isn't a `const fn` — this is still fixed/deterministic, just recomputed (cheaply)
+/// on every read instead of baked in at compile time.
+fn migration_dust_threshold_zatoshi() -> u64 {
+    u64::from(MARGINAL_FEE) * 2
+}
 
 /// The per-run prepared-note cap for zodl's own in-process signer, well above the crate's
 /// [`MIGRATION_MAX_PREPARED_NOTES_PER_RUN`](zcash_pool_migration::denomination::MIGRATION_MAX_PREPARED_NOTES_PER_RUN)
@@ -3335,10 +3343,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// A pure constant read — [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] is a fixed protocol-level value,
-/// not derived from any wallet or account state, so unlike every other export in this file this
-/// needs no `db_data`/`network_id`/account argument and can't fail or panic (no `catch_unwind` /
-/// `unwrap_exc_or` needed).
+/// A fixed protocol-level value (`2 * MARGINAL_FEE`), not derived from any wallet or account
+/// state, so unlike every other export in this file this needs no `db_data`/`network_id`/account
+/// argument and can't fail or panic (no `catch_unwind` / `unwrap_exc_or` needed).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationDustThresholdZatoshiNative<
     'local,
@@ -3346,7 +3353,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     _env: JNIEnv<'local>,
     _: JClass<'local>,
 ) -> jlong {
-    MIGRATION_DUST_THRESHOLD_ZATOSHI as jlong
+    migration_dust_threshold_zatoshi() as jlong
 }
 
 /// Kris Nuttycombe's per-note "is the leftover balance actually worth prompting to migrate"
@@ -3355,7 +3362,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// `MARGINAL_FEE` cost more to spend than they're worth, so summing net-of-fee value only across
 /// notes actually worth spending answers "how much would the user actually receive if they
 /// migrated everything right now" — replacing the raw aggregate Orchard balance the Kotlin call
-/// site compared against [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] before this.
+/// site compared against [`migration_dust_threshold_zatoshi`] before this.
 ///
 /// [`InputSource::select_unspent_notes`] already applies the `value > MARGINAL_FEE` filter at the
 /// SQL layer (`zcash_client_sqlite::wallet::common::select_unspent_notes`), so every note this
@@ -3368,8 +3375,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// correctly don't count toward it.
 ///
 /// The threshold this total is compared against (`migratable_total > 2 * MARGINAL_FEE`) is left
-/// to the caller: [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] already equals `2 * MARGINAL_FEE`
-/// (10,000 zatoshi), so no new threshold constant is needed — only the total this compares.
+/// to the caller: [`migration_dust_threshold_zatoshi`] already computes `2 * MARGINAL_FEE`, so no
+/// separate threshold is needed here — only the total this compares.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migratableOrchardTotalNative<
     'local,
