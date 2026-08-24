@@ -99,5 +99,14 @@ sealed interface PaymentUriRequest {
     ) : PaymentUriRequest
 }
 
-/** Raised when a payment URI is malformed or unsupported. */
-class InvalidPaymentUriException : IllegalArgumentException("Invalid payment URI")
+/**
+ * Raised when a payment URI is malformed or unsupported. `cause` chains the original failure
+ * (a JNI RuntimeException whose message categorizes the kind of rejection without echoing the
+ * raw URI content, a JSONException from unexpected schema, etc.) for diagnostics -- but this
+ * exception's own message stays fixed and generic, since payment URIs come from untrusted
+ * scanned/pasted input and this SDK's convention is to never splice raw caller-supplied content
+ * into a message that could end up displayed or logged verbatim.
+ */
+class InvalidPaymentUriException(
+    cause: Throwable? = null
+) : IllegalArgumentException("Invalid payment URI", cause)
