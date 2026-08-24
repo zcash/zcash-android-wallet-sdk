@@ -59,10 +59,11 @@ zcash_proofs = "0.30"
 zcash_protocol = "0.10"
 zcash_script = "0.4"
 zip32 = "0.2"
-# TODO: temporary git-rev pin tied to the unmerged zcash/librustzcash#2989 branch -- switch to a
-# published crates.io release once that PR lands, since a rebase/force-push or branch deletion
-# on the other end can make this exact commit unreachable and break reproducible builds.
-payment_uri = { git = "https://github.com/zcash/librustzcash.git", rev = "3460a6a7be8d3e86b7556b38738e05e95a940f68", features = ["json"] }
+# TODO: temporary git-rev pin -- switch to a published crates.io release once payment_uri ships
+# one. Pinned to the zcash/librustzcash#2989 merge commit specifically (not main's moving tip),
+# so this doesn't pick up unrelated later changes; that merge commit is a permanent part of
+# main's history now, so it stays reachable even as main moves on.
+payment_uri = { git = "https://github.com/zcash/librustzcash.git", rev = "330e4c0aa9e25199acdb93a56bf70126d0d3f2b9", features = ["json"] }
 # Used by migration_finalize.rs to read `ShardTreeError`/`QueryError` variants when checking
 # note-witness availability at a migration transaction's anchor boundary.
 shardtree = "0.7"
