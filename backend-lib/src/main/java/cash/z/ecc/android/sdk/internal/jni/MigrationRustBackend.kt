@@ -494,6 +494,23 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
+     * Kris Nuttycombe's per-note "is the leftover balance worth prompting to migrate" total:
+     * `sum(value - MARGINAL_FEE)` over every spendable Orchard note whose value exceeds
+     * `MARGINAL_FEE` — see `migratableOrchardTotalNative` in `migration.rs` for the full doc.
+     * Compare this against [migrationDustThresholdZatoshi] (already `2 * MARGINAL_FEE`), not the
+     * raw aggregate Orchard balance.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migratableOrchardTotal(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migratableOrchardTotalNative(dbDataPath, networkId, accountUuidBytes)
+        }
+
+    /**
      * Lists every account's UUID in the wallet database, independent of any live `Synchronizer`.
      */
     @Throws(RuntimeException::class)
@@ -932,6 +949,14 @@ class MigrationRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun migrationDustThresholdZatoshiNative(): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migratableOrchardTotalNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)

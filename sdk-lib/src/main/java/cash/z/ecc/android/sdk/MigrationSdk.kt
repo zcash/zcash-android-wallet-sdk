@@ -1028,6 +1028,16 @@ interface OrchardMigrationSdk {
     suspend fun migrationDustThresholdZatoshi(): Long
 
     /**
+     * Kris Nuttycombe's per-note "is the leftover balance actually worth prompting to migrate"
+     * total: `sum(value - MARGINAL_FEE)` over every spendable Orchard note whose value exceeds
+     * `MARGINAL_FEE` — notes at or below `MARGINAL_FEE` cost more to spend than they're worth, so
+     * this is "how much the user would actually receive if they migrated everything right now",
+     * not the raw aggregate Orchard balance. Compare against [migrationDustThresholdZatoshi]
+     * (already `2 * MARGINAL_FEE`) rather than a raw wallet-balance total.
+     */
+    suspend fun migratableOrchardTotal(): Long
+
+    /**
      * Marks whatever Orchard balance remains after migration (dust below the migratable
      * threshold, or an opted-out residual) as unspendable, so it can't later be swept into a
      * transaction that reveals its specific — and therefore identifying — amount.

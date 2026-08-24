@@ -46,11 +46,12 @@ use rusqlite::Connection;
 use std::num::NonZeroUsize;
 use std::ptr;
 
-use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
+use zcash_client_backend::data_api::wallet::input_selection::{LockFilter, LockedInputPolicy};
 use zcash_client_backend::data_api::{InputSource, OutputLockStore, WalletRead};
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
 use zcash_client_sqlite::util::SystemClock;
+use zcash_primitives::transaction::fees::zip317::MARGINAL_FEE;
 use zcash_protocol::consensus::{
     BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants, Parameters,
 };
@@ -3346,6 +3347,63 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     _: JClass<'local>,
 ) -> jlong {
     MIGRATION_DUST_THRESHOLD_ZATOSHI as jlong
+}
+
+/// Kris Nuttycombe's per-note "is the leftover balance actually worth prompting to migrate"
+/// total (Zcash Foundation Slack, MOB-1750 follow-up, 2026-08): `sum(value - MARGINAL_FEE)` over
+/// every spendable Orchard note whose value exceeds `MARGINAL_FEE`. Notes at or below
+/// `MARGINAL_FEE` cost more to spend than they're worth, so summing net-of-fee value only across
+/// notes actually worth spending answers "how much would the user actually receive if they
+/// migrated everything right now" — replacing the raw aggregate Orchard balance the Kotlin call
+/// site compared against [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] before this.
+///
+/// [`InputSource::select_unspent_notes`] already applies the `value > MARGINAL_FEE` filter at the
+/// SQL layer (`zcash_client_sqlite::wallet::common::select_unspent_notes`), so every note this
+/// call sees already qualifies for the sum — no re-filtering needed here.
+///
+/// `LockFilter::Policy(&LockedInputPolicy::Exclude)` matches `migration_engine::Backend`'s own
+/// `spendable_orchard()` (the migration engine's real note-selection view), not the `Unfiltered`
+/// view [`lockRemainingOrchardBalanceNative`] uses — this answers "what could a NEW migration
+/// actually move", so notes already locked by a prior "Lock balance" tap or an in-flight proposal
+/// correctly don't count toward it.
+///
+/// The threshold this total is compared against (`migratable_total > 2 * MARGINAL_FEE`) is left
+/// to the caller: [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] already equals `2 * MARGINAL_FEE`
+/// (10,000 zatoshi), so no new threshold constant is needed — only the total this compares.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migratableOrchardTotalNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let target = target_height(&wallet)?;
+
+        let received = wallet
+            .select_unspent_notes(
+                account,
+                &[ShieldedPool::Orchard],
+                target.into(),
+                &[],
+                LockFilter::Policy(&LockedInputPolicy::Exclude),
+            )
+            .map_err(|e| anyhow!("Error reading migratable Orchard total: {}", e))?;
+
+        let marginal_fee = u64::from(MARGINAL_FEE);
+        let total: u64 = received
+            .orchard()
+            .iter()
+            .map(|rn| rn.note().value().inner().saturating_sub(marginal_fee))
+            .sum();
+        Ok(total as jlong)
+    });
+    unwrap_exc_or(&mut env, res, 0)
 }
 
 // ----- External signer (Keystone hardware wallet) -----
