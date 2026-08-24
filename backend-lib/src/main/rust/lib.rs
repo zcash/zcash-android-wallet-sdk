@@ -106,13 +106,12 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
-mod eip681;
-mod payment_uri;
 mod migration;
 mod migration_engine;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
+mod payment_uri;
 mod tor;
 mod utils;
 mod voting;
