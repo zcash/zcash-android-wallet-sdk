@@ -1372,6 +1372,12 @@ class OrchardMigrationSdkImplTest {
 
         override suspend fun migrationDustThresholdZatoshi(): Long = migrationDustThresholdZatoshiResult
 
+        override suspend fun migratableOrchardTotal(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid
+        ): Long = error("Unused")
+
         override suspend fun migrationState(
             dbDataPath: String,
             network: ZcashNetwork,
