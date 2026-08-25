@@ -33,6 +33,12 @@ class PaymentUriParser private constructor(
     fun parse(input: String): PaymentUriRequest =
         try {
             JSONObject(paymentUri.parse(input)).toPaymentRequest()
+        } catch (e: InvalidPaymentUriException) {
+            // toPaymentRequest() below throws this directly for a version mismatch, an
+            // unrecognized result type, or an unrecognized network -- rethrow as-is rather than
+            // letting the broader catch below wrap it a second time, which would otherwise bury
+            // the real cause one level deeper for no benefit.
+            throw e
         } catch (e: Exception) {
             // Deliberately broad: a JNI RuntimeException whose message already categorizes the
             // rejection without echoing raw URI content, a JSONException from unexpected schema,
@@ -169,6 +175,10 @@ class PaymentUriParser private constructor(
         }
 
     companion object {
+        // Must match `payment_uri::JSON_VERSION` in
+        // https://github.com/zcash/librustzcash/blob/main/components/payment_uri/src/lib.rs --
+        // that `pub const` is the actual source of truth for this JSON envelope's version; bump
+        // both together whenever the crate's emitted schema changes.
         private const val ENCODED_VERSION = 1
 
         /** Loads the native library and creates a parser. */
