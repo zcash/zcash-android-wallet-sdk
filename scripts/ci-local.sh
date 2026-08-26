@@ -12,18 +12,19 @@
 #   2. detekt       -> static_analysis_detekt
 #   3. ktlint       -> static_analysis_ktlint
 #   4. rust         -> test_rust_unit
-#   5. unit tests   -> test_android_modules_unit
-#   6. android lint -> static_analysis_android_lint
-#   7. demo app     -> demo_app_release_build
-#   8. androidTest  -> (approximation of) test_android_modules_wtf
+#   5. deny         -> check_native_licenses
+#   6. unit tests   -> test_android_modules_unit
+#   7. android lint -> static_analysis_android_lint
+#   8. demo app     -> demo_app_release_build
+#   9. androidTest  -> (approximation of) test_android_modules_wtf
 #
-# Stage 8 uses a Gradle Managed Device (pixel2Target, SDK 36). It downloads an
+# Stage 9 uses a Gradle Managed Device (pixel2Target, SDK 36). It downloads an
 # AVD on first run (~1.5 GB) and is the slowest stage.
 #
 # Usage:
 #   ./scripts/ci-local.sh             # run every stage in sequence
 #   ./scripts/ci-local.sh fast        # stages 1-3 only (shell + lint + style)
-#   ./scripts/ci-local.sh quick       # stages 1-5 (fast + rust + unit tests)
+#   ./scripts/ci-local.sh quick       # stages 1-6 (fast + rust + deny + unit tests)
 #   ./scripts/ci-local.sh full        # all stages including androidTest (default)
 #   ./scripts/ci-local.sh shell       # run release tooling tests
 #   ./scripts/ci-local.sh detekt      # run one named stage
@@ -35,7 +36,9 @@
 #   - For stage 4, a Rust toolchain matching rust-toolchain.toml (rustup installs
 #     it automatically on first cargo invocation). The first run is slow because
 #     it builds ~640 crates; later runs are incremental.
-#   - For stage 8, an Apple Silicon Mac needs the `aosp` SDK-36 system image.
+#   - For stage 5, cargo-deny (`cargo install cargo-deny --locked`). The stage fails with
+#     that hint when it is missing, the same way CI would.
+#   - For stage 9, an Apple Silicon Mac needs the `aosp` SDK-36 system image.
 
 set -euo pipefail
 
@@ -46,47 +49,57 @@ cd "${REPO_ROOT}"
 GRADLE="./gradlew"
 
 stage_shell() {
-    echo "==> [1/8] shell tests (release tooling tests)"
+    echo "==> [1/9] shell tests (release tooling tests)"
     ./scripts/tests/run-tests.sh
 }
 
 stage_detekt() {
-    echo "==> [2/8] detekt (static_analysis_detekt)"
+    echo "==> [2/9] detekt (static_analysis_detekt)"
     "${GRADLE}" detektAll
 }
 
 stage_ktlint() {
-    echo "==> [3/8] ktlint (static_analysis_ktlint)"
+    echo "==> [3/9] ktlint (static_analysis_ktlint)"
     "${GRADLE}" ktlint
 }
 
 # `--locked` is deliberately absent here and in CI: backend-lib/Cargo.lock
 # currently cannot satisfy Cargo.toml. Add it once the lockfile is reconciled.
 stage_rust() {
-    echo "==> [4/8] rust (test_rust_unit)"
+    echo "==> [4/9] rust (test_rust_unit)"
     (
         cd "${REPO_ROOT}/backend-lib"
         cargo test --all-features
     )
 }
 
+stage_deny() {
+    echo "==> [5/9] cargo deny (check_native_licenses)"
+    if ! cargo --list | grep -q '^    deny\b'; then
+        echo "error: cargo-deny is not installed. Install it with:" >&2
+        echo "    cargo install cargo-deny --locked" >&2
+        return 1
+    fi
+    make deny-rust
+}
+
 stage_unit() {
-    echo "==> [5/8] unit tests (test_android_modules_unit)"
+    echo "==> [6/9] unit tests (test_android_modules_unit)"
     "${GRADLE}" test
 }
 
 stage_lint() {
-    echo "==> [6/8] android lint (static_analysis_android_lint)"
+    echo "==> [7/9] android lint (static_analysis_android_lint)"
     "${GRADLE}" :sdk-lib:lintRelease :demo-app:lintZcashmainnetRelease
 }
 
 stage_demoapp() {
-    echo "==> [7/8] demo app release build (demo_app_release_build)"
+    echo "==> [8/9] demo app release build (demo_app_release_build)"
     "${GRADLE}" assembleRelease
 }
 
 stage_androidtest() {
-    echo "==> [8/8] android instrumentation tests (test_android_modules_wtf approximation)"
+    echo "==> [9/9] android instrumentation tests (test_android_modules_wtf approximation)"
     echo "    Note: CI uses testDebugWithEmulatorWtf (cloud). Local approximation runs the"
     echo "    same tests on a Gradle managed Pixel 2 (SDK 36) virtual device."
     "${GRADLE}" \
@@ -101,6 +114,7 @@ run_all() {
     stage_detekt
     stage_ktlint
     stage_rust
+    stage_deny
     stage_unit
     stage_lint
     stage_demoapp
@@ -116,6 +130,7 @@ run_fast() {
 run_quick() {
     run_fast
     stage_rust
+    stage_deny
     stage_unit
 }
 
@@ -127,6 +142,7 @@ case "${1:-full}" in
     detekt)       stage_detekt ;;
     ktlint)       stage_ktlint ;;
     rust)         stage_rust ;;
+    deny)         stage_deny ;;
     unit)         stage_unit ;;
     lint)         stage_lint ;;
     demoapp)      stage_demoapp ;;

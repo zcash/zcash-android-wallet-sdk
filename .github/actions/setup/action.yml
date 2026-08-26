@@ -93,19 +93,22 @@ runs:
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
       with:
-        # Deliberately enumerated rather than caching `~/.cargo` wholesale, which would also
-        # include `~/.cargo/git`. Everything listed here is public content: `registry/` is
-        # crates.io, and `backend-lib/target` holds compiled output too expensive to rebuild
-        # every run.
+        # `~/.cargo/git` holds cargo's clones of the git-sourced dependencies (the Keystone UR
+        # crates) and `registry/` is crates.io content; both are public and safe to share across
+        # runs, including with pull requests from forks.
+        #
+        # `backend-lib/target` holds compiled rlib/rmeta output and is too expensive to rebuild
+        # every run, so it is cached alongside the source and registry content.
         path: |
           backend-lib/target
           ~/.cargo/bin
+          ~/.cargo/git
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/registry/src
-        # v3: v2 entries were saved with the wide `~/.cargo` path above, and `restore-keys`
-        # prefix-matching would otherwise keep unpacking those archives — reinstating
-        # `~/.cargo/git` regardless of what this step now lists.
+        # Bump the `v3` prefix only when restoring an older archive would be harmful rather
+        # than merely stale: the exact key already changes with this file and the lockfile, and
+        # the prefix in `restore-keys` is what keeps a warm `backend-lib/target` across them.
         key: ${{ runner.os }}-rust-v3-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/backend-lib/build.rs'), format('{0}{1}', github.workspace, '/rust-toolchain.toml'), format('{0}{1}', github.workspace, '/gradle.properties'), format('{0}{1}', github.workspace, '/.github/actions/setup/action.yml')) }}
         restore-keys: |
           ${{ runner.os }}-rust-v3-

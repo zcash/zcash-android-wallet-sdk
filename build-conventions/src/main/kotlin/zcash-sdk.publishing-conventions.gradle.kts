@@ -44,14 +44,14 @@ extensions.getByType<MavenPublishBaseExtension>().apply {
         developers {
             developer {
                 id.set("zcash")
-                name.set("Zcash")
+                name.set("Zcash Open Development Lab")
                 url.set("https://github.com/zcash/")
             }
         }
         licenses {
             license {
-                name.set("The MIT License")
-                url.set("http://opensource.org/licenses/MIT")
+                name.set("MIT License")
+                url.set("https://github.com/zcash/zcash-android-wallet-sdk/blob/main/LICENSE")
                 distribution.set("repo")
             }
         }

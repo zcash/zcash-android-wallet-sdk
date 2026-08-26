@@ -56,8 +56,6 @@ tasks {
                 "IS_MINIFY_SDK_ENABLED" to "false",
                 "IS_MINIFY_APP_ENABLED" to "true",
 
-                "IS_SLIPSTREAM_ENABLED" to "true",
-
                 "ZCASH_DEBUG_KEYSTORE_PATH" to "",
                 "ZCASH_RELEASE_KEYSTORE_PATH" to "",
                 "ZCASH_RELEASE_KEYSTORE_PASSWORD" to "",

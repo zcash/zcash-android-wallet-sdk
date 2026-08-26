@@ -870,10 +870,11 @@ interface OrchardMigrationSdk {
      * privacy buffer (see [privacySyncBufferDuration]).
      *
      * The SDK owns this decision entirely and re-derives it from its own persisted migration
-     * state — the app does not toggle this, it only observes it (typically by feeding it
-     * straight into the synchronizer's own construction/gating, the same way isTorEnabled
-     * already works). This guarantees blocking can never get "stuck" from a forgotten resume
-     * call, since there is no imperative resume call to forget.
+     * state — the app does not toggle this, it only observes it. It is advisory: no component of
+     * this SDK pauses a live [Synchronizer] on its behalf, so a host that wants sync traffic kept
+     * apart from a migration broadcast must act on it itself (defer constructing a
+     * [Synchronizer], or close the one it owns, while this is true). Because the value is
+     * re-derived rather than toggled, blocking can never get "stuck" from a forgotten resume call.
      *
      * Implementation note (Rust bridge, 2026-07-10): "SDK owns this" means the **Kotlin**
      * implementation of [OrchardMigrationSdk], not the Rust `MigrationContext` — the Rust engine
@@ -887,8 +888,8 @@ interface OrchardMigrationSdk {
     fun isSyncBlocked(): Flow<Boolean>
 
     /**
-     * How long sync must stay blocked after a transfer is broadcast via the immediate
-     * ("send now") path, to decouple broadcast timing from sync-resume timing for privacy.
+     * How long [isSyncBlocked] keeps reporting true after a transfer is broadcast via the
+     * immediate ("send now") path, to decouple broadcast timing from sync-resume timing for privacy.
      * SDK-owned so this stays consistent with whatever cadence the SDK actually schedules
      * transfers at — the app only displays this value, it does not compute it.
      *
@@ -1056,9 +1057,9 @@ interface OrchardMigrationSdk {
         /**
          * Constructs the real, Rust-backed [OrchardMigrationSdk].
          *
-         * Deliberately independent of [Synchronizer] — [WalletCoordinator]'s `isSyncBlocked` input
-         * needs this *before* any `Synchronizer` exists (a `Synchronizer`-scoped factory would be
-         * circular), so this only needs the same inputs [Synchronizer.new] itself takes.
+         * Deliberately independent of [Synchronizer] — a host-level sync gate needs this *before*
+         * any `Synchronizer` exists (a `Synchronizer`-scoped factory would be circular), so this
+         * only needs the same inputs [Synchronizer.new] itself takes.
          *
          * [lightWalletEndpoint] should be the same endpoint the app passes to [Synchronizer.new] —
          * there is no independent way for this factory to discover it (wallet/endpoint persistence
@@ -1073,7 +1074,7 @@ interface OrchardMigrationSdk {
          * migration flow is actually running for (the app resolves this, e.g. from the currently
          * selected account; it is never auto-picked here). Pass `null` only for the one legitimate
          * case that has no account selection to make yet: gating [Synchronizer]-independent sync
-         * (e.g. [WalletCoordinator]'s `isSyncBlocked` input) before any account is chosen — with a
+         * (a host-level sync gate, evaluated before any account is chosen) — with a
          * `null` account, [OrchardMigrationSdk.isSyncBlocked] checks every account in the wallet
          * instead of assuming one, and every other method degrades to its "nothing to do" answer
          * or throws (see [cash.z.ecc.android.sdk.internal.OrchardMigrationSdkImpl]'s doc).

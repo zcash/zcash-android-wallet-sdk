@@ -44,24 +44,14 @@ NETWORK ?= Zcashmainnet
 #   make test-instrumented MANAGED_DEVICE=pixel2Target
 MANAGED_DEVICE ?= pixel2Min
 
-# Mirrors the Gradle property of the same name (gradle.properties). Override per
-# invocation to match a flag-off build:
-#   make test-instrumented IS_SLIPSTREAM_ENABLED=false
-IS_SLIPSTREAM_ENABLED ?= $(shell sed -n 's/^IS_SLIPSTREAM_ENABLED=//p' gradle.properties)
-
-# Scoped to the five modules CI covers. The unqualified task would also pull in
+# Scoped to the four modules CI covers. The unqualified task would also pull in
 # darkside-test-lib, which needs a live darkside server, and the demo-app
-# modules. :slipstream-lib only exists when IS_SLIPSTREAM_ENABLED is true, so
-# its entry follows that flag automatically.
+# modules.
 ANDROID_TEST_MODULES := \
 	:sdk-lib:$(MANAGED_DEVICE)DebugAndroidTest \
 	:lightwallet-client-lib:$(MANAGED_DEVICE)DebugAndroidTest \
 	:sdk-incubator-lib:$(MANAGED_DEVICE)DebugAndroidTest \
 	:backend-lib:$(MANAGED_DEVICE)DebugAndroidTest
-
-ifeq ($(IS_SLIPSTREAM_ENABLED),true)
-ANDROID_TEST_MODULES += :slipstream-lib:$(MANAGED_DEVICE)DebugAndroidTest
-endif
 
 # maxConcurrentDevices=1 keeps a single emulator booted at a time so the
 # machine is not overwhelmed by four; swiftshader_indirect is the software
@@ -154,7 +144,7 @@ build-release: ## Build every module in release mode
 check: check-properties check-format lint test ## Run all checks
 
 .PHONY: check-all
-check-all: check check-format-rust lint-rust test-rust ## All checks, incl. Rust
+check-all: check check-format-rust lint-rust test-rust deny-rust ## All checks, incl. Rust
 
 .PHONY: check-format
 check-format: ktlint ## Check formatting (Kotlin)
@@ -235,7 +225,7 @@ ktlint-format: ## Apply Kotlin code style with ktlint
 
 .PHONY: lint-android
 lint-android: ## Static analysis with Android Lint
-	$(GRADLE) :sdk-lib:lintRelease $(if $(filter true,$(IS_SLIPSTREAM_ENABLED)),:slipstream-lib:lintRelease) :demo-app:lint$(NETWORK)Release
+	$(GRADLE) :sdk-lib:lintRelease :demo-app:lint$(NETWORK)Release
 
 .PHONY: check-properties
 check-properties: ## Validate the Gradle properties
@@ -332,6 +322,10 @@ format-rust: ## Format the Rust crate with rustfmt
 .PHONY: check-format-rust
 check-format-rust: ## Check the Rust formatting
 	cd $(RUST_DIR) && $(CARGO) fmt --all --check
+
+.PHONY: deny-rust
+deny-rust: ## Check the Rust dependency graph against backend-lib/deny.toml (licences, sources)
+	cd $(RUST_DIR) && $(CARGO) deny check licenses sources
 
 .PHONY: clean-rust
 clean-rust: ## Clean the Cargo build artifacts

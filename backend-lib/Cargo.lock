@@ -110,12 +110,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "android_log-sys"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85965b6739a430150bdd138e2374a98af0c3ee0d030b3bb7fc3bddff58d0102e"
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6492,17 +6486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-android"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12612be8f868a09c0ceae7113ff26afe79d81a24473a393cb9120ece162e86c0"
-dependencies = [
- "android_log-sys",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7545,11 +7528,9 @@ dependencies = [
  "serde",
  "serde_json",
  "shardtree",
- "tokio",
  "tonic",
  "tor-rtcompat",
  "tracing",
- "tracing-android",
  "tracing-subscriber",
  "ur",
  "ur-registry",
@@ -7567,7 +7548,6 @@ dependencies = [
  "zcash_transparent",
  "zcash_voting",
  "zip32",
- "zodl-slipstream",
 ]
 
 [[package]]
@@ -7586,9 +7566,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_backend"
-version = "0.24.0-rc.7"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f49636f1d22b0511b2a117548cc9dcf569440a3589b06bf6df422c6b738f6231"
+checksum = "07ad58d8ca5daacbc089bf82ec09e45cf2a8be40adeb40b9399b16545c81a528"
 dependencies = [
  "ambassador",
  "arti-client",
@@ -7660,9 +7640,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_sqlite"
-version = "0.22.0-rc.8"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c44798ac3735e85c523899c4c8e06cf94e422a6ceedc9ee5b256a3cf53dd1c96"
+checksum = "dd92e4334619b1e3f67019254049318ec0d0240a3c15d853bdf2ac4bba597078"
 dependencies = [
  "ambassador",
  "bip32",
@@ -7768,9 +7748,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_pool_migration"
-version = "0.1.0-rc.7"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "532ac156acab2144a88b3e55763ee9329704863a34839e55c2fa705addf3e57e"
+checksum = "6188c544911aad647bdb0730d18a0309991da1ccbbdab0415d4ef3113ecadcb3"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -7790,9 +7770,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_primitives"
-version = "0.30.0"
+version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34ca4de11896f704ffe6319c2cd7bc8fc6ab31a55cec80d26def15c009d83678"
+checksum = "403d5be1e96339534be098e3377fb8a78d68ca7585b1780133d884b810277418"
 dependencies = [
  "blake2b_simd",
  "block-buffer 0.11.0-rc.3",
@@ -7845,9 +7825,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_protocol"
-version = "0.10.4"
+version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "043686451284bcb72e40ffa18e2cdcea3108e8468e3d021062c0b32c4a060c98"
+checksum = "314329b91ec4bbb517441840e47d0b2029bf0b946f086980c96c889c2d92dc5d"
 dependencies = [
  "corez",
  "document-features",
@@ -8038,9 +8018,9 @@ dependencies = [
 
 [[package]]
 name = "zip321"
-version = "0.9.0-rc.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb464491970d9b61889e4f2b7b00fb9f471a33692e5c0de3122fdc575d8067ab"
+checksum = "e0180028b8807c60498f01eb805a125eed095ab4c4a1737635c80e6ef7cb0a9c"
 dependencies = [
  "base64",
  "nom",
@@ -8054,46 +8034,6 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "zodl-slipstream"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "166eb670a194f5da7c20507f0c8d9d6dfa6afd75d50d1ba93b978dba92418325"
-dependencies = [
- "ff",
- "futures-util",
- "group",
- "incrementalmerkletree",
- "orchard",
- "pasta_curves",
- "prost 0.14.4",
- "rand 0.8.7",
- "rayon",
- "rusqlite",
- "sapling-crypto",
- "schemerz",
- "schemerz-rusqlite",
- "secrecy",
- "shardtree",
- "sinsemilla",
- "thiserror 2.0.20",
- "tokio",
- "tonic",
- "tonic-prost",
- "tracing",
- "uuid",
- "zcash_address",
- "zcash_client_backend",
- "zcash_client_sqlite",
- "zcash_keys",
- "zcash_note_encryption",
- "zcash_primitives",
- "zcash_protocol",
- "zcash_script",
- "zcash_transparent",
- "zip32",
-]
 
 [[package]]
 name = "zstd"

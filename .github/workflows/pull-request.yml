@@ -322,14 +322,12 @@ jobs:
         run: |
           ./scripts/update-proposal-proto.sh --check
 
-  # Guards the IS_SLIPSTREAM_ENABLED=false configuration against rot. Nothing else in
-  # this workflow ever configures the build with the flag off, so a change that only
-  # compiles against the engineSlipstream source directory (or that reaches for the
-  # `projects.slipstreamLib` typesafe accessor outside the conditional) would otherwise
-  # land unnoticed. Kotlin compilation only, so it stays far cheaper than the assemble
-  # jobs, though backend-lib still cross-compiles the one ABI its javaPreCompileDebug
-  # depends on.
-  check_slipstream_disabled:
+  # Licence gate for the native library: every crate in backend-lib's dependency graph must
+  # carry a licence from the permissive-only allow-list in backend-lib/deny.toml, and every git
+  # source must be one that file names. cargo-deny only resolves the lockfile (`cargo metadata`),
+  # so the job installs a pinned, checksummed release binary and lets rustup pick the toolchain
+  # from rust-toolchain.toml; it needs neither the Gradle caches nor an Android build.
+  check_native_licenses:
     needs: validate_gradle_wrapper
     runs-on: ubuntu-latest
     permissions:
@@ -342,16 +340,25 @@ jobs:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
           persist-credentials: false
-      - name: Setup
-        id: setup
-        timeout-minutes: 30
-        uses: ./.github/actions/setup
-        with:
-          rust-cache: true
-      - name: Compile with Slipstream disabled
-        timeout-minutes: 30
+      - name: Install cargo-deny
+        timeout-minutes: 3
+        env:
+          CARGO_DENY_VERSION: "0.20.2"
+          CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
         run: |
-          ./gradlew :sdk-incubator-lib:compileDebugKotlin :sdk-lib:compileDebugKotlin -PIS_SLIPSTREAM_ENABLED=false
+          set -euo pipefail
+          archive="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL --retry 3 -o "${archive}.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${archive}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  ${archive}.tar.gz" | sha256sum --check --strict
+          tar -xzf "${archive}.tar.gz" "${archive}/cargo-deny"
+          install -m 0755 "${archive}/cargo-deny" "${HOME}/.cargo/bin/cargo-deny"
+          rm -rf "${archive}" "${archive}.tar.gz"
+          cargo deny --version
+      - name: cargo deny
+        timeout-minutes: 15
+        run: |
+          make deny-rust
 
   test_android_modules_unit:
     needs: [validate_gradle_wrapper]

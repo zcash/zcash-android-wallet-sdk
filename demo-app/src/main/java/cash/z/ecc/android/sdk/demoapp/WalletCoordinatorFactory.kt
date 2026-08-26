@@ -29,8 +29,7 @@ private val lazy =
             accountName = "Zcash Account 1",
             keySource = "ZCASH",
             isTorEnabled = flowOf(null),
-            isExchangeRateEnabled = flowOf(null),
-            isSyncBlocked = flowOf(false)
+            isExchangeRateEnabled = flowOf(null)
         )
     }
 
