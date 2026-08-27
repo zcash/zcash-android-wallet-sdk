@@ -288,7 +288,3 @@ include("demo-app-benchmark-test")
 include("lightwallet-client-lib")
 include("sdk-incubator-lib")
 include("sdk-lib")
-
-if (extra["IS_SLIPSTREAM_ENABLED"].toString().toBoolean()) {
-    include("slipstream-lib")
-}

@@ -13,12 +13,13 @@ jobs that are runnable on a dev machine:
 
 ```bash
 ./scripts/ci-local.sh fast     # detekt + ktlint (~30s) -- run this first
-./scripts/ci-local.sh quick    # fast + rust + unit tests (~5m)
+./scripts/ci-local.sh quick    # fast + rust + deny + unit tests (~5m)
 ./scripts/ci-local.sh full     # everything, including androidTest (~15-30m)
 
 # Or a single stage when iterating:
 ./scripts/ci-local.sh detekt
 ./scripts/ci-local.sh rust
+./scripts/ci-local.sh deny
 ./scripts/ci-local.sh lint
 ./scripts/ci-local.sh demoapp
 ```
@@ -51,6 +52,9 @@ builds around 640 crates and is slow; later runs are incremental.
   second JDK: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
 
 - **Android SDK** at `$ANDROID_HOME` or `~/Library/Android/sdk`.
+- **cargo-deny** (`cargo install cargo-deny --locked`) for the `deny` stage and
+  `make deny-rust`, which check the native dependency graph against
+  `backend-lib/deny.toml`.
 - For the `androidtest` stage on Apple Silicon, the `aosp` SDK-36 Pixel 2
   system image is downloaded on first run (~1.5 GB).
 

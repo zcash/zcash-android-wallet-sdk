@@ -1,0 +1,65 @@
+# cargo-deny configuration for the native library that ships inside the zcash-android-sdk AAR.
+#
+# The licence allow-list below is permissive-only, on purpose. The published SDK is MIT and is
+# linked, unmodified, into third-party wallet applications, so no licence that places
+# obligations on the linking application (the GPL, LGPL, AGPL, SSPL and EUPL families, or any
+# other copyleft term) may enter the dependency graph in any form: direct, transitive, behind an
+# optional feature, or from a git source. MPL-2.0 is file-scoped and is satisfied by shipping the
+# crates unmodified, so it is allowed. A crate whose only licence is copyleft fails this check
+# instead of being discovered at release time.
+#
+# Run locally with `make deny-rust`; CI runs the same checks in the `check_native_licenses` job.
+
+[graph]
+# Evaluate every feature, matching the widest set the clippy and test jobs build, so nothing
+# hides behind a feature flag.
+all-features = true
+
+[licenses]
+version = 2
+# cargo-deny satisfies an `A OR B` expression if any branch is allowed, so dual-licensed crates
+# pass through their permissive branch; a crate licensed solely under a term missing from this
+# list fails.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BlueOak-1.0.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+# The backend-lib crate itself is `publish = false` (a JNI shim, never uploaded to a registry),
+# so it carries no `license` field and would otherwise fail as "unlicensed". Its own licence is
+# the repository's, tracked in the top-level LICENSE file, not in Cargo.toml metadata.
+[licenses.private]
+ignore = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Keystone UR envelope crates, consumed from git (see the Keystone comment in Cargo.toml), and
+# the project's own upstream, so a temporary `[patch.crates-io]` pin against in-progress
+# librustzcash work (the commented template at the bottom of Cargo.toml) does not trip the
+# provenance check.
+allow-git = [
+    "https://github.com/KeystoneHQ/ur-rs",
+    "https://github.com/KeystoneHQ/keystone-sdk-rust",
+    "https://github.com/zcash/librustzcash",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"

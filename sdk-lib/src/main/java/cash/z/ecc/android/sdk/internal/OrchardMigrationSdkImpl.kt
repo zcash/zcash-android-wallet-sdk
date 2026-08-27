@@ -97,22 +97,21 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Real, Rust-backed implementation of [OrchardMigrationSdk].
  *
- * Deliberately independent of [cash.z.ecc.android.sdk.Synchronizer]: `WalletCoordinatorFactory`
- * needs [isSyncBlocked] *before* any `Synchronizer` exists (it gates whether `WalletCoordinator`
- * creates one at all) — a `Synchronizer`-scoped factory would be circular. Every method here
- * instead resolves the wallet's db path (via [DatabaseCoordinator], the same helper
- * `getWalletDbPathForVoting()` uses) lazily, per call, independent of any `Synchronizer`.
+ * Deliberately independent of [cash.z.ecc.android.sdk.Synchronizer]: a host-level sync gate needs
+ * [isSyncBlocked] *before* any `Synchronizer` exists — a `Synchronizer`-scoped factory would be
+ * circular. Every method here instead resolves the wallet's db path (via [DatabaseCoordinator], the
+ * same helper `getWalletDbPathForVoting()` uses) lazily, per call, independent of any `Synchronizer`.
  *
  * The interface itself has no account parameter on any method, so it already assumes one bound
  * account per instance — [account] is that bound account, resolved by the caller from whichever
- * wallet account the migration flow is actually running against (Zodl/Keystone or Zashi, whichever
- * is currently selected — never auto-picked here). It's nullable only for the one call site that
- * genuinely has no account selection to make yet: `WalletCoordinatorFactory`'s [isSyncBlocked]
- * gate, evaluated before any account is chosen, which checks *every* account in the wallet rather
- * than assuming one. Every other operation requires a non-null [account]: on-launch/background
- * calls degrade to their "nothing to do" answer (`NotStarted`, `null`, `false`) if it's somehow
- * missing rather than throwing; calls that only make sense once a wallet exists (`prepareNoteSplit`,
- * `submitNoteSplit`, the propose/sign/restart family) throw instead.
+ * wallet account the migration flow is actually running against (the account the app currently has
+ * selected — never auto-picked here). It's nullable only for the one call site that genuinely has
+ * no account selection to make yet: a host-level sync gate (evaluated before any account is
+ * chosen), which checks *every* account in the wallet rather than assuming one. Every other
+ * operation requires a non-null [account]: on-launch/background calls degrade to their "nothing to
+ * do" answer (`NotStarted`, `null`, `false`) if it's somehow missing rather than throwing; calls
+ * that only make sense once a wallet exists (`prepareNoteSplit`, `submitNoteSplit`, the
+ * propose/sign/restart family) throw instead.
  */
 internal class OrchardMigrationSdkImpl(
     private val context: Context,
@@ -1171,14 +1170,14 @@ internal class OrchardMigrationSdkImpl(
         // nextStep()'s doc), not a blanket "does anything exist overdue anywhere in the plan"
         // scan. hasOverdueTransfers() without an estimated tip answers a plan-wide existence
         // question that's essentially permanently true once migration starts on a fast chain
-        // (e.g. testnet) — starving syncRun()'s syncToTip() call forever. What sync actually
+        // (e.g. testnet) — starving the worker's sync-to-tip step forever. What sync actually
         // needs to know is narrower: is a transfer ready to BROADCAST right now (so the privacy
         // buffer around it isn't disturbed by a concurrent sync)? Prove/Rebuild readiness doesn't
         // need sync to back off — those are local, not a Tor-correlatable network action.
         val readyToBroadcast =
             MIGRATION_DB_ACCESS_MUTEX.withLock {
-                // No account was bound at construction (the WalletCoordinatorFactory gate case,
-                // evaluated before any account is chosen) — check every account in the wallet rather
+                // No account was bound at construction (the host-level sync gate case, evaluated
+                // before any account is chosen) — check every account in the wallet rather
                 // than assuming one, so sync stays blocked if *any* of them has a transfer ready to
                 // broadcast right now.
                 if (account != null) {

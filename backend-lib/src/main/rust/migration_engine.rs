@@ -2,22 +2,22 @@
 //! `MigrationBackend`/`MigrationCrypto`/`PoolMigrationRead`/`PoolMigrationWrite` traits.
 //!
 //! This is deliberately a separate, thinner adapter than `zcash_pool_migration::wallet::
-//! WalletMigration`: that type's constructor requires a `UnifiedSpendingKey` unconditionally
-//! (its `orchard_fvk()` is derived from the usk), but several JNI entry points in `migration.rs`
-//! only ever plan or build unsigned PCZTs (no usk available at that call site — mirroring the old
-//! `zcash_pool_migration` crate, which likewise derived the FVK from the account's stored UFVK,
-//! not from a spending key). `Backend::usk` is therefore optional: every method needed for
-//! planning/building unsigned PCZTs (`orchard_fvk`, `resolve_wallet_note`,
-//! `spendable_orchard_note_values`, `chain_tip_height`) works without it; only `sign()` requires
-//! one, and `zcash_pool_migration::engine::build_preparation_unsigned` never calls it (only
-//! `commit_preparation`'s in-process-signing path does).
+//! WalletMigration`: that type is handed the account's `UnifiedFullViewingKey` and an abstract
+//! store, whereas a JNI entry point names an account and a wallet database path and nothing else.
+//! This adapter therefore reads the account's Orchard full viewing key out of the wallet itself
+//! and opens the `PoolMigrations` store over the same connection.
+//!
+//! No key with spend authority is held here. In-process signing takes the account's Orchard
+//! spending key as an argument to `zcash_pool_migration::engine::commit_preparation`, live for
+//! that one call, so one `Backend` serves the planning, unsigned-build, proving and persistence
+//! paths alike whether or not the caller has a spending key.
 
 use std::convert::Infallible;
 
 use rusqlite::Connection;
 
 use incrementalmerkletree::Position;
-use orchard::keys::{FullViewingKey, Scope, SpendAuthorizingKey};
+use orchard::keys::{FullViewingKey, Scope};
 use orchard::note::Note as OrchardNote;
 use zcash_client_backend::address::Receiver;
 use zcash_client_backend::data_api::MaxSpendMode;
@@ -26,7 +26,6 @@ use zcash_client_backend::data_api::wallet::input_selection::{LockFilter, Locked
 use zcash_client_backend::data_api::wallet::{ConfirmationsPolicy, propose_send_max_transfer};
 use zcash_client_backend::data_api::{Account, InputSource, WalletRead};
 use zcash_client_backend::fees::StandardFeeRule;
-use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::proposal::Proposal;
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::ShieldedPool;
@@ -54,14 +53,17 @@ type SpendableNote = (OrchardNote, Position, u64);
 /// only ever instantiated over one concrete wallet type.
 pub type EngineError = anyhow::Error;
 
-/// A migration backend over the Android SDK's own wallet database, an account, an optional
-/// spending key (required only for in-process signing), and a `PoolMigrations` store borrow.
+/// A migration backend over the Android SDK's own wallet database, an account, that account's
+/// Orchard full viewing key, and a `PoolMigrations` store borrow.
 pub struct Backend<'a, W> {
     wallet: &'a W,
     account: AccountUuid,
-    usk: Option<UnifiedSpendingKey>,
+    /// The account's Orchard full viewing key, or `None` for an account whose unified key has no
+    /// Orchard component. Resolved once at construction because `MigrationCrypto::orchard_fvk` is
+    /// infallible and hands out a borrow.
+    orchard_fvk: Option<FullViewingKey>,
     /// The store carries the network parameters and a clock because, as of
-    /// `zcash_client_sqlite 0.22.0-rc.7`, `PoolMigrationWrite::store_proved_transaction` finalizes
+    /// `zcash_client_sqlite 0.22.0`, `PoolMigrationWrite::store_proved_transaction` finalizes
     /// a proved migration transaction into the wallet's own transaction tables: it recovers the
     /// transaction's outputs (needing `params`) and stamps the sent-transaction time (needing the
     /// clock). Both are unused by the read/write-state methods.
@@ -89,16 +91,22 @@ where
     pub fn new(
         wallet: &'a W,
         account: AccountUuid,
-        usk: Option<UnifiedSpendingKey>,
         conn: &'a mut Connection,
         params: Network,
     ) -> Result<Self, EngineError> {
+        let orchard_fvk = wallet
+            .get_account(account)
+            .map_err(|e| anyhow::anyhow!("account lookup failed: {e}"))?
+            .ok_or_else(|| anyhow::anyhow!("unknown account"))?
+            .ufvk()
+            .and_then(|ufvk| ufvk.orchard())
+            .cloned();
         let store = PoolMigrations::for_account(params, SystemClock, conn, account)
             .map_err(|e| anyhow::anyhow!("opening pool-migration store failed: {e:?}"))?;
         Ok(Self {
             wallet,
             account,
-            usk,
+            orchard_fvk,
             store,
             spendable: std::cell::RefCell::new(None),
         })
@@ -215,20 +223,11 @@ where
 {
     type Error = EngineError;
 
-    /// Derived from the account's stored Orchard UFVK (not from `self.usk`) so this works whether
-    /// or not a spending key was provided — matches the old `zcash_pool_migration` crate's
-    /// `account_orchard_fvk` helper.
-    fn orchard_fvk(&self) -> Result<FullViewingKey, Self::Error> {
-        let account = self
-            .wallet
-            .get_account(self.account)
-            .map_err(|e| anyhow::anyhow!("account lookup failed: {e}"))?
-            .ok_or_else(|| anyhow::anyhow!("unknown account"))?;
-        account
-            .ufvk()
-            .and_then(|ufvk| ufvk.orchard())
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("account has no Orchard full viewing key"))
+    /// The account's stored Orchard viewing key, read from the wallet at construction. `None` is
+    /// an account whose unified key carries no Orchard component; each entry point that needs the
+    /// key reports its absence itself.
+    fn orchard_fvk(&self) -> Option<&FullViewingKey> {
+        self.orchard_fvk.as_ref()
     }
 
     /// The account's ZIP 32 derivation as the wallet records it, or `None` for an account held
@@ -255,16 +254,6 @@ where
             .get(index)
             .ok_or_else(|| anyhow::anyhow!("no spendable note at index {index}"))?;
         Ok(note)
-    }
-
-    fn sign(&self, pczt: pczt::Pczt) -> Result<pczt::Pczt, Self::Error> {
-        let usk = self
-            .usk
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("no spending key available for in-process signing"))?;
-        let ask = SpendAuthorizingKey::from(usk.orchard());
-        zcash_pool_migration::build::sign_pczt(pczt, &ask)
-            .map_err(|e| anyhow::anyhow!("signing the migration PCZT failed: {e:?}"))
     }
 }
 

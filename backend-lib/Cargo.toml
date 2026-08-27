@@ -17,18 +17,12 @@ default = []
 # Enables JNI helpers that are only used by Android instrumentation tests.
 # This feature must not be enabled for production native builds.
 android-test-fixtures = []
-# Enables the Slipstream sync-engine JNI surface (src/main/rust/slipstream/) and pulls in the
-# git-pinned `slipstream-core` engine dependency, its tokio runtime, the env-filter for the
-# module's logging setup, and (on Android) the logcat tracing layer. OFF by default; enabled
-# for the merged native library that ships Slipstream.
-slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracing-subscriber/env-filter"]
 
 [dependencies]
 # Zcash dependencies
 
 # Ironwood (NU6.3): resolves from crates.io — the published 0.15.4 carries the ZIP 374 support
-# the old git pin provided, so no orchard [patch] entry is needed (and slipstream-core requires
-# ^0.15.4, which it satisfies).
+# the old git pin provided, so no orchard [patch] entry is needed.
 #
 # `unstable-voting-circuits` is not requested here, but it IS enabled in the built graph:
 # re-enabling shielded voting brings it back transitively, because `zcash_voting` and its
@@ -37,14 +31,14 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 # way to keep the share-reveal circuit out of the shipped library is to drop voting itself,
 # not to drop this feature.
 orchard = "0.15"
-zcash_pool_migration = { version = "0.1.0-rc.7", features = ["wallet"] }
+zcash_pool_migration = { version = "0.1.0", features = ["wallet"] }
 # `signer` is this branch's addition, for the Keystone batch-signing recipe below
 # (`pczt::roles::signer::batch`).
 pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = "0.13"
-zcash_client_backend = { version = "0.24.0-rc.7", features = [
+zcash_client_backend = { version = "0.24.0", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -52,7 +46,7 @@ zcash_client_backend = { version = "0.24.0-rc.7", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.8", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
@@ -154,20 +148,6 @@ zcash_voting = { version = "=3.0.0-rc.3" }
 pasta_curves = { version = "0.5" }
 ff = { version = "0.13" }
 
-# Slipstream sync engine. Its JNI binding is folded into this crate as the `slipstream` module
-# (src/main/rust/slipstream/), gated by the off-by-default `slipstream` feature above, so the
-# `Java_com_zodl_slipstream_*` exports link into THIS cdylib instead of a separate
-# libslipstream.so. This is the merged-library shape iOS already has (one libzcashlc, one
-# bundled SQLite): backend-lib's own bundled rusqlite and the engine's must be the SAME SQLite
-# instance in the SAME process, or closing one connection drops the other's fcntl locks out
-# from under it (the dual-instance SIGBUS/disk-I/O hazard; see
-# docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
-# the published `zodl-slipstream` crate from crates.io, built against the same librustzcash
-# generation as the rest of this graph — verify with `cargo tree -d` after any bump.
-slipstream-core = { package = "zodl-slipstream", version = "0.1", optional = true }
-# The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
-
 # Keystone hardware-wallet batch signing for the Orchard migration flow.
 #
 # The compiled `keystone-sdk-android` AAR this project's Kotlin layer otherwise depends on
@@ -182,12 +162,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 # not Keystone-specific; these crates only provide the outer UR/QR envelope.
 ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
-
-# Android-only logcat backend for the `slipstream` module's tracing setup (used only under
-# `#[cfg(target_os = "android")]`). Optional and activated by the `slipstream` feature; never
-# compiled on the host `cargo check`.
-[target.'cfg(target_os = "android")'.dependencies]
-tracing-android = { version = "0.2", optional = true }
 
 [dev-dependencies]
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
@@ -204,23 +178,18 @@ bip0039 = "0.12"
 # transaction through `zcash_client_sqlite`'s internal pool-migration truncation wiring. Cargo
 # unions this feature set with the `[dependencies]` entry above only for test/bench/example
 # builds, so the release library never links tempfile/rand_chacha/ambassador.
-zcash_client_sqlite = { version = "0.22.0-rc.7", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
+zcash_client_sqlite = { version = "0.22.0", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
 
 [lib]
 name = "zcashwalletsdk"
 path = "src/main/rust/lib.rs"
 crate-type = ["staticlib", "cdylib"]
 
-# This crate is its own single-package workspace. The former nested slipstream-jni crate (which
-# required an `exclude` here) is gone — its code is now the `slipstream` module of this crate.
+# This crate is its own single-package workspace.
 [workspace]
 
 [patch.crates-io]
-# `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
-# published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
-# the rest of the released family — the old git pin was not dropped by accident.
-#
-# `zcash_voting` is also deliberately absent (removed 2026-08-11, see #2161): now that
+# `zcash_voting` is deliberately absent (removed 2026-08-11, see #2161): now that
 # 2.0.0-rc.5 ships the `tx1_effects` fix on crates.io directly (see the dependency entry
 # above), the unpublished git pin this patch used to carry is no longer needed.
 

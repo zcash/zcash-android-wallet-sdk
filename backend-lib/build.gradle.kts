@@ -43,7 +43,6 @@ val enableAndroidTestNativeFixtures =
         taskName.requestsAndroidTestNativeFixtures()
     }
 
-val isSlipstreamEnabled = project.property("IS_SLIPSTREAM_ENABLED").toString().toBoolean()
 
 val productionNativeArtifactTasksWithAndroidFixtures =
     if (enableAndroidTestNativeFixtures) {
@@ -129,17 +128,11 @@ cargo {
     )
     profile = "release"
     extraCargoBuildArguments = run {
-        val features = mutableListOf<String>()
-        if (isSlipstreamEnabled) {
-            // The Slipstream sync-engine JNI surface is a Cargo feature (previously it was an
-            // always-linked path dependency); enabling it keeps the `Java_com_zodl_slipstream_*`
-            // exports in libzcashwalletsdk.so for builds that ship :slipstream-lib.
-            features.add("slipstream")
-        }
-        if (enableAndroidTestNativeFixtures) {
-            // Test-only fixture exports.
-            features.add("android-test-fixtures")
-        }
+        // Test-only fixture exports; never part of a production native build.
+        val features =
+            buildList {
+                if (enableAndroidTestNativeFixtures) add("android-test-fixtures")
+            }
         if (features.isEmpty()) emptyList() else listOf("--features", features.joinToString(","))
     }
     prebuiltToolchains = true
@@ -193,7 +186,6 @@ project.afterEvaluate {
         }
         .configureEach {
             inputs.property("androidTestNativeFixtures", enableAndroidTestNativeFixtures)
-            inputs.property("slipstreamEnabled", isSlipstreamEnabled)
         }
 }
 
