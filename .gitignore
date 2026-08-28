@@ -104,4 +104,4 @@ backup-dbs/
 
 # Design docs, implementation plans, and other working notes. These are
 # conversation artifacts rather than repository history.
-.plans/
+.plans
