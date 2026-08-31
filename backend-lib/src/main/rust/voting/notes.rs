@@ -111,8 +111,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_com
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let notes = java_note_info_array(env, &notes, "notes")?;
-        let (count, weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
-        make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
+        let setup = bundle_setup_from_notes(&notes)?;
+        make_jni_bundle_setup_result(
+            env,
+            setup.count,
+            setup.eligible_weight,
+            &setup.bundle_weights,
+            setup.dropped_count,
+        )
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
@@ -263,7 +269,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let notes = java_note_info_array(env, &notes, "notes")?;
-        let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
+        // setup.dropped_count is intentionally not part of this cross-check: the DB
+        // layer's skipped-suffix recovery path (below) reports dropped_count=0 for an
+        // already-persisted round regardless of the note set's actual dust, so comparing
+        // it here against the freshly recomputed value would false-positive on that path.
+        let setup = bundle_setup_from_notes(&notes)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let layout = db
             .ensure_bundles_with_skipped_suffix_with_policy(
@@ -272,7 +282,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
                 voting::BundlePolicy::default(),
             )
             .map_err(|e| anyhow!("ensure_bundles_with_skipped_suffix_with_policy: {}", e))?;
-        if layout.bundle_count != expected_count || layout.eligible_weight != expected_weight {
+        if layout.bundle_count != setup.count || layout.eligible_weight != setup.eligible_weight {
             // ensure_bundles_with_skipped_suffix_with_policy has already persisted the
             // round's bundles. Treat a mismatch as an internal bug; callers must clear
             // the round before retrying.
@@ -280,15 +290,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
                 "setup_bundles result mismatch after persisting bundles; call clearRound before retrying: db=({}, {}) chunk=({}, {})",
                 layout.bundle_count,
                 layout.eligible_weight,
-                expected_count,
-                expected_weight
+                setup.count,
+                setup.eligible_weight
             ));
         }
         make_jni_bundle_setup_result(
             env,
             layout.bundle_count,
             layout.eligible_weight,
-            &bundle_weights,
+            &setup.bundle_weights,
+            layout.dropped_count,
         )
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())

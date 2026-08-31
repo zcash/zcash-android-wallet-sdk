@@ -539,10 +539,11 @@ internal const val JNI_ROUND_PHASE_VOTE_READY = 4
 data class JniBundleSetupResult(
     val bundleCount: Int,
     val eligibleWeight: Long,
-    val bundleWeights: List<Long>
+    val bundleWeights: List<Long>,
+    val droppedCount: Int
 ) {
-    internal constructor(bundleCount: Int, eligibleWeight: Long, bundleWeights: LongArray) :
-        this(bundleCount, eligibleWeight, bundleWeights.toList())
+    internal constructor(bundleCount: Int, eligibleWeight: Long, bundleWeights: LongArray, droppedCount: Int) :
+        this(bundleCount, eligibleWeight, bundleWeights.toList(), droppedCount)
 }
 
 @Keep

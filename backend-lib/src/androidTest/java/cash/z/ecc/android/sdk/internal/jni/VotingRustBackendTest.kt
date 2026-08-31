@@ -69,6 +69,8 @@ class VotingRustBackendTest {
         private const val LARGE_BUNDLE_WEIGHT = 62_500_000L
         private const val SMALL_BUNDLE_WEIGHT = 12_500_000L
         private const val TWO_BUNDLE_ELIGIBLE_WEIGHT = 75_000_000L
+        private const val DUST_NOTE_VALUE = 100L
+        private const val BUNDLE_NOTE_SLOTS = 5
         private val EA_PK = ByteArray(FIELD_BYTES) { 3 }
         private val NC_ROOT = ByteArray(FIELD_BYTES) { 4 }
         private val NULLIFIER_IMT_ROOT = ByteArray(FIELD_BYTES) { 5 }
@@ -380,6 +382,28 @@ class VotingRustBackendTest {
             assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
             assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
             assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
+            assertEquals(0, setup.droppedCount)
+        }
+
+    @Test
+    fun compute_bundle_setup_reports_dropped_dust_count() =
+        runTest {
+            // One real note fills the first bundle's remaining slots with dust; the
+            // last dust note overflows into its own bundle, which falls below
+            // BALLOT_DIVISOR and is dropped.
+            val dustNotes =
+                (1..BUNDLE_NOTE_SLOTS).map { index ->
+                    note(value = DUST_NOTE_VALUE, position = index.toLong(), byteValue = index + 1)
+                }
+            val setup =
+                VotingRustBackend.new().computeBundleSetup(
+                    listOf(note(value = NOTE_VALUE, position = 0, byteValue = 1)) + dustNotes
+                )
+
+            assertEquals(1, setup.bundleCount)
+            assertEquals(SMALL_BUNDLE_WEIGHT, setup.eligibleWeight)
+            assertEquals(listOf(SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
+            assertEquals(1, setup.droppedCount)
         }
 
     @Test
@@ -427,6 +451,7 @@ class VotingRustBackendTest {
                 assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
                 assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
                 assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
+                assertEquals(0, setup.droppedCount)
                 assertEquals(2, db.getBundleCount(ROUND_ID))
 
                 val deletedRows = db.deleteSkippedBundles(ROUND_ID, keepCount = 1)

@@ -297,11 +297,18 @@ data class VotingHotkey(
     override fun hashCode(): Int = address.hashCode()
 }
 
-/** The count/weight summary produced when a round's bundles are first laid out. */
+/**
+ * The count/weight summary produced when a round's bundles are first laid out.
+ *
+ * @param droppedCount the number of notes dropped as dust: notes that landed in a bundle
+ *  whose total value fell below the ballot divisor, so the bundle (and its notes) was
+ *  excluded from [bundleCount]/[eligibleWeight]/[bundleWeights].
+ */
 data class VotingBundleSetupResult(
     val bundleCount: Int,
     val eligibleWeight: Long,
-    val bundleWeights: List<Long>
+    val bundleWeights: List<Long>,
+    val droppedCount: Int
 )
 
 /** An unsigned governance PCZT and its extracted extraction metadata. */

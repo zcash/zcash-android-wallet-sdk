@@ -71,8 +71,8 @@ const JNI_SHARE_DELEGATION_RECORD_CTOR_SIG: &str =
     "(Ljava/lang/String;III[Ljava/lang/String;[BZJJ)V";
 // Must match JniVotingHotkey(ByteArray, ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([B[BLjava/lang/String;)V";
-// Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
-const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
+// Must match JniBundleSetupResult(Int, Long, LongArray, Int) in JniVotingModels.kt.
+const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[JI)V";
 // Must match JniGovernancePczt(ByteArray, ByteArray, ByteArray, Int) in
 // JniVotingModels.kt.
 const JNI_GOVERNANCE_PCZT_CTOR_SIG: &str = "([B[B[BI)V";
@@ -1504,6 +1504,7 @@ pub(super) fn make_jni_bundle_setup_result<'local>(
     count: u32,
     weight: u64,
     bundle_weights: &[u64],
+    dropped_count: u32,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_BUNDLE_SETUP_RESULT)?;
     let weights = bundle_weights
@@ -1522,6 +1523,7 @@ pub(super) fn make_jni_bundle_setup_result<'local>(
             JValue::Int(u32_to_jint(count, "bundle_count")?),
             JValue::Long(u64_to_jlong(weight, "eligible_weight")?),
             JValue::Object(&weights_array_obj),
+            JValue::Int(u32_to_jint(dropped_count, "dropped_count")?),
         ],
     )?;
     Ok(obj.into_raw())
@@ -1709,9 +1711,20 @@ fn make_jni_fixed_byte_array_vec<'local>(
     })?)
 }
 
+/// Result of [`bundle_setup_from_notes`]: the voting note chunker's output in
+/// JNI-ready primitives.
+pub(super) struct NoteBundleSetup {
+    pub(super) count: u32,
+    pub(super) eligible_weight: u64,
+    pub(super) bundle_weights: Vec<u64>,
+    /// Number of notes dropped as dust (notes whose bundle fell below
+    /// `BALLOT_DIVISOR` and was discarded).
+    pub(super) dropped_count: u32,
+}
+
 /// Runs the voting note chunker and returns total count, total eligible weight,
-/// and each bundle's quantized voting weight.
-pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32, u64, Vec<u64>)> {
+/// each bundle's quantized voting weight, and the number of notes dropped as dust.
+pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<NoteBundleSetup> {
     // zcash_voting 1.0.0 (merged-library patch) moved `chunk_notes` from `types` to
     // `note_bundling`; same `&[NoteInfo] -> ChunkResult` signature.
     let chunk_result = voting::note_bundling::chunk_notes(notes);
@@ -1726,12 +1739,14 @@ pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32
             Ok((total / voting::BALLOT_DIVISOR) * voting::BALLOT_DIVISOR)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok((
-        u32::try_from(chunk_result.bundles.len())
+    Ok(NoteBundleSetup {
+        count: u32::try_from(chunk_result.bundles.len())
             .map_err(|_| anyhow!("bundle count is too large for u32"))?,
-        chunk_result.eligible_weight,
+        eligible_weight: chunk_result.eligible_weight,
         bundle_weights,
-    ))
+        dropped_count: u32::try_from(chunk_result.dropped_count)
+            .map_err(|_| anyhow!("dropped_count is too large for u32"))?,
+    })
 }
 
 /// Recomputes deterministic note chunking and returns the requested bundle.
