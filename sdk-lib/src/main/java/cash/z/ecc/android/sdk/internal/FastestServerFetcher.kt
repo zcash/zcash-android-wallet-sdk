@@ -42,14 +42,22 @@ internal class FastestServerFetcher(
         flow {
             emit(FastestServersResult.Measuring)
 
-            val serversByRpcMeanLatency =
+            // MOB-1728: candidates share no Tor circuit -- each derives its own via
+            // walletClientFactory.create(endpoint), same as before this file was touched. An
+            // earlier version of this fix shared one isolated circuit across every candidate, on
+            // the theory that too many concurrent Tor connections were the problem; that turned
+            // out not to be it (see ValidateServerResult.rankingLatency's kdoc for what actually
+            // was: the noisy ranking metric), the sharing was reverted, and parallelMapNotNull
+            // below still runs every candidate concurrently regardless -- N independent circuits
+            // built at once, same as it would have been without ever touching this file at all.
+            val serversByRankingLatency =
                 servers
                     .parallelMapNotNull {
                         validateServerEndpointAndMeasure(it)
                     }.sortedBy {
-                        it.meanDuration
+                        it.rankingLatency
                     }.mapIndexedNotNull { index, result ->
-                        if (index <= K - 1 || result.meanDuration <= LATENCY_THRESHOLD) {
+                        if (index <= K - 1 || result.rankingLatency <= LATENCY_THRESHOLD) {
                             Twig.debug { "Fastest Server: '${result.endpoint}' VALIDATED by SORTING by RPC latency" }
                             result
                         } else {
@@ -59,13 +67,13 @@ internal class FastestServerFetcher(
                     }
 
             Twig.debug {
-                "Fastest Server: '${serversByRpcMeanLatency.map { it.endpoint }}' VALIDATED by MEASURING RPC latency"
+                "Fastest Server: '${serversByRankingLatency.map { it.endpoint }}' VALIDATED by MEASURING RPC latency"
             }
 
-            emit(FastestServersResult.Validating(serversByRpcMeanLatency.map { it.endpoint }.take(K)))
+            emit(FastestServersResult.Validating(serversByRankingLatency.map { it.endpoint }.take(K)))
 
             val serversByGetBlockRangeTimeout =
-                serversByRpcMeanLatency
+                serversByRankingLatency
                     .asFlow()
                     .mapNotNull { result ->
                         result.use {
@@ -115,33 +123,34 @@ internal class FastestServerFetcher(
             }
         }
 
-        val lightWalletClient = kotlin.runCatching { walletClientFactory.create(endpoint) }.getOrNull() ?: return null
+        val lightWalletClient =
+            kotlin.runCatching { walletClientFactory.create(endpoint) }.getOrNull()
+                ?: return null
 
-        val remoteInfo: LightWalletEndpointInfoUnsafe?
-        val getServerInfoDuration =
-            measureTime {
-                // 5 seconds timeout in case server is very unresponsive
-                remoteInfo =
-                    withTimeoutOrNull(5.seconds) {
-                        when (
-                            val response =
-                                lightWalletClient.getServerInfo(
-                                    sdkFlags ifTor
-                                        ServiceMode.Group(
-                                            "validateServerEndpointAndMeasure(${endpoint.host}:${endpoint.port})"
-                                        )
+        // Not timed: MOB-1728 ranks candidates on getLatestBlockHeightDuration alone (see
+        // ValidateServerResult.rankingLatency's kdoc for why), so this call's own duration isn't
+        // needed -- only remoteInfo, for the checks below.
+        // 5 seconds timeout in case server is very unresponsive
+        val remoteInfo: LightWalletEndpointInfoUnsafe? =
+            withTimeoutOrNull(5.seconds) {
+                when (
+                    val response =
+                        lightWalletClient.getServerInfo(
+                            sdkFlags ifTor
+                                ServiceMode.Group(
+                                    "validateServerEndpointAndMeasure(${endpoint.host}:${endpoint.port})"
                                 )
-                        ) {
-                            is Response.Success -> {
-                                response.result
-                            }
-
-                            is Response.Failure -> {
-                                logRuledOut("getServerInfo failed", response.toThrowable())
-                                null
-                            }
-                        }
+                        )
+                ) {
+                    is Response.Success -> {
+                        response.result
                     }
+
+                    is Response.Failure -> {
+                        logRuledOut("getServerInfo failed", response.toThrowable())
+                        null
+                    }
+                }
             }
 
         if (remoteInfo == null) {
@@ -230,25 +239,41 @@ internal class FastestServerFetcher(
             remoteInfo = remoteInfo,
             lightWalletClient = lightWalletClient,
             endpoint = endpoint,
-            getServerInfoDuration = getServerInfoDuration,
             getLatestBlockHeightDuration = getLatestBlockHeightDuration
         )
     }
 
+    // MOB-1728: coroutineScope must wrap the whole map, not be created per element -- a
+    // per-element coroutineScope { async { ... } } suspends on that one child before returning,
+    // so map (plain sequential iteration) never starts the next element until the previous one's
+    // block() has fully completed. That was this function's actual behavior despite its name
+    // until this fix (see the fixed git blame for the previous, sequential version and the
+    // comment this replaced in invoke() above).
     private suspend inline fun <T, R> Iterable<T>.parallelMapNotNull(crossinline block: suspend (T) -> R?): List<R> =
-        map { coroutineScope { async { block(it) } } }
-            .awaitAll()
-            .filterNotNull()
+        coroutineScope {
+            map { async { block(it) } }
+        }.awaitAll().filterNotNull()
 }
 
 private data class ValidateServerResult(
     val remoteInfo: LightWalletEndpointInfoUnsafe,
     val lightWalletClient: CombinedWalletClient,
     val endpoint: LightWalletEndpoint,
-    val getServerInfoDuration: Duration,
     val getLatestBlockHeightDuration: Duration,
 ) : Disposable {
-    val meanDuration = (getServerInfoDuration + getLatestBlockHeightDuration) / 2
+    // MOB-1728: this used to rank on the mean of getServerInfoDuration and
+    // getLatestBlockHeightDuration, but both calls go through the same
+    // ServiceMode.Group(endpoint) key, so CombinedWalletClientImpl's per-serviceMode cache
+    // (getOrCreate) makes the SECOND call reuse the Tor circuit the first call just built —
+    // getServerInfoDuration paid a one-time, highly variable circuit-build cost that had nothing
+    // to do with this server's real responsiveness, while getLatestBlockHeightDuration measures
+    // the actual round-trip over an already-warm connection. Averaging the two baked half that
+    // circuit-build noise into the ranking metric, which — live-verified: 4/4 consecutive app
+    // launches on a 7-candidate mainnet config, each different — was enough to make the "fastest"
+    // server flip almost every single evaluation, forcing a real endpoint switch (and the full
+    // Synchronizer rebuild that comes with it) on nearly every app launch. Ranking on the warm
+    // measurement alone removes that noise source; getServerInfoDuration is no longer measured.
+    val rankingLatency = getLatestBlockHeightDuration
 
     override suspend fun dispose() {
         lightWalletClient.dispose()
@@ -266,7 +291,7 @@ private const val K = 3
 private const val N = 100
 
 /**
- * Threshold for mean RPC call latency.
+ * Threshold for warm RPC call latency (see [ValidateServerResult.rankingLatency]).
  */
 private val LATENCY_THRESHOLD = 300.milliseconds
 
