@@ -6,6 +6,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MigrationTransferState.unsatisfiableKind` (`MigrationUnsatisfiableKind`) now carries why a
+  pool-migration transaction can never execute. The kind is a separate field because
+  `MigrationBlocker.UNSATISFIABLE` carries no payload, and the two are independent: a marked
+  transaction may report a different blocker.
+
+### Changed
+
+- Whether a pool-migration transaction has been mined is now derived from the wallet's own scan
+  data by the migration engine, instead of being observed by the SDK and recorded with an explicit
+  mark. A migration transaction is promoted to mined only once the wallet has scanned to the height
+  carrying it, so the promotion can no longer outlive a rollback of the block that justified it.
+- A pool-migration transfer whose expiry has probably passed — at or above the wallet's fully
+  scanned height, but below its estimate of the chain tip — is now withheld from the broadcast and
+  prove queues rather than offered. This is protective and reversible: nothing is recorded and no
+  artifact is discarded, and such a transfer becomes available again if the wallet's own scan shows
+  that it remains executable.
+
 ## [3.0.0] - 2026-08-25
 
 ### Added
