@@ -6,6 +6,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `TransactionEncoderException.AnchorNotFoundException`, thrown by
+  `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions`
+  when transactions cannot be created from a proposal because no anchor is computable at
+  the height the proposal anchors to
+  (`zcash_client_backend`'s `ProposalError::AnchorNotFound`). When
+  `Synchronizer.createPcztFromProposal` fails for the same reason, the
+  `CreatePcztFromProposalException` it throws now carries this exception as its `cause`.
+  The failure previously surfaced only as the generic
+  `TransactionEncoderException.TransactionNotCreatedException` (or the generic PCZT
+  exception), identifiable only by matching the formatted Rust error message. The new
+  exception is a sibling of `TransactionNotCreatedException`, not a subtype: code that
+  catches `TransactionNotCreatedException` around `createProposedTransactions` and
+  needs to handle this case must add a catch for the new exception. Scanning
+  creates a checkpoint at every height a proposal can anchor to, so the expected
+  recovery is to sync further and then create a new proposal; the failed proposal
+  anchors to the same height, so retrying it unchanged is not expected to succeed on
+  its own.
+
 ## [2.7.0] - 2026-08-20
 
 ### Added

@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.ext.masked
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
+import cash.z.ecc.android.sdk.internal.jni.ProposalAnchorNotFoundException
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
@@ -15,6 +16,7 @@ import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Class responsible for encoding a transaction in a consistent way. This bridges the gap by
@@ -60,6 +62,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal from URI String." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw TransactionEncoderException.ProposalFromUriException(it)
         }
     }
@@ -75,6 +78,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating the migration proposal." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw TransactionEncoderException.ProposalFromParametersException(it)
         }
     }
@@ -103,6 +107,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw TransactionEncoderException.ProposalFromParametersException(it)
         }
     }
@@ -124,10 +129,12 @@ internal class TransactionEncoderImpl(
         }.onSuccess { result ->
             Twig.info { "Result of proposeShielding: ${result?.toPrettyString()}" }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw TransactionEncoderException.ProposalShieldingException(it)
         }
 
     @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
         TransactionEncoderException.TransactionNotCreatedException::class,
         TransactionEncoderException.TransactionNotFoundException::class,
     )
@@ -149,7 +156,9 @@ internal class TransactionEncoderImpl(
             }.onSuccess { result ->
                 Twig.info { "Result of createProposedTransactions: $result" }
             }.getOrElse {
-                throw TransactionEncoderException.TransactionNotCreatedException(it)
+                if (it is CancellationException) throw it
+                throw it.asAnchorNotFoundException()
+                    ?: TransactionEncoderException.TransactionNotCreatedException(it)
             }
 
         val txs =
@@ -175,7 +184,8 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating PCZT." }
         }.getOrElse {
-            throw PcztException.CreatePcztFromProposalException(it.message, it.cause)
+            if (it is CancellationException) throw it
+            throw PcztException.CreatePcztFromProposalException(it.message, it.asAnchorNotFoundException() ?: it.cause)
         }
 
     override suspend fun redactPcztForSigner(pczt: Pczt): Pczt =
@@ -293,3 +303,13 @@ internal class TransactionEncoderImpl(
         return backend.getBranchIdForHeight(height)
     }
 }
+
+/**
+ * Returns the typed [TransactionEncoderException.AnchorNotFoundException] equivalent of this
+ * failure when the native layer reported that no anchor was computable at the height the
+ * proposal anchors to, and `null` for every other failure.
+ */
+private fun Throwable.asAnchorNotFoundException(): TransactionEncoderException.AnchorNotFoundException? =
+    (this as? ProposalAnchorNotFoundException)?.let {
+        TransactionEncoderException.AnchorNotFoundException(BlockHeight.new(it.anchorHeight), it)
+    }

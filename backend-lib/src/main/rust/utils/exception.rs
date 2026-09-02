@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use jni::JNIEnv;
+use jni::objects::{JObject, JThrowable};
 use std::any::Any;
 use std::thread;
 use tracing::error;
@@ -28,7 +29,9 @@ pub fn unwrap_exc_or<T>(env: &mut JNIEnv, res: ExceptionResult<T>, error_val: T)
                 Ok(val) => val,
                 Err(jni_error) => {
                     // Do nothing if there is a pending Java-exception that will be thrown
-                    // automatically by the JVM when the native method returns.
+                    // automatically by the JVM when the native method returns. Typed
+                    // exceptions raised through `throw_object` below rely on this check to
+                    // win over the generic `RuntimeException`.
                     if !env.exception_check().unwrap() {
                         // Throw a Java exception manually in case of an internal error.
                         throw(env, &jni_error.to_string())
@@ -62,6 +65,29 @@ fn throw(env: &mut JNIEnv, description: &str) {
     };
     if let Err(e) = env.throw_new(exception, description) {
         error!("Unable to find 'RuntimeException' class: {}", e.to_string());
+    }
+}
+
+/// Throws the exception object built by `construct` on the JVM, so that a typed exception —
+/// rather than the generic `RuntimeException` from `throw` above — is pending when the native
+/// method returns. `class` names the exception class, for logging only; `construct` typically
+/// calls `JNIEnv::new_object` (`JNIEnv::throw_new` cannot be used when the constructor takes
+/// more than a message string).
+///
+/// This helper and `unwrap_exc_or` share a contract: `unwrap_exc_or` skips its own throw
+/// whenever an exception is already pending, so a successful call here wins over the generic
+/// path. When constructing or throwing fails, the failure usually leaves its *own* exception
+/// (e.g. `NoClassDefFoundError`) pending, which would otherwise suppress the generic fallback
+/// and surface an unrelated JVM error instead of the original one — so it is cleared here,
+/// and the generic path reports the original error.
+pub fn throw_object<'local, F>(env: &mut JNIEnv<'local>, class: &str, construct: F)
+where
+    F: FnOnce(&mut JNIEnv<'local>) -> Result<JObject<'local>, jni::errors::Error>,
+{
+    let thrown = construct(env).and_then(|exception| env.throw(JThrowable::from(exception)));
+    if let Err(e) = thrown {
+        error!("Unable to throw '{}': {}", class, e);
+        let _ = env.exception_clear();
     }
 }
 
