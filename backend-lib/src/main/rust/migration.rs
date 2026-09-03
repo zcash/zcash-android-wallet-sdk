@@ -51,7 +51,7 @@ use zcash_client_backend::data_api::{InputSource, OutputLockStore, WalletRead};
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
 use zcash_client_sqlite::util::SystemClock;
-use zcash_primitives::transaction::fees::zip317::MARGINAL_FEE;
+use zcash_primitives::transaction::fees::{FeeRule, zip317::MARGINAL_FEE};
 use zcash_protocol::consensus::{
     BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants, Parameters,
 };
@@ -3388,7 +3388,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, _store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
 
@@ -3402,12 +3402,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             )
             .map_err(|e| anyhow!("Error reading migratable Orchard total: {}", e))?;
 
-        let marginal_fee = u64::from(MARGINAL_FEE);
+        let fee_rule = zcash_primitives::transaction::fees::zip317::FeeRule::standard();
+        let fee = fee_rule
+            .fee_required(&network, target, [], [], 0, 0, received.orchard().len(), 0)
+            .map_err(|_| {
+                anyhow!(
+                    "Unable to compute fee for {} Orchard notes.",
+                    received.orchard().len()
+                )
+            })?;
+
         let total: u64 = received
             .orchard()
             .iter()
-            .map(|rn| rn.note().value().inner().saturating_sub(marginal_fee))
-            .sum();
+            .map(|rn| rn.note().value().inner())
+            .sum::<u64>()
+            .saturating_sub(fee.into_u64());
         Ok(total as jlong)
     });
     unwrap_exc_or(&mut env, res, 0)
