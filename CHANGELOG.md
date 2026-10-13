@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-13
+
 ### Added
 - Shielded voting: `voteSubmission(roundId, bundleIndex, proposalId)` returns `JniVoteSubmission`,
   the chain-ready fields needed to resend a cast-vote transaction before it confirms, without the
@@ -14,7 +16,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the confirmed position of the vote commitment in the vote commitment tree.
 
 ### Changed
-- Updated the `zcash_voting` dependency to `2.0.0-rc.5` 
+- Updated the `zcash_voting` dependency to `3.0.0-rc.3`.
 - **Shielded voting works again, on a source-incompatible API.** 3.0.0 shipped with the
   voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
   built into the native library again and that deprecation is removed, so `VotingRustBackend` and
