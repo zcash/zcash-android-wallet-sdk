@@ -16,12 +16,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the confirmed position of the vote commitment in the vote commitment tree.
 
 ### Changed
-- Updated the `zcash_voting` dependency to `3.0.0-rc.3`.
+- Updated the `zcash_voting` dependency to `3.0.0-rc.3`. Shielded voting in this release is
+  release-candidate grade: it depends on a release candidate of `zcash_voting` and on
+  release-candidate transitive crates (e.g. `pir-client`, `voting-circuits`). A later stable
+  `zcash_voting` may require a further breaking SDK release.
 - **Shielded voting works again, on a source-incompatible API.** 3.0.0 shipped with the
   voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
   built into the native library again and that deprecation is removed, so `VotingRustBackend` and
   the `sdk-lib` typesafe wrapper around it are usable. The surface is not the one that existed
-  before voting was switched off, because it is now built on `zcash_voting` 2.0.0-rc.3: the
+  before voting was switched off, because it is now built on `zcash_voting` 3.0.0-rc.3: the
   native entry points went from 60 to 55, because three were added and eight were removed —
   seven of them public API, the eighth a test fixture — and nine of the survivors changed their
   parameter lists, one of them without changing its signature. A wallet that stayed on an
@@ -116,7 +119,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - The native library no longer links two copies of the Zcash crate graph (#2056). `zcash_voting`
-  moved from its crates.io `=0.11.0` pin to `2.0.0-rc.3`. The old pin
+  moved from its crates.io `=0.11.0` pin to `3.0.0-rc.3`. The old pin
   required the pre-Ironwood librustzcash family, which cargo resolved *alongside* this crate's
   Ironwood family, so every build carried two copies each of `orchard`, `pczt`, `shardtree`,
   `zcash_address`, `zcash_keys`, `zcash_primitives`, `zcash_protocol` and `zcash_transparent`.
