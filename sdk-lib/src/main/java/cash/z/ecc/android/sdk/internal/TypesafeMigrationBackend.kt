@@ -293,6 +293,18 @@ internal interface TypesafeMigrationBackend {
      */
     suspend fun migrationDustThresholdZatoshi(): Long
 
+    /**
+     * Kris Nuttycombe's per-note "is the leftover balance worth prompting to migrate" total:
+     * `sum(value - MARGINAL_FEE)` over every spendable Orchard note whose value exceeds
+     * `MARGINAL_FEE`. Compare against [migrationDustThresholdZatoshi] (already `2 * MARGINAL_FEE`),
+     * not the raw aggregate Orchard balance.
+     */
+    suspend fun migratableOrchardTotal(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Long
+
     // ----- External signer (Keystone hardware wallet) -----
 
     suspend fun createUnsignedNoteSplitPczt(

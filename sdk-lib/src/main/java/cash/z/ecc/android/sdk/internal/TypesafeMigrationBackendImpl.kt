@@ -242,6 +242,12 @@ internal class TypesafeMigrationBackendImpl(
 
     override suspend fun migrationDustThresholdZatoshi(): Long = rustBackend().migrationDustThresholdZatoshi()
 
+    override suspend fun migratableOrchardTotal(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid
+    ): Long = rustBackend().migratableOrchardTotal(dbDataPath, network.id, account.value)
+
     override suspend fun createUnsignedNoteSplitPczt(
         dbDataPath: String,
         network: ZcashNetwork,

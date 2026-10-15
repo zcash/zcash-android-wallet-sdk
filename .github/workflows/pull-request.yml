@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -65,7 +65,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -86,7 +86,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -106,7 +106,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -145,7 +145,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -184,7 +184,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -229,7 +229,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -257,7 +257,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -286,7 +286,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -312,7 +312,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # The check only reads Cargo.lock and curls a public URL, so it needs no
           # credential; keep it out of .git/config.
@@ -335,7 +335,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -368,7 +368,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -440,7 +440,7 @@ jobs:
   #   steps:
   #     - name: Checkout
   #       timeout-minutes: 1
-  #       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+  #       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
   #       with:
   #         # No job here pushes or otherwise re-uses the checkout credential, so keep it
   #         # out of .git/config where it would be picked up by artifact uploads.
@@ -503,7 +503,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -581,7 +581,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.
@@ -640,7 +640,7 @@ jobs:
     steps:
       - name: Checkout
         timeout-minutes: 1
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # No job here pushes or otherwise re-uses the checkout credential, so keep it
           # out of .git/config where it would be picked up by artifact uploads.

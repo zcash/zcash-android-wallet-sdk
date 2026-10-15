@@ -293,11 +293,13 @@ fn pir_layout_from_jni(
     pir_depth: jint,
     tier0_layers: jint,
     tier1_layers: jint,
+    poly_len: jint,
 ) -> anyhow::Result<voting::config::PirLayout> {
     Ok(voting::config::PirLayout {
         pir_depth: jint_to_u32(pir_depth, "pir_depth")?,
         tier0_layers: jint_to_u32(tier0_layers, "tier0_layers")?,
         tier1_layers: jint_to_u32(tier1_layers, "tier1_layers")?,
+        poly_len: jint_to_u32(poly_len, "poly_len")?,
     })
 }
 
@@ -342,6 +344,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     pir_depth: jint,
     pir_tier0_layers: jint,
     pir_tier1_layers: jint,
+    pir_poly_len: jint,
     notes: JObjectArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -353,7 +356,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let round_id = java_string_to_rust(env, &round_id)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
-        let pir_layout = pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers)?;
+        let pir_layout =
+            pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
         let pir_client = connect_pir_client(&pir_url, pir_layout)?;
         let result = db
             .precompute_delegation_pir(
@@ -383,6 +387,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
     pir_depth: jint,
     pir_tier0_layers: jint,
     pir_tier1_layers: jint,
+    pir_poly_len: jint,
     notes: JObjectArray<'local>,
     fvk_bytes: JByteArray<'local>,
     hotkey_secret: JByteArray<'local>,
@@ -398,6 +403,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let notes = java_note_info_array(env, &notes, "notes")?;
         let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
+        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
         require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
 
         let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
@@ -426,7 +432,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         .map_err(|e| anyhow!("DelegationKeys::with_voting_hotkey: {}", e))?;
 
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
-        let pir_layout = pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers)?;
+        let pir_layout =
+            pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
         let pir_client = connect_pir_client(&pir_url, pir_layout)?;
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = DelegationProgressReporterBridge(reporter.as_ref());
@@ -656,6 +663,50 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Persists a Keystone-signed delegation bundle's signature so a later round-wide
+/// `resetVotingSessionStateNative` preserves this bundle instead of wiping its unsigned setup
+/// fields for a rebuild. Wraps the crate's own `store_keystone_signature`
+/// (`storage/queries.rs`/`storage/operations.rs`), which `clear_unsigned_delegation_setup_fields`
+/// already checks against (`bundle_index NOT IN (SELECT bundle_index FROM keystone_signatures ...)`)
+/// — so simply calling this after a successful `getDelegationSubmissionWithKeystoneSigNative` is
+/// enough to make that preservation take effect; nothing else needs to change.
+///
+/// Callers should pass the `rk`/`sighash` pair `getDelegationSubmissionWithKeystoneSigNative`
+/// already verified `keystone_sig` against (its returned submission result's `rk`), not
+/// arbitrary caller-supplied values — this call does not itself re-verify the signature.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeKeystoneSignatureNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    keystone_sig: JByteArray<'local>,
+    keystone_sighash: JByteArray<'local>,
+    rk: JByteArray<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let sig = java_bytes_exact(env, &keystone_sig, "keystoneSig", SPEND_AUTH_SIG_BYTES)?;
+        let sighash = java_bytes_exact(
+            env,
+            &keystone_sighash,
+            "keystoneSighash",
+            PROTOCOL_FIELD_BYTES,
+        )?;
+        let rk = java_bytes_exact(env, &rk, "rk", PROTOCOL_FIELD_BYTES)?;
+        db.store_keystone_signature(&round_id, bundle_index, &sig, &sighash, &rk)
+            .map_err(|e| anyhow!("store_keystone_signature: {}", e))?;
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
 #[cfg(feature = "android-test-fixtures")]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_delegationProofResultFixtureNative<
@@ -784,6 +835,33 @@ fn require_witnesses_match_bundle(
     Ok(())
 }
 
+/// Fails fast if the round has already advanced past `max_phase`, instead of letting a stale
+/// retry silently re-enter minutes-long Halo2 proving for an already-past-submission round.
+///
+/// This is a read-only check (unlike the round-level `phase` writes `build_governance_pczt_for_bundle`
+/// deliberately no longer performs — see that function's doc comment) and does not reintroduce
+/// the multi-bundle "refusing to regress round phase" regression: it only ever rejects a round
+/// that is *further along* than `max_phase`, never blocks a bundle that simply hasn't reached it
+/// yet.
+fn require_round_phase_not_after(
+    db: &VotingDb,
+    round_id: &str,
+    max_phase: RoundPhase,
+) -> anyhow::Result<()> {
+    let state = db
+        .get_round_state(round_id)
+        .map_err(|e| anyhow!("get_round_state: {}", e))?;
+    if state.phase as i32 > max_phase as i32 {
+        return Err(anyhow!(
+            "round {round_id} is already past {:?}: {:?}",
+            max_phase,
+            state.phase
+        ));
+    }
+
+    Ok(())
+}
+
 fn verify_delegation_submission_sig(data: &DelegationSubmissionData) -> anyhow::Result<()> {
     let rk = fixed_bytes::<PROTOCOL_FIELD_BYTES>(data.rk.clone(), "rk")?;
     let sighash = fixed_bytes::<PROTOCOL_FIELD_BYTES>(data.sighash.clone(), "sighash")?;
@@ -812,6 +890,55 @@ mod tests {
     use super::*;
     use rand::rngs::OsRng;
     use voting::types::VotingHotkey;
+
+    #[test]
+    fn require_round_phase_not_after_allows_phase_at_or_before_max() {
+        let (db, round_id) = test_db_with_round();
+
+        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)
+            .expect("Initialized is not after DelegationProved");
+
+        db.advance_round_phase(&round_id, RoundPhase::DelegationProved)
+            .expect("advance to DelegationProved");
+        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)
+            .expect("DelegationProved is not after DelegationProved");
+    }
+
+    #[test]
+    fn require_round_phase_not_after_fails_fast_once_round_moved_past_max() {
+        let (db, round_id) = test_db_with_round();
+        db.advance_round_phase(&round_id, RoundPhase::VoteReady)
+            .expect("advance to VoteReady");
+
+        let err = require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)
+            .unwrap_err();
+
+        assert!(err.to_string().contains("already past"));
+    }
+
+    #[test]
+    fn store_keystone_signature_persists_and_is_retrievable() {
+        let (db, round_id) = test_db_with_round();
+        let notes = [note_info()];
+        db.ensure_bundles_with_skipped_suffix_with_policy(
+            &round_id,
+            &notes,
+            voting::BundlePolicy::default(),
+        )
+        .expect("bundle setup");
+
+        db.store_keystone_signature(&round_id, 0, &[0x11; 64], &[0xAA; 32], &[0x22; 32])
+            .expect("store keystone signature");
+
+        let signatures = db
+            .get_keystone_signatures(&round_id)
+            .expect("get keystone signatures");
+        assert_eq!(signatures.len(), 1);
+        assert_eq!(signatures[0].bundle_index, 0);
+        assert_eq!(signatures[0].sig, vec![0x11; 64]);
+        assert_eq!(signatures[0].sighash, vec![0xAA; 32]);
+        assert_eq!(signatures[0].rk, vec![0x22; 32]);
+    }
 
     #[test]
     fn extract_spend_auth_sig_accepts_signed_governance_pczt() {
@@ -988,6 +1115,13 @@ mod tests {
             vote_round_id: "round-1".to_string(),
             spend_auth_sig,
             sighash,
+            // `sighash` (32 bytes) is still required for local Keystone-signature
+            // verification (see `verify_delegation_submission_sig`), but the
+            // vote-chain server now requires `tx1_effects` (821 bytes,
+            // zcash_voting::tx1::TX1_EFFECTS_LEN) on submission instead of sighash
+            // — see JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG's doc comment in
+            // helpers.rs. Both fields are exercised here since this fixture feeds
+            // signature-verification tests, not submission-payload tests.
             tx1_effects: vec![8; voting::tx1::TX1_EFFECTS_LEN],
         }
     }

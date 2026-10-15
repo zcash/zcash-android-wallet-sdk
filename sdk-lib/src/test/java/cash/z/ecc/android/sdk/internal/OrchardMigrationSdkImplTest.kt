@@ -190,7 +190,7 @@ class OrchardMigrationSdkImplTest {
 
     /**
      * `migrationDustThresholdZatoshi()` is a pure pass-through to the Rust-side
-     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` constant (100,000 zatoshi / 0.001 ZEC) — no account or
+     * `MIGRATION_DUST_THRESHOLD_ZATOSHI` constant (10,000 zatoshi / 0.0001 ZEC) — no account or
      * database state involved. This just pins down that the value round-trips through the
      * typesafe backend unchanged.
      */
@@ -200,7 +200,7 @@ class OrchardMigrationSdkImplTest {
             val account = AccountUuid.new(ByteArray(16) { it.toByte() })
             val fakeBackend =
                 FakeTypesafeMigrationBackend(
-                    migrationDustThresholdZatoshiResult = 100_000L
+                    migrationDustThresholdZatoshiResult = 10_000L
                 )
             val sdk =
                 OrchardMigrationSdkImpl(
@@ -215,7 +215,7 @@ class OrchardMigrationSdkImplTest {
 
             val result = sdk.migrationDustThresholdZatoshi()
 
-            assertEquals(100_000L, result)
+            assertEquals(10_000L, result)
         }
 
     /**
@@ -1324,7 +1324,7 @@ class OrchardMigrationSdkImplTest {
     @Suppress("TooManyFunctions", "LongParameterList")
     private class FakeTypesafeMigrationBackend(
         private val proposeImmediateSendMaxResult: ByteArray = ByteArray(0),
-        private val migrationDustThresholdZatoshiResult: Long = 100_000L,
+        private val migrationDustThresholdZatoshiResult: Long = 10_000L,
         private val migrationSummaryResult: LongArray = LongArray(0),
         private val hasOverdueTransfersResult: Boolean = false,
         private val nextStepResult: LongArray? = null,
@@ -1371,6 +1371,12 @@ class OrchardMigrationSdkImplTest {
         var hasOverdueTransfersCallCount = 0
 
         override suspend fun migrationDustThresholdZatoshi(): Long = migrationDustThresholdZatoshiResult
+
+        override suspend fun migratableOrchardTotal(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid
+        ): Long = error("Unused")
 
         override suspend fun migrationState(
             dbDataPath: String,

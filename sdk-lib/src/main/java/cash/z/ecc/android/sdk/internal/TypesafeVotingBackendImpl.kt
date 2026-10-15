@@ -20,6 +20,7 @@ import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniCommittedVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
@@ -355,6 +356,7 @@ internal interface VotingDbBackend {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult
 
@@ -365,6 +367,7 @@ internal interface VotingDbBackend {
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -498,6 +501,24 @@ internal interface VotingDbBackend {
         shareIndex: Int,
         newUrls: List<String>
     )
+
+    suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase>
+
+    suspend fun resetVotingSessionState(roundId: String)
+
+    /**
+     * Persists a Keystone-signed delegation bundle's signature so a later round-wide
+     * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
+     * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
+     * [getDelegationSubmissionWithKeystoneSig] call, not arbitrary caller-supplied values.
+     */
+    suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    )
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -610,6 +631,7 @@ private class RustVotingDbBackend(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
@@ -619,6 +641,7 @@ private class RustVotingDbBackend(
             pirDepth,
             pirTier0Layers,
             pirTier1Layers,
+            pirPolyLen,
             notes
         )
 
@@ -629,6 +652,7 @@ private class RustVotingDbBackend(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<JniNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -644,6 +668,7 @@ private class RustVotingDbBackend(
             pirDepth,
             pirTier0Layers,
             pirTier1Layers,
+            pirPolyLen,
             notes,
             fvkBytes,
             hotkeySecret,
@@ -830,6 +855,20 @@ private class RustVotingDbBackend(
         shareIndex: Int,
         newUrls: List<String>
     ) = votingDb.addSentServers(roundId, bundleIndex, proposalId, shareIndex, newUrls)
+
+    override suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase> =
+        votingDb.delegationPhases(roundId)
+
+    override suspend fun resetVotingSessionState(roundId: String) =
+        votingDb.resetVotingSessionState(roundId)
+
+    override suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    ) = votingDb.storeKeystoneSignature(roundId, bundleIndex, keystoneSig, keystoneSighash, rk)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -947,6 +986,7 @@ internal class TypesafeVotingDbImpl(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult =
         votingDb
@@ -957,6 +997,7 @@ internal class TypesafeVotingDbImpl(
                 pirDepth,
                 pirTier0Layers,
                 pirTier1Layers,
+                pirPolyLen,
                 notes.toJniNoteInfos()
             ).toDelegationPirPrecomputeResult()
 
@@ -967,6 +1008,7 @@ internal class TypesafeVotingDbImpl(
         pirDepth: Int,
         pirTier0Layers: Int,
         pirTier1Layers: Int,
+        pirPolyLen: Int,
         notes: List<VotingNoteInfo>,
         fvkBytes: ByteArray,
         hotkeySecret: ByteArray,
@@ -983,6 +1025,7 @@ internal class TypesafeVotingDbImpl(
                 pirDepth,
                 pirTier0Layers,
                 pirTier1Layers,
+                pirPolyLen,
                 notes.toJniNoteInfos(),
                 fvkBytes,
                 hotkeySecret,
@@ -1092,6 +1135,15 @@ internal class TypesafeVotingDbImpl(
                 proofProgress?.asVotingProgressCallback()
             ).also { commitment ->
                 commitment.requireValid()
+                require(commitment.bundleIndex == bundleIndex) {
+                    "commitVote result bundleIndex ${commitment.bundleIndex} does not match " +
+                        "requested bundleIndex $bundleIndex"
+                }
+                val expectedShareCount = if (singleShare) 1 else JNI_VOTE_SHARE_COUNT
+                require(commitment.sharePayloads.size == expectedShareCount) {
+                    "commitVote result sharePayloads must contain $expectedShareCount entries " +
+                        "for singleShare=$singleShare, got ${commitment.sharePayloads.size}"
+                }
             }
 
     override suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String) =
@@ -1157,7 +1209,11 @@ internal class TypesafeVotingDbImpl(
         nullifier: ByteArray,
         submitAt: Long
     ) {
-        nullifier.requireByteArraySize("nullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
+        // Matches the JNI layer's contract (see `VotingRustBackend.VotingDb.recordShareDelegation`):
+        // the native side derives and persists the authoritative nullifier itself, so the
+        // caller-supplied value is only shape-validated when non-empty. An empty nullifier is the
+        // normal case for callers that do not have it yet.
+        nullifier.requireByteArraySizeIfNotEmpty("nullifier", JNI_PROTOCOL_FIELD_BYTES_SIZE)
         votingDb.recordShareDelegation(
             roundId,
             bundleIndex,
@@ -1193,6 +1249,20 @@ internal class TypesafeVotingDbImpl(
         shareIndex: Int,
         newUrls: List<String>
     ) = votingDb.addSentServers(roundId, bundleIndex, proposalId, shareIndex, newUrls)
+
+    override suspend fun delegationPhases(roundId: String): List<JniDelegationPhase> =
+        votingDb.delegationPhases(roundId).asList()
+
+    override suspend fun resetVotingSessionState(roundId: String) =
+        votingDb.resetVotingSessionState(roundId)
+
+    override suspend fun storeKeystoneSignature(
+        roundId: String,
+        bundleIndex: Int,
+        keystoneSig: ByteArray,
+        keystoneSighash: ByteArray,
+        rk: ByteArray
+    ) = votingDb.storeKeystoneSignature(roundId, bundleIndex, keystoneSig, keystoneSighash, rk)
 }
 
 internal fun JniGovernancePczt.toGovernancePcztResult(): GovernancePcztResult {
@@ -1378,6 +1448,11 @@ private fun ((Double) -> Unit).asVotingProgressCallback() =
 private fun ByteArray.requireByteArraySize(name: String, expectedSize: Int) =
     require(size == expectedSize) {
         "$name must be $expectedSize bytes, got $size"
+    }
+
+private fun ByteArray.requireByteArraySizeIfNotEmpty(name: String, expectedSize: Int) =
+    require(isEmpty() || size == expectedSize) {
+        "$name must be empty or $expectedSize bytes, got $size"
     }
 
 private fun ByteArray.requireByteArrayNotEmpty(name: String) =
