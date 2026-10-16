@@ -1,19 +1,16 @@
 [![license](https://img.shields.io/github/license/zcash/zcash-android-wallet-sdk.svg?maxAge=2592000&style=plastic)](https://github.com/zcash/zcash-android-wallet-sdk/blob/master/LICENSE)
 ![Maven Central](https://img.shields.io/maven-central/v/cash.z.ecc.android/zcash-android-sdk?color=success&style=plastic)
 
-This is a beta build and is currently under active development. Please be advised of the following:
+# End of Support
+Version 4.0.0 is the final release of the Zcash Android Wallet SDK. Support for this
+SDK will end when [NU7 activates](https://zips.z.cash/zip-0259), currently expected
+in November 2026\.
 
-- This code currently is not audited by an external security auditor, use it at your own risk
-- The code **has not been subjected to thorough review** by engineers at the Electric Coin Company
-- We **are actively changing** the codebase and adding features where/when needed
+Development will continue in the [ZODL Android Wallet SDK](https://github.com/zodl-inc/zodl-android-wallet-sdk), alongside [ZODL Slipstream](https://github.com/zodl-inc/slipstream).
+These projects are available under the GNU Affero General Public License (AGPLv3),
+with separate commercial licensing options for developers whose needs require different terms.
 
-🔒 Security Warnings
-
-- The Zcash Android Wallet SDK is experimental and a work in progress. Use it at your own risk.
-- Developers using this SDK must familiarize themselves with the current [threat
-  model](https://zcash.readthedocs.io/en/latest/rtd_pages/wallet_threat_model.html), especially the known weaknesses described there.
-
----
+We thank the Zcash community for seven years of support, contributions, and collaboration.
 
 # Zcash Android SDK
 This lightweight SDK connects Android to Zcash, allowing third-party Android apps to send and receive shielded transactions easily, securely and privately.
