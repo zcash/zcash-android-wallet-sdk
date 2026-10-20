@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-10-20
+
+### Fixed
+- Updated the native library's TLS certificate-validation and root-store crates in response to
+  the compromise of the private keys of eight eMudhra intermediate CAs: `rustls-webpki` 0.103.13 →
+  0.103.16 and `webpki-roots` 1.0.9 → 1.0.10. TLS connections made by the native library, including
+  to lightwalletd and for shielded voting, now reject any certificate chain that passes through one
+  of the compromised intermediates, and no longer trust the "emSign ECC Root CA - G3" root. No API
+  changes; consuming apps need no code changes.
+
 ## [4.0.0] - 2026-10-13
 
 ### Added
