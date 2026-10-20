@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-10-20
+
 ### Fixed
 - Updated the native library's TLS certificate-validation and root-store crates in response to
   the compromise of the private keys of eight eMudhra intermediate CAs: `rustls-webpki` 0.103.13 →
